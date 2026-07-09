@@ -1,0 +1,10 @@
+{
+    mtimes = {
+        ["xmake.lua"] = 1783526287
+    },
+    recheck = false,
+    options = {
+        use_system_deps = true,
+        use_xrepo_deps = false
+    }
+}

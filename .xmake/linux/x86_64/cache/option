@@ -1,0 +1,16 @@
+{
+    use_system_deps = {
+        showmenu = true,
+        __sourceinfo_showmenu = { },
+        __sourceinfo_default = { },
+        default = true,
+        __scriptdir = "/home/rm/super/newvision",
+        description = "Use system OpenCV and yaml-cpp development packages",
+        __sourceinfo_description = {
+            ["Use system OpenCV and yaml-cpp development packages"] = {
+                line = 22,
+                file = "./xmake.lua"
+            }
+        }
+    }
+}

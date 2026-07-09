@@ -1,0 +1,41 @@
+#include "l1_sensor/camera.hpp"
+
+#include <stdexcept>
+
+#include "hikrobot/hikrobot.hpp"
+#include "mindvision/mindvision.hpp"
+#include "yaml.hpp"
+
+namespace L1Sensor {
+
+Camera::Camera(const std::string& config_path)
+{
+  const auto config = tools::load(config_path);
+  const auto camera_name = tools::read<std::string>(config, "camera_name");
+  const auto exposure_ms = tools::read<double>(config, "exposure_ms");
+  const auto vid_pid = tools::read<std::string>(config, "vid_pid");
+
+  if (camera_name == "hikrobot") {
+    const auto gain = tools::read<double>(config, "gain");
+    camera_ = std::make_unique<io::HikRobot>(exposure_ms, gain, vid_pid);
+    return;
+  }
+
+  if (camera_name == "mindvision") {
+    const auto gamma = tools::read<double>(config, "gamma");
+    camera_ = std::make_unique<io::MindVision>(exposure_ms, gamma, vid_pid);
+    return;
+  }
+
+  throw std::runtime_error("Unsupported camera_name: " + camera_name);
+}
+
+void Camera::read(cv::Mat& img, std::chrono::steady_clock::time_point& timestamp)
+{
+  if (!camera_) {
+    throw std::runtime_error("Camera backend is not initialized.");
+  }
+  camera_->read(img, timestamp);
+}
+
+}  // namespace L1Sensor

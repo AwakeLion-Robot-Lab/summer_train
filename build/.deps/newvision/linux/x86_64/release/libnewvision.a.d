@@ -1,0 +1,35 @@
+{
+    files = {
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/camera.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/frame_packet.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/robot_state.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/timestamp.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/detector.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/lightbar_detector.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/yolo_detector.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/ekf_tracker.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/pnp_solver.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/target_estimator.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l4_planning/ballistic_solver.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l4_planning/latency_compensator.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l4_planning/planner.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l4_planning/predictor.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l5_control/controller.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l5_control/fire_decision.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l5_control/reject_reason.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l5_control/serial_command.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/fps_counter.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/logger.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/math.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/trace_scope.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/runtime/auto_aim_runtime.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/hikrobot/hikrobot.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/mindvision/mindvision.cpp.o"
+    },
+    values = {
+        "/usr/bin/ar",
+        {
+            "-cr"
+        }
+    }
+}

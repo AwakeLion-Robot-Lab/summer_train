@@ -1,0 +1,174 @@
+{
+    nasm_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    ascendc_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = false
+    },
+    go_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    tool_target_auto_aim_linux_x86_64_ld = {
+        toolchain_info = {
+            arch = "x86_64",
+            plat = "linux",
+            name = "gcc-13",
+            cachekey = "gcc-13_arch_x86_64_plat_linux"
+        },
+        program = "/usr/bin/g++-13",
+        toolname = "gxx"
+    },
+    ["gcc-13_arch_x86_64_plat_linux"] = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = {
+            name = "gcc",
+            program = "/usr/bin/gcc-13"
+        }
+    },
+    fasm_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    tool_target_fps_counter_smoke_linux_x86_64_ld = {
+        toolchain_info = {
+            arch = "x86_64",
+            plat = "linux",
+            name = "gcc-13",
+            cachekey = "gcc-13_arch_x86_64_plat_linux"
+        },
+        program = "/usr/bin/g++-13",
+        toolname = "gxx"
+    },
+    tool_target_auto_aim_linux_x86_64_cxx = {
+        toolchain_info = {
+            arch = "x86_64",
+            plat = "linux",
+            name = "gcc-13",
+            cachekey = "gcc-13_arch_x86_64_plat_linux"
+        },
+        program = "/usr/bin/g++-13",
+        toolname = "gxx"
+    },
+    zig_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = false
+    },
+    cross_arch_x86_64_plat_linux = {
+        plat = "linux",
+        arch = "x86_64",
+        __global = true
+    },
+    gcc_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = {
+            name = "gcc",
+            program = "/usr/bin/gcc"
+        }
+    },
+    gfortran_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    clang_arch_x86_64_plat_linux = {
+        plat = "linux",
+        arch = "x86_64",
+        __global = true
+    },
+    tool_target_newvision_linux_x86_64_cxx = {
+        toolchain_info = {
+            arch = "x86_64",
+            plat = "linux",
+            name = "gcc-13",
+            cachekey = "gcc-13_arch_x86_64_plat_linux"
+        },
+        program = "/usr/bin/g++-13",
+        toolname = "gxx"
+    },
+    swift_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    dotnet_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = false
+    },
+    fpc_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    tool_target_fps_counter_smoke_linux_x86_64_cxx = {
+        toolchain_info = {
+            arch = "x86_64",
+            plat = "linux",
+            name = "gcc-13",
+            cachekey = "gcc-13_arch_x86_64_plat_linux"
+        },
+        program = "/usr/bin/g++-13",
+        toolname = "gxx"
+    },
+    tool_target_newvision_linux_x86_64_ar = {
+        toolchain_info = {
+            arch = "x86_64",
+            plat = "linux",
+            name = "gcc-13",
+            cachekey = "gcc-13_arch_x86_64_plat_linux"
+        },
+        program = "/usr/bin/ar",
+        toolname = "ar"
+    },
+    yasm_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    cuda_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    nim_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = false
+    },
+    rust_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    },
+    envs_arch_x86_64_plat_linux = {
+        arch = "x86_64",
+        plat = "linux",
+        __global = true,
+        __checked = true
+    }
+}
