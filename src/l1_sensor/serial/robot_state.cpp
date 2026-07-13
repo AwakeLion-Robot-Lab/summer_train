@@ -1,4 +1,4 @@
-#include "l1_sensor/robot_state.hpp"
+#include "l1_sensor/serial/robot_state.hpp"
 
 namespace L1Sensor {
 

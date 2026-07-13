@@ -1,4 +1,4 @@
-#include "l1_sensor/camera.hpp"
+#include "l1_sensor/camera/camera.hpp"
 
 #include <stdexcept>
 
@@ -30,12 +30,22 @@ Camera::Camera(const std::string& config_path)
   throw std::runtime_error("Unsupported camera_name: " + camera_name);
 }
 
-void Camera::read(cv::Mat& img, std::chrono::steady_clock::time_point& timestamp)
+bool Camera::read(
+  cv::Mat& img,
+  std::chrono::steady_clock::time_point& timestamp,
+  std::chrono::milliseconds timeout)
 {
   if (!camera_) {
     throw std::runtime_error("Camera backend is not initialized.");
   }
-  camera_->read(img, timestamp);
+  return camera_->read(img, timestamp, timeout);
+}
+
+void Camera::stop()
+{
+  if (camera_) {
+    camera_->stop();
+  }
 }
 
 }  // namespace L1Sensor

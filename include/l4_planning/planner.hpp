@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l1_sensor/robot_state.hpp"
+#include "l1_sensor/serial/robot_state.hpp"
 #include "l3_estimation/target_estimator.hpp"
 
 #include <optional>

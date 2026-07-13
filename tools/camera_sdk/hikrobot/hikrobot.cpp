@@ -57,22 +57,44 @@ HikRobot::HikRobot(double exposure_ms, double gain, const std::string & vid_pid)
 
 HikRobot::~HikRobot()
 {
-  daemon_quit_ = true;
-  if (daemon_thread_.joinable()) daemon_thread_.join();
+  stop();
+  if (daemon_thread_.joinable()) {
+    daemon_thread_.join();
+  }
   L6Telemetry::logInfo("HikRobot destructed.");
 }
 
-void HikRobot::read(cv::Mat & img, std::chrono::steady_clock::time_point & timestamp)
+bool HikRobot::read(
+  cv::Mat & img,
+  std::chrono::steady_clock::time_point & timestamp,
+  std::chrono::milliseconds timeout)
 {
   CameraData data;
-  buffer.read(data);
+  const auto result = buffer.readFor(data, timeout);
+  if (result != tools::LatestBuffer<CameraData>::ReadStatus::Value) {
+    img.release();
+    timestamp = {};
+    return false;
+  }
 
   img = data.img;
   timestamp = data.timestamp;
+  return true;
+}
+
+void HikRobot::stop()
+{
+  daemon_quit_.store(true);
+  capture_quit_.store(true);
+  buffer.close();
 }
 
 void HikRobot::capture_start()
 {
+  if (daemon_quit_.load()) {
+    return;
+  }
+
   capturing_ = false;
   capture_quit_ = false;
 
@@ -93,6 +115,7 @@ void HikRobot::capture_start()
   ret = MV_CC_CreateHandle(&handle_, device_list.pDeviceInfo[0]);
   if (ret != MV_OK) {
     L6Telemetry::logWarn("MV_CC_CreateHandle failed: {:#x}", ret);
+    handle_ = nullptr;
     return;
   }
 
@@ -122,10 +145,9 @@ void HikRobot::capture_start()
 
     capturing_ = true;
 
-    MV_FRAME_OUT raw;
-    MV_CC_PIXEL_CONVERT_PARAM cvt_param;
+    MV_FRAME_OUT raw{};
 
-    while (!capture_quit_) {
+    while (!capture_quit_.load()) {
       std::this_thread::sleep_for(1ms);
 
       unsigned int ret;
@@ -133,25 +155,15 @@ void HikRobot::capture_start()
 
       ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
       if (ret != MV_OK) {
-        L6Telemetry::logWarn("MV_CC_GetImageBuffer failed: {:#x}", ret);
+        if (!capture_quit_.load()) {
+          L6Telemetry::logWarn("MV_CC_GetImageBuffer failed: {:#x}", ret);
+        }
         break;
       }
 
       auto timestamp = std::chrono::steady_clock::now();
       cv::Mat img(cv::Size(raw.stFrameInfo.nWidth, raw.stFrameInfo.nHeight), CV_8U, raw.pBufAddr);
 
-      cvt_param.nWidth = raw.stFrameInfo.nWidth;
-      cvt_param.nHeight = raw.stFrameInfo.nHeight;
-
-      cvt_param.pSrcData = raw.pBufAddr;
-      cvt_param.nSrcDataLen = raw.stFrameInfo.nFrameLen;
-      cvt_param.enSrcPixelType = raw.stFrameInfo.enPixelType;
-
-      cvt_param.pDstBuffer = img.data;
-      cvt_param.nDstBufferSize = img.total() * img.elemSize();
-      cvt_param.enDstPixelType = PixelType_Gvsp_BGR8_Packed;
-
-      // ret = MV_CC_ConvertPixelType(handle_, &cvt_param);
       const auto & frame_info = raw.stFrameInfo;
       auto pixel_type = frame_info.enPixelType;
       cv::Mat dst_image;
@@ -160,14 +172,30 @@ void HikRobot::capture_start()
         {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRG2RGB},
         {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGB2RGB},
         {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBG2RGB}};
-      cv::cvtColor(img, dst_image, type_map.at(pixel_type));
-      img = dst_image;
+      const auto conversion = type_map.find(pixel_type);
+      if (conversion == type_map.end()) {
+        L6Telemetry::logWarn("Unsupported HikRobot pixel type", static_cast<int>(pixel_type));
+        MV_CC_FreeImageBuffer(handle_, &raw);
+        break;
+      }
 
-      buffer.write({img, timestamp});
+      try {
+        cv::cvtColor(img, dst_image, conversion->second);
+      } catch (const cv::Exception& e) {
+        L6Telemetry::logWarn("HikRobot color conversion failed", e.what());
+        MV_CC_FreeImageBuffer(handle_, &raw);
+        break;
+      }
+
+      img = dst_image;
 
       ret = MV_CC_FreeImageBuffer(handle_, &raw);
       if (ret != MV_OK) {
         L6Telemetry::logWarn("MV_CC_FreeImageBuffer failed: {:#x}", ret);
+        break;
+      }
+
+      if (!buffer.write({img, timestamp})) {
         break;
       }
     }
@@ -180,28 +208,34 @@ void HikRobot::capture_start()
 void HikRobot::capture_stop()
 {
   capture_quit_ = true;
-  if (capture_thread_.joinable()) capture_thread_.join();
+  if (capture_thread_.joinable()) {
+    capture_thread_.join();
+  }
+  capturing_ = false;
+
+  if (handle_ == nullptr) {
+    return;
+  }
+
+  auto* handle = handle_;
+  handle_ = nullptr;
 
   unsigned int ret;
 
-  ret = MV_CC_StopGrabbing(handle_);
+  ret = MV_CC_StopGrabbing(handle);
   if (ret != MV_OK) {
     L6Telemetry::logWarn("MV_CC_StopGrabbing failed: {:#x}", ret);
-    return;
   }
 
-  ret = MV_CC_CloseDevice(handle_);
+  ret = MV_CC_CloseDevice(handle);
   if (ret != MV_OK) {
     L6Telemetry::logWarn("MV_CC_CloseDevice failed: {:#x}", ret);
-    return;
   }
 
-  ret = MV_CC_DestroyHandle(handle_);
+  ret = MV_CC_DestroyHandle(handle);
   if (ret != MV_OK) {
     L6Telemetry::logWarn("MV_CC_DestroyHandle failed: {:#x}", ret);
-    return;
   }
-  handle_ = nullptr;
 }
 
 void HikRobot::set_float_value(const std::string & name, double value)

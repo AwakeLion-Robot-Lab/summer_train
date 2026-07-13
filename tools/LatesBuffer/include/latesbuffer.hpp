@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -11,6 +12,12 @@ namespace tools {
 template <typename T>
 class LatestBuffer {
 public:
+  enum class ReadStatus {
+    Value,
+    Timeout,
+    Closed,
+  };
+
   bool write(T value)
   {
     std::unique_lock<std::mutex> lock(mutex_);
@@ -38,6 +45,26 @@ public:
     out = std::move(*value_);
     value_.reset();
     return true;
+  }
+
+  template <typename Rep, typename Period>
+  ReadStatus readFor(
+    T& out, const std::chrono::duration<Rep, Period>& timeout)
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!cv_.wait_for(lock, timeout, [this] {
+          return value_.has_value() || closed_;
+        })) {
+      return ReadStatus::Timeout;
+    }
+
+    if (!value_.has_value()) {
+      return ReadStatus::Closed;
+    }
+
+    out = std::move(*value_);
+    value_.reset();
+    return ReadStatus::Value;
   }
 
   void close()

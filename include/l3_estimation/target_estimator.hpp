@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l1_sensor/robot_state.hpp"
+#include "l1_sensor/serial/robot_state.hpp"
 #include "l2_perception/detector.hpp"
 
 #include <chrono>

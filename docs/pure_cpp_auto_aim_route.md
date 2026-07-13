@@ -328,9 +328,9 @@ configs/runtime.yaml
 现有文件需要保留并后续整理：
 
 ```text
-include/l1_sensor/camera.hpp
-include/l1_sensor/frame_packet.hpp
-include/l1_sensor/robot_state.hpp
+include/l1_sensor/camera/camera.hpp
+include/l1_sensor/camera/frame_packet.hpp
+include/l1_sensor/serial/robot_state.hpp
 include/l2_perception/detector.hpp
 include/l2_perception/yolo_detector.hpp
 include/l2_perception/lightbar_detector.hpp

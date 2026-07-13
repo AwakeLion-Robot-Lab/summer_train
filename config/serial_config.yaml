@@ -1,0 +1,25 @@
+enable: true
+
+# 串口设备名；常见值为 /dev/ttyACM0、/dev/ttyUSB0、/dev/ttyUART。
+device: "/dev/ttyACM0"
+
+# 波特率，需要和下位机保持一致。
+baud_rate: 115200
+
+# 单次 read 的超时时间，单位 ms。
+read_timeout_ms: 20
+
+# 视觉向下位机发送控制命令的频率。
+tx_rate_hz: 200
+
+# 最新控制命令的最长有效时间，超时后保持最后的 yaw/pitch、禁止射击。
+command_timeout_ms: 100
+
+# 串口断开后重连间隔，单位 ms。
+reconnect_interval_ms: 500
+
+# 接收线程每次从串口读取的临时 buffer 大小。
+rx_buffer_size: 256
+
+# 使用 HeaderFrame.seq 检测接收帧是否丢包；下位机未维护 seq 时可关闭。
+packet_loss_check_enable: true
