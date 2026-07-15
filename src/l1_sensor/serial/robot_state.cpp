@@ -2,35 +2,33 @@
 
 namespace L1Sensor {
 
-std::string toString(EnemyColor color)
-{
+std::string toString(EnemyColor color) {
   switch (color) {
-    case EnemyColor::Red:
-      return "red";
-    case EnemyColor::Blue:
-      return "blue";
-    case EnemyColor::Unknown:
-    default:
-      return "unknown";
+  case EnemyColor::Red:
+    return "red";
+  case EnemyColor::Blue:
+    return "blue";
+  case EnemyColor::Unknown:
+  default:
+    return "unknown";
   }
 }
 
-std::string toString(WorkMode mode)
-{
+std::string toString(WorkMode mode) {
   switch (mode) {
-    case WorkMode::Idle:
-      return "idle";
-    case WorkMode::AutoAim:
-      return "auto_aim";
-    case WorkMode::SmallBuff:
-      return "small_buff";
-    case WorkMode::BigBuff:
-      return "big_buff";
-    case WorkMode::Outpost:
-      return "outpost";
-    default:
-      return "unknown";
+  case WorkMode::Idle:
+    return "idle";
+  case WorkMode::AutoAim:
+    return "auto_aim";
+  case WorkMode::SmallBuff:
+    return "small_buff";
+  case WorkMode::BigBuff:
+    return "big_buff";
+  case WorkMode::Outpost:
+    return "outpost";
+  default:
+    return "unknown";
   }
 }
 
-}  // namespace L1Sensor
+} // namespace L1Sensor

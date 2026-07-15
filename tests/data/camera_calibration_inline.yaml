@@ -1,0 +1,12 @@
+camera_name: hikrobot
+exposure_ms: 4.0
+gain: 10.0
+vid_pid: "2bdf:0001"
+calibration:
+  image_width: 1440
+  image_height: 1080
+  camera_matrix:
+    - [1210.0, 0.0, 721.5]
+    - [0.0, 1208.0, 539.5]
+    - [0.0, 0.0, 1.0]
+  distortion_coefficients: [-0.12, 0.03, 0.0004, -0.0002, 0.0]
