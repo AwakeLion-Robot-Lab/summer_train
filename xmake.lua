@@ -124,6 +124,16 @@ target("fps_counter_smoke")
     add_files("src/l6_telemetry/fps_counter.cpp")
     add_includedirs("include")
 
+target("udp_json_sender_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/udp_json_sender_smoke.cpp")
+    add_files("src/l6_telemetry/udp_json_sender.cpp")
+    add_includedirs("include")
+    add_includedirs("tools/logger/include/3rdparty")
+    add_syslinks("pthread")
+
 if has_config("use_openvino") then
 target("openvino_armor_smoke")
     set_kind("binary")

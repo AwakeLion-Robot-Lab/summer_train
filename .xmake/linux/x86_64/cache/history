@@ -1,11 +1,5 @@
 {
     cmdlines = {
-        "xmake build newvision",
-        "xmake show -t newvision",
-        [[xmake lua -c "import(\"core.project.project\"); print(\"lua-ok\")"]],
-        [[xmake lua -c "import(\"lib.detect.find_package\"); import(\"core.base.dump\"); dump(find_package(\"pkgconfig::openvino\", {version = true}))"]],
-        [[xmake lua -c "import(\"lib.detect.find_package\"); import(\"core.base.json\"); local p=find_package(\"pkgconfig::openvino\", {version = true}); print(json.encode(p))"]],
-        "xmake require --info openvino",
         [[xmake lua -c "import(\"lib.detect.find_package\"); import(\"core.base.json\"); local p=find_package(\"cmake::OpenVINO\", {version = true}); print(p and json.encode(p) or \"not found\")"]],
         [[xmake lua -c "import(\"lib.detect.find_package\"); import(\"core.base.json\"); for _, n in ipairs({\"cmake::openvino\", \"cmake::OpenVINO\", \"cmake::openvino::runtime\"}) do local p=find_package(n, {version=true, configdirs={\"/usr/lib/x86_64-linux-gnu/cmake/openvino2023.1.0\"}}); print(n, p and json.encode(p) or \"not found\") end"]],
         [[xmake lua -c "import(\"lib.detect.find_package\"); import(\"core.base.json\"); local p=find_package(\"openvino\", {version=true}); print(p and json.encode(p) or \"not found\")"]],
@@ -64,6 +58,12 @@
         "xmake run openvino_armor_smoke model/armor_model/armor.xml docs/armorVideo.mp4",
         "xmake run openvino_armor_smoke --show",
         "xmake run openvino_armor_smoke model/armor_model/armor.xml docs/armorVideo.mp4 --show",
-        "xmake run openvino_armor_smoke model/armor_model/armor.xml docs/armorVideo.mp4 CPU --show"
+        "xmake run openvino_armor_smoke model/armor_model/armor.xml docs/armorVideo.mp4 CPU --show",
+        "xmake build udp_json_sender_smoke",
+        "xmake lua /home/rm/.local/share/xmake/actions/build/cleaner.lua",
+        "xmake run udp_json_sender_smoke",
+        "xmake build newvision",
+        "xmake run udp_json_sender_smoke",
+        "xmake run udp_json_sender_smoke"
     }
 }

@@ -1,4 +1,5 @@
 {
+    depfiles_format = "gcc",
     depfiles = "serial_port.o: src/l1_sensor/serial/serial_port.cpp  include/l1_sensor/serial/serial_port.hpp  include/l1_sensor/serial/serial_config.hpp  include/l6_telemetry/logger.hpp tools/serial/include/serial/serial.h  tools/serial/include/serial/v8stdint.h\
 ",
     values = {
@@ -22,8 +23,8 @@
             "-Itools/logger/include",
             "-Itools/logger/include/3rdparty",
             "-I/usr/include/opencv4",
-            "-I/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/include/ie",
-            "-I/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/include",
+            "-I/usr/lib/x86_64-linux-gnu/pkgconfig/../../../include/ie",
+            "-I/usr/lib/x86_64-linux-gnu/pkgconfig/../../../include",
             "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1",
             "-DIE_THREAD=IE_THREAD_TBB",
             "-DOV_THREAD=OV_THREAD_TBB",
@@ -31,7 +32,6 @@
             "-DNDEBUG"
         }
     },
-    depfiles_format = "gcc",
     files = {
         "src/l1_sensor/serial/serial_port.cpp"
     }

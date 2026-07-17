@@ -1,4 +1,5 @@
 {
+    depfiles_format = "gcc",
     depfiles = "reject_reason.o: src/l5_control/reject_reason.cpp  include/l5_control/reject_reason.hpp\
 ",
     values = {
@@ -22,8 +23,8 @@
             "-Itools/logger/include",
             "-Itools/logger/include/3rdparty",
             "-I/usr/include/opencv4",
-            "-I/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/include/ie",
-            "-I/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/include",
+            "-I/usr/lib/x86_64-linux-gnu/pkgconfig/../../../include/ie",
+            "-I/usr/lib/x86_64-linux-gnu/pkgconfig/../../../include",
             "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1",
             "-DIE_THREAD=IE_THREAD_TBB",
             "-DOV_THREAD=OV_THREAD_TBB",
@@ -31,7 +32,6 @@
             "-DNDEBUG"
         }
     },
-    depfiles_format = "gcc",
     files = {
         "src/l5_control/reject_reason.cpp"
     }

@@ -1,10 +1,4 @@
 {
-    values = {
-        "/usr/bin/ar",
-        {
-            "-cr"
-        }
-    },
     files = {
         "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/camera/camera.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/camera/camera_calibration.cpp.o",
@@ -35,10 +29,17 @@
         "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/logger.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/math.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/trace_scope.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/udp_json_sender.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/runtime/auto_aim_runtime.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/hikrobot/hikrobot.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/mindvision/mindvision.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/tools/serial/src/impl/unix.cc.o",
         "build/.objs/newvision/linux/x86_64/release/tools/serial/src/serial.cc.o"
+    },
+    values = {
+        "/usr/bin/ar",
+        {
+            "-cr"
+        }
     }
 }
