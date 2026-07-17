@@ -1,0 +1,9 @@
+{
+    errdata = "tools/serial/src/impl/unix.cc: In member function ‘void serial::Serial::SerialImpl::reconfigurePort()’:\
+tools/serial/src/impl/unix.cc:527:28: warning: arithmetic between floating-point type ‘double’ and enumeration type ‘serial::stopbits_t’ is deprecated [-Wdeprecated-enum-float-conversion]\
+  527 |     byte_time_ns_ += ((1.5 - stopbits_one_point_five) * bit_time_ns);\
+      |                        ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~\
+At global scope:\
+cc1plus: note: unrecognized command-line option ‘-Wno-gnu-line-marker’ may have been intended to silence earlier diagnostics\
+"
+}

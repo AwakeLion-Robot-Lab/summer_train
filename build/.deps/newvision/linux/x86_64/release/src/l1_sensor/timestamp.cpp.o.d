@@ -1,10 +1,10 @@
 {
-    depfiles_format = "gcc",
-    depfiles = "timestamp.o: src/l1_sensor/timestamp.cpp include/l1_sensor/timestamp.hpp\
-",
     files = {
         "src/l1_sensor/timestamp.cpp"
     },
+    depfiles_format = "gcc",
+    depfiles = "timestamp.o: src/l1_sensor/timestamp.cpp include/l1_sensor/timestamp.hpp\
+",
     values = {
         "/usr/bin/g++-13",
         {
@@ -14,6 +14,7 @@
             "-O3",
             "-std=c++20",
             "-Iinclude",
+            "-I../sp_vision_25-main/io/serial/include",
             "-Itools/config_set/include",
             "-Itools/LatesBuffer/include",
             "-Itools/camera_sdk",

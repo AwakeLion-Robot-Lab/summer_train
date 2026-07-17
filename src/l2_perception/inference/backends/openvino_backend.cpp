@@ -35,14 +35,15 @@ struct OpenVinoBackend::Impl
       {
         std::lock_guard lock(mutex);
         if (!idle_requests.empty()) {
+          //像栈一样
           ov::InferRequest request = std::move(idle_requests.back());
           idle_requests.pop_back();
           return request;
         }
       }
 
-      // 所有缓存请求都随未释放的结果占用时，创建独立请求，绝不等待上一帧解码。
-      return compiled_model.create_infer_request();
+      throw std::runtime_error(
+        "OpenVINO infer request is busy; queued inference is disabled");
     }
 
     void release(ov::InferRequest&& request) noexcept
@@ -57,7 +58,7 @@ struct OpenVinoBackend::Impl
       }
     }
 
-    static constexpr std::size_t max_cached_requests = 2;
+    static constexpr std::size_t max_cached_requests = 1;
     ov::CompiledModel compiled_model;
     std::mutex mutex;
     std::vector<ov::InferRequest> idle_requests;

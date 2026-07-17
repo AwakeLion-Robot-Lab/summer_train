@@ -1,10 +1,6 @@
 {
-    depfiles_format = "gcc",
     depfiles = "trace_scope.o: src/l6_telemetry/trace_scope.cpp  include/l6_telemetry/trace_scope.hpp include/l6_telemetry/logger.hpp\
 ",
-    files = {
-        "src/l6_telemetry/trace_scope.cpp"
-    },
     values = {
         "/usr/bin/g++-13",
         {
@@ -14,6 +10,8 @@
             "-O3",
             "-std=c++20",
             "-Iinclude",
+            "-I/usr/include/eigen3",
+            "-Itools/serial/include",
             "-Itools/config_set/include",
             "-Itools/LatesBuffer/include",
             "-Itools/camera_sdk",
@@ -24,7 +22,17 @@
             "-Itools/logger/include",
             "-Itools/logger/include/3rdparty",
             "-I/usr/include/opencv4",
+            "-I/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/include/ie",
+            "-I/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/include",
+            "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1",
+            "-DIE_THREAD=IE_THREAD_TBB",
+            "-DOV_THREAD=OV_THREAD_TBB",
+            "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
+    },
+    depfiles_format = "gcc",
+    files = {
+        "src/l6_telemetry/trace_scope.cpp"
     }
 }

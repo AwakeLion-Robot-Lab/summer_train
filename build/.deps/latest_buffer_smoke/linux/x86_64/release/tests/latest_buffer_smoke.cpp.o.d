@@ -1,12 +1,12 @@
 {
+    depfiles_format = "gcc",
     depfiles = "latest_buffer_smoke.o: tests/latest_buffer_smoke.cpp  tools/LatesBuffer/include/latesbuffer.hpp\
 ",
-    depfiles_format = "gcc",
     files = {
         "tests/latest_buffer_smoke.cpp"
     },
     values = {
-        "/usr/bin/g++",
+        "/usr/bin/g++-13",
         {
             "-m64",
             "-fvisibility=hidden",

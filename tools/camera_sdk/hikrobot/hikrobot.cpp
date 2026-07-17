@@ -11,30 +11,22 @@
 
 #include "l6_telemetry/logger.hpp"
 
-
 using namespace std::chrono_literals;
 
-namespace io
-{
-HikRobot::HikRobot(double exposure_ms, double gain, const std::string & vid_pid)
-: exposure_us_(exposure_ms * 1e3),
-  gain_(gain),
-  daemon_quit_(false),
-  capturing_(false),
-  capture_quit_(false),
-  handle_(nullptr),
-  vid_(-1),
-  pid_(-1)
-{
+namespace io {
+HikRobot::HikRobot(double exposure_ms, double gain, const std::string &vid_pid)
+    : exposure_us_(exposure_ms * 1e3), gain_(gain), daemon_quit_(false),
+      capturing_(false), capture_quit_(false), handle_(nullptr), vid_(-1),
+      pid_(-1) {
   set_vid_pid(vid_pid);
 #if NEWVISION_HAS_LIBUSB
-  if (libusb_init(NULL)) L6Telemetry::logWarn("Unable to init libusb!");
+  if (libusb_init(NULL))
+    L6Telemetry::logWarn("Unable to init libusb!");
 #else
   L6Telemetry::logWarn("libusb header not found; USB reset is disabled.");
 #endif
 
   daemon_thread_ = std::thread{[this] {
-    
     L6Telemetry::logInfo("HikRobot's daemon thread started.");
 
     capture_start();
@@ -42,7 +34,8 @@ HikRobot::HikRobot(double exposure_ms, double gain, const std::string & vid_pid)
     while (!daemon_quit_) {
       std::this_thread::sleep_for(100ms);
 
-      if (capturing_) continue;
+      if (capturing_)
+        continue;
 
       capture_stop();
       reset_usb();
@@ -55,8 +48,7 @@ HikRobot::HikRobot(double exposure_ms, double gain, const std::string & vid_pid)
   }};
 }
 
-HikRobot::~HikRobot()
-{
+HikRobot::~HikRobot() {
   stop();
   if (daemon_thread_.joinable()) {
     daemon_thread_.join();
@@ -64,11 +56,9 @@ HikRobot::~HikRobot()
   L6Telemetry::logInfo("HikRobot destructed.");
 }
 
-bool HikRobot::read(
-  cv::Mat & img,
-  std::chrono::steady_clock::time_point & timestamp,
-  std::chrono::milliseconds timeout)
-{
+bool HikRobot::read(cv::Mat &img,
+                    std::chrono::steady_clock::time_point &timestamp,
+                    std::chrono::milliseconds timeout) {
   CameraData data;
   const auto result = buffer.readFor(data, timeout);
   if (result != tools::LatestBuffer<CameraData>::ReadStatus::Value) {
@@ -82,15 +72,13 @@ bool HikRobot::read(
   return true;
 }
 
-void HikRobot::stop()
-{
+void HikRobot::stop() {
   daemon_quit_.store(true);
   capture_quit_.store(true);
   buffer.close();
 }
 
-void HikRobot::capture_start()
-{
+void HikRobot::capture_start() {
   if (daemon_quit_.load()) {
     return;
   }
@@ -162,26 +150,30 @@ void HikRobot::capture_start()
       }
 
       auto timestamp = std::chrono::steady_clock::now();
-      cv::Mat img(cv::Size(raw.stFrameInfo.nWidth, raw.stFrameInfo.nHeight), CV_8U, raw.pBufAddr);
+      cv::Mat img(cv::Size(raw.stFrameInfo.nWidth, raw.stFrameInfo.nHeight),
+                  CV_8U, raw.pBufAddr);
 
-      const auto & frame_info = raw.stFrameInfo;
+      const auto &frame_info = raw.stFrameInfo;
       auto pixel_type = frame_info.enPixelType;
       cv::Mat dst_image;
-      const static std::unordered_map<MvGvspPixelType, cv::ColorConversionCodes> type_map = {
-        {PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGR2RGB},
-        {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRG2RGB},
-        {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGB2RGB},
-        {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBG2RGB}};
+      // L1 对上层统一输出 OpenCV 的 BGR。MindVision 同样配置为 BGR，L2 因此不需要
+      // 根据相机品牌猜测通道顺序，也不会把红蓝装甲板识别反。
+      const static std::unordered_map<MvGvspPixelType, cv::ColorConversionCodes>
+          type_map = {{PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGR2BGR},
+                      {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRG2BGR},
+                      {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGB2BGR},
+                      {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBG2BGR}};
       const auto conversion = type_map.find(pixel_type);
       if (conversion == type_map.end()) {
-        L6Telemetry::logWarn("Unsupported HikRobot pixel type", static_cast<int>(pixel_type));
+        L6Telemetry::logWarn("Unsupported HikRobot pixel type",
+                             static_cast<int>(pixel_type));
         MV_CC_FreeImageBuffer(handle_, &raw);
         break;
       }
 
       try {
         cv::cvtColor(img, dst_image, conversion->second);
-      } catch (const cv::Exception& e) {
+      } catch (const cv::Exception &e) {
         L6Telemetry::logWarn("HikRobot color conversion failed", e.what());
         MV_CC_FreeImageBuffer(handle_, &raw);
         break;
@@ -205,8 +197,7 @@ void HikRobot::capture_start()
   }};
 }
 
-void HikRobot::capture_stop()
-{
+void HikRobot::capture_stop() {
   capture_quit_ = true;
   if (capture_thread_.joinable()) {
     capture_thread_.join();
@@ -217,7 +208,7 @@ void HikRobot::capture_stop()
     return;
   }
 
-  auto* handle = handle_;
+  auto *handle = handle_;
   handle_ = nullptr;
 
   unsigned int ret;
@@ -238,32 +229,31 @@ void HikRobot::capture_stop()
   }
 }
 
-void HikRobot::set_float_value(const std::string & name, double value)
-{
+void HikRobot::set_float_value(const std::string &name, double value) {
   unsigned int ret;
 
   ret = MV_CC_SetFloatValue(handle_, name.c_str(), value);
 
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_SetFloatValue(\"{}\", {}) failed: {:#x}", name, value, ret);
+    L6Telemetry::logWarn("MV_CC_SetFloatValue(\"{}\", {}) failed: {:#x}", name,
+                         value, ret);
     return;
   }
 }
 
-void HikRobot::set_enum_value(const std::string & name, unsigned int value)
-{
+void HikRobot::set_enum_value(const std::string &name, unsigned int value) {
   unsigned int ret;
 
   ret = MV_CC_SetEnumValue(handle_, name.c_str(), value);
 
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_SetEnumValue(\"{}\", {}) failed: {:#x}", name, value, ret);
+    L6Telemetry::logWarn("MV_CC_SetEnumValue(\"{}\", {}) failed: {:#x}", name,
+                         value, ret);
     return;
   }
 }
 
-void HikRobot::set_vid_pid(const std::string & vid_pid)
-{
+void HikRobot::set_vid_pid(const std::string &vid_pid) {
   auto index = vid_pid.find(':');
   if (index == std::string::npos) {
     L6Telemetry::logWarn("Invalid vid_pid: \"{}\"", vid_pid);
@@ -281,10 +271,10 @@ void HikRobot::set_vid_pid(const std::string & vid_pid)
   }
 }
 
-void HikRobot::reset_usb() const
-{
+void HikRobot::reset_usb() const {
 #if NEWVISION_HAS_LIBUSB
-  if (vid_ == -1 || pid_ == -1) return;
+  if (vid_ == -1 || pid_ == -1)
+    return;
 
   // https://github.com/ralight/usb-reset/blob/master/usb-reset.c
   auto handle = libusb_open_device_with_vid_pid(NULL, vid_, pid_);
@@ -300,8 +290,9 @@ void HikRobot::reset_usb() const
 
   libusb_close(handle);
 #else
-  L6Telemetry::logWarn("USB reset skipped because libusb support is not available.");
+  L6Telemetry::logWarn(
+      "USB reset skipped because libusb support is not available.");
 #endif
 }
 
-}  // namespace io
+} // namespace io

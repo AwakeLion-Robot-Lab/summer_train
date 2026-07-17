@@ -5,14 +5,18 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 
 namespace
@@ -37,6 +41,45 @@ void printShape(const std::vector<std::size_t>& shape)
   std::cout << ']';
 }
 
+cv::Point toPixel(const cv::Point2f& point)
+{
+  return {static_cast<int>(std::lround(point.x)), static_cast<int>(std::lround(point.y))};
+}
+
+void drawDetections(
+  cv::Mat& image,
+  const std::vector<L2Perception::ArmorDetection>& detections,
+  double display_fps,
+  double l2_fps)
+{
+  cv::putText(image, cv::format("display %.1f FPS | L2 %.1f FPS", display_fps, l2_fps),
+              {12, 28}, cv::FONT_HERSHEY_SIMPLEX, 0.7, {0, 255, 0}, 2, cv::LINE_AA);
+
+  for (const auto& detection : detections) {
+    const cv::Scalar color = detection.color == L2Perception::ArmorColor::Red
+                               ? cv::Scalar{0, 0, 255}
+                               : detection.color == L2Perception::ArmorColor::Blue
+                                   ? cv::Scalar{255, 0, 0}
+                                   : cv::Scalar{0, 255, 255};
+    const char* color_name = detection.color == L2Perception::ArmorColor::Red
+                               ? "red"
+                               : detection.color == L2Perception::ArmorColor::Blue ? "blue" : "unknown";
+
+    // 画模型解码后的四角点。这里的坐标已经由 Decoder 从 640x640 letterbox 还原到原图。
+    for (std::size_t index = 0; index < detection.corners.size(); ++index) {
+      const auto& start = detection.corners[index];
+      const auto& end = detection.corners[(index + 1) % detection.corners.size()];
+      cv::line(image, toPixel(start), toPixel(end), color, 2, cv::LINE_AA);
+    }
+
+    const std::string label = color_name + std::string{" class="}
+                              + std::to_string(detection.class_id) + " conf="
+                              + std::to_string(detection.confidence).substr(0, 4);
+    cv::putText(image, label, toPixel(detection.corners.front()) + cv::Point{0, -6},
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv::LINE_AA);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -47,6 +90,7 @@ int main(int argc, char** argv)
       : std::filesystem::path{"model/armor_model/armor.xml"};
     // 第三个可选参数用于同口径比较 CPU/GPU；不传时保持稳定的 CPU 默认值。
     const std::string device = argc >= 4 ? std::string{argv[3]} : std::string{"CPU"};
+    const bool show_window = argc >= 5 && std::string_view{argv[4]} == "--show";
 
     cv::Mat image;
     cv::VideoCapture video;
@@ -115,13 +159,32 @@ int main(int argc, char** argv)
     std::array<std::size_t, 3> color_counts{};  // Red、Blue、Unknown。
     std::array<std::size_t, 9> class_counts{};  // G、1、2、3、4、5、O、Bs、Bb。
     double total_l2_ms = 0.0;
+    bool display_open = show_window;
+    auto previous_display_time = std::chrono::steady_clock::now();
+    double display_fps = 0.0;
+    if (show_window) {
+      cv::namedWindow("armor inference", cv::WINDOW_NORMAL);
+    }
 
     const auto measure_frame = [&](const cv::Mat& frame) {
+      // 统计“相邻两次显示开始”的间隔，包含读视频、推理、绘制和窗口刷新。
+      const auto display_begin = std::chrono::steady_clock::now();
+      const double display_interval_ms =
+        std::chrono::duration<double, std::milli>(display_begin - previous_display_time).count();
+      if (display_interval_ms > 0.0) {
+        const double instantaneous_fps = 1000.0 / display_interval_ms;
+        // 简单低通滤波，避免每帧文字因系统调度产生剧烈跳动。
+        display_fps = display_fps == 0.0 ? instantaneous_fps
+                                          : display_fps * 0.9 + instantaneous_fps * 0.1;
+      }
+      previous_display_time = display_begin;
+
       const auto begin = std::chrono::steady_clock::now();
       const auto detections = detect_frame(frame);
       const auto end = std::chrono::steady_clock::now();
+      const double l2_ms = std::chrono::duration<double, std::milli>(end - begin).count();
 
-      total_l2_ms += std::chrono::duration<double, std::milli>(end - begin).count();
+      total_l2_ms += l2_ms;
       ++processed_frames;
       total_detections += detections.size();
       if (!detections.empty()) {
@@ -146,20 +209,31 @@ int main(int argc, char** argv)
           ++class_counts[static_cast<std::size_t>(detection.class_id)];
         }
       }
+
+      if (display_open) {
+        // 不修改推理输入帧；可视化使用独立副本，避免影响下一帧或统计结果。
+        cv::Mat visualization = frame.clone();
+        drawDetections(visualization, detections, display_fps, 1000.0 / l2_ms);
+        cv::imshow("armor inference", visualization);
+        // pollKey() 不主动等待下一帧，窗口按“推理完成即刷新”的速度播放。
+        const int key = cv::pollKey();
+        display_open = key != 27 && key != 'q' && key != 'Q';
+      }
+
+      return display_open || !show_window;
     };
 
     if (video_mode) {
       // 第一帧已被读取用于预热；先正式统计它，再顺序处理视频剩余全部帧。
-      measure_frame(image);
-      while (video.read(image)) {
+      bool keep_running = measure_frame(image);
+      while (keep_running && video.read(image)) {
         if (!image.empty()) {
-          measure_frame(image);
+          keep_running = measure_frame(image);
         }
       }
     } else {
       constexpr int measured_frames = 20;
-      for (int frame = 0; frame < measured_frames; ++frame) {
-        measure_frame(image);
+      for (int frame = 0; frame < measured_frames && measure_frame(image); ++frame) {
       }
     }
 
@@ -190,6 +264,9 @@ int main(int argc, char** argv)
       const double fps = video.get(cv::CAP_PROP_FPS);
       const double declared_frames = video.get(cv::CAP_PROP_FRAME_COUNT);
       std::cout << "video metadata: fps=" << fps << ", declared_frames=" << declared_frames << '\n';
+    }
+    if (show_window) {
+      cv::destroyWindow("armor inference");
     }
     return 0;
   } catch (const std::exception& error) {

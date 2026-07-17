@@ -1,16 +1,30 @@
 {
-    use_system_deps = {
-        showmenu = true,
-        __sourceinfo_showmenu = { },
+    use_openvino = {
         __sourceinfo_default = { },
-        default = true,
         __scriptdir = "/home/rm/super/newvision",
+        __sourceinfo_showmenu = { },
+        default = false,
+        description = "Enable the optional OpenVINO inference backend",
+        __sourceinfo_description = {
+            ["Enable the optional OpenVINO inference backend"] = {
+                file = "./xmake.lua",
+                line = 28
+            }
+        },
+        showmenu = true
+    },
+    use_system_deps = {
+        __sourceinfo_default = { },
+        __scriptdir = "/home/rm/super/newvision",
+        __sourceinfo_showmenu = { },
+        default = true,
         description = "Use system OpenCV and yaml-cpp development packages",
         __sourceinfo_description = {
             ["Use system OpenCV and yaml-cpp development packages"] = {
-                line = 22,
-                file = "./xmake.lua"
+                file = "./xmake.lua",
+                line = 22
             }
-        }
+        },
+        showmenu = true
     }
 }

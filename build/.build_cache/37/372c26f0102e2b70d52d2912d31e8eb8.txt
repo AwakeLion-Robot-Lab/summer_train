@@ -1,0 +1,141 @@
+{
+    errdata = "In file included from /usr/include/opencv4/opencv2/core/mat.hpp:3764,\
+                 from /usr/include/opencv4/opencv2/core.hpp:58,\
+                 from include/l2_perception/inference/image_preprocessor.hpp:5,\
+                 from include/l2_perception/armor/armor_decoder.hpp:4,\
+                 from include/l2_perception/armor/armor_detector.hpp:3,\
+                 from tests/openvino_armor_smoke.cpp:1:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const cv::Mat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:103:57: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  103 | inline _InputArray::_InputArray(const Mat& m) { init(MAT+ACCESS_READ, &m); }\
+      |                                                      ~~~^~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const std::vector<cv::Mat>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:104:83: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  104 | inline _InputArray::_InputArray(const std::vector<Mat>& vec) { init(STD_VECTOR_MAT+ACCESS_READ, &vec); }\
+      |                                                                     ~~~~~~~~~~~~~~^~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const cv::UMat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:105:59: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  105 | inline _InputArray::_InputArray(const UMat& m) { init(UMAT+ACCESS_READ, &m); }\
+      |                                                       ~~~~^~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const std::vector<cv::UMat>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:106:85: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  106 | inline _InputArray::_InputArray(const std::vector<UMat>& vec) { init(STD_VECTOR_UMAT+ACCESS_READ, &vec); }\
+      |                                                                      ~~~~~~~~~~~~~~~^~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const std::array<cv::Mat, _Nm>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:118:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  118 | { init(STD_ARRAY_MAT + ACCESS_READ, arr.data(), Size(1, _Nm)); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const cv::cuda::GpuMat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:148:21: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  148 | { init(CUDA_GPU_MAT + ACCESS_READ, &d_mat); }\
+      |        ~~~~~~~~~~~~~^~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const std::vector<cv::cuda::GpuMat>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:151:38: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  151 | {       init(STD_VECTOR_CUDA_GPU_MAT + ACCESS_READ, &d_mat);}\
+      |              ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const cv::ogl::Buffer&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:154:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  154 | { init(OPENGL_BUFFER + ACCESS_READ, &buf); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputArray::_InputArray(const cv::cuda::HostMem&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:157:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  157 | { init(CUDA_HOST_MEM + ACCESS_READ, &cuda_mem); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray()’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:200:49: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  200 | inline _OutputArray::_OutputArray() { init(NONE + ACCESS_WRITE, 0); }\
+      |                                            ~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(cv::Mat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:202:53: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  202 | inline _OutputArray::_OutputArray(Mat& m) { init(MAT+ACCESS_WRITE, &m); }\
+      |                                                  ~~~^~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(std::vector<cv::Mat>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:203:80: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  203 | inline _OutputArray::_OutputArray(std::vector<Mat>& vec) { init(STD_VECTOR_MAT + ACCESS_WRITE, &vec); }\
+      |                                                                 ~~~~~~~~~~~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(cv::UMat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:204:56: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  204 | inline _OutputArray::_OutputArray(UMat& m) { init(UMAT + ACCESS_WRITE, &m); }\
+      |                                                   ~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(std::vector<cv::UMat>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:205:82: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  205 | inline _OutputArray::_OutputArray(std::vector<UMat>& vec) { init(STD_VECTOR_UMAT + ACCESS_WRITE, &vec); }\
+      |                                                                  ~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(std::array<cv::Mat, _Nm>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:217:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  217 | { init(STD_ARRAY_MAT + ACCESS_WRITE, arr.data(), Size(1, _Nm)); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(cv::cuda::GpuMat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:272:21: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  272 | { init(CUDA_GPU_MAT + ACCESS_WRITE, &d_mat); }\
+      |        ~~~~~~~~~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(std::vector<cv::cuda::GpuMat>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:275:38: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  275 | {       init(STD_VECTOR_CUDA_GPU_MAT + ACCESS_WRITE, &d_mat);}\
+      |              ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(cv::ogl::Buffer&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:278:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  278 | { init(OPENGL_BUFFER + ACCESS_WRITE, &buf); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_OutputArray::_OutputArray(cv::cuda::HostMem&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:281:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  281 | { init(CUDA_HOST_MEM + ACCESS_WRITE, &cuda_mem); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputOutputArray::_InputOutputArray(cv::Mat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:328:63: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  328 | inline _InputOutputArray::_InputOutputArray(Mat& m) { init(MAT+ACCESS_RW, &m); }\
+      |                                                            ~~~^~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputOutputArray::_InputOutputArray(std::vector<cv::Mat>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:329:89: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  329 | inline _InputOutputArray::_InputOutputArray(std::vector<Mat>& vec) { init(STD_VECTOR_MAT+ACCESS_RW, &vec); }\
+      |                                                                           ~~~~~~~~~~~~~~^~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputOutputArray::_InputOutputArray(cv::UMat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:330:65: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  330 | inline _InputOutputArray::_InputOutputArray(UMat& m) { init(UMAT+ACCESS_RW, &m); }\
+      |                                                             ~~~~^~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputOutputArray::_InputOutputArray(std::vector<cv::UMat>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:331:91: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  331 | inline _InputOutputArray::_InputOutputArray(std::vector<UMat>& vec) { init(STD_VECTOR_UMAT+ACCESS_RW, &vec); }\
+      |                                                                            ~~~~~~~~~~~~~~~^~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputOutputArray::_InputOutputArray(std::array<cv::Mat, _Nm>&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:343:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  343 | { init(STD_ARRAY_MAT + ACCESS_RW, arr.data(), Size(1, _Nm)); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputOutputArray::_InputOutputArray(cv::cuda::GpuMat&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:398:21: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  398 | { init(CUDA_GPU_MAT + ACCESS_RW, &d_mat); }\
+      |        ~~~~~~~~~~~~~^~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputOutputArray::_InputOutputArray(cv::ogl::Buffer&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:401:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  401 | { init(OPENGL_BUFFER + ACCESS_RW, &buf); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp: In constructor ‘cv::_InputOutputArray::_InputOutputArray(cv::cuda::HostMem&)’:\
+/usr/include/opencv4/opencv2/core/mat.inl.hpp:404:22: warning: arithmetic between different enumeration types ‘cv::_InputArray::KindFlag’ and ‘cv::AccessFlag’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  404 | { init(CUDA_HOST_MEM + ACCESS_RW, &cuda_mem); }\
+      |        ~~~~~~~~~~~~~~^~~~~~~~~~~\
+In file included from tests/openvino_armor_smoke.cpp:16:\
+/usr/include/opencv4/opencv2/videoio.hpp: At global scope:\
+/usr/include/opencv4/opencv2/videoio.hpp:293:72: warning: arithmetic between different enumeration types ‘cv::<unnamed enum>’ and ‘cv::<unnamed enum>’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  293 | enum { CAP_OPENNI_IMAGE_GENERATOR_PRESENT         = CAP_OPENNI_IMAGE_GENERATOR + CAP_PROP_OPENNI_GENERATOR_PRESENT,\
+      |                                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/videoio.hpp:294:76: warning: arithmetic between different enumeration types ‘cv::<unnamed enum>’ and ‘cv::<unnamed enum>’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  294 |        CAP_OPENNI_IMAGE_GENERATOR_OUTPUT_MODE     = CAP_OPENNI_IMAGE_GENERATOR + CAP_PROP_OPENNI_OUTPUT_MODE,\
+      |                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/videoio.hpp:295:72: warning: arithmetic between different enumeration types ‘cv::<unnamed enum>’ and ‘cv::<unnamed enum>’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  295 |        CAP_OPENNI_DEPTH_GENERATOR_PRESENT         = CAP_OPENNI_DEPTH_GENERATOR + CAP_PROP_OPENNI_GENERATOR_PRESENT,\
+      |                                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/videoio.hpp:296:73: warning: arithmetic between different enumeration types ‘cv::<unnamed enum>’ and ‘cv::<unnamed enum>’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  296 |        CAP_OPENNI_DEPTH_GENERATOR_BASELINE        = CAP_OPENNI_DEPTH_GENERATOR + CAP_PROP_OPENNI_BASELINE,\
+      |                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/videoio.hpp:297:77: warning: arithmetic between different enumeration types ‘cv::<unnamed enum>’ and ‘cv::<unnamed enum>’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  297 |        CAP_OPENNI_DEPTH_GENERATOR_FOCAL_LENGTH    = CAP_OPENNI_DEPTH_GENERATOR + CAP_PROP_OPENNI_FOCAL_LENGTH,\
+      |                                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/videoio.hpp:298:77: warning: arithmetic between different enumeration types ‘cv::<unnamed enum>’ and ‘cv::<unnamed enum>’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  298 |        CAP_OPENNI_DEPTH_GENERATOR_REGISTRATION    = CAP_OPENNI_DEPTH_GENERATOR + CAP_PROP_OPENNI_REGISTRATION,\
+      |                                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\
+/usr/include/opencv4/opencv2/videoio.hpp:300:66: warning: arithmetic between different enumeration types ‘cv::<unnamed enum>’ and ‘cv::<unnamed enum>’ is deprecated [-Wdeprecated-enum-enum-conversion]\
+  300 |        CAP_OPENNI_IR_GENERATOR_PRESENT            = CAP_OPENNI_IR_GENERATOR + CAP_PROP_OPENNI_GENERATOR_PRESENT,\
+      |                                          ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\
+cc1plus: note: unrecognized command-line option ‘-Wno-gnu-line-marker’ may have been intended to silence earlier diagnostics\
+"
+}

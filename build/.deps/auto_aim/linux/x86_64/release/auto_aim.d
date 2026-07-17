@@ -9,9 +9,11 @@
             "-m64",
             "-Ltools/camera_sdk/hikrobot/lib/amd64",
             "-Ltools/camera_sdk/mindvision/lib/amd64",
+            "-L/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/lib/intel64",
             "-Lbuild/linux/x86_64/release",
             "-Wl,-rpath=/home/rm/super/newvision/tools/camera_sdk/hikrobot/lib/amd64",
             "-Wl,-rpath=/home/rm/super/newvision/tools/camera_sdk/mindvision/lib/amd64",
+            "-Wl,-rpath=/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/lib/intel64",
             "-s",
             "-lnewvision",
             "-lMvCameraControl",
@@ -24,7 +26,10 @@
             "-lopencv_calib3d",
             "-lopencv_dnn",
             "-lopencv_highgui",
-            "-lyaml-cpp"
+            "-lyaml-cpp",
+            "-lopenvino",
+            "-lpthread",
+            "-lrt"
         }
     }
 }

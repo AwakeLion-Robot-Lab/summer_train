@@ -1,0 +1,32 @@
+{
+    files = {
+        "build/.objs/serial_hardware_smoke/linux/x86_64/release/tests/serial_hardware_smoke.cpp.o",
+        "build/linux/x86_64/release/libnewvision.a"
+    },
+    values = {
+        "/usr/bin/g++-13",
+        {
+            "-m64",
+            "-Ltools/camera_sdk/hikrobot/lib/amd64",
+            "-Ltools/camera_sdk/mindvision/lib/amd64",
+            "-Lbuild/linux/x86_64/release",
+            "-Wl,-rpath=/home/rm/super/newvision/tools/camera_sdk/hikrobot/lib/amd64",
+            "-Wl,-rpath=/home/rm/super/newvision/tools/camera_sdk/mindvision/lib/amd64",
+            "-s",
+            "-lnewvision",
+            "-lMvCameraControl",
+            "-lMVSDK",
+            "-lusb-1.0",
+            "-lopencv_core",
+            "-lopencv_imgproc",
+            "-lopencv_imgcodecs",
+            "-lopencv_videoio",
+            "-lopencv_calib3d",
+            "-lopencv_dnn",
+            "-lopencv_highgui",
+            "-lyaml-cpp",
+            "-lpthread",
+            "-lrt"
+        }
+    }
+}

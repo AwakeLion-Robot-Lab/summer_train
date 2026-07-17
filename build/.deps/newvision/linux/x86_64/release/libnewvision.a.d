@@ -1,12 +1,26 @@
 {
+    values = {
+        "/usr/bin/ar",
+        {
+            "-cr"
+        }
+    },
     files = {
-        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/camera.cpp.o",
-        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/frame_packet.cpp.o",
-        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/robot_state.cpp.o",
-        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/timestamp.cpp.o",
-        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/detector.cpp.o",
-        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/lightbar_detector.cpp.o",
-        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/yolo_detector.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/camera/camera.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/camera/camera_calibration.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/robot_state.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/serial_config.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/serial_port.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/serial_protocol.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/serial_worker.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/armor/armor_decoder.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/armor/armor_detector.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/buff/buff_decoder.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/buff/buff_detector.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/backends/openvino_backend.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/backends/tensorrt_backend.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/image_preprocessor.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/inference_backend.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/ekf_tracker.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/pnp_solver.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/target_estimator.cpp.o",
@@ -17,19 +31,14 @@
         "build/.objs/newvision/linux/x86_64/release/src/l5_control/controller.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l5_control/fire_decision.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l5_control/reject_reason.cpp.o",
-        "build/.objs/newvision/linux/x86_64/release/src/l5_control/serial_command.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/fps_counter.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/logger.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/math.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/trace_scope.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/src/runtime/auto_aim_runtime.cpp.o",
         "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/hikrobot/hikrobot.cpp.o",
-        "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/mindvision/mindvision.cpp.o"
-    },
-    values = {
-        "/usr/bin/ar",
-        {
-            "-cr"
-        }
+        "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/mindvision/mindvision.cpp.o",
+        "build/.objs/newvision/linux/x86_64/release/tools/serial/src/impl/unix.cc.o",
+        "build/.objs/newvision/linux/x86_64/release/tools/serial/src/serial.cc.o"
     }
 }
