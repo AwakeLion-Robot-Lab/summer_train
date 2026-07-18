@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "buff_detector.o: src/l2_perception/buff/buff_detector.cpp\
 ",
+    files = {
+        "src/l2_perception/buff/buff_detector.cpp"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -31,8 +34,5 @@
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "src/l2_perception/buff/buff_detector.cpp"
     }
 }

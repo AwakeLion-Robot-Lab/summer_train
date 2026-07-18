@@ -1,10 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "udp_json_sender.o: src/l6_telemetry/udp_json_sender.cpp  include/l6_telemetry/udp_json_sender.hpp  tools/logger/include/3rdparty/nlohmann/json.hpp\
 ",
     files = {
         "src/l6_telemetry/udp_json_sender.cpp"
     },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {

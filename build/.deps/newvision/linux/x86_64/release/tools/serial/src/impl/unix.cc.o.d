@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "unix.o: tools/serial/src/impl/unix.cc  tools/serial/include/serial/impl/unix.h  tools/serial/include/serial/serial.h  tools/serial/include/serial/v8stdint.h\
 ",
+    files = {
+        "tools/serial/src/impl/unix.cc"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -31,8 +34,5 @@
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "tools/serial/src/impl/unix.cc"
     }
 }

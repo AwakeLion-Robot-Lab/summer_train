@@ -1,19 +1,15 @@
 {
-    files = {
-        "build/.objs/camera_calibration_smoke/linux/x86_64/release/tests/camera_calibration_smoke.cpp.o",
-        "build/linux/x86_64/release/libnewvision.a"
-    },
     values = {
         "/usr/bin/g++-13",
         {
             "-m64",
             "-Ltools/camera_sdk/hikrobot/lib/amd64",
             "-Ltools/camera_sdk/mindvision/lib/amd64",
-            "-L/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/lib/intel64",
+            "-L/usr/lib/x86_64-linux-gnu/pkgconfig/../../../lib/x86_64-linux-gnu",
             "-Lbuild/linux/x86_64/release",
             "-Wl,-rpath=/home/rm/super/newvision/tools/camera_sdk/hikrobot/lib/amd64",
             "-Wl,-rpath=/home/rm/super/newvision/tools/camera_sdk/mindvision/lib/amd64",
-            "-Wl,-rpath=/opt/intel/openvino2023/runtime/lib/intel64/pkgconfig/../../../../runtime/lib/intel64",
+            "-Wl,-rpath=/usr/lib/x86_64-linux-gnu/pkgconfig/../../../lib/x86_64-linux-gnu",
             "-s",
             "-lnewvision",
             "-lMvCameraControl",
@@ -31,5 +27,9 @@
             "-lpthread",
             "-lrt"
         }
+    },
+    files = {
+        "build/.objs/camera_calibration_smoke/linux/x86_64/release/tests/camera_calibration_smoke.cpp.o",
+        "build/linux/x86_64/release/libnewvision.a"
     }
 }

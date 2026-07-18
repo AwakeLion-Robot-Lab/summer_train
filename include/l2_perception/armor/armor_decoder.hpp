@@ -58,9 +58,9 @@ class ArmorDecoder
 public:
   explicit ArmorDecoder(ArmorDecoderConfig config = {});
 
-  // 将模型坐标的原始 float 输出变为原图坐标 ArmorDetection。
+  // 将模型坐标的原始 float 输出变为原图坐标 Armor。
   // 这里完成阈值、角点排序、颜色/类别 argmax、NMS；不会做 PnP 或目标优先级。
-  [[nodiscard]] std::vector<ArmorDetection> decode(
+  [[nodiscard]] std::vector<Armor> decode(
     const InferenceResult& result,
     const ImageTransform& transform) const;
 

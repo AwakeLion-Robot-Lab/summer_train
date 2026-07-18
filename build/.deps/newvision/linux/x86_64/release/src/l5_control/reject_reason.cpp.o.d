@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "reject_reason.o: src/l5_control/reject_reason.cpp  include/l5_control/reject_reason.hpp\
 ",
+    files = {
+        "src/l5_control/reject_reason.cpp"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -31,8 +34,5 @@
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "src/l5_control/reject_reason.cpp"
     }
 }

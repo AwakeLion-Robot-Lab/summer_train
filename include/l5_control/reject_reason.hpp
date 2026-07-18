@@ -6,9 +6,22 @@ namespace L5Control {
 
 enum class RejectReason {
   None,
+  ShootDisabled,
   NoTarget,
+  NotTracking,
+  TempLost,
+  PlanInvalid,
+  BallisticInvalid,
+  RobotStateStale,
+  GimbalPoseStale,
+  BadBulletSpeed,
   OutOfRange,
   HeatLimit,
+  OutsideHitWindow,
+  ArmorSwitching,
+  CommandJump,
+  MissingCalibration,
+  NonFinite,
   Unstable
 };
 

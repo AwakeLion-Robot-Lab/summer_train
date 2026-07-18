@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "fps_counter.o: src/l6_telemetry/fps_counter.cpp  include/l6_telemetry/fps_counter.hpp\
 ",
+    files = {
+        "src/l6_telemetry/fps_counter.cpp"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -31,8 +34,5 @@
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "src/l6_telemetry/fps_counter.cpp"
     }
 }

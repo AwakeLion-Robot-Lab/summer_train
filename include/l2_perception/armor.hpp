@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Eigen/Core>
+
 #include <array>
 
 #include <opencv2/core/types.hpp>
@@ -13,7 +15,8 @@ enum class ArmorColor {
 };
 
 // Fosu armor.xml 的 9 个车辆类别，数值与模型第 13~21 字段 argmax 的下标一致。
-// class_id 仍保留在 ArmorDetection 中，方便记录原始模型编号；需要语义时调用此函数。
+// class_id 仍保留在 Armor 中，方便记录原始模型编号；
+// 需要语义时调用此函数。
 enum class ArmorClass : int {
   Guard = 0,      // G，哨兵
   Hero = 1,       // 1，英雄
@@ -35,13 +38,22 @@ enum class ArmorClass : int {
            : ArmorClass::Unknown;
 }
 
-struct ArmorDetection {
+struct Armor {
   // 顺序固定为：左上、右上、右下、左下；PnP 必须沿用同一顺序。
   std::array<cv::Point2f, 4> corners{};
   // Fosu 约定：0~8 分别为 G、1、2、3、4、5、O、Bs、Bb。
   int class_id{-1};
   ArmorColor color{ArmorColor::Unknown};
   float confidence{0.0F};
+
+  Eigen::Vector3d xyz_in_barrel{Eigen::Vector3d::Zero()};  // 单位：m
+  Eigen::Vector3d xyz_in_world{Eigen::Vector3d::Zero()};   // 单位：m
+  Eigen::Vector3d rpy_in_barrel{Eigen::Vector3d::Zero()};  // [roll,pitch,yaw]，rad
+  Eigen::Vector3d rpy_in_world{Eigen::Vector3d::Zero()};   // [roll,pitch,yaw]，rad
+  Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};   // 球坐标系
 };
+
+// 保留检测层原有接口名称，避免后端和测试因数据结构改名而失效。
+using ArmorDetection = Armor;
 
 }  // namespace L2Perception

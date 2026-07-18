@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "serial_config.o: src/l1_sensor/serial/serial_config.cpp  include/l1_sensor/serial/serial_config.hpp  include/l6_telemetry/logger.hpp tools/config_set/include/yaml.hpp\
 ",
+    files = {
+        "src/l1_sensor/serial/serial_config.cpp"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -31,8 +34,5 @@
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "src/l1_sensor/serial/serial_config.cpp"
     }
 }

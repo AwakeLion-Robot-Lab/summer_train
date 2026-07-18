@@ -1,11 +1,11 @@
 {
     mtimes = {
-        ["xmake.lua"] = 1784293984
+        ["xmake.lua"] = 1784315030
     },
-    recheck = false,
     options = {
-        use_xrepo_deps = false,
         use_openvino = true,
-        use_system_deps = true
-    }
+        mode = "release",
+        clean = true
+    },
+    recheck = false
 }

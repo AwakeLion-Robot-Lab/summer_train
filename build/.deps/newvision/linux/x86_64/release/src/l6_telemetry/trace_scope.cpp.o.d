@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "trace_scope.o: src/l6_telemetry/trace_scope.cpp  include/l6_telemetry/trace_scope.hpp include/l6_telemetry/logger.hpp\
 ",
+    files = {
+        "src/l6_telemetry/trace_scope.cpp"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -31,8 +34,5 @@
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "src/l6_telemetry/trace_scope.cpp"
     }
 }

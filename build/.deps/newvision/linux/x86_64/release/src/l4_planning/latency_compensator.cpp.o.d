@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "latency_compensator.o: src/l4_planning/latency_compensator.cpp  include/l4_planning/latency_compensator.hpp\
 ",
+    files = {
+        "src/l4_planning/latency_compensator.cpp"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -31,8 +34,5 @@
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "src/l4_planning/latency_compensator.cpp"
     }
 }

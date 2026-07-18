@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "tensorrt_backend.o:  src/l2_perception/inference/backends/tensorrt_backend.cpp  include/l2_perception/inference/backends/tensorrt_backend.hpp  include/l2_perception/inference/inference_backend.hpp  include/l2_perception/inference/inference_result.hpp\
 ",
+    files = {
+        "src/l2_perception/inference/backends/tensorrt_backend.cpp"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -31,8 +34,5 @@
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "src/l2_perception/inference/backends/tensorrt_backend.cpp"
     }
 }

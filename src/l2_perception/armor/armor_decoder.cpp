@@ -14,7 +14,7 @@ namespace
 
 struct DecodedCandidate
 {
-  ArmorDetection detection;
+  Armor detection;
   cv::Rect2f bounds;
   // 使用类别最大分数做 NMS 的排序和二次阈值过滤，保留该值以复现模型原行为。
   float nms_score{0.0F};
@@ -90,7 +90,7 @@ ArmorDecoder::ArmorDecoder(ArmorDecoderConfig config)
 {
 }
 
-std::vector<ArmorDetection> ArmorDecoder::decode(
+std::vector<Armor> ArmorDecoder::decode(
   const InferenceResult& result,
   const ImageTransform& transform) const
 {
@@ -169,7 +169,7 @@ std::vector<ArmorDetection> ArmorDecoder::decode(
       continue;
     }
 
-    ArmorDetection detection;
+    Armor detection;
     // 先在模型坐标排序，再通过同帧 letterbox 变换还原到原图坐标。
     detection.corners = sortCorners(model_corners);
     for (auto& corner : detection.corners) {
@@ -227,7 +227,7 @@ std::vector<ArmorDetection> ArmorDecoder::decode(
     return left.nms_score > right.nms_score;
   });
 
-  std::vector<ArmorDetection> detections;
+  std::vector<Armor> detections;
   for (const auto& candidate : candidates) {
     bool suppressed = false;
     for (const auto& kept : detections) {

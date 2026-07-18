@@ -24,7 +24,7 @@ bool ArmorDetector::ready() const noexcept
   return backend_ != nullptr && backend_->ready();
 }
 
-std::vector<ArmorDetection> ArmorDetector::detect(const cv::Mat& image) const
+std::vector<Armor> ArmorDetector::detect(const cv::Mat& image) const
 {
   if (!ready() || image.empty()) {
     return {};
