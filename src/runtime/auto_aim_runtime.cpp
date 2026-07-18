@@ -5,6 +5,7 @@
 #include "l2_perception/armor.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
+#include "l3_estimation/pnp_solver.hpp"
 #include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
