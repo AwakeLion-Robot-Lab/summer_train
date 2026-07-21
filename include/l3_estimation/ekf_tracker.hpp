@@ -14,11 +14,11 @@ public:
   void update(const std::vector<ArmorObservation>& observations);
   void reset();
 
-  [[nodiscard]] const VehicleState& state() const noexcept;
+  [[nodiscard]] const TargetState& state() const noexcept;
   [[nodiscard]] bool expired(TimePoint now) const noexcept;
 
 private:
-  VehicleState state_;
+  TargetState state_;
   TimePoint last_seen_{};
 };
 

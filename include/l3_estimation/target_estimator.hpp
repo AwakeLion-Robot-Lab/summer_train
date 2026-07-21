@@ -27,16 +27,38 @@ public:
     Eigen::Vector3d translation_camera_to_gimbal,
     GimbalPoseProvider gimbal_pose_provider);
 
-  [[nodiscard]] std::vector<VehicleState> update(
+  [[nodiscard]] std::vector<TargetState> update(
     const std::vector<L2Perception::ArmorDetection>& armors,
     TimePoint timestamp);
 
 private:
   [[nodiscard]] ArmorSize armorSizeFromClass(int class_id) const noexcept;
 
+  [[nodiscard]] int robotIdFromClass(int class_id) const noexcept;
+
+  [[nodiscard]] std::vector<ArmorObservation> buildObservations(
+    const std::vector<L2Perception::ArmorDetection>& armors,
+    TimePoint timestamp,
+    const Eigen::Quaterniond& rotation_gimbal_to_world) const;
+
   [[nodiscard]] std::optional<ArmorObservation> makeObservation(
     const L2Perception::ArmorDetection& armor,
-    TimePoint timestamp) const;
+    TimePoint timestamp,
+    const Eigen::Quaterniond& rotation_gimbal_to_world) const;
+
+  [[nodiscard]] Eigen::Vector3d positionInWorld(
+    const ArmorPose& pose,
+    const Eigen::Quaterniond& rotation_gimbal_to_world) const noexcept;
+
+  [[nodiscard]] double yawInWorld(
+    const ArmorPose& pose,
+    const Eigen::Quaterniond& rotation_gimbal_to_world) const;
+
+  void predictTrackers(TimePoint timestamp);
+  void updateTrackers(const std::vector<ArmorObservation>& observations);
+  void removeExpiredTrackers(TimePoint timestamp);
+
+  [[nodiscard]] std::vector<TargetState> collectTargets() const;
 
   PnpSolver pnp_solver_;
   Eigen::Matrix3d rotation_camera_to_gimbal_;
