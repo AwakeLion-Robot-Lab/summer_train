@@ -47,19 +47,19 @@ struct PlannerContext
 
    Eigen::Vector3d gimbal_center_world;  云台旋转中心在世界坐标系的位置
 
-   MuzzleExtrinsics muzzle_extrinsics;  云台到枪口的变换矩阵
+   GimbalExtrinsics gimbal_extrinsics;  云台到枪口的变换矩阵
 
-   double gravity;  重力加速度
+   double gravity{9.80665};  重力加速度
 
+   PlannerConfig config;  储存MPC信息
  };
 
 
 车辆状态
  struct RobotState 
 {
-
    // 当前云台姿态
-   Orientation rpy;
+   gimbal rpy;
 
    // 当前云台运动状态
    double yaw_rate = 0.0;
@@ -67,19 +67,8 @@ struct PlannerContext
    double yaw_acceleration = 0.0;
    double pitch_acceleration = 0.0;
 
-   // 当前执行器状态，主要给后续MPC使用
-   double yaw_current = 0.0;
-   double pitch_current = 0.0;
-
    // 当前弹丸速度
    double bullet_speed = 0.0;
-
-   // 发射系统状态
-   double heat = 0.0;
-
-   // 识别和运行模式
-   EnemyColor enemy_color = EnemyColor::Unknown;
-   WorkMode mode = WorkMode::Idle;
 
    // 时间戳
    TimePoint timestamp{};
@@ -96,8 +85,12 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 一、预测dt后装甲板的位姿：  使用迭代拦截法预测装甲板的未来位置
 
 1  latency_compensator  延迟补偿器计算系统延迟->得到系统延迟：system_delay（图片识别->弹丸离开枪口）
-- 延迟补偿system_delay
-- 延迟是否可信delay_coefficient
+  struct LatencyResult
+  {
+      double system_delay{0.0};  
+      double confidence{0.0};    // [0, 1]
+      bool valid{false};
+  };
 
 如果有必要可以将延迟分为
 - 高转速延迟high_speed_system_delay
@@ -109,9 +102,7 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 struct BallisticRequest
 {
 
-   double horizontal_distance;  水平距离
-
-   double height;  高度
+  Eigen::Vector3d target_position_muzzle;
 
    double bullet_speed;  弹速
 
@@ -122,7 +113,9 @@ struct BallisticRequest
  输出：
 struct BallisticSolution
 {
-   double pitch;  
+   double pitch;
+
+   double yaw;  
 
    double fly_time;  飞行时间
 
@@ -134,27 +127,61 @@ struct BallisticSolution
 输入：
 struct PredictionRequest
 {
-   TargetState target;
+   TargetState target;  目标车辆状态
 
    TimePoint target_time;  预测到的绝对命中时刻
-
-   std::optional<int> preferred_armor;  上一周期选择的装甲板，防止频繁切换
-
- };
+};
 
 输出：
-struct PredictionResult 
-{
-   TargetState predicted_vehicle;
+  struct ArmorPose
+  {
+      int robot_id{-1};
+      int armor_id{-1};
+      ArmorType armor_type{ArmorType::Small};
 
-   std::vector<ArmorPose> armor_candidates;
-   std::optional<ArmorPose> selected_armor;
+      Eigen::Vector3d position_world{
+          Eigen::Vector3d::Zero()};
 
-   bool valid = false;
+      Eigen::Vector3d velocity_world{
+          Eigen::Vector3d::Zero()};
 
- };
+      double yaw_world{0.0};
+
+      TimePoint timestamp{};
+      bool valid{false};
+  };
+
+  struct PredictionResult
+  {
+      TargetState predicted_vehicle;
+
+      std::vector<ArmorPose> armor_candidates;
+
+      bool valid{false};
+  };
+
+  
  
+   struct ArmorCandidate
+  {
+      ArmorPose armor;
+      BallisticSolution ballistic;
+
+      TimePoint impact_time{};
+
+      double delta_angle{0.0};
+
+      int iteration_count{0};
+      double fly_time_error{0.0};
+      double position_error{0.0};
+
+      bool converged{false};
+      bool within_firing_window{false};
+      bool valid{false};
+  };
+
 3  对全部装甲板使用predictor+BallisticSolver迭代计算直至收敛，预测锁定装甲板的准确位置
+先根据识别到的装甲板预测时间，再重新预测位置，不断迭代直至收敛
 收敛条件：
 - 相邻两次飞行时间差小于 0.2～1 ms；
 - 相邻两次命中位置差小于约 5～10 mm，或瞄准角变化小于允许误差的一小部分；
@@ -200,38 +227,58 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
 7  目标身份一致性：
   - 装甲板的车辆编号和装甲板类型应与当前跟踪目标一致
   - 防止将相邻车辆的装甲板错误关联到当前目标
+
+
+
+  根据全部装甲板的信息选择跟踪
+  接收：
+  struct SelectionRequest
+  {
+      std::vector<ArmorCandidate> candidates;
+      std::optional<int> preferred_armor_id;
+  };
+
+发布：
+  struct SelectionResult
+  {
+      std::optional<ArmorCandidate> selected;
+
+      bool switching{false};
+      bool valid{false};
+
+      SelectionReason reason{
+          SelectionReason::NoCandidate};
+  };
 --------------------------------------------------------------------------------------------------------------------------
 三、发布最佳装甲板的信息
 
 理想轨迹
- struct AimReference
-{
+  struct AimReferenceSample
+  {
+      TimePoint command_time{};
+      TimePoint fire_time{};
+      TimePoint impact_time{};
 
-   TimePoint command_time;  下位机开始执行
+      double yaw{0.0};
+      double pitch{0.0};
 
-   TimePoint fire_time;  弹丸离开枪口的时间
+      double yaw_rate{0.0};
+      double pitch_rate{0.0};
 
-   TimePoint impact_time;  弹丸预期命中目标的时间（impact_time = fire_time + fly_time）
+      double yaw_acceleration{0.0};
+      double pitch_acceleration{0.0};
 
+      double fly_time{0.0};
+      double confidence{0.0};
 
-   double yaw;
+      int target_id{-1};
+      int armor_id{-1};
 
-   double pitch;
+      Eigen::Vector3d aim_point_world{
+          Eigen::Vector3d::Zero()};
 
-   double yaw_rate;
-
-   double pitch_rate;
-
-
-   double fly_time;
-
-   double confidence;
-
-   int armor_index;
-
-   Eigen::Vector3d aim_point_world;
-
- };
+      bool valid{false};
+  };
 --------------------------------------------------------------------------------------------------------------------------
 5.MPC产生平滑角加速度控制枪口运动/若不使用MPC则将使用传统方案（跟踪装甲板）
 当目前枪口与装甲板位姿误差在某范围内则fire_permitted=1，进入初步射击窗口，由l5火控判断最终开火
@@ -265,27 +312,62 @@ pitch 加速度范围= [-100, 100] rad/s^2
   3. 较小的 jerk 代价
   4. 较高的角度跟踪权重
 
+接收：
+理想轨迹
+struct AimReferenceSample
+
+
+
+
+
 输出：
 可执行轨迹
-struct AimPlan 
-{
+  struct AimPlan
+  {
+      uint64_t sequence{0};
 
-   uint64_t sequence;
+      int target_id{-1};
+      int selected_armor_id{-1};
 
-   TimePoint generated_at;
+      TimePoint generated_at{};
+      TimePoint valid_until{};
 
-   TimePoint valid_until;
+      AimPlanStatus status{
+          AimPlanStatus::NoTarget};
 
-   AimPlanStatus status;
+      PlannerType planner_type{
+          PlannerType::Direct};
 
-   std::vector<AimSample> samples;
-   std::vector<AimReference> reference;
+      std::vector<AimSample> samples;
+      std::vector<AimReferenceSample> reference;
 
-   PlanningDiagnostics diagnostics;
+      PlanningDiagnostics diagnostics;
 
-   bool fire_permitted;
+      double confidence{0.0};
 
- };
+      bool ballistic_valid{false};
+      bool fire_permitted{false};
+      bool valid{false};
+ }; 
+
+   struct AimSample
+  {
+      TimePoint execute_time{};
+
+      double yaw{0.0};
+      double pitch{0.0};
+
+      double yaw_rate{0.0};
+      double pitch_rate{0.0};
+
+      double yaw_acceleration{0.0};
+      double pitch_acceleration{0.0};
+
+      double yaw_jerk{0.0};
+      double pitch_jerk{0.0};
+  };
+
+
  若不经过MPC，直接将struct AimReference传给下位机
 --------------------------------------------------------------------------------------------------------------------------
 
