@@ -18,8 +18,8 @@ namespace L6Telemetry {
 struct AimTrace {
   FrameTrace frame;
   std::vector<L2Perception::Armor> detections;
-  std::vector<L3Estimation::Armor> armors;
-  std::optional<L3Estimation::Target> target;
+  std::vector<L3Estimation::ArmorObservation> armors;
+  std::optional<L3Estimation::TargetState> target;
   L4Planning::Plan plan;
   L5Control::FireDecision fire;
   L5Control::SerialCommand command;

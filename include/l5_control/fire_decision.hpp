@@ -38,7 +38,7 @@ struct FireConfig {
 };
 
 struct FireInput {
-  std::optional<L3Estimation::Target> target;
+  std::optional<L3Estimation::TargetState> target;
   L4Planning::Plan plan;
   L1Sensor::RobotState robot_state;
 

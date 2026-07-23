@@ -10,24 +10,23 @@
 
 int main()
 {
-  static_assert(std::is_same_v<
-    L3Estimation::Armor, L3Estimation::ArmorObservation>);
-  static_assert(std::is_same_v<
-    L3Estimation::Target, L3Estimation::TargetState>);
   static_assert(std::is_same_v<L4Planning::Plan, L4Planning::AimPlan>);
 
-  L3Estimation::Target target;
-  target.position = {1.0, 2.0, 3.0};
+  L3Estimation::TargetState target;
+  target.center = {1.0, 2.0, 3.0};
   target.velocity = {4.0, 5.0, 6.0};
   target.yaw = 0.7;
-  target.v_yaw = 0.8;
+  target.yaw_rate = 0.8;
   target.radius = 0.22;
 
-  const auto x = target.vector();
   const bool state_order_ok =
-    x[0] == 1.0 && x[1] == 4.0 && x[2] == 2.0 && x[3] == 5.0 &&
-    x[4] == 3.0 && x[5] == 6.0 && x[6] == 0.7 && x[7] == 0.8 &&
-    x[8] == 0.22;
+    target.center.x() == 1.0 && target.velocity.x() == 4.0 &&
+    target.center.y() == 2.0 && target.velocity.y() == 5.0 &&
+    target.center.z() == 3.0 && target.velocity.z() == 6.0 &&
+    target.yaw == 0.7 && target.yaw_rate == 0.8 &&
+    target.radius == 0.22 &&
+    target.covariance.rows() == L3Estimation::STATE_DIM &&
+    target.covariance.cols() == L3Estimation::STATE_DIM;
   if (!state_order_ok) {
     std::cerr << "Target state order is incorrect\n";
     return 1;
@@ -46,7 +45,7 @@ int main()
   }
 
   runtime::AutoAimConfig config;
-  L3Estimation::AimCalibration calibration;
+  L1Sensor::CameraCalibration calibration;
   if (config.fire.shoot_enable || config.fireReady(calibration)) {
     std::cerr << "Auto aim configuration is not safe by default\n";
     return 3;

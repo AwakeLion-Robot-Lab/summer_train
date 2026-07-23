@@ -4,31 +4,36 @@
 #include "l2_perception/armor.hpp"
 #include "l3_estimation/types.hpp"
 
+#include <array>
 #include <optional>
+
+#include <opencv2/core.hpp>
 
 namespace L3Estimation {
 
+// 单位均为米。
+struct ArmorDimensions {
+  double small_width = 0.135;
+  double large_width = 0.230;
+  double height = 0.055;
+};
+
 class PnpSolver {
 public:
-  explicit PnpSolver(
-    const L1Sensor::CameraCalibration& calibration,
-    ArmorConfig config = {});
+  PnpSolver(
+    L1Sensor::CameraCalibration calibration,
+    ArmorDimensions dimensions = {});
 
-  [[nodiscard]] bool ready() const noexcept;
-
-  // 姿态表示枪管坐标系到世界坐标系的旋转，必须对应图像曝光时刻。
-  void set_R_world_barrel(
-    const std::optional<Eigen::Quaterniond>& barrel_pose);
-
-  // 原地补充 Armor 的相机系和世界系 PnP 结果。
-  void single_pnp(Armor& armor) const;
+  // detection.corners 顺序必须为：左上、右上、右下、左下。
+  [[nodiscard]] std::optional<ArmorPose> solve(
+    const L2Perception::ArmorDetection& detection,
+    ArmorSize size) const;
 
 private:
+  [[nodiscard]] std::array<cv::Point3f, 4> objectPoints(ArmorSize size) const;
+
   L1Sensor::CameraCalibration calibration_;
-  ArmorConfig config_;
-  Eigen::Matrix3d R_world_barrel_{Eigen::Matrix3d::Identity()};
-  bool world_barrel_ready_{false};
-  bool ready_{false};
+  ArmorDimensions dimensions_;
 };
 
 }  // namespace L3Estimation

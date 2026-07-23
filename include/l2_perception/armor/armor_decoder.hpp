@@ -37,12 +37,12 @@ struct ArmorDecoderConfig
   std::size_t corner_offset{0};
   std::size_t confidence_index{8};
   std::size_t color_offset{9};
-  std::size_t color_count{4};  // Red、Blue、Gray、Purple
+  std::size_t color_count{4};  // Blue、Red、Gray、Purple
   std::size_t class_offset{13};
   std::size_t class_count{9};  // G、1、2、3、4、5、O、Bs、Bb
 
-  int red_color_index{0};
-  int blue_color_index{1};
+  int red_color_index{1};
+  int blue_color_index{0};
   int class_id_offset{0};
   float confidence_threshold{0.65F};
   float nms_iou_threshold{0.45F};

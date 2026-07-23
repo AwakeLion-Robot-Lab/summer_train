@@ -9,14 +9,12 @@
 #include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
-#include "runtime/auto_aim_config.hpp"
 #include <opencv2/opencv.hpp>
 
 #include <exception>
 #include <filesystem>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <utility>
 
 namespace {
@@ -46,8 +44,8 @@ L2Perception::ArmorDetector makeArmorDetector()
     L2Perception::InferenceModelConfig model_config;
     model_config.model_path = model_path;
     model_config.device = "CPU";
-    // 这份 armor.xml 沿用 FosuVision 的 BGR 输入契约；不要在后端交换红蓝通道。
-    model_config.model_color_order = L2Perception::ModelColorOrder::Bgr;
+    // armor.xml 的宿主输入来自 OpenCV BGR 图像，送入模型前必须转换为 RGB。
+    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
     model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
 
@@ -85,23 +83,6 @@ void AutoAimRuntime::run() {
   if (!serial_started && serial_config.enable) {
     L6Telemetry::logWarn("Failed to start serial worker.");
   }
-  // PnP 使用启动时加载的静态内参、畸变、枪管外参和装甲板尺寸参数。
-    // 标定缺失时 runtime 继续运行检测和显示，
-    // 但后续不得生成有效瞄准/开火命令。
-  AutoAimConfig auto_aim_config;
-  std::optional<L3Estimation::PnpSolver> pnp_solver;
-  const auto& camera_calibration = camera->calibration();
-  if (!camera_calibration) {
-    L6Telemetry::logWarn("PnP disabled: camera calibration is missing");
-  } else {
-    pnp_solver.emplace(*camera_calibration, auto_aim_config.armor);
-    if (pnp_solver->ready()) {
-      L6Telemetry::logInfo("PnP solver configured");
-    } else {
-      L6Telemetry::logWarn("PnP disabled: calibration or armor config is invalid");
-    }
-  }
-
   cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
 
   cv::Mat frame;
@@ -120,12 +101,8 @@ void AutoAimRuntime::run() {
       const auto robot_state = serial.latestState();
       if (robot_state) {
         const auto &state = *robot_state;
-        // 图像曝光时刻的枪管系 -> 世界系旋转；
-        // 当前模型忽略两坐标系原点平移。
-        const auto q_world_barrel = serial.gimbalPoseAt(timestamp);
-        if (pnp_solver) {
-          pnp_solver->set_R_world_barrel(q_world_barrel);
-        }
+        const auto gimbal_pose = serial.gimbalPoseAt(timestamp);
+        (void)gimbal_pose;
         switch (state.mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {

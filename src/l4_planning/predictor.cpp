@@ -5,7 +5,7 @@ namespace L4Planning {
 L3Estimation::TargetState Predictor::predict(const L3Estimation::TargetState& target, double dt) const
 {
   auto predicted = target;
-  predicted.position += target.velocity * dt;
+  predicted.center += target.velocity * dt;
   return predicted;
 }
 
