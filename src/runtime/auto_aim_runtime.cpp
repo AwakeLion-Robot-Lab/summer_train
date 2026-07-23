@@ -83,7 +83,6 @@ void AutoAimRuntime::run() {
   if (!serial_started && serial_config.enable) {
     L6Telemetry::logWarn("Failed to start serial worker.");
   }
-
   cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
 
   cv::Mat frame;
@@ -104,7 +103,6 @@ void AutoAimRuntime::run() {
         const auto &state = *robot_state;
         const auto gimbal_pose = serial.gimbalPoseAt(timestamp);
         (void)gimbal_pose;
-
         switch (state.mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {

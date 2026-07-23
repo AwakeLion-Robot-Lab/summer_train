@@ -26,7 +26,7 @@ public:
 
   [[nodiscard]] bool ready() const noexcept;
   // 一帧同步检测。Backend/Decoder 抛出的异常会被转换为日志和空结果，避免中断主循环。
-  [[nodiscard]] std::vector<ArmorDetection> detect(const cv::Mat& image) const;
+  [[nodiscard]] std::vector<Armor> detect(const cv::Mat& image) const;
 
 private:
   std::unique_ptr<IInferenceBackend> backend_;

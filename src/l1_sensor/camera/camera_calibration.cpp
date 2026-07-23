@@ -1,5 +1,7 @@
 #include "l1_sensor/camera/camera_calibration.hpp"
 
+#include <cmath>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -72,6 +74,95 @@ cv::Mat readRequiredMatrix(const YAML::Node &node, const std::string &key,
   return matrix;
 }
 
+Eigen::Matrix3d readRotation(const YAML::Node &transform_node,
+                             const std::string &transform_name,
+                             const std::string &source_name) {
+  const auto rotation_node = transform_node["rotation"];
+  if (!rotation_node || !rotation_node.IsSequence() ||
+      rotation_node.size() != 3) {
+    invalidCalibration(source_name,
+                       transform_name + ".rotation must be a 3x3 matrix");
+  }
+
+  Eigen::Matrix3d rotation;
+  try {
+    for (std::size_t row = 0; row < 3; ++row) {
+      if (!rotation_node[row].IsSequence() ||
+          rotation_node[row].size() != 3) {
+        invalidCalibration(source_name,
+                           transform_name + ".rotation must be a 3x3 matrix");
+      }
+      for (std::size_t col = 0; col < 3; ++col) {
+        rotation(static_cast<Eigen::Index>(row),
+                 static_cast<Eigen::Index>(col)) =
+            rotation_node[row][col].as<double>();
+      }
+    }
+  } catch (const YAML::Exception &e) {
+    invalidCalibration(source_name,
+                       "invalid " + transform_name + ".rotation: " + e.what());
+  }
+
+  constexpr double kRotationTolerance = 1e-3;
+  const Eigen::Matrix3d orthogonality_error =
+      rotation.transpose() * rotation - Eigen::Matrix3d::Identity();
+  if (!rotation.allFinite() ||
+      orthogonality_error.norm() > kRotationTolerance ||
+      std::abs(rotation.determinant() - 1.0) > kRotationTolerance) {
+    invalidCalibration(source_name,
+                       transform_name + ".rotation must be a finite SO(3) matrix");
+  }
+
+  return rotation;
+}
+
+Eigen::Vector3d readTranslation(const YAML::Node &transform_node,
+                                const std::string &transform_name,
+                                const std::string &source_name) {
+  const auto translation_node = transform_node["translation"];
+  if (!translation_node || !translation_node.IsSequence() ||
+      translation_node.size() != 3) {
+    invalidCalibration(
+        source_name, transform_name + ".translation must contain 3 values");
+  }
+
+  Eigen::Vector3d translation;
+  try {
+    for (std::size_t index = 0; index < 3; ++index) {
+      translation[static_cast<Eigen::Index>(index)] =
+          translation_node[index].as<double>();
+    }
+  } catch (const YAML::Exception &e) {
+    invalidCalibration(
+        source_name,
+        "invalid " + transform_name + ".translation: " + e.what());
+  }
+
+  if (!translation.allFinite()) {
+    invalidCalibration(source_name,
+                       transform_name + ".translation must be finite");
+  }
+  return translation;
+}
+
+std::optional<Eigen::Isometry3d> readOptionalTransform(
+    const YAML::Node &node, const std::string &key,
+    const std::string &source_name) {
+  const auto transform_node = node[key];
+  if (!transform_node) {
+    return std::nullopt;
+  }
+  if (!transform_node.IsMap()) {
+    invalidCalibration(source_name, key + " must be a YAML map");
+  }
+
+  Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
+  transform.linear() = readRotation(transform_node, key, source_name);
+  transform.translation() =
+      readTranslation(transform_node, key, source_name);
+  return transform;
+}
+
 void validatePinholeCoefficients(const cv::Mat &coefficients,
                                  const std::string &path) {
   const auto count = coefficients.total();
@@ -118,18 +209,25 @@ bool CameraCalibration::matchesImageSize(const cv::Size &size) const noexcept {
   return size == image_size;
 }
 
+bool CameraCalibration::barrelExtrinsicsReady() const noexcept {
+  return T_barrel_camera.has_value();
+}
+
 CameraCalibration loadCameraCalibration(const YAML::Node &node,
                                         const std::string &source_name) {
   if (!node || !node.IsMap()) {
     invalidCalibration(source_name, "calibration must be a YAML map");
   }
 
-  return makeCalibration(
+  CameraCalibration calibration = makeCalibration(
       {readRequiredInt(node, "image_width", source_name),
        readRequiredInt(node, "image_height", source_name)},
       readRequiredMatrix(node, "camera_matrix", source_name),
       readRequiredMatrix(node, "distortion_coefficients", source_name),
       source_name);
+  calibration.T_barrel_camera =
+      readOptionalTransform(node, "T_barrel_camera", source_name);
+  return calibration;
 }
 
 } // namespace L1Sensor

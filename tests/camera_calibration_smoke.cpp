@@ -32,6 +32,29 @@ int main()
     return 3;
   }
 
+  if (!calibration.barrelExtrinsicsReady()) {
+    std::cerr << "CameraCalibration did not load static extrinsics\n";
+    return 4;
+  }
+
+  const Eigen::Vector3d point_in_camera{1.0, 0.0, 2.0};
+  const Eigen::Vector3d point_in_barrel =
+    *calibration.T_barrel_camera * point_in_camera;
+  const Eigen::Vector3d expected_point{0.01, 0.98, 2.03};
+  if (!point_in_barrel.isApprox(expected_point, 1e-12)) {
+    std::cerr << "T_barrel_camera uses the wrong transform direction\n";
+    return 5;
+  }
+
+  auto intrinsic_only_node = YAML::Clone(camera_config["calibration"]);
+  intrinsic_only_node.remove("T_barrel_camera");
+  const auto intrinsic_only = L1Sensor::loadCameraCalibration(
+    intrinsic_only_node, "intrinsic-only smoke config");
+  if (intrinsic_only.barrelExtrinsicsReady()) {
+    std::cerr << "Missing extrinsics were treated as valid identity transforms\n";
+    return 6;
+  }
+
   std::cout << "CameraCalibration smoke test passed\n";
   return 0;
 }

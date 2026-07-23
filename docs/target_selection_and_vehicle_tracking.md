@@ -84,6 +84,11 @@ R = [R_left, C; C^T, R_right]
 
 双板信息增益来自两个不同装甲面的几何约束，不应简单地把每块板的 `R` 除以二。每块板的 `R` 应根据距离、倾角、检测置信度、角点质量和重投影误差动态生成。第一版可以使用块对角 `R` 并适度膨胀，采集日志后再估计相关项 `C`。
 
+单板 `R` 的正式定义、像素噪声模型、投影 Jacobian、从 6D PnP 位姿传播到
+`[x_world, y_world, z_world, yaw_world]` 的方法，以及四角点残差自由度和
+IPPE 双峰歧义的限制，见
+[`pnp_observation_noise_and_covariance.md`](pnp_observation_noise_and_covariance.md)。
+
 ## 6. rm.cv.fans 的可借鉴部分
 
 `rm.cv.fans` 会对所有有效装甲板分别 PnP，再按车辆编号聚合。其旧 `top4_model` 使用同车两块装甲板的八个角点联合拟合朝向，通过两块板法向延长线的交点估计车体中心，并得到两种半径；参见 [`top4_model.cpp`](../../rm.cv.fans-main/aimer/auto_aim/predictor/motion/top4_model.cpp)。

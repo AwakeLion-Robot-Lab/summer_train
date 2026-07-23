@@ -48,7 +48,7 @@ cv::Point toPixel(const cv::Point2f& point)
 
 void drawDetections(
   cv::Mat& image,
-  const std::vector<L2Perception::ArmorDetection>& detections,
+  const std::vector<L2Perception::Armor>& detections,
   double display_fps,
   double l2_fps)
 {

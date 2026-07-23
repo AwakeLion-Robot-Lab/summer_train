@@ -123,6 +123,13 @@ target("ekf_tracker_smoke")
     add_files("tests/ekf_tracker_smoke.cpp")
     add_deps("newvision")
 
+target("pnp_solver_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/pnp_solver_smoke.cpp")
+    add_deps("newvision")
+
 target("fps_counter_smoke")
     set_kind("binary")
     set_default(false)
