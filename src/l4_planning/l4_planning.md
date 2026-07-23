@@ -84,17 +84,25 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 实现：
 一、预测dt后装甲板的位姿：  使用迭代拦截法预测装甲板的未来位置
 
-1  latency_compensator  延迟补偿器计算系统延迟->得到系统延迟：system_delay（图片识别->弹丸离开枪口）
+1  latency_compensator 延迟补偿器计算系统延迟：
+
+系统出枪延迟 =（命令发布时间戳 - 图像时间戳）+ 命令发布到弹丸离开枪口的标定时间。
+前一项由消息自带时间戳实测，不再人为拆分 image/plan/send/control 各段；
+配置中只保存无法从时间戳得到的 command_timestamp。
+struct Delay
+{
+  TimePoint camera_timestamp;
+  TimePoint command_timestamp;
+  double fire_delay{0.0};
+}
+
+delay=(command_timestamp-camera_timestamp)+fire_delay
   struct LatencyResult
   {
-      double system_delay{0.0};  
+      Delay delay;
       double confidence{0.0};    // [0, 1]
       bool valid{false};
   };
-
-如果有必要可以将延迟分为
-- 高转速延迟high_speed_system_delay
-- 低转速延迟low_speed_system_delay
 
 2.1  BallisticSolver  通过装甲板的位置计算pitch和弹丸射中的时间fly_time；
 丐版使用真空抛物线低弹道；后续再加入空气阻力和弹道标定参数
@@ -102,7 +110,7 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 struct BallisticRequest
 {
 
-  Eigen::Vector3d target_position_muzzle;
+  Eigen::Vector3d target_position_world;
 
    double bullet_speed;  弹速
 
@@ -370,7 +378,5 @@ struct AimReferenceSample
 
  若不经过MPC，直接将struct AimReference传给下位机
 --------------------------------------------------------------------------------------------------------------------------
-
-
 
 

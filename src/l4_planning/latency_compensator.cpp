@@ -1,15 +1,27 @@
 #include "l4_planning/latency_compensator.hpp"
 
+#include "l4_planning/types.hpp"
+
 namespace L4Planning {
 
-LatencyCompensator::LatencyCompensator(double latency_seconds)
-  : latency_seconds_(latency_seconds)
+LatencyCompensator::LatencyCompensator(LatencyConfig config)
 {
+  (void)config;
 }
 
-double LatencyCompensator::latency() const
+LatencyResult LatencyCompensator::calculate(const Delay& delay) const noexcept
 {
-  return latency_seconds_;
+  LatencyResult result;
+  if (delay.camera_timestamp == TimePoint{} ||
+      delay.command_timestamp < delay.camera_timestamp ||
+      delay.fire_delay < 0.0) {
+    return result;
+  }
+
+  result.delay = delay;
+  result.confidence = 1.0;
+  result.valid = true;
+  return result;
 }
 
 }  // namespace L4Planning

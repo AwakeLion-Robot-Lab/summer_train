@@ -1,4 +1,5 @@
 #include "l3_estimation/types.hpp"
+#include "l4_planning/latency_compensator.hpp"
 #include "l4_planning/types.hpp"
 #include "l5_control/reject_reason.hpp"
 #include "l6_telemetry/auto_aim_trace.hpp"
@@ -32,15 +33,21 @@ int main()
     return 1;
   }
 
-  L4Planning::Delay delay;
-  delay.image_to_plan = 0.001;
-  delay.plan_to_send = 0.002;
-  delay.send_to_control = 0.003;
-  delay.control_to_fire = 0.004;
-  delay.fire_to_hit = 0.010;
-  if (std::abs(delay.beforeFire() - 0.010) > 1e-12 ||
-      std::abs(delay.total() - 0.020) > 1e-12) {
+  const auto image_time = L4Planning::TimePoint{std::chrono::milliseconds{100}};
+  const auto command_time = image_time + std::chrono::milliseconds{6};
+  L4Planning::LatencyConfig latency_config;
+  const L4Planning::LatencyCompensator latency_compensator{latency_config};
+  const auto latency = latency_compensator.calculate(
+    L4Planning::Delay{image_time, command_time, 0.010});
+  if (!latency.valid ||
+      std::abs(latency.delay.beforeFire() - 0.006) > 1e-12 ||
+      std::abs(latency.delay.total() - 0.016) > 1e-12) {
     std::cerr << "Delay aggregation is incorrect\n";
+    return 2;
+  }
+  if (latency_compensator.calculate(
+        L4Planning::Delay{command_time, image_time, 0.0}).valid) {
+    std::cerr << "Invalid latency input was accepted\n";
     return 2;
   }
 
