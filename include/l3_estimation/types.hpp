@@ -75,19 +75,19 @@ struct TargetState {
 
   // 车辆旋转中心的水平位置；z 是第 1 组装甲板的参考高度，不一定是车辆
   // 几何中心高度。
-  Eigen::Vector3d center = Eigen::Vector3d::Zero();
-  Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
+  Eigen::Vector3d center = Eigen::Vector3d::Zero(); // xc, yc, zc
+  Eigen::Vector3d velocity = Eigen::Vector3d::Zero(); // vx, vy, vz
 
   // 0 号装甲板局部 +x 法线在世界系中的方向。yaw=0 指向世界系 +x，
   // 从 +x 转向 +y（向左转）为正，发布前应归一化到 (-pi, pi]。
-  double yaw = 0.0;
-  double yaw_rate = 0.0;
+  double yaw = 0.0;       // 车辆旋转中心的航向角
+  double yaw_rate = 0.0;  // 车辆旋转中心的角速度，正值表示向左转。
 
   // r1、r2-r1、z2-z1。四装甲板模型中 0/2 号面使用 r1/z1，
   // 1/3 号面使用 r2/z2。
-  double radius = 0.0;
-  double radius_offset = 0.0;
-  double height_offset = 0.0;
+  double radius = 0.0;        //装甲板半径
+  double radius_offset = 0.0; //装甲板半径差
+  double height_offset = 0.0; //装甲板高度差
 
   StateCovariance covariance = StateCovariance::Identity();
 

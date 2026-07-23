@@ -44,8 +44,8 @@ L2Perception::ArmorDetector makeArmorDetector()
     L2Perception::InferenceModelConfig model_config;
     model_config.model_path = model_path;
     model_config.device = "CPU";
-    // 这份 armor.xml 沿用 FosuVision 的 BGR 输入契约；不要在后端交换红蓝通道。
-    model_config.model_color_order = L2Perception::ModelColorOrder::Bgr;
+    // armor.xml 的宿主输入来自 OpenCV BGR 图像，送入模型前必须转换为 RGB。
+    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
     model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
 

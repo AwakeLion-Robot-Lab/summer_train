@@ -25,7 +25,8 @@ public:
     L1Sensor::CameraCalibration calibration,
     Eigen::Matrix3d rotation_camera_to_gimbal,
     Eigen::Vector3d translation_camera_to_gimbal,
-    GimbalPoseProvider gimbal_pose_provider);
+    GimbalPoseProvider gimbal_pose_provider,
+    EkfTrackerConfig tracker_config = {});
 
   [[nodiscard]] std::vector<TargetState> update(
     const std::vector<L2Perception::ArmorDetection>& armors,
@@ -64,6 +65,7 @@ private:
   Eigen::Matrix3d rotation_camera_to_gimbal_;
   Eigen::Vector3d translation_camera_to_gimbal_;
   GimbalPoseProvider gimbal_pose_provider_;
+  EkfTrackerConfig tracker_config_;
   std::unordered_map<int, EkfTracker> trackers_;
 };
 

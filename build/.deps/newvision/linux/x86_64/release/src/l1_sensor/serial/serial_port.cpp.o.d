@@ -1,7 +1,10 @@
 {
-    depfiles_format = "gcc",
     depfiles = "serial_port.o: src/l1_sensor/serial/serial_port.cpp  include/l1_sensor/serial/serial_port.hpp  include/l1_sensor/serial/serial_config.hpp  include/l6_telemetry/logger.hpp tools/serial/include/serial/serial.h  tools/serial/include/serial/v8stdint.h\
 ",
+    files = {
+        "src/l1_sensor/serial/serial_port.cpp"
+    },
+    depfiles_format = "gcc",
     values = {
         "/usr/bin/g++-13",
         {
@@ -23,16 +26,11 @@
             "-Itools/logger/include",
             "-Itools/logger/include/3rdparty",
             "-I/usr/include/opencv4",
-            "-I/usr/lib/x86_64-linux-gnu/pkgconfig/../../../include/ie",
-            "-I/usr/lib/x86_64-linux-gnu/pkgconfig/../../../include",
-            "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1",
-            "-DIE_THREAD=IE_THREAD_TBB",
+            "-I/home/rm/rm_summmer/tongjiceshi/.deps/l_openvino_toolkit_ubuntu24_2024.6.0.17404.4c0f47d2335_x86_64/runtime/lib/intel64/pkgconfig/../../../../runtime/include",
+            "-D_GLIBCXX_USE_CXX11_ABI=1",
             "-DOV_THREAD=OV_THREAD_TBB",
             "-DNEWVISION_HAS_OPENVINO=1",
             "-DNDEBUG"
         }
-    },
-    files = {
-        "src/l1_sensor/serial/serial_port.cpp"
     }
 }

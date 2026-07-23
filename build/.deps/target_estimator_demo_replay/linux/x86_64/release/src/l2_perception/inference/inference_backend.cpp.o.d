@@ -1,0 +1,28 @@
+{
+    files = {
+        "src/l2_perception/inference/inference_backend.cpp"
+    },
+    depfiles_format = "gcc",
+    depfiles = "inference_backend.o: src/l2_perception/inference/inference_backend.cpp  include/l2_perception/inference/inference_backend.hpp  include/l2_perception/inference/inference_result.hpp\
+",
+    values = {
+        "/usr/bin/g++-13",
+        {
+            "-m64",
+            "-fvisibility=hidden",
+            "-fvisibility-inlines-hidden",
+            "-O3",
+            "-std=c++20",
+            "-Iinclude",
+            "-I/usr/include/eigen3",
+            "-Itools/logger/include",
+            "-Itools/logger/include/3rdparty",
+            "-I/usr/include/opencv4",
+            "-I/home/rm/rm_summmer/tongjiceshi/.deps/l_openvino_toolkit_ubuntu24_2024.6.0.17404.4c0f47d2335_x86_64/runtime/lib/intel64/pkgconfig/../../../../runtime/include",
+            "-D_GLIBCXX_USE_CXX11_ABI=1",
+            "-DOV_THREAD=OV_THREAD_TBB",
+            "-DNEWVISION_HAS_OPENVINO=1",
+            "-DNDEBUG"
+        }
+    }
+}

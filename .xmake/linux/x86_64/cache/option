@@ -1,30 +1,30 @@
 {
     use_system_deps = {
-        __sourceinfo_showmenu = { },
-        __scriptdir = "/home/rm/super/newvision",
-        default = true,
-        description = "Use system OpenCV and yaml-cpp development packages",
-        showmenu = true,
         __sourceinfo_description = {
             ["Use system OpenCV and yaml-cpp development packages"] = {
-                file = "./xmake.lua",
-                line = 22
+                line = 22,
+                file = "./xmake.lua"
             }
         },
-        __sourceinfo_default = { }
+        __scriptdir = "/home/rm/rm_summmer/summer_train",
+        description = "Use system OpenCV and yaml-cpp development packages",
+        __sourceinfo_default = { },
+        __sourceinfo_showmenu = { },
+        showmenu = true,
+        default = true
     },
     use_openvino = {
-        __sourceinfo_showmenu = { },
-        __scriptdir = "/home/rm/super/newvision",
-        default = false,
-        description = "Enable the optional OpenVINO inference backend",
-        showmenu = true,
         __sourceinfo_description = {
             ["Enable the optional OpenVINO inference backend"] = {
-                file = "./xmake.lua",
-                line = 28
+                line = 28,
+                file = "./xmake.lua"
             }
         },
-        __sourceinfo_default = { }
+        __scriptdir = "/home/rm/rm_summmer/summer_train",
+        description = "Enable the optional OpenVINO inference backend",
+        __sourceinfo_default = { },
+        __sourceinfo_showmenu = { },
+        showmenu = true,
+        default = false
     }
 }

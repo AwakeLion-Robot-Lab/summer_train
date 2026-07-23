@@ -11,6 +11,7 @@
 namespace L3Estimation {
 namespace {
 
+//归一化
 double normalizeAngle(double angle) noexcept
 {
   constexpr double kTwoPi = 2.0 * std::numbers::pi;
@@ -18,6 +19,7 @@ double normalizeAngle(double angle) noexcept
   return angle <= -std::numbers::pi ? angle + kTwoPi : angle;
 }
 
+//矩阵是否合规
 bool isRotationMatrix(const Eigen::Matrix3d& rotation) noexcept
 {
   if (!rotation.allFinite()) {
@@ -30,11 +32,13 @@ bool isRotationMatrix(const Eigen::Matrix3d& rotation) noexcept
          && std::abs(rotation.determinant() - 1.0) < 1e-5;
 }
 
+//四元数是否合规
 bool isValidQuaternion(const Eigen::Quaterniond& quaternion) noexcept
 {
   return quaternion.coeffs().allFinite() && quaternion.norm() > 1e-9;
 }
 
+//旋转向量 → 旋转矩阵
 Eigen::Matrix3d rotationMatrixFromRvec(const cv::Vec3d& rvec)
 {
   cv::Mat rotation_cv;
@@ -55,11 +59,13 @@ TargetEstimator::TargetEstimator(
   L1Sensor::CameraCalibration calibration,
   Eigen::Matrix3d rotation_camera_to_gimbal,
   Eigen::Vector3d translation_camera_to_gimbal,
-  GimbalPoseProvider gimbal_pose_provider)
+  GimbalPoseProvider gimbal_pose_provider,
+  EkfTrackerConfig tracker_config)
   : pnp_solver_(std::move(calibration)),
     rotation_camera_to_gimbal_(std::move(rotation_camera_to_gimbal)),
     translation_camera_to_gimbal_(std::move(translation_camera_to_gimbal)),
-    gimbal_pose_provider_(std::move(gimbal_pose_provider))
+    gimbal_pose_provider_(std::move(gimbal_pose_provider)),
+    tracker_config_(std::move(tracker_config))
 {
   if (!isRotationMatrix(rotation_camera_to_gimbal_)) {
     throw std::invalid_argument(
@@ -74,6 +80,7 @@ TargetEstimator::TargetEstimator(
   }
 }
 
+// 装甲板大小判断
 ArmorSize TargetEstimator::armorSizeFromClass(int class_id) const noexcept
 {
   const auto armor_class = L2Perception::armorClassFromId(class_id);
@@ -83,6 +90,7 @@ ArmorSize TargetEstimator::armorSizeFromClass(int class_id) const noexcept
   return is_large ? ArmorSize::Large : ArmorSize::Small;
 }
 
+// 装甲板ID判断
 int TargetEstimator::robotIdFromClass(int class_id) const noexcept
 {
   const auto armor_class = L2Perception::armorClassFromId(class_id);
@@ -97,6 +105,7 @@ int TargetEstimator::robotIdFromClass(int class_id) const noexcept
   return static_cast<int>(armor_class);
 }
 
+// 装甲板局部坐标系到世界坐标系的转换（camera → gimbal → world）
 Eigen::Vector3d TargetEstimator::positionInWorld(
   const ArmorPose& pose,
   const Eigen::Quaterniond& rotation_gimbal_to_world) const noexcept
@@ -109,6 +118,7 @@ Eigen::Vector3d TargetEstimator::positionInWorld(
   return rotation_gimbal_to_world * position_gimbal;
 }
 
+// 装甲板朝向的世界坐标系表示（armor → camera → gimbal → world）
 double TargetEstimator::yawInWorld(
   const ArmorPose& pose,
   const Eigen::Quaterniond& rotation_gimbal_to_world) const
@@ -126,17 +136,18 @@ double TargetEstimator::yawInWorld(
     rotation_armor_to_world(0, 0)));
 }
 
+  //   单块装甲板 → PnP → 世界观测
 std::optional<ArmorObservation> TargetEstimator::makeObservation(
   const L2Perception::ArmorDetection& armor,
   TimePoint timestamp,
   const Eigen::Quaterniond& rotation_gimbal_to_world) const
 {
+  const ArmorSize armor_size = armorSizeFromClass(armor.class_id);
   const int robot_id = robotIdFromClass(armor.class_id);
   if (robot_id < 0 || !std::isfinite(armor.confidence)) {
     return std::nullopt;
   }
 
-  const ArmorSize armor_size = armorSizeFromClass(armor.class_id);
   const auto pose = pnp_solver_.solve(armor, armor_size);
   if (!pose) {
     return std::nullopt;
@@ -163,6 +174,7 @@ std::optional<ArmorObservation> TargetEstimator::makeObservation(
     .timestamp = timestamp};
 }
 
+// 遍历本帧装甲板
 std::vector<ArmorObservation> TargetEstimator::buildObservations(
   const std::vector<L2Perception::ArmorDetection>& armors,
   TimePoint timestamp,
@@ -180,6 +192,7 @@ std::vector<ArmorObservation> TargetEstimator::buildObservations(
   return observations;
 }
 
+//   所有车辆每帧预测一次
 void TargetEstimator::predictTrackers(TimePoint timestamp)
 {
   for (auto& [robot_id, tracker] : trackers_) {
@@ -188,6 +201,7 @@ void TargetEstimator::predictTrackers(TimePoint timestamp)
   }
 }
 
+//   按robot_id分组并更新对应Tracker
 void TargetEstimator::updateTrackers(
   const std::vector<ArmorObservation>& observations)
 {
@@ -197,12 +211,14 @@ void TargetEstimator::updateTrackers(
   }
 
   for (auto& [robot_id, robot_observations] : observations_by_robot) {
-    auto [tracker, inserted] = trackers_.try_emplace(robot_id, robot_id);
+    auto [tracker, inserted] = trackers_.try_emplace(
+      robot_id, robot_id, tracker_config_);
     (void)inserted;
     tracker->second.update(robot_observations);
   }
 }
 
+//   删除过期车辆
 void TargetEstimator::removeExpiredTrackers(TimePoint timestamp)
 {
   std::erase_if(trackers_, [timestamp](const auto& item) {
@@ -210,6 +226,7 @@ void TargetEstimator::removeExpiredTrackers(TimePoint timestamp)
   });
 }
 
+//
 std::vector<TargetState> TargetEstimator::collectTargets() const
 {
   std::vector<TargetState> targets;
@@ -235,12 +252,13 @@ std::vector<TargetState> TargetEstimator::update(
   // 预测所有 tracker 到当前帧时刻，保证后续更新使用一致的时间戳。
   predictTrackers(timestamp);
 
-
   const auto gimbal_pose = gimbal_pose_provider_(timestamp);
   if (gimbal_pose && isValidQuaternion(*gimbal_pose)) {
+
     const Eigen::Quaterniond rotation_gimbal_to_world = gimbal_pose->normalized();
     const auto observations =
       buildObservations(armors, timestamp, rotation_gimbal_to_world);
+    
     updateTrackers(observations);
   }
 

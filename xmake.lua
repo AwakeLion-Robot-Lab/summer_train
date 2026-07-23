@@ -116,6 +116,13 @@ target("camera_calibration_smoke")
     add_files("tests/camera_calibration_smoke.cpp")
     add_deps("newvision")
 
+target("ekf_tracker_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/ekf_tracker_smoke.cpp")
+    add_deps("newvision")
+
 target("fps_counter_smoke")
     set_kind("binary")
     set_default(false)
@@ -141,6 +148,51 @@ target("openvino_armor_smoke")
     set_rundir("$(projectdir)")
     add_files("tests/openvino_armor_smoke.cpp")
     add_deps("newvision")
+
+target("target_estimator_demo_replay")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/target_estimator_demo_replay.cpp")
+    -- 视频文件在本测试中充当 L1 输入，只链接 L2/L3 所需实现，
+    -- 避免 L4/L5/Runtime 的开发状态阻塞 TargetEstimator 回放测试。
+    add_files("src/l2_perception/armor/armor_decoder.cpp")
+    add_files("src/l2_perception/armor/armor_detector.cpp")
+    add_files("src/l2_perception/inference/inference_backend.cpp")
+    add_files("src/l2_perception/inference/image_preprocessor.cpp")
+    add_files("src/l2_perception/inference/backends/openvino_backend.cpp")
+    add_files("src/l3_estimation/pnp_solver.cpp")
+    add_files("src/l3_estimation/target_estimator.cpp")
+    add_files("src/l3_estimation/ekf_tracker.cpp")
+    -- ArmorDetector 的错误路径和测试入口需要共用项目日志。
+    add_files("src/l6_telemetry/logger.cpp")
+    add_files("src/l6_telemetry/udp_json_sender.cpp")
+    add_includedirs("include")
+    add_includedirs("/usr/include/eigen3")
+    add_includedirs("tools/logger/include")
+    add_includedirs("tools/logger/include/3rdparty")
+    if has_config("use_xrepo_deps") then
+        add_packages("opencv", "yaml-cpp")
+    elseif has_config("use_system_deps") then
+        add_includedirs("/usr/include/opencv4")
+        add_links("opencv_core", "opencv_imgproc", "opencv_videoio",
+                  "opencv_highgui", "opencv_calib3d", "yaml-cpp")
+    end
+    on_load(function (target)
+        import("lib.detect.find_package")
+        local openvino = find_package("pkgconfig::openvino", {version = true})
+        assert(openvino,
+            "OpenVINO was not found through pkg-config; source setupvars.sh first")
+
+        target:add("includedirs", openvino.includedirs)
+        if openvino.defines then
+            target:add("defines", openvino.defines)
+        end
+        target:add("defines", "NEWVISION_HAS_OPENVINO=1")
+        target:add("linkdirs", openvino.linkdirs)
+        target:add("rpathdirs", openvino.linkdirs)
+        target:add("links", "openvino")
+    end)
 end
 
 target("serial_protocol_smoke")

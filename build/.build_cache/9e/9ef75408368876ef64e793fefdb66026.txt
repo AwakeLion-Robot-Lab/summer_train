@@ -1,0 +1,9 @@
+{
+    errdata = "\27[01m\27[Ktools/serial/src/impl/unix.cc:\27[m\27[K In member function ‘\27[01m\27[Kvoid serial::Serial::SerialImpl::\27[01;32m\27[KreconfigurePort\27[m\27[K()\27[m\27[K’:\
+\27[01m\27[Ktools/serial/src/impl/unix.cc:536:28:\27[m\27[K \27[01;35m\27[Kwarning: \27[m\27[Karithmetic between floating-point type ‘\27[01m\27[Kdouble\27[m\27[K’ and enumeration type ‘\27[01m\27[Kserial::stopbits_t\27[m\27[K’ is deprecated [\27[01;35m\27[K-Wdeprecated-enum-float-conversion\27[m\27[K]\
+  536 |     byte_time_ns_ += ((\27[01;35m\27[K1.5 - stopbits_one_point_five\27[m\27[K) * bit_time_ns);\
+      |                        \27[01;35m\27[K~~~~^~~~~~~~~~~~~~~~~~~~~~~~~\27[m\27[K\
+At global scope:\
+\27[01m\27[Kcc1plus:\27[m\27[K \27[01;36m\27[Knote: \27[m\27[Kunrecognized command-line option ‘\27[01m\27[K-Wno-gnu-line-marker\27[m\27[K’ may have been intended to silence earlier diagnostics\
+"
+}
