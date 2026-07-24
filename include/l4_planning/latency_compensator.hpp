@@ -10,7 +10,6 @@ struct LatencyConfig {
 
 struct LatencyResult {
   Delay delay;
-  double confidence{0.0};
   bool valid{false};
 };
 
@@ -19,6 +18,9 @@ public:
   explicit LatencyCompensator(LatencyConfig config = {});
 
   [[nodiscard]] LatencyResult calculate(const Delay& delay) const noexcept;
+
+private:
+  LatencyConfig config_;
 };
 
 }  // namespace L4Planning

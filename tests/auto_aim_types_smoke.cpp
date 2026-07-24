@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <type_traits>
 
 int main()
@@ -48,6 +49,19 @@ int main()
   if (latency_compensator.calculate(
         L4Planning::Delay{command_time, image_time, 0.0}).valid) {
     std::cerr << "Invalid latency input was accepted\n";
+    return 2;
+  }
+  if (latency_compensator.calculate(
+        L4Planning::Delay{
+          image_time, command_time,
+          std::numeric_limits<double>::quiet_NaN()}).valid ||
+      latency_compensator.calculate(
+        L4Planning::Delay{
+          image_time, command_time,
+          std::numeric_limits<double>::infinity()}).valid ||
+      latency_compensator.calculate(
+        L4Planning::Delay{image_time, command_time, -0.001}).valid) {
+    std::cerr << "Invalid fire delay was accepted\n";
     return 2;
   }
 

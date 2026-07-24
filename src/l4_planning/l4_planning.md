@@ -85,10 +85,7 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 一、预测dt后装甲板的位姿：  使用迭代拦截法预测装甲板的未来位置
 
 1  latency_compensator 延迟补偿器计算系统延迟：
-
 系统出枪延迟 =（命令发布时间戳 - 图像时间戳）+ 命令发布到弹丸离开枪口的标定时间。
-前一项由消息自带时间戳实测，不再人为拆分 image/plan/send/control 各段；
-配置中只保存无法从时间戳得到的 command_timestamp。
 struct Delay
 {
   TimePoint camera_timestamp;
@@ -100,7 +97,6 @@ delay=(command_timestamp-camera_timestamp)+fire_delay
   struct LatencyResult
   {
       Delay delay;
-      double confidence{0.0};    // [0, 1]
       bool valid{false};
   };
 
@@ -378,5 +374,4 @@ struct AimReferenceSample
 
  若不经过MPC，直接将struct AimReference传给下位机
 --------------------------------------------------------------------------------------------------------------------------
-
 
