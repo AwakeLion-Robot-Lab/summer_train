@@ -38,21 +38,15 @@ int armor_count=4；装甲板数量
 
 
 基础信息
-struct PlannerContext 
-{
-
-   TimePoint planning_time;   本次规划开始时间
-
-   LatencyConfig latency;  延迟
-
-   Eigen::Vector3d gimbal_center_world;  云台旋转中心在世界坐标系的位置
-
-   GimbalExtrinsics gimbal_extrinsics;  云台到枪口的变换矩阵
-
-   double gravity{9.80665};  重力加速度
-
-   PlannerConfig config;  储存MPC信息
- };
+struct PlannerContext {
+  TimePoint planning_time{};
+  LatencyConfig latency;
+  Eigen::Vector3d gimbal_center_world{Eigen::Vector3d::Zero()};
+  GimbalExtrinsics gimbal_extrinsics;
+  double gravity{9.80665};
+  PlannerConfig config;
+  ArmorScoreWeights armor_score_weights;
+};
 
 
 车辆状态
@@ -166,23 +160,19 @@ struct PredictionRequest
 
   
  
-   struct ArmorCandidate
-  {
-      ArmorPose armor;
-      BallisticSolution ballistic;
-
-      TimePoint impact_time{};
-
-      double delta_angle{0.0};
-
-      int iteration_count{0};
-      double fly_time_error{0.0};
-      double position_error{0.0};
-
-      bool converged{false};
-      bool within_firing_window{false};
-      bool valid{false};
-  };
+struct ArmorCandidate {
+  ArmorPose armor;
+  BallisticSolution ballistic;
+  TimePoint impact_time{};
+  double delta_angle{0.0};
+  int iteration_count{0};
+  double fly_time_error{0.0};
+  double position_error{0.0};
+  bool converged{false};
+  bool within_firing_window{false};
+  bool valid{false};
+  ArmorScore score;
+};
 
 3  对全部装甲板使用predictor+BallisticSolver迭代计算直至收敛，预测锁定装甲板的准确位置
 先根据识别到的装甲板预测时间，再重新预测位置，不断迭代直至收敛
@@ -202,16 +192,24 @@ struct PredictionRequest
   - 目标身份一致性：装甲板必须属于当前跟踪车辆，编号和类型应保持一致。身份不一致的候选应直接评分为0（跟预测滤波的稳定性有关，只考虑稳定帧）
 
   总代价函数：
-  Q(i)=0.30 * 正对程度Q_facing(i)
-    +  0.30 * 剩余窗口Q_window(i)
-    +  0.25 * 跟踪可信度Q_prediction_confidence(i)
-    +  0.15 * 弹道可靠性Q_ballistic
+  Q(i)=Q_facing_value（0.30） * 正对程度Q_facing(i)
+    +  Q_window_value（0.30）* 剩余窗口Q_window(i)
+    +  Q_prediction_confidence_value（0.25） * 预测可信度Q_prediction_confidence(i)
+    +  Q_ballistic_value（0.15） * 弹道可靠性Q_ballistic(i)
 
     Q(i)=[0,1]
-  最终评分为：Score(i) = flag(i) × J(i)
+  最终评分为：Score(i) = flag(i) × Q(i)
   其中flag只有0和1：
   - 身份一致、稳定帧满足要求、预测有效、弹道有解且迭代收敛时，flag=1。
   - 任一硬条件不满足时，flag=0。
+
+  struct ArmorScoreWeights 
+{
+  double facing{0.30};
+  double window{0.30};
+  double prediction_confidence{0.25};
+  double ballistic{0.15};
+};
 
   未锁定时：
   分数越高，优先锁定
