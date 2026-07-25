@@ -211,6 +211,36 @@ struct ArmorCandidate {
   double ballistic{0.15};
 };
 
+struct ArmorScoreComponents
+{
+  double Q_facing{0.0};
+  double Q_window{0.0};
+  double Q_prediction_confidence{0.0};
+  double Q_ballistic{0.0};
+};
+
+//flag
+struct ArmorScoreHardConditions 
+{
+  bool identity_consistent{false};
+  bool stable_tracking{false};
+  bool prediction_valid{false};
+  bool within_firing_window{false};
+  bool ballistic_valid{false};
+  bool iteration_converged{false};
+};
+
+//score（i） = flag(i) * Q(i)
+struct ArmorScore 
+{
+  ArmorScoreComponents components;
+  ArmorScoreHardConditions hard_conditions;
+  bool flag{false};
+  double quality{0.0};
+  double score{0.0};
+};
+
+
   未锁定时：
   分数越高，优先锁定
 
