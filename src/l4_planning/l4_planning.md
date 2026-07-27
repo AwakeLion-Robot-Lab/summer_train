@@ -87,6 +87,10 @@ struct Delay
 }
 
 delay=(command_timestamp-camera_timestamp)+fire_delay
+
+其中 `fire_delay` 存放在 `LatencyConfig` 中，由标定参数提供。规划器向
+`LatencyCompensator` 传入图像时间戳和命令时间戳，补偿器负责构造并校验
+本次使用的 `Delay`。
   struct LatencyResult
   {
       Delay delay;
@@ -498,4 +502,3 @@ MPC接收AimPlan.reference中的理想瞄准目标，求解后仍输出同一个
   并保证samples.front()是当前周期应执行的控制点；
 - L5始终接收AimPlan，不再接收独立的参考点向量。
 --------------------------------------------------------------------------------------------------------------------------
-

@@ -160,14 +160,11 @@ AimPlan Planner::plan(
     return plan;
   }
 
-  // 当前接口尚未暴露独立的标定出膛延迟，因此这里先将 fire_delay 置零。
-  // 图像/滤波时刻到本次规划时刻的延迟仍由 LatencyCompensator 统一校验。
-  const Delay requested_delay{
-    target->timestamp,
-    robot_state.timestamp,
-    0.0};
-  const LatencyCompensator latency_compensator;
-  const LatencyResult latency = latency_compensator.calculate(requested_delay);
+  // 图像/滤波时刻到规划时刻的耗时由时间戳计算，标定的出膛延迟由
+  // context.latency 提供，两者均由 LatencyCompensator 统一校验。
+  const LatencyCompensator latency_compensator{context.latency};
+  const LatencyResult latency = latency_compensator.calculate(
+    target->timestamp, robot_state.timestamp);
   if (!latency.valid) {
     return plan;
   }
