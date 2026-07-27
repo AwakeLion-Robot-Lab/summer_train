@@ -2,6 +2,11 @@
 
 namespace L5Control {
 
+bool evaluateFire(const L4Planning::AimPlan& plan)
+{
+
+}
+
 bool shouldFire(const L4Planning::AimPlan& plan)
 {
   return plan.valid;
