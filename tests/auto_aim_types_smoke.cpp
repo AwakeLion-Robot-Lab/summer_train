@@ -14,6 +14,14 @@ int main()
 {
   static_assert(std::is_same_v<L4Planning::Plan, L4Planning::AimPlan>);
 
+  L4Planning::AimPlan direct_plan;
+  if (direct_plan.using_MPC || !direct_plan.samples.empty()
+      || direct_plan.tracking || direct_plan.valid
+      || !direct_plan.aim_point_world.isZero()) {
+    std::cerr << "AimPlan direct-mode defaults are incorrect\n";
+    return 1;
+  }
+
   L3Estimation::TargetState target;
   target.center = {1.0, 2.0, 3.0};
   target.velocity = {4.0, 5.0, 6.0};
@@ -31,7 +39,7 @@ int main()
     target.covariance.cols() == L3Estimation::STATE_DIM;
   if (!state_order_ok) {
     std::cerr << "Target state order is incorrect\n";
-    return 1;
+    return 2;
   }
 
   const auto image_time = L4Planning::TimePoint{std::chrono::milliseconds{100}};
@@ -44,12 +52,12 @@ int main()
       std::abs(latency.delay.beforeFire() - 0.006) > 1e-12 ||
       std::abs(latency.delay.total() - 0.016) > 1e-12) {
     std::cerr << "Delay aggregation is incorrect\n";
-    return 2;
+    return 3;
   }
   if (latency_compensator.calculate(
         L4Planning::Delay{command_time, image_time, 0.0}).valid) {
     std::cerr << "Invalid latency input was accepted\n";
-    return 2;
+    return 3;
   }
   if (latency_compensator.calculate(
         L4Planning::Delay{
@@ -62,14 +70,14 @@ int main()
       latency_compensator.calculate(
         L4Planning::Delay{image_time, command_time, -0.001}).valid) {
     std::cerr << "Invalid fire delay was accepted\n";
-    return 2;
+    return 3;
   }
 
   runtime::AutoAimConfig config;
   L1Sensor::CameraCalibration calibration;
   if (config.fire.shoot_enable || config.fireReady(calibration)) {
     std::cerr << "Auto aim configuration is not safe by default\n";
-    return 3;
+    return 4;
   }
 
   L6Telemetry::AimTrace trace;
@@ -79,7 +87,7 @@ int main()
   if (!trace.target || trace.plan.target_id != 3 ||
       L5Control::toString(trace.fire.reasons.front()) != "shoot_disabled") {
     std::cerr << "AimTrace data contract is incorrect\n";
-    return 4;
+    return 5;
   }
 
   std::cout << "Auto aim data types smoke test passed\n";

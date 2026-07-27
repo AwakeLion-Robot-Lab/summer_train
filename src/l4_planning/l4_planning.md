@@ -43,7 +43,6 @@ struct PlannerContext {
   LatencyConfig latency;
   Eigen::Vector3d gimbal_center_world{Eigen::Vector3d::Zero()};
   GimbalExtrinsics gimbal_extrinsics;
-  double gravity{9.80665};
   PlannerConfig config;
   ArmorScoreWeights armor_score_weights;
 };
@@ -95,16 +94,44 @@ delay=(command_timestamp-camera_timestamp)+fire_delay
   };
 
 2.1  BallisticSolver  通过装甲板的位置计算pitch和弹丸射中的时间fly_time；
-丐版使用真空抛物线低弹道；后续再加入空气阻力和弹道标定参数
-输入：  
+
+支持两种可以切换的弹道模型：
+
+- `enable_air_resistance=false`：使用真空抛物线弹道，只考虑初速度和重力；
+- `enable_air_resistance=true`：使用线性空气阻力模型 `a_drag=-k*v`。
+
+线性阻力系数 `linear_drag_coefficient=k` 的单位是 `s^-1`，需要通过实弹
+落点数据标定。速度微分方程为：
+
+```
+dv/dt = -k*v + [0, 0, -g]
+```
+
+令 `A(t)=(1-exp(-k*t))/k`，目标水平距离 `d` 和高度 `h` 满足：
+
+```
+d = v0*cos(pitch)*A(t)
+h = v0*sin(pitch)*A(t) - g/k*(t-A(t))
+```
+
+实现中根据给定 pitch 由第一式解析计算飞行时间，再对第二式的高度残差
+使用黄金分割和二分求根，优先选择飞行时间较短的低弹道；低弹道求解或
+校验失败时再尝试高弹道。在线性阻力模型下，
+水平位移极限为 `v0/k`，超过该距离时弹道无解。
+
+输入：
 struct BallisticRequest
 {
 
-  Eigen::Vector3d target_position_world;
+  Eigen::Vector3d target_position_barrel;
 
    double bullet_speed;  弹速
 
    double gravity;   重力加速度
+
+   bool enable_air_resistance;  是否启用线性空气阻力
+
+   double linear_drag_coefficient;  线性阻力系数k，单位s^-1
 
  };
 
@@ -118,7 +145,26 @@ struct BallisticSolution
    double fly_time;  飞行时间
 
    bool valid; 是否有解
+
+   bool used_air_resistance; 实际是否使用了空气阻力模型
 };
+
+Planner通过PlannerConfig统一管理重力加速度、线性阻力系数和弹道模型选择；
+PlannerContext通过config字段携带该配置：
+```
+struct PlannerConfig
+{
+  double gravity{9.80665};
+  bool enable_air_resistance{false};
+  double linear_drag_coefficient{0.0};  // s^-1
+};
+
+struct PlannerContext
+{
+  PlannerConfig config;
+};
+```
+
 
 2.2  predictor  通过l3给出的滤波预测t0时刻装甲板的位置
 
@@ -161,17 +207,18 @@ struct PredictionRequest
   
  
 struct ArmorCandidate {
-  ArmorPose armor;
-  BallisticSolution ballistic;
-  TimePoint impact_time{};
-  double delta_angle{0.0};
-  int iteration_count{0};
-  double fly_time_error{0.0};
-  double position_error{0.0};
-  bool converged{false};
-  bool within_firing_window{false};
-  bool valid{false};
-  ArmorScore score;
+  ArmorPose armor;                 // 收敛后的装甲板位姿
+  BallisticSolution ballistic;    // 对最终位置求得的弹道
+  TimePoint impact_time{};        // 预计绝对命中时刻
+  double delta_angle{0.0};        // 装甲板法向与目标方位角之差，rad
+  int iteration_count{0};         // 实际固定点迭代次数
+  double fly_time_error{0.0};     // 相邻两次飞行时间误差，s
+  double position_error{0.0};     // 相邻两次位置误差，m
+  double angle_error{0.0};        // 相邻两次瞄准角合成误差，rad
+  bool converged{false};          // 是否满足时间和位置/角度收敛条件
+  bool within_firing_window{false}; // 命中时刻是否仍可射击
+  bool valid{false};              // 所有硬条件是否满足
+  ArmorScore score;               // 多装甲板选择评分
 };
 
 3  对全部装甲板使用predictor+BallisticSolver迭代计算直至收敛，预测锁定装甲板的准确位置
@@ -359,35 +406,12 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
 --------------------------------------------------------------------------------------------------------------------------
 三、发布最佳装甲板的信息
 
-理想轨迹
-  struct AimReferenceSample
-  {
-      TimePoint command_time{};
-      TimePoint fire_time{};
-      TimePoint impact_time{};
+AimReference中成员；由using_MPC明确告诉L5应读取哪组控制量：
 
-      double yaw{0.0};
-      double pitch{0.0};
-
-      double yaw_rate{0.0};
-      double pitch_rate{0.0};
-
-      double yaw_acceleration{0.0};
-      double pitch_acceleration{0.0};
-
-      double fly_time{0.0};
-      double confidence{0.0};
-
-      int target_id{-1};
-      int armor_id{-1};
-
-      Eigen::Vector3d aim_point_world{
-          Eigen::Vector3d::Zero()};
-
-      bool valid{false};
-  };
+- `using_MPC=false`：L5直接读取AimPlan.reference；
+- `using_MPC=true`：L5读取samples，samples.front()
 --------------------------------------------------------------------------------------------------------------------------
-5.MPC产生平滑角加速度控制枪口运动/若不使用MPC则将使用传统方案（跟踪装甲板）
+四、MPC产生平滑角加速度控制枪口运动/若不使用MPC则将使用传统方案（跟踪装甲板）
 当目前枪口与装甲板位姿误差在某范围内则fire_permitted=1，进入初步射击窗口，由l5火控判断最终开火
 
 
@@ -419,61 +443,59 @@ pitch 加速度范围= [-100, 100] rad/s^2
   3. 较小的 jerk 代价
   4. 较高的角度跟踪权重
 
-接收：
-理想轨迹
-struct AimReferenceSample
+MPC接收AimPlan.reference中的理想瞄准目标，求解后仍输出同一个AimPlan协议：
 
+  struct AimReference  // 非MPC模式的瞄准参考
+  {
+      int target_id{-1};           // 当前锁定的目标车辆ID，-1表示未锁定
+      TimePoint impact_time{};     // 预计弹丸命中装甲板的时刻
+      bool tracking{false};        // 是否在追踪
 
+      Eigen::Vector3d aim_point_barrel{
+          Eigen::Vector3d::Zero()}; // 枪管坐标系下的瞄准点，单位m
+      Eigen::Vector3d aim_point_world{
+          Eigen::Vector3d::Zero()}; // 世界坐标系下的预测命中点，单位m
 
+      double yaw{0.0};             // 目标yaw角，单位rad
+      double pitch{0.0};           // 目标pitch角，单位rad
+      double yaw_rate{0.0};        // 目标yaw角速度，单位rad/s
+      double pitch_rate{0.0};      // 目标pitch角速度，单位rad/s
+      double yaw_acceleration{0.0};   // 目标yaw角加速度，单位rad/s^2
+      double pitch_acceleration{0.0}; // 目标pitch角加速度，单位rad/s^2
+      double fly_time{0.0};        // 从出膛到命中的预计飞行时间，单位s
+  };
 
+  struct AimSample  // MPC模式的瞄准参考
+  {
+      TimePoint execute_time{};     // 该控制点应被执行的绝对时刻
+      double yaw{0.0};             // 规划yaw角，单位rad
+      double pitch{0.0};           // 规划pitch角，单位rad
+      double yaw_rate{0.0};        // 规划yaw角速度，单位rad/s
+      double pitch_rate{0.0};      // 规划pitch角速度，单位rad/s
+      double yaw_acceleration{0.0};   // 规划yaw角加速度，单位rad/s^2
+      double pitch_acceleration{0.0}; // 规划pitch角加速度，单位rad/s^2
+      double yaw_jerk{0.0};        // yaw角加加速度，单位rad/s^3
+      double pitch_jerk{0.0};      // pitch角加加速度，单位rad/s^3
+  };
 
-输出：
-可执行轨迹
   struct AimPlan
   {
-      uint64_t sequence{0};
+      TimePoint generated_at{};    // 本次AimPlan生成完成的时刻
 
-      int target_id{-1};
-      int selected_armor_id{-1};
+      AimReference reference;      // 弹道和目标预测得到的理想瞄准参考
+      bool using_MPC{false};       // false使用reference，true使用samples
+      std::vector<AimSample> samples; // MPC轨迹，按execute_time升序排列
 
-      TimePoint generated_at{};
-      TimePoint valid_until{};
-
-      AimPlanStatus status{
-          AimPlanStatus::NoTarget};
-
-      PlannerType planner_type{
-          PlannerType::Direct};
-
-      std::vector<AimSample> samples;
-      std::vector<AimReferenceSample> reference;
-
-      PlanningDiagnostics diagnostics;
-
-      double confidence{0.0};
-
-      bool ballistic_valid{false};
-      bool fire_permitted{false};
-      bool valid{false};
- }; 
-
-   struct AimSample
-  {
-      TimePoint execute_time{};
-
-      double yaw{0.0};
-      double pitch{0.0};
-
-      double yaw_rate{0.0};
-      double pitch_rate{0.0};
-
-      double yaw_acceleration{0.0};
-      double pitch_acceleration{0.0};
-
-      double yaw_jerk{0.0};
-      double pitch_jerk{0.0};
+      bool ballistic_valid{false}; // 最终瞄准点是否存在有效弹道解
+      bool fire_permitted{false};  // L4是否允许进入后续射击判断
+      bool valid{false};           // 规划结果是否有效
   };
-  
- 若不经过MPC，直接将struct AimReference传给下位机
+
+协议约束：
+- 非MPC规划器设置`using_MPC=false`、保持`samples`为空，并填充AimPlan
+  的reference成员；
+- MPC规划器设置`using_MPC=true`，填充按execute_time排序的samples，
+  并保证samples.front()是当前周期应执行的控制点；
+- L5始终接收AimPlan，不再接收独立的参考点向量。
 --------------------------------------------------------------------------------------------------------------------------
 

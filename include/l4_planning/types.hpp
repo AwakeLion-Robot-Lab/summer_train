@@ -63,10 +63,14 @@ struct Ballistic {
   bool valid{false};
 };
 
-struct AimReferenceSample {
-  TimePoint command_time{};
-  TimePoint fire_time{};
+// 非 MPC 模式的瞄准参考。
+struct AimReference {
+  int target_id{-1};
   TimePoint impact_time{};
+  bool tracking{false};
+
+  Eigen::Vector3d aim_point_barrel{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d aim_point_world{Eigen::Vector3d::Zero()};
 
   double yaw{0.0};
   double pitch{0.0};
@@ -76,13 +80,9 @@ struct AimReferenceSample {
   double pitch_acceleration{0.0};
 
   double fly_time{0.0};
-  double confidence{0.0};
-  int target_id{-1};
-  int armor_id{-1};
-  Eigen::Vector3d aim_point_world{Eigen::Vector3d::Zero()};
-  bool valid{false};
 };
 
+// MPC 输出的单个可执行控制点。
 struct AimSample {
   TimePoint execute_time{};
 
@@ -97,57 +97,38 @@ struct AimSample {
 };
 
 struct PlanningDiagnostics {
-  int iteration_count{0};
-  double fly_time_error{0.0};
-  double position_error{0.0};
-  double angle_error{0.0};
-  bool converged{false};
+  int iteration_count{0};       // 最终候选的固定点迭代次数
+  double fly_time_error{0.0};   // 最终相邻飞行时间误差，s
+  double position_error{0.0};   // 最终相邻装甲板位置误差，m
+  double angle_error{0.0};      // 最终相邻 yaw/pitch 合成误差，rad
+  bool converged{false};        // 是否满足配置中的收敛条件
 };
 
-// L4 的完整输出。第一版 Setpoint 规划器将速度和加速度保持为 0。
-struct Plan {
-  std::uint64_t sequence{0};
-  int target_id{-1};
-  int armor_id{-1};
-  int selected_armor_id{-1};
-
-  TimePoint plan_time{};
+// AimReference 作为基类，使现有 L5 无需修改即可继续访问 plan.yaw/pitch。
+struct Plan : AimReference {
   TimePoint generated_at{};
-  TimePoint valid_until{};
-  TimePoint fire_time{};
-  TimePoint hit_time{};
 
-  Eigen::Vector3d aim_point{Eigen::Vector3d::Zero()};  // barrel frame, meter
-
-  double yaw{0.0};
-  double pitch{0.0};
-  double yaw_vel{0.0};
-  double pitch_vel{0.0};
-  double yaw_acc{0.0};
-  double pitch_acc{0.0};
-
-  double fly_time{0.0};
-  Delay delay;
+  // using_MPC=true 时非空，并按 execute_time 排列；首项是当前控制点。
   std::vector<AimSample> samples;
-  std::vector<AimReferenceSample> reference;
-  PlanningDiagnostics diagnostics;
-  double confidence{0.0};
 
-  AimPlanStatus status{AimPlanStatus::NoTarget};
-  PlanType planner_type{PlanType::Direct};
-  bool ballistic_valid{false};
-  bool fire_permitted{false};
-
-  PlanType type{PlanType::Setpoint};
-  PlanError error{PlanError::NoTarget};
-  bool valid{false};
+  bool using_MPC{false};       // false：直接参考；true：已生成 MPC samples
+  bool ballistic_valid{false}; // 最终装甲板是否存在有效弹道
+  bool fire_permitted{false};  // 规划层是否允许进入射击窗口
+  bool valid{false};           // 规划结果是否有效
 };
 
 struct PlanConfig {
-  int max_iterations{20};
-  std::chrono::microseconds fly_time_tolerance{200};
+  int max_iterations{20}; // 单块装甲板最大固定点迭代次数
+  std::chrono::microseconds fly_time_tolerance{200}; // 飞行时间收敛阈值
   double position_tolerance{0.005};  // meter
   double angle_tolerance{0.0};       // rad，0 表示暂不启用
+
+  double gravity{9.80665}; // 重力加速度绝对值，单位 m/s^2
+  // 弹道模型选择。关闭时使用真空弹道；开启时使用 a_drag=-k*v。
+  bool enable_air_resistance{false};
+  // 有效线性阻力系数 k，单位 s^-1，需要通过实弹落点标定。
+  double linear_drag_coefficient{0.0};
+
   double switch_dead_zone{5.0};  // degree
 
   double normal_enter_angle{60.0};   // degree
