@@ -9,6 +9,10 @@ std::string toString(RejectReason reason)
       return "none";
     case RejectReason::ShootDisabled:
       return "shoot_disabled";
+    case RejectReason::ParametersNotReady:
+      return "parameters_not_ready";
+    case RejectReason::AutoAimDisabled:
+      return "auto_aim_disabled";
     case RejectReason::NoTarget:
       return "no_target";
     case RejectReason::NotTracking:
