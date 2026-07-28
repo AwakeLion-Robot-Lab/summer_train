@@ -41,8 +41,7 @@ int armor_count=4；装甲板数量
 struct PlannerContext {
   TimePoint planning_time{};
   LatencyConfig latency;
-  Eigen::Vector3d gimbal_center_world{Eigen::Vector3d::Zero()};
-  GimbalExtrinsics gimbal_extrinsics;
+  Eigen::Isometry3d T_barrel_world{Eigen::Isometry3d::Identity()};
   PlannerConfig config;
   ArmorScoreWeights armor_score_weights;
 };
@@ -245,7 +244,7 @@ struct ArmorCandidate {
   总代价函数：
   Q(i)=Q_facing_value（0.30） * 正对程度Q_facing(i)
     +  Q_window_value（0.30）* 剩余窗口Q_window(i)
-    +  Q_prediction_confidence_value（0.25） * 预测可信度Q_prediction_confidence(i)
+    +  Q_prediction_confidence_value（0.25） * 预测可信度Q_prediction_confidence(i)   <-通过协方差矩阵来判断
     +  Q_ballistic_value（0.15） * 弹道可靠性Q_ballistic(i)
 
     Q(i)=[0,1]

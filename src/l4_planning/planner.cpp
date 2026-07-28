@@ -55,14 +55,6 @@ constexpr int kOutpostRobotId = 6;
          && robot_state.bullet_speed > 0.0;
 }
 
-[[nodiscard]] bool validGimbalOrientation(
-  const L1Sensor::RobotState& robot_state) noexcept
-{
-  return std::isfinite(robot_state.rpy.roll)
-         && std::isfinite(robot_state.rpy.pitch)
-         && std::isfinite(robot_state.rpy.yaw);
-}
-
 // 配置校验在规划前集中完成，避免零容差进入后续计算。
 [[nodiscard]] bool validPlannerConfig(const PlannerConfig& config) noexcept
 {
@@ -89,16 +81,6 @@ constexpr int kOutpostRobotId = 6;
   return std::isfinite(config.gravity)
          && config.gravity > 0.0
          && drag_ready;
-}
-
-[[nodiscard]] Eigen::Matrix3d rotationGimbalToWorld(
-  const L1Sensor::Orientation& orientation)
-{
-  return (
-    Eigen::AngleAxisd(orientation.yaw, Eigen::Vector3d::UnitZ())
-    * Eigen::AngleAxisd(orientation.pitch, Eigen::Vector3d::UnitY())
-    * Eigen::AngleAxisd(orientation.roll, Eigen::Vector3d::UnitX()))
-    .toRotationMatrix();
 }
 
 [[nodiscard]] double clampUnit(double value) noexcept
@@ -153,10 +135,10 @@ AimPlan Planner::plan(
   if (!validBulletSpeed(robot_state)) {
     return plan;
   }
-  if (!validGimbalOrientation(robot_state)) {
+  if (!validPlannerConfig(config) || !validBallisticConfig(config)) {
     return plan;
   }
-  if (!validPlannerConfig(config) || !validBallisticConfig(config)) {
+  if (!context.T_barrel_world.translation().allFinite()) {
     return plan;
   }
 
@@ -175,9 +157,12 @@ AimPlan Planner::plan(
     std::chrono::duration<double>(config.fly_time_tolerance).count();
   const double angle_tolerance = config.angle_tolerance;
   const int max_iterations = std::max(1, config.max_iterations);
-  // 将世界系预测点转换到当前枪管坐标系后再进行弹道求解。
-  const Eigen::Matrix3d world_to_barrel =
-    rotationGimbalToWorld(robot_state.rpy).transpose();
+  // 世界系和枪口系轴向始终平行，世界系到枪口系只改变原点。
+  // T_barrel_world 的平移用于将世界系位置转换到枪口系。
+  const auto world_to_barrel =
+    [&context](const Eigen::Vector3d& position_world) {
+      return position_world + context.T_barrel_world.translation();
+    };
 
   Predictor predictor;
   BallisticSolver ballistic_solver;
@@ -223,10 +208,8 @@ AimPlan Planner::plan(
         break;
       }
 
-      // TargetState 的世界系原点位于云台旋转中心；当前 hpp 未提供额外
-      // 平移外参，因此只需用实时云台姿态转到枪管坐标系。
       const Eigen::Vector3d position_barrel =
-        world_to_barrel * armor->position_world;
+        world_to_barrel(armor->position_world);
       const BallisticSolution ballistic = solve_ballistic(position_barrel);
 
       candidate.armor = *armor;
@@ -285,7 +268,7 @@ AimPlan Planner::plan(
       const ArmorPose* final_armor = findArmor(final_prediction, armor_id);
       if (final_prediction.valid && final_armor != nullptr && final_armor->valid) {
         const Eigen::Vector3d final_position_barrel =
-          world_to_barrel * final_armor->position_world;
+          world_to_barrel(final_armor->position_world);
         const BallisticSolution final_ballistic =
           solve_ballistic(final_position_barrel);
         if (final_ballistic.valid) {
@@ -406,7 +389,7 @@ AimPlan Planner::plan(
   }
 
   const Eigen::Vector3d final_position_barrel =
-    world_to_barrel * selected->armor.position_world;
+    world_to_barrel(selected->armor.position_world);
   plan.impact_time = selected->impact_time;
   plan.aim_point_barrel = final_position_barrel;
   plan.aim_point_world = selected->armor.position_world;

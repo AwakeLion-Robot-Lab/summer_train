@@ -50,16 +50,11 @@ struct ArmorScore {
   double score{0.0};
 };
 
-struct GimbalExtrinsics {
-  // gimbal frame -> barrel frame
-  Eigen::Isometry3d T_barrel_gimbal{Eigen::Isometry3d::Identity()};
-};
-
 struct PlannerContext {
   TimePoint planning_time{}; // 本周期开始规划的绝对时刻
   LatencyConfig latency;     // 系统延迟补偿配置
-  Eigen::Vector3d gimbal_center_world{Eigen::Vector3d::Zero()}; // 云台中心世界坐标
-  GimbalExtrinsics gimbal_extrinsics; // 云台到枪管的外参
+  // 世界系和枪口系轴向平行；仅使用该变换的平移部分。
+  Eigen::Isometry3d T_barrel_world{Eigen::Isometry3d::Identity()};
   PlannerConfig config;                // 迭代、弹道和轨迹配置
   ArmorScoreWeights armor_score_weights; // 多装甲板评分权重
 };
