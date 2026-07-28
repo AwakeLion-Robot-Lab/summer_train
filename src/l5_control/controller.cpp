@@ -2,7 +2,10 @@
 
 namespace L5Control {
 
-SerialCommand Controller::makeCommand(const L4Planning::AimPlan& plan) const
+ SerialCommand  makeCommand(
+    const L4Planning::AimPlan& plan,
+    const FireDecision& decision,
+    const L1Sensor::RobotState& robot_state) const
 {
   return SerialCommand{plan.yaw, plan.pitch, plan.valid};
 }
