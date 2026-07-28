@@ -10,65 +10,84 @@
 #include <vector>
 
 namespace L5Control {
-
+using TimePoint = std::chrono::steady_clock::time_point;
 struct FireConfig {
   // 第一阶段必须保持 false；完成验收后由实车配置显式修改。
   bool shoot_enable{false};
-
+//弹丸和热量限制
   std::optional<double> bullet_diameter;  // meter; 17 mm projectile = 0.017
   std::optional<double> min_bullet_speed;  // meter per second
   std::optional<double> max_bullet_speed;  // meter per second
   std::optional<double> heat_limit;
+//云台机械范围
+  std::optional<double> min_yaw;   //目标装甲板最小 yaw（机械范围）
+  std::optional<double> max_yaw;    //目标装甲板最大 yaw
+  std::optional<double> min_pitch;   //目标装甲板最小 pitch
+  std::optional<double> max_pitch;   //目标装甲板最大 pitch
 
-  std::optional<double> min_yaw;
-  std::optional<double> max_yaw;
-  std::optional<double> min_pitch;
-  std::optional<double> max_pitch;
 
+//误差和跳变限制
+  std::optional<double> max_aim_yaw_error;   //目标装甲板最大 yaw_error(判断云台是否对准目标)
+  std::optional<double> max_aim_pitch_error;   //目标装甲板最大 pitch_error
+std::optional<double> max_yaw_command_jump;       // yaw命令最大允许跳变量
+  std::optional<double> max_pitch_command_jump;     // pitch命令最大允许跳变量
+  std::optional<double> max_yaw_error;              // 云台就位时允许的yaw误差
+  std::optional<double> max_pitch_error;            // 云台就位时允许的pitch误差  
   std::chrono::milliseconds max_robot_state_age{50};
   std::chrono::milliseconds max_gimbal_pose_age{20};
+  std::chrono::milliseconds max_plan_age{30};
+
 
   [[nodiscard]] bool parametersReady() const noexcept
   {
     return bullet_diameter.has_value() && min_bullet_speed.has_value() &&
            max_bullet_speed.has_value() && heat_limit.has_value() &&
            min_yaw.has_value() && max_yaw.has_value() &&
-           min_pitch.has_value() && max_pitch.has_value();
+           min_pitch.has_value() && max_pitch.has_value()&& max_aim_yaw_error.has_value() && max_aim_pitch_error.has_value() &&
+           max_yaw_command_jump.has_value() && max_pitch_command_jump.has_value() && max_yaw_error.has_value() 
+           && max_pitch_error.has_value()&& max_robot_state_age.count() > 0 && max_gimbal_pose_age.count() > 0 
+           && max_plan_age.count() > 0  ;
   }
 };
 
 struct FireInput {
-  std::optional<L3Estimation::TargetState> target; 
+  std::optional<L3Estimation::TargetState> target;
   L4Planning::Plan plan;
   L1Sensor::RobotState robot_state;
 
-  std::chrono::steady_clock::time_point now{};
-  double actual_yaw{0.0};
-  double actual_pitch{0.0};
-
+  TimePoint now{};
+ 
   bool calibration_ready{false};
-  bool serial_fresh{false};
-  bool gimbal_pose_fresh{false};
-  bool armor_switching{false};
-  bool command_jump{false};
+  
 };
-//判断是否切板
-struct FireEvaluator{
-  int last_target_id{-1};
-  int last_armor_id{-1};
-  std::optional<double> last_yaw;
-  std::optional<double> last_pitch;
-  std::optional<double> last_fly_time;
-  TimePoint last_switch_time_{};
-  FireDecision evaluate(const FireInput& input);
-}
 struct FireDecision {
   // fire_feasible 记录理论窗口；shoot 是考虑 shoot_enable 后的实际下发值。
   bool fire_feasible{false};
   bool shoot{false};
   std::vector<RejectReason> reasons;
 };
-bool evaluateFire(const L4Planning::AimPlan& plan);
-bool shouldFire(const L4Planning::AimPlan& plan);
 
-}  // namespace L5Control
+// 记录上一帧瞄准状态，用于判断目标或装甲板是否发生切换。
+class FireEvaluator {
+public:
+  explicit FireEvaluator(FireConfig config = {});//火控判断器
+  [[nodiscard]] FireDecision evaluate(const FireInput& input);
+
+  void reset() noexcept;
+
+private:
+  FireConfig config_;
+
+  int last_target_id_{-1};
+
+  std::optional<double> last_command_yaw_;
+  std::optional<double> last_command_pitch_;
+  std::optional<double> last_fly_time_;
+
+  std::size_t stable_tracking_frames_{0};
+  TimePoint last_switch_time_{};
+};
+
+
+}  
+// namespace L5Control
