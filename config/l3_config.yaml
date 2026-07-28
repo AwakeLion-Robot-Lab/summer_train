@@ -1,0 +1,61 @@
+version: 1
+
+# 标定参数只对固定分辨率、ROI 和 binning 有效。
+require_matching_image_size: true
+
+armor:
+  small_width_m: 0.135
+  large_width_m: 0.230
+  height_m: 0.055
+
+  # 第一版先复用 tongjiceshi 的经验值，所有角度必须填写弧度。
+  four_armor_vehicle:
+    pitch_rad: 0.2617993877991494
+    initial_radius_m: 0.20
+    linear_acceleration_variance: 100.0
+    angular_acceleration_variance: 400.0
+    expiration_timeout_ms: 500
+
+  three_armor_outpost:
+    pitch_rad: -0.2617993877991494
+    initial_radius_m: 0.2765
+    linear_acceleration_variance: 10.0
+    angular_acceleration_variance: 0.1
+    expiration_timeout_ms: 2500
+
+pnp:
+  method: IPPE
+  minimum_corner_area_px: 1.0
+  minimum_distance_m: 0.05
+  maximum_distance_m: 20.0
+  maximum_reprojection_error_px: 8.0
+
+yaw_search:
+  enabled: true
+  half_range_rad: 1.2217304763960306  # 70°
+  step_rad: 0.0174532925199433        # 1°
+
+observation_noise:
+  position_standard_deviation_base_m: 0.05
+  position_standard_deviation_quadratic: 0.01
+  armor_yaw_standard_deviation_rad: 0.15
+
+association:
+  position_gate_m: 0.60
+  yaw_gate_rad: 1.0471975511965976
+  position_weight: 1.0
+  yaw_weight: 1.0
+  # 第一版只记录标准 NIS，不用该值拒绝观测。
+  nis_reference_threshold: 9.4877
+
+lifecycle:
+  confirmation_hits: 5
+  max_predict_interval_ms: 100
+
+tracker:
+  # [xc, vx, yc, vy, zc, vz, yaw, yaw_rate, r1, r2-r1, z2-z1]
+  initial_variance: [1.0, 64.0, 1.0, 64.0, 1.0, 64.0, 0.4, 100.0, 0.01, 0.01, 0.01]
+  geometry_random_walk_variance: 0.00001
+  minimum_radius_m: 0.05
+  maximum_radius_m: 0.50
+  maximum_absolute_height_offset_m: 0.30

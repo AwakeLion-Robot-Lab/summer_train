@@ -38,21 +38,15 @@ int armor_count=4；装甲板数量
 
 
 基础信息
-struct PlannerContext 
-{
-
-   TimePoint planning_time;   本次规划开始时间
-
-   LatencyConfig latency;  延迟
-
-   Eigen::Vector3d gimbal_center_world;  云台旋转中心在世界坐标系的位置
-
-   GimbalExtrinsics gimbal_extrinsics;  云台到枪口的变换矩阵
-
-   double gravity{9.80665};  重力加速度
-
-   PlannerConfig config;  储存MPC信息
- };
+struct PlannerContext {
+  TimePoint planning_time{};
+  LatencyConfig latency;
+  Eigen::Vector3d gimbal_center_world{Eigen::Vector3d::Zero()};
+  GimbalExtrinsics gimbal_extrinsics;
+  double gravity{9.80665};
+  PlannerConfig config;
+  ArmorScoreWeights armor_score_weights;
+};
 
 
 车辆状态
@@ -84,17 +78,21 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 实现：
 一、预测dt后装甲板的位姿：  使用迭代拦截法预测装甲板的未来位置
 
-1  latency_compensator  延迟补偿器计算系统延迟->得到系统延迟：system_delay（图片识别->弹丸离开枪口）
+1  latency_compensator 延迟补偿器计算系统延迟：
+系统出枪延迟 =（命令发布时间戳 - 图像时间戳）+ 命令发布到弹丸离开枪口的标定时间。
+struct Delay
+{
+  TimePoint camera_timestamp;
+  TimePoint command_timestamp;
+  double fire_delay{0.0};
+}
+
+delay=(command_timestamp-camera_timestamp)+fire_delay
   struct LatencyResult
   {
-      double system_delay{0.0};  
-      double confidence{0.0};    // [0, 1]
+      Delay delay;
       bool valid{false};
   };
-
-如果有必要可以将延迟分为
-- 高转速延迟high_speed_system_delay
-- 低转速延迟low_speed_system_delay
 
 2.1  BallisticSolver  通过装甲板的位置计算pitch和弹丸射中的时间fly_time；
 丐版使用真空抛物线低弹道；后续再加入空气阻力和弹道标定参数
@@ -102,7 +100,7 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 struct BallisticRequest
 {
 
-  Eigen::Vector3d target_position_muzzle;
+  Eigen::Vector3d target_position_world;
 
    double bullet_speed;  弹速
 
@@ -162,23 +160,19 @@ struct PredictionRequest
 
   
  
-   struct ArmorCandidate
-  {
-      ArmorPose armor;
-      BallisticSolution ballistic;
-
-      TimePoint impact_time{};
-
-      double delta_angle{0.0};
-
-      int iteration_count{0};
-      double fly_time_error{0.0};
-      double position_error{0.0};
-
-      bool converged{false};
-      bool within_firing_window{false};
-      bool valid{false};
-  };
+struct ArmorCandidate {
+  ArmorPose armor;
+  BallisticSolution ballistic;
+  TimePoint impact_time{};
+  double delta_angle{0.0};
+  int iteration_count{0};
+  double fly_time_error{0.0};
+  double position_error{0.0};
+  bool converged{false};
+  bool within_firing_window{false};
+  bool valid{false};
+  ArmorScore score;
+};
 
 3  对全部装甲板使用predictor+BallisticSolver迭代计算直至收敛，预测锁定装甲板的准确位置
 先根据识别到的装甲板预测时间，再重新预测位置，不断迭代直至收敛
@@ -188,6 +182,119 @@ struct PredictionRequest
 - 最大迭代 20 次，未能迭代成功，则重新选择装甲板
 --------------------------------------------------------------------------------------------------------------------------
 二、装甲板的选择标准：  最好使用plotjugger跑仿真，得到装甲板选择模型
+！！！！引入装甲板评分体系！！！！
+评分只用于装甲板的切换，暂时不考虑枪口运动（交给MPC），目的是打击最佳的装甲板，让射击目标更加合理
+装甲板评分主要考虑以下因素：
+  - 正对程度：优先选择法线更朝向枪口、投影面积更大的装甲板。判断时应使用预测命中时刻的姿态，而不是当前姿态
+  - 剩余射击窗口：不仅要判断命中时是否仍能击打，还要估计装甲板还能保持可击打状态多久。即将转出视野的装甲板应降低评分
+  - 跟踪可信度：根据l3的对装甲板观测质量进行评分
+  - 弹道可靠性：弹道必须有解，预测的俯仰角、飞行时间和命中位置必须合理。迭代误差越小、收敛越稳定，评分越高
+  - 目标身份一致性：装甲板必须属于当前跟踪车辆，编号和类型应保持一致。身份不一致的候选应直接评分为0（跟预测滤波的稳定性有关，只考虑稳定帧）
+
+  总代价函数：
+  Q(i)=Q_facing_value（0.30） * 正对程度Q_facing(i)
+    +  Q_window_value（0.30）* 剩余窗口Q_window(i)
+    +  Q_prediction_confidence_value（0.25） * 预测可信度Q_prediction_confidence(i)
+    +  Q_ballistic_value（0.15） * 弹道可靠性Q_ballistic(i)
+
+    Q(i)=[0,1]
+  最终评分为：Score(i) = flag(i) × Q(i)
+  其中flag只有0和1：
+  - 身份一致、稳定帧满足要求、预测有效、弹道有解且迭代收敛时，flag=1。
+  - 任一硬条件不满足时，flag=0。
+
+  struct ArmorScoreWeights 
+{
+  double facing{0.30};
+  double window{0.30};
+  double prediction_confidence{0.25};
+  double ballistic{0.15};
+};
+
+struct ArmorScoreComponents
+{
+  double Q_facing{0.0};
+  double Q_window{0.0};
+  double Q_prediction_confidence{0.0};
+  double Q_ballistic{0.0};
+};
+
+//flag
+struct ArmorScoreHardConditions 
+{
+  bool identity_consistent{false};
+  bool stable_tracking{false};
+  bool prediction_valid{false};
+  bool within_firing_window{false};
+  bool ballistic_valid{false};
+  bool iteration_converged{false};
+};
+
+//score（i） = flag(i) * Q(i)
+struct ArmorScore 
+{
+  ArmorScoreComponents components;
+  ArmorScoreHardConditions hard_conditions;
+  bool flag{false};
+  double quality{0.0};
+  double score{0.0};
+};
+
+
+  未锁定时：
+  分数越高，优先锁定
+
+  锁定后：
+  - 当前装甲板有效时，默认保持当前ID。
+  - 新候选分数必须明显高于当前装甲板，例如高出0.08～0.15。
+  - 分数优势需要连续保持3～5帧。
+  - 建立锁定后至少保持约80～150毫秒。
+  - 当前装甲板硬失效时，立即选择有效候选中的最高分。
+  - 切换完成后设置短暂冷却时间，避免立刻切回。
+
+当前装甲板失效时，需从新寻找锁定目标时，直接切换到有效候选中评分最高的装甲板。
+
+锁定过程分为四个阶段：
+  - 当前锁定：继续跟踪并射击当前装甲板。
+  - 预切换：提前确定下一块候选装甲板，但枪口仍主要跟踪当前装甲板。
+  - 切换中：枪口开始减速并转向下一块装甲板，此时一般暂时禁止开火。
+  - 新装甲板锁定：下一块装甲板进入稳定射击窗口后完成锁定。
+
+### 锁定需要考虑的核心条件
+  1. 目标身份一致
+      - robot_id 与当前目标一致。
+      - armor_id 连续，不能仅凭最近距离关联。
+      - 装甲板类型与目标车型匹配。
+      - 需要防止切换到相邻车辆的装甲板。
+
+  2. 时序连续性
+      - 当前装甲板与上一周期锁定装甲板 ID 相同。
+      - 预测位置、速度和朝向变化合理，不能发生不符合车辆运动模型的跳变。
+      - 时间戳有效，观测和规划时间差不能过大。
+
+  3. 短时丢失容忍
+      - 文档规定可以连续丢失最多约 5 帧。
+      - 5 帧以内继续用运动模型预测，并保持锁定状态。
+      - 超过 5 帧，或预测不确定度过大，解除锁定并重新选择。
+
+  4. 预测结果有效
+      - PredictionResult.valid == true。
+      - 对应 ArmorPose.valid == true。
+      - 迭代拦截计算已经收敛。
+      - 飞行时间误差、位置误差和迭代次数处于允许范围。
+      - 协方差或预测置信度不能过差。
+
+  5. 命中时刻的装甲板朝向
+
+     应判断预测命中时刻的：
+     delta_angle = armor_yaw - center_yaw;
+     而不是只判断当前观测角度。已经锁定时采用“离开窗口”，未锁定时采用“进入窗口”，形成滞回，避免装甲板在边界附近反复切换。
+
+  6. 旋转方向和可持续跟踪性
+      - 根据 yaw_rate 判断装甲板正在转入还是转出正面。
+      - 优先锁定即将转入正面、预计射击窗口更长的装甲板。
+      - 如果当前装甲板即将快速转出，而下一块装甲板即将转入，可以提前进入切换状态。
+
 
 TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即 装甲板朝向角－方位角）：
 判断顺序如下
@@ -366,11 +473,7 @@ struct AimReferenceSample
       double yaw_jerk{0.0};
       double pitch_jerk{0.0};
   };
-
-
+  
  若不经过MPC，直接将struct AimReference传给下位机
 --------------------------------------------------------------------------------------------------------------------------
-
-
-
 

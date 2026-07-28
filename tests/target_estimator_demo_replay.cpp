@@ -36,6 +36,7 @@ using Clock = std::chrono::steady_clock;
 const std::string kCommandLineKeys =
   "{help h usage ? | | 输出命令行参数说明}"
   "{config-path c | ../tongjiceshi/configs/demo.yaml | demo.yaml 路径}"
+  "{l3-config | config/l3_config.yaml | L3 参数 YAML 路径}"
   "{model-path m | model/armor_model/armor.xml | OpenVINO 装甲板模型路径}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{start-index s | 0 | 视频起始帧下标}"
@@ -57,6 +58,9 @@ struct ReplayStatistics {
   std::size_t frames_with_detections = 0;
   std::size_t total_detections = 0;
   std::size_t max_detections = 0;
+  std::size_t frames_with_l3_observations = 0;
+  std::size_t total_l3_observations = 0;
+  std::size_t accepted_associations = 0;
   std::size_t frames_with_targets = 0;
   std::size_t total_published_targets = 0;
   std::size_t max_targets = 0;
@@ -124,6 +128,12 @@ L1Sensor::CameraCalibration calibrationFromConfig(
     static_cast<int>(distortion_values.size()),
     CV_64FC1,
     const_cast<double*>(distortion_values.data())).clone();
+  Eigen::Isometry3d T_barrel_camera = Eigen::Isometry3d::Identity();
+  T_barrel_camera.linear() =
+    matrix3FromConfig(config, "R_camera2gimbal");
+  T_barrel_camera.translation() =
+    vector3FromConfig(config, "t_camera2gimbal");
+  calibration.T_barrel_camera = T_barrel_camera;
   return calibration;
 }
 
@@ -293,11 +303,14 @@ void printFrameState(
   double l2_ms,
   double l3_ms,
   const std::vector<L2Perception::ArmorDetection>& detections,
+  const std::vector<L3Estimation::ArmorObservation>& observations,
+  const std::vector<L3Estimation::AssociationDiagnostic>& diagnostics,
   const std::vector<L3Estimation::TargetState>& targets)
 {
   std::cout << '[' << frame_index << "] t=" << std::fixed
             << std::setprecision(3) << input_time
             << " detections=" << detections.size()
+            << " observations=" << observations.size()
             << " targets=" << targets.size()
             << " L2=" << std::setprecision(2) << l2_ms << "ms"
             << " L3=" << l3_ms << "ms\n";
@@ -311,6 +324,19 @@ void printFrameState(
               << " r1=" << target.radius
               << " dr=" << target.radius_offset
               << " dz=" << target.height_offset << '\n';
+  }
+  for (const auto& diagnostic : diagnostics) {
+    std::cout << "  association robot=" << diagnostic.robot_id
+              << " face=" << diagnostic.associated_face_id
+              << " accepted=" << diagnostic.accepted
+              << " pos_error=" << diagnostic.position_error_m
+              << " yaw_error=" << diagnostic.yaw_error_rad
+              << " nis=" << diagnostic.nis
+              << " lifecycle="
+              << static_cast<int>(diagnostic.lifecycle_before)
+              << "->"
+              << static_cast<int>(diagnostic.lifecycle_after)
+              << '\n';
   }
 }
 
@@ -385,6 +411,8 @@ int main(int argc, char** argv)
     const std::filesystem::path pose_path = input_base.string() + ".txt";
     const std::filesystem::path config_path =
       command_line.get<std::string>("config-path");
+    const std::filesystem::path l3_config_path =
+      command_line.get<std::string>("l3-config");
     const std::filesystem::path model_path =
       command_line.get<std::string>("model-path");
     const std::string device = command_line.get<std::string>("device");
@@ -440,10 +468,6 @@ int main(int argc, char** argv)
     const YAML::Node config = YAML::LoadFile(config_path.string());
     const L1Sensor::CameraCalibration calibration =
       calibrationFromConfig(config, frame.size());
-    const Eigen::Matrix3d rotation_camera_to_gimbal =
-      matrix3FromConfig(config, "R_camera2gimbal");
-    const Eigen::Vector3d translation_camera_to_gimbal =
-      vector3FromConfig(config, "t_camera2gimbal");
     const Eigen::Matrix3d rotation_gimbal_to_imu_body =
       matrix3FromConfig(config, "R_gimbal2imubody");
 
@@ -452,7 +476,7 @@ int main(int argc, char** argv)
 
     L3Estimation::TimePoint current_timestamp{};
     std::optional<Eigen::Quaterniond> current_gimbal_pose;
-    const L3Estimation::GimbalPoseProvider pose_provider =
+    const L3Estimation::BarrelPoseProvider pose_provider =
       [&current_timestamp, &current_gimbal_pose](L3Estimation::TimePoint timestamp)
       -> std::optional<Eigen::Quaterniond> {
       if (timestamp != current_timestamp) {
@@ -463,9 +487,8 @@ int main(int argc, char** argv)
 
     L3Estimation::TargetEstimator target_estimator{
       calibration,
-      rotation_camera_to_gimbal,
-      translation_camera_to_gimbal,
-      pose_provider};
+      pose_provider,
+      L3Estimation::loadL3Config(l3_config_path)};
 
     std::unique_ptr<L6Telemetry::UdpJsonSender> plotjuggler_sender;
     if (enable_plotjuggler) {
@@ -519,7 +542,14 @@ int main(int argc, char** argv)
       const auto l2_begin = Clock::now();
       const auto detections = armor_detector.detect(frame);
       const auto l2_end = Clock::now();
-      const auto targets = target_estimator.update(detections, current_timestamp);
+      const auto targets = target_estimator.update(
+        detections,
+        L3Estimation::FrameContext{
+          .timestamp = current_timestamp,
+          .image_size = frame.size()});
+      const auto& observations = target_estimator.lastObservations();
+      const auto& diagnostics =
+        target_estimator.lastAssociationDiagnostics();
       const auto l3_end = Clock::now();
 
       const double l2_ms =
@@ -532,10 +562,21 @@ int main(int argc, char** argv)
       statistics.total_detections += detections.size();
       statistics.max_detections =
         std::max(statistics.max_detections, detections.size());
+      statistics.total_l3_observations += observations.size();
+      statistics.accepted_associations +=
+        static_cast<std::size_t>(std::count_if(
+          diagnostics.begin(),
+          diagnostics.end(),
+          [](const auto& diagnostic) {
+            return diagnostic.accepted;
+          }));
       statistics.total_published_targets += targets.size();
       statistics.max_targets = std::max(statistics.max_targets, targets.size());
       if (!detections.empty()) {
         ++statistics.frames_with_detections;
+      }
+      if (!observations.empty()) {
+        ++statistics.frames_with_l3_observations;
       }
       if (!targets.empty()) {
         ++statistics.frames_with_targets;
@@ -570,6 +611,8 @@ int main(int argc, char** argv)
           l2_ms,
           l3_ms,
           detections,
+          observations,
+          diagnostics,
           targets);
       }
 
@@ -620,6 +663,12 @@ int main(int argc, char** argv)
               << "frames with detections: " << statistics.frames_with_detections << '\n'
               << "total detections: " << statistics.total_detections << '\n'
               << "max detections per frame: " << statistics.max_detections << '\n'
+              << "frames with L3 observations: "
+              << statistics.frames_with_l3_observations << '\n'
+              << "total L3 observations: "
+              << statistics.total_l3_observations << '\n'
+              << "accepted associations: "
+              << statistics.accepted_associations << '\n'
               << "frames with published targets: " << statistics.frames_with_targets << '\n'
               << "total published target samples: "
               << statistics.total_published_targets << '\n'

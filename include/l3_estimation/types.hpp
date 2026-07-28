@@ -5,6 +5,9 @@
 #include <Eigen/Core>
 
 #include <chrono>
+#include <cstddef>
+#include <numbers>
+#include <vector>
 
 #include <opencv2/core.hpp>
 
@@ -17,25 +20,40 @@ enum class ArmorSize {
   Large
 };
 
-// 装甲板局部坐标系到 OpenCV 相机坐标系的原始 PnP 位姿。
-// 装甲板坐标：x 沿法向、y 向左、z 向上；tvec 单位为米。
+enum class TargetModel {
+  FourArmorVehicle,
+  ThreeArmorOutpost
+};
+
+struct TargetModelTraits {
+  int armor_count = 4;
+  double face_angle_interval_rad = std::numbers::pi / 2.0;
+  bool uses_alternating_radius_and_height = true;
+};
+
+[[nodiscard]] constexpr TargetModelTraits targetModelTraits(
+  TargetModel model) noexcept
+{
+  if (model == TargetModel::ThreeArmorOutpost) {
+    return {
+      .armor_count = 3,
+      .face_angle_interval_rad = 2.0 * std::numbers::pi / 3.0,
+      .uses_alternating_radius_and_height = false};
+  }
+  return {};
+}
+
+// 每次处理一帧时显式传入时间戳和图像尺寸。
+struct FrameContext {
+  TimePoint timestamp{};
+  cv::Size image_size{};
+};
+
+// 单次 IPPE 解出的 armor→camera 位姿，长度单位为米。
 struct ArmorPose {
   cv::Vec3d rvec{};
   cv::Vec3d tvec{};
-};
-
-// 完成 PnP、世界坐标转换和 yaw 重投影优化后的单板观测。
-struct ArmorObservation {
-  int robot_id = -1;
-  L2Perception::ArmorClass armor_class = L2Perception::ArmorClass::Unknown;
-
-  Eigen::Vector3d position_world{};
-  double yaw_raw_world = 0.0;
-  double yaw_world = 0.0;
-
-  float confidence = 0.0F;
   double reprojection_error_px = 0.0;
-  TimePoint timestamp{};
 };
 
 enum class TrackerState {
@@ -45,8 +63,52 @@ enum class TrackerState {
   TemporaryLost
 };
 
-// 整车 EKF 的固定状态顺序。covariance 的行列必须严格使用这一顺序：
-// [xc, vx, yc, vy, zc, vz, yaw, yaw_rate, r1, r2-r1, z2-z1]。
+// 一块二维装甲板经过 PnP、yaw 遍历和坐标变换后的世界系观测。
+struct ArmorObservation {
+  int robot_id = -1;
+  L2Perception::ArmorClass armor_class = L2Perception::ArmorClass::Unknown;
+  TargetModel model = TargetModel::FourArmorVehicle;
+
+  Eigen::Vector3d position_world = Eigen::Vector3d::Zero();
+  double yaw_raw_world = 0.0;
+  double yaw_world = 0.0;
+
+  float confidence = 0.0F;
+  double pnp_reprojection_error_px = 0.0;
+  double raw_yaw_reprojection_error_px = 0.0;
+  double optimized_reprojection_error_px = 0.0;
+  TimePoint timestamp{};
+};
+
+// 基线版本每块观测只记录一次简单物理面匹配结果。
+struct AssociationDiagnostic {
+  std::size_t observation_index = 0;
+  int robot_id = -1;
+  int associated_face_id = -1;
+  double position_error_m = 0.0;
+  double yaw_error_rad = 0.0;
+  double match_cost = 0.0;
+  Eigen::Vector4d innovation = Eigen::Vector4d::Zero();
+  double nis = 0.0;
+  bool nis_valid = false;
+  bool accepted = false;
+  TrackerState lifecycle_before = TrackerState::Lost;
+  TrackerState lifecycle_after = TrackerState::Lost;
+};
+
+struct TargetQualityMetrics {
+  float mean_detection_confidence = 0.0F;
+  double mean_reprojection_error_px = 0.0;
+  double last_nis = 0.0;
+  bool nis_valid = false;
+  std::size_t accepted_observation_count = 0;
+  int associated_face_id = -1;
+  Eigen::Vector4d innovation = Eigen::Vector4d::Zero();
+  TrackerState lifecycle_before = TrackerState::Lost;
+  TrackerState lifecycle_after = TrackerState::Lost;
+};
+
+// 整车 EKF 固定使用这一状态顺序。
 enum StateIndex : int {
   XC = 0,
   VX = 1,
@@ -65,34 +127,26 @@ enum StateIndex : int {
 using StateVector = Eigen::Matrix<double, STATE_DIM, 1>;
 using StateCovariance = Eigen::Matrix<double, STATE_DIM, STATE_DIM>;
 
-// L3 对 L4 发布的目标车辆状态。
-//
-// 坐标约定与 tongjiceshi 一致：OpenCV 相机系为 x右、y下、z前；经过
-// camera->gimbal->world 后，世界系为 x前、y左、z上，原点位于云台旋转中心。
-// 所有长度使用 m，速度使用 m/s，角度使用 rad，角速度使用 rad/s。
+// L3 发布的世界系整车状态。
 struct TargetState {
   int robot_id = -1;
+  TargetModel model = TargetModel::FourArmorVehicle;
+  int armor_count = targetModelTraits(model).armor_count;
+  TrackerState tracker_state = TrackerState::Lost;
 
-  // 车辆旋转中心的水平位置；z 是第 1 组装甲板的参考高度，不一定是车辆
-  // 几何中心高度。
-  Eigen::Vector3d center = Eigen::Vector3d::Zero(); // xc, yc, zc
-  Eigen::Vector3d velocity = Eigen::Vector3d::Zero(); // vx, vy, vz
-
-  // 0 号装甲板局部 +x 法线在世界系中的方向。yaw=0 指向世界系 +x，
-  // 从 +x 转向 +y（向左转）为正，发布前应归一化到 (-pi, pi]。
-  double yaw = 0.0;       // 车辆旋转中心的航向角
-  double yaw_rate = 0.0;  // 车辆旋转中心的角速度，正值表示向左转。
-
-  // r1、r2-r1、z2-z1。四装甲板模型中 0/2 号面使用 r1/z1，
-  // 1/3 号面使用 r2/z2。
-  double radius = 0.0;        //装甲板半径
-  double radius_offset = 0.0; //装甲板半径差
-  double height_offset = 0.0; //装甲板高度差
+  Eigen::Vector3d center = Eigen::Vector3d::Zero();
+  Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
+  double yaw = 0.0;
+  double yaw_rate = 0.0;
+  double radius = 0.0;
+  double radius_offset = 0.0;
+  double height_offset = 0.0;
 
   StateCovariance covariance = StateCovariance::Identity();
-
-  // 状态实际对应的预测/更新时刻，而不是发送给 L4 的时刻。
   TimePoint timestamp{};
+  TimePoint last_observation_time{};
+  bool updated_this_frame = false;
+  TargetQualityMetrics quality{};
 };
 
 }  // namespace L3Estimation

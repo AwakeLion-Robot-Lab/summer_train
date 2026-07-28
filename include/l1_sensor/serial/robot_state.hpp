@@ -30,6 +30,13 @@ struct Orientation
 struct RobotState {
 
   Orientation rpy;
+
+  // 云台当前运动状态，单位依次为 rad/s 和 rad/s^2。
+  double yaw_rate = 0.0;
+  double pitch_rate = 0.0;
+  double yaw_acceleration = 0.0;
+  double pitch_acceleration = 0.0;
+
   double bullet_speed = 0.0;
   double heat = 0.0;
   EnemyColor enemy_color = EnemyColor::Unknown;

@@ -108,7 +108,7 @@ SHtech 的价值在工程框架：
 
 - PnP 测距噪声与距离关系：若像素浮动近似恒定，距离方差近似随距离四次方增长。因此 EKF 的观测噪声 `R` 应随距离增大。
 - 延迟必须拆分：图像曝光中点、预测开始、发送、电控响应、发射、命中。视觉算法不应只加一个固定 delay，而应至少区分处理延迟、通信/控制延迟和飞行时间。
-- 延迟拆分不是“每段都天然精确知道”，而是给每段定义可见性：`img_to_predict` 可由本帧图像时间和预测开始时间直接测量；`predict_to_send` 可由预测开始和发送时间测量后滤波估计；`send_to_control` 依赖电控/通信标定或配置；`control_to_fire` 可由电控反馈标定，当前实现主要用配置；`fire_to_hit` 由枪口坐标距离和弹速计算。
+- 延迟拆分不是“每段都天然精确知道”，而是给每段定义可见性：`img_to_predict` 可由本帧图像时间和预测开始时间直接测量；`predict_to_send` 可由预测开始和发送时间测量后滤波估计；`send_to_control` 依赖电控/通信标定或配置；`control_to_fire` 可由电控反馈标定，当前实现主要用配置；`fire_delay` 由枪口坐标距离和弹速计算。
 - 坐标语义必须清晰：它区分相机坐标、相机光心下 IMU 坐标、枪口中心下 IMU 坐标、枪口中心相机朝向坐标、枪口发射坐标。`newvision` 不必照搬命名，但必须明确 target 坐标和 aim 坐标分别以相机还是枪口为原点。
 - 弹道解算在枪口坐标中做，而不是在相机坐标中硬加 yaw/pitch 偏置。相机到枪口的平移先转换到目标点，再解重力/阻力补偿。
 - 运行时参数热更新很有价值：调延迟、火控阈值、空气阻力、目标类型和滤波噪声时不应每次重启程序。`newvision` 可先做启动加载，后期加热更新。
@@ -543,7 +543,7 @@ total_prediction_time =
 | `predict_to_send` | 解算开始到串口准备发送 | 解算开始时间与发送时间相减 | 每帧测量，用一阶滤波或滑动平均 |
 | `send_to_control` | 串口发送到电控开始执行 | 通信、电控调度、控制周期 | 配置标定，若有 ack 再在线估计 |
 | `control_to_fire` | 电控执行到弹丸真实发射 | 机械传动、拨弹、加速过程 | 配置标定；有发射 id 回传后用于回放校正 |
-| `fire_to_hit` | 发射到击中 | 弹速、距离、弹道模型 | 由枪口坐标目标点和弹道解算得到 |
+| `fire_delay` | 发射到击中 | 弹速、距离、弹道模型 | 由枪口坐标目标点和弹道解算得到 |
 
 这里要区分两个时间：
 
@@ -552,14 +552,14 @@ prediction_time = img
   + img_to_predict
   + predict_to_send
   + send_to_control
-  + fire_to_hit
+  + fire_delay
 
 hit_time = img
   + img_to_predict
   + predict_to_send
   + send_to_control
   + control_to_fire
-  + fire_to_hit
+  + fire_delay
 ```
 
 `prediction_time` 对应 rm.cv.fans 的 water-gun 假设：视觉认为电控能在 `control` 时刻达到命令角度，因此瞄准的是“control 时刻发出的弹流能击中”的目标。`hit_time` 对应真实单发弹丸回放和落点校正，要额外加入 `control_to_fire`。第一版 `newvision` 可以先统一使用 `hit_time` 做预测，但必须把这两个语义留在日志里，避免后续调火控时混淆。
@@ -1110,10 +1110,10 @@ L6 Telemetry
   `send_to_control` 和 `control_to_fire` 当前来自参数配置。代码里保留了从 `robot_status.latency_cmd_to_fire` 获取真实发射延迟的注释，说明这段最好由电控反馈标定。
 
 - `rm.cv.fans-main/aimer/base/robot/coord_converter.cpp:137`  
-  `fire_to_hit` 当前按 `aim_xyz_i_barrel.norm() / bullet_speed` 计算；后续可替换成带空气阻力弹道飞行时间。
+  `fire_delay` 当前按 `aim_xyz_i_barrel.norm() / bullet_speed` 计算；后续可替换成带空气阻力弹道飞行时间。
 
 - `rm.cv.fans-main/aimer/base/robot/coord_converter.cpp:143`  
-  `get_img_to_prediction_latency()` 组合 `img_to_predict + predict_to_send + send_to_control + fire_to_hit`，刻意不含 `control_to_fire`。
+  `get_img_to_prediction_latency()` 组合 `img_to_predict + predict_to_send + send_to_control + fire_delay`，刻意不含 `control_to_fire`。
 
 - `rm.cv.fans-main/aimer/base/robot/coord_converter.cpp:155`  
   `get_img_to_hit_latency()` 组合真实单发击中时间，额外包含 `control_to_fire`。
