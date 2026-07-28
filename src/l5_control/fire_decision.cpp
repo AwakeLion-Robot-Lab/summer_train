@@ -2,9 +2,14 @@
 
 namespace L5Control {
 
-bool shouldFire(const L4Planning::AimPlan& plan)
+bool evaluateFire(const L4Planning::AimPlan& plan)
 {
   return plan.valid;
+}
+
+bool shouldFire(const L4Planning::AimPlan& plan)
+{
+  return evaluateFire(plan);
 }
 
 }  // namespace L5Control

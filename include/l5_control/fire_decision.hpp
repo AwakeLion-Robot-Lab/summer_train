@@ -60,6 +60,19 @@ struct FireDecision {
   std::vector<RejectReason> reasons;
 };
 
+// 记录上一帧瞄准状态，用于判断目标或装甲板是否发生切换。
+struct FireEvaluator {
+  int last_target_id{-1};
+  int last_armor_id{-1};
+  std::optional<double> last_yaw;
+  std::optional<double> last_pitch;
+  std::optional<double> last_fly_time;
+  L4Planning::TimePoint last_switch_time_{};
+
+  FireDecision evaluate(const FireInput& input);
+};
+
+bool evaluateFire(const L4Planning::AimPlan& plan);
 bool shouldFire(const L4Planning::AimPlan& plan);
 
 }  // namespace L5Control
