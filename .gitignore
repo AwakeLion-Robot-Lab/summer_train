@@ -1,3 +1,4 @@
 # XMake local state and generated build outputs.
 /.xmake/
 /build/
+/.deps/

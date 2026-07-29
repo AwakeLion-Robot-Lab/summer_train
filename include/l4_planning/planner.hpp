@@ -14,20 +14,19 @@
 
 namespace L4Planning {
 
-// 装甲板质量评分的权重。四项权重之和为 1。
-  struct ArmorScoreWeights {
-    double facing_weight{0.30};
-    double window_weight{0.30};
-    double prediction_confidence_weight{0.25};
-    double ballistic_weight{0.15};
-  };
+// 装甲板质量评分的权重。三项权重之和为 1。
+struct ArmorScoreWeights {
+  double facing_weight{0.40};
+  double window_weight{0.40};
+  double aim_cost_weight{0.20};
+};
 
-// 四项归一化质量分量，取值范围均为 [0, 1]
+// 三项归一化质量分量，取值范围均为 [0, 1]。
+// Q_aim_cost 越大表示转向代价越小。
 struct ArmorScoreComponents {
   double Q_facing{0.0};
   double Q_window{0.0};
-  double Q_prediction_confidence{0.0};
-  double Q_ballistic{0.0};
+  double Q_aim_cost{0.0};
 };
 
 // flag
@@ -57,6 +56,9 @@ struct PlannerContext {
   Eigen::Isometry3d T_barrel_world{Eigen::Isometry3d::Identity()};
   PlannerConfig config;                // 迭代、弹道和轨迹配置
   ArmorScoreWeights armor_score_weights; // 多装甲板评分权重
+  // Q_facing 的平滑归一化区间，单位 degree。
+  double facing_angle_good{5.0};  // 小于该角度时评分为 1
+  double facing_angle_bad{25.0};  // 大于该角度时评分为 0
 };
 
 struct ArmorCandidate {
@@ -68,6 +70,11 @@ struct ArmorCandidate {
   double fly_time_error{0.0};     // 相邻两次飞行时间之差，s
   double position_error{0.0};     // 相邻两次预测位置之差，m
   double angle_error{0.0};        // 相邻两次瞄准角的二维误差，rad
+  double aim_angle_error{0.0};    // 当前云台到候选弹道角的合成角差，rad
+  double relative_yaw_rate{0.0};  // 装甲板法线相对目标方位的角速度，rad/s
+  double phase_angle{0.0};        // 沿旋转方向递增的窗口相位，rad
+  double remaining_window_time{0.0}; // 到离开射击窗口的预计时间，s
+  bool entering_firing_window{false}; // 是否位于车辆中心前的转入区间
   bool converged{false};          // 时间误差和位置/角度误差是否收敛
   bool within_firing_window{false}; // 命中时刻是否仍在可射击窗口
   bool valid{false};              // 所有硬条件是否同时满足
@@ -76,6 +83,12 @@ struct ArmorCandidate {
 
 enum class SelectionReason {
   NoCandidate,
+  InitialLock,
+  KeepCurrent,
+  PrepareSwitch,
+  SwitchToCandidate,
+  Stabilizing,
+  LockConfirmed,
   PreferredArmor,
   EnteringArmor,
   MostFacing,
@@ -85,13 +98,26 @@ enum class SelectionReason {
 struct SelectionRequest {
   std::vector<ArmorCandidate> candidates;
   std::optional<int> preferred_armor_id;
+  bool observation_fresh{true};
 };
 
 struct SelectionResult {
   std::optional<ArmorCandidate> selected;
+  ArmorTrackingPhase phase{ArmorTrackingPhase::Unlocked};
   bool switching{false};
+  bool fire_permitted{false};
   bool valid{false};
   SelectionReason reason{SelectionReason::NoCandidate};
+};
+
+struct ArmorTrackingState {
+  ArmorTrackingPhase phase{ArmorTrackingPhase::Unlocked};
+  int robot_id{-1};
+  std::optional<int> current_armor_id;
+  std::optional<int> next_armor_id;
+  TimePoint phase_started_at{};
+  int current_lost_frames{0};
+  int next_stable_frames{0};
 };
 
 class Planner {
@@ -105,6 +131,10 @@ public:
   void setConfig(PlannerConfig config);
   // 获取当前只读配置。
   [[nodiscard]] const PlannerConfig& config() const noexcept;
+  // 清除跨帧目标和装甲板锁定状态。
+  void resetTracking() noexcept;
+  // 获取当前装甲板跟踪状态，供调试和遥测使用。
+  [[nodiscard]] const ArmorTrackingState& trackingState() const noexcept;
 
   // 兼容入口：使用内部 PlannerConfig 和默认物理参数构造 Context。
   AimPlan plan(const std::optional<L3Estimation::TargetState>& target, const L1Sensor::RobotState& robot_state);
@@ -116,7 +146,15 @@ public:
     const PlannerContext& context);
 
 private:
+  [[nodiscard]] SelectionResult selectArmor(
+    const SelectionRequest& request,
+    TimePoint selection_time,
+    const PlannerConfig& config);
+
   PlannerConfig config_; // 当前 Planner 使用的模型和收敛参数
+  ArmorTrackingState tracking_state_;
+  std::optional<L3Estimation::TargetState> last_target_;
+  int target_lost_frames_{0};
 };
 
 }  // namespace L4Planning

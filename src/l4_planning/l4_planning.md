@@ -44,6 +44,8 @@ struct PlannerContext {
   Eigen::Isometry3d T_barrel_world{Eigen::Isometry3d::Identity()};
   PlannerConfig config;
   ArmorScoreWeights armor_score_weights;
+  double facing_angle_good{5.0};  // degree
+  double facing_angle_bad{25.0};  // degree
 };
 
 
@@ -160,6 +162,11 @@ struct PlannerConfig
   double gravity{9.80665};
   bool enable_air_resistance{false};
   double linear_drag_coefficient{0.0};  // s^-1
+  double switch_dead_zone{5.0};         // degree
+  double rotation_rate_dead_zone{0.05}; // rad/s
+  int lock_stable_frames{3};
+  double aim_cost_good_angle{5.0};      // degree
+  double aim_cost_bad_angle{30.0};      // degree， 这两个变量是把“云台需要转多少角度”归一化为 Q_aim_cost 的软评分阈值
 };
 
 struct PlannerContext
@@ -218,6 +225,11 @@ struct ArmorCandidate {
   double fly_time_error{0.0};     // 相邻两次飞行时间误差，s
   double position_error{0.0};     // 相邻两次位置误差，m
   double angle_error{0.0};        // 相邻两次瞄准角合成误差，rad
+  double aim_angle_error{0.0};    // 当前云台到候选弹道角的合成角差，rad
+  double relative_yaw_rate{0.0};  // 装甲板法线相对目标方位的角速度，rad/s
+  double phase_angle{0.0};        // 沿旋转方向递增的窗口相位，rad
+  double remaining_window_time{0.0}; // 到离开窗口的预计时间，s
+  bool entering_firing_window{false}; // 是否正在转入正面窗口
   bool converged{false};          // 是否满足时间和位置/角度收敛条件
   bool within_firing_window{false}; // 命中时刻是否仍可射击
   bool valid{false};              // 所有硬条件是否满足
@@ -237,15 +249,14 @@ struct ArmorCandidate {
 装甲板评分主要考虑以下因素：
   - 正对程度：优先选择法线更朝向枪口、投影面积更大的装甲板。判断时应使用预测命中时刻的姿态，而不是当前姿态
   - 剩余射击窗口：不仅要判断命中时是否仍能击打，还要估计装甲板还能保持可击打状态多久。即将转出视野的装甲板应降低评分
-  - 跟踪可信度：根据l3的对装甲板观测质量进行评分
-  - 弹道可靠性：弹道必须有解，预测的俯仰角、飞行时间和命中位置必须合理。迭代误差越小、收敛越稳定，评分越高
-  - 目标身份一致性：装甲板必须属于当前跟踪车辆，编号和类型应保持一致。身份不一致的候选应直接评分为0（跟预测滤波的稳定性有关，只考虑稳定帧）
+  - 转向代价：优先选择云台可以更快转到的装甲板
 
-  总代价函数：
-  Q(i)=Q_facing_value（0.30） * 正对程度Q_facing(i)
-    +  Q_window_value（0.30）* 剩余窗口Q_window(i)
-    +  Q_prediction_confidence_value（0.25） * 预测可信度Q_prediction_confidence(i)   <-通过协方差矩阵来判断
-    +  Q_ballistic_value（0.15） * 弹道可靠性Q_ballistic(i)
+暂时先通过硬性标准来判断追踪目标的切换，后期考虑通过评分来切换装甲板
+
+  总代价函数
+    Q = 0.40 * Q_facing
+      + 0.40 * Q_window
+      + 0.20 * Q_aim_cost
 
     Q(i)=[0,1]
   最终评分为：Score(i) = flag(i) × Q(i)
@@ -253,20 +264,91 @@ struct ArmorCandidate {
   - 身份一致、稳定帧满足要求、预测有效、弹道有解且迭代收敛时，flag=1。
   - 任一硬条件不满足时，flag=0。
 
+  1. 正对程度 Q_facing
+ 把“正对”定义为枪口当前方向与装甲板朝向的夹角，
+ delta_angle = armor_yaw - center_yaw，即 装甲板朝向角－方位角
+  设置两个阈值：
+  facing_angle_good = 5 度
+  facing_angle_bad  = 25 度
+
+  归一化：
+  x = clamp
+  (
+      (angle - facing_angle_good)
+      / (facing_angle_bad - facing_angle_good),
+      0,
+      1
+  )
+  Q_facing = 1 - x*x*(3 - 2*x)
+  结果：
+  - angle 小于facing_angle_good，Q_facing 接近 1
+  - angle 大于facing_angle_bad，Q_facing 等于 0
+  - 中间平滑下降
+
+
+ 2. 剩余窗口 Q_window
+使用目标旋转角速度减去目标中心方位角速度，得到相对旋转角速度
+relative_yaw_rate。对旋转方向归一化后，phase_angle 始终沿装甲板
+转动方向递增：
+```
+phase_angle = sign(relative_yaw_rate) * delta_angle
+```
+
+普通车辆的窗口为：
+```
+-normal_enter_angle <= phase_angle <= normal_leave_angle
+```
+
+前哨站的窗口为：
+```
+-outpost_enter_angle <= phase_angle <= outpost_leave_angle
+```
+
+剩余窗口时间：
+```
+remaining_window_time =
+    (leave_angle - phase_angle) / abs(relative_yaw_rate)
+```
+
+Q_window 在进入边界为1，在离开边界平滑下降到0。角速度小于
+rotation_rate_dead_zone 时按近似静止处理，窗口内 Q_window=1。
+
+ 3. 转向代价 Q_aim_cost
+使用当前云台姿态和候选装甲板最终弹道角计算合成角差：
+```
+yaw_error = abs(normalize_angle(candidate.ballistic.yaw - robot_state.rpy.yaw))
+pitch_error = abs(candidate.ballistic.pitch - robot_state.rpy.pitch)
+aim_angle_error = hypot(yaw_error, pitch_error)
+```
+
+使用 PlannerConfig 中的两个角度阈值平滑归一化：
+```
+good_angle_rad = aim_cost_good_angle * pi / 180
+bad_angle_rad = aim_cost_bad_angle * pi / 180
+x = clamp(
+    (aim_angle_error - good_angle_rad)
+    / (bad_angle_rad - good_angle_rad),
+    0,
+    1)
+Q_aim_cost = 1 - x*x*(3 - 2*x)
+```
+
+Q_aim_cost 越大表示云台转向距离越短、转向代价越小。云台 yaw、pitch
+和候选弹道角的单位统一为 rad，两个配置阈值的单位为 degree。
+
+
   struct ArmorScoreWeights 
 {
-  double facing{0.30};
-  double window{0.30};
-  double prediction_confidence{0.25};
-  double ballistic{0.15};
+  double facing_weight{0.40};
+  double window_weight{0.40};
+  double aim_cost_weight{0.20};
 };
 
 struct ArmorScoreComponents
 {
   double Q_facing{0.0};
   double Q_window{0.0};
-  double Q_prediction_confidence{0.0};
-  double Q_ballistic{0.0};
+  double Q_aim_cost{0.0};
 };
 
 //flag
@@ -295,20 +377,18 @@ struct ArmorScore
   分数越高，优先锁定
 
   锁定后：
-  - 当前装甲板有效时，默认保持当前ID。
-  - 新候选分数必须明显高于当前装甲板，例如高出0.08～0.15。
-  - 分数优势需要连续保持3～5帧。
-  - 建立锁定后至少保持约80～150毫秒。
-  - 当前装甲板硬失效时，立即选择有效候选中的最高分。
-  - 切换完成后设置短暂冷却时间，避免立刻切回。
-
-当前装甲板失效时，需从新寻找锁定目标时，直接切换到有效候选中评分最高的装甲板。
+  当前装甲板失效时，需从新寻找锁定目标时，直接切换到有效候选中评分最高的装甲板。
 
 锁定过程分为四个阶段：
   - 当前锁定：继续跟踪并射击当前装甲板。
   - 预切换：提前确定下一块候选装甲板，但枪口仍主要跟踪当前装甲板。
   - 切换中：枪口开始减速并转向下一块装甲板，此时一般暂时禁止开火。
-  - 新装甲板锁定：下一块装甲板进入稳定射击窗口后完成锁定。
+  - 装甲板锁定（Stabilizing）：下一块装甲板进入稳定射击窗口并连续满足
+    lock_stable_frames 后完成锁定。
+
+代码额外使用 Unlocked 表示当前没有装甲板锁定。四阶段状态由
+ArmorTrackingPhase 保存，current_armor_id 和 next_armor_id 分别保存
+当前装甲板与预切换候选。
 
 ### 锁定需要考虑的核心条件
   1. 目标身份一致
@@ -393,6 +473,7 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
   {
       std::vector<ArmorCandidate> candidates;
       std::optional<int> preferred_armor_id;
+      bool observation_fresh{true};
   };
 
 发布：
@@ -400,7 +481,9 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
   {
       std::optional<ArmorCandidate> selected;
 
+      ArmorTrackingPhase phase{ArmorTrackingPhase::Unlocked};
       bool switching{false};
+      bool fire_permitted{false};
       bool valid{false};
 
       SelectionReason reason{
@@ -408,15 +491,12 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
   };
 --------------------------------------------------------------------------------------------------------------------------
 三、发布最佳装甲板的信息
-
-AimReference中成员；由using_MPC明确告诉L5应读取哪组控制量：
-
-- `using_MPC=false`：L5直接读取AimPlan.reference；
-- `using_MPC=true`：L5读取samples，samples.front()
+分为是否使用MPC，为方便l5调用，这里将追踪装甲板的信息和MPC控制信息放在同个结构体里
+由AimPlan中成员；由using_MPC明确告诉L5应读取哪组控制量：
+- `using_MPC=false`：L5读取AimPlan.reference；
+- `using_MPC=true`：L5读取AimPlan.samples.front()；
 --------------------------------------------------------------------------------------------------------------------------
 四、MPC产生平滑角加速度控制枪口运动/若不使用MPC则将使用传统方案（跟踪装甲板）
-当目前枪口与装甲板位姿误差在某范围内则fire_permitted=1，进入初步射击窗口，由l5火控判断最终开火
-
 
 同济MPC：
 状态 = [角度, 角速度]
@@ -451,6 +531,7 @@ MPC接收AimPlan.reference中的理想瞄准目标，求解后仍输出同一个
   struct AimReference  // 非MPC模式的瞄准参考
   {
       int target_id{-1};           // 当前锁定的目标车辆ID，-1表示未锁定
+      int armor_id{-1};            // 当前输出装甲板ID，-1表示未锁定
       TimePoint impact_time{};     // 预计弹丸命中装甲板的时刻
       bool tracking{false};        // 是否在追踪
 
@@ -489,6 +570,8 @@ MPC接收AimPlan.reference中的理想瞄准目标，求解后仍输出同一个
       bool using_MPC{false};       // false使用reference，true使用samples
       std::vector<AimSample> samples; // MPC轨迹，按execute_time升序排列
 
+      ArmorTrackingPhase tracking_phase{ArmorTrackingPhase::Unlocked};
+      bool armor_switching{false}; // 切换中或等待新装甲板稳定
       bool ballistic_valid{false}; // 最终瞄准点是否存在有效弹道解
       bool fire_permitted{false};  // L4是否允许进入后续射击判断
       bool valid{false};           // 规划结果是否有效
