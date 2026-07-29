@@ -9,6 +9,7 @@
 #include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
+#include "tools/recorder.hpp"
 #include <opencv2/opencv.hpp>
 
 #include <exception>
@@ -73,6 +74,7 @@ void AutoAimRuntime::run() {
     active_camera_ = camera;
   }
   L6Telemetry::FpsCounter fps_counter;
+  tools::Recorder recorder{tools::loadRecorderConfig(config_path_)};
   // 启动时只加载一次模型；每帧仅执行预处理、推理和 Decoder。
   L2Perception::ArmorDetector armor_detector = makeArmorDetector();
 
@@ -102,7 +104,9 @@ void AutoAimRuntime::run() {
       if (robot_state) {
         const auto &state = *robot_state;
         const auto gimbal_pose = serial.gimbalPoseAt(timestamp);
-        (void)gimbal_pose;
+        if (gimbal_pose) {
+          recorder.record(frame, *gimbal_pose, timestamp);
+        }
         switch (state.mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
@@ -155,6 +159,7 @@ void AutoAimRuntime::run() {
     }
   }
 
+  recorder.stop();
   serial.stop();
   camera->stop();
   {
