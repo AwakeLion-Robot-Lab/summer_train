@@ -232,7 +232,7 @@ struct ArmorCandidate {
   bool entering_firing_window{false}; // 是否正在转入正面窗口
   bool converged{false};          // 是否满足时间和位置/角度收敛条件
   bool within_firing_window{false}; // 命中时刻是否仍可射击
-  bool valid{false};              // 所有硬条件是否满足
+  bool valid{false};              // 身份、跟踪、预测和迭代收敛条件有效
   ArmorScore score;               // 多装甲板选择评分
 };
 
@@ -251,18 +251,18 @@ struct ArmorCandidate {
   - 剩余射击窗口：不仅要判断命中时是否仍能击打，还要估计装甲板还能保持可击打状态多久。即将转出视野的装甲板应降低评分
   - 转向代价：优先选择云台可以更快转到的装甲板
 
-暂时先通过硬性标准来判断追踪目标的切换，后期考虑通过评分来切换装甲板
-
   总代价函数
     Q = 0.40 * Q_facing
       + 0.40 * Q_window
       + 0.20 * Q_aim_cost
 
     Q(i)=[0,1]
-  最终评分为：Score(i) = flag(i) × Q(i)
-  其中flag只有0和1：
-  - 身份一致、稳定帧满足要求、预测有效、弹道有解且迭代收敛时，flag=1。
-  - 任一硬条件不满足时，flag=0。
+  最终质量为：quality(i) = Q(i)
+
+quality 只表示候选装甲板的相对质量，不再乘硬条件 flag，也不直接决定能否
+开火。身份、预测、弹道有效性和迭代收敛等条件由 candidate.valid 负责；
+within_firing_window 只在最终开火门控中使用。这样即使候选当前位于
+射击窗口外，仍保留其真实评分并可以成为更优的跟踪目标，但不会触发开火。
 
   1. 正对程度 Q_facing
  把“正对”定义为枪口当前方向与装甲板朝向的夹角，
@@ -351,44 +351,73 @@ struct ArmorScoreComponents
   double Q_aim_cost{0.0};
 };
 
-//flag
 struct ArmorScoreHardConditions 
 {
   bool identity_consistent{false};
-  bool stable_tracking{false};
+  bool stable_tracking{false};     当前 stable_tracking 只验证数值合法，并没有真正判断跟踪是否稳定
   bool prediction_valid{false};
   bool within_firing_window{false};
   bool ballistic_valid{false};
   bool iteration_converged{false};
 };
 
-//score（i） = flag(i) * Q(i)
 struct ArmorScore 
 {
   ArmorScoreComponents components;
   ArmorScoreHardConditions hard_conditions;
-  bool flag{false};
   double quality{0.0};
-  double score{0.0};
 };
 
 
   未锁定时：
-  分数越高，优先锁定
+  首次选择以及当前目标丢失后的恢复保留 prefer_entering 强优先：
+  先从正在进入射击窗口的有效候选中选最高分；没有此类候选时，再从
+  其余有效候选中选最高分。
 
   锁定后：
-  当前装甲板失效时，需从新寻找锁定目标时，直接切换到有效候选中评分最高的装甲板。
+  每周期比较当前装甲板与其他有效候选的评分。只有满足
+  ```
+  best.score.quality
+      > current.score.quality + config.score_switch_threshold
+  ```
+  才主动换板，避免评分微小波动造成频繁切换。Tracking 状态下的主动
+  换板不使用射击窗口作为强制切换条件；窗口外的高质量候选可以击败
+  窗口内候选。当前装甲板失效时，仍使用 prefer_entering 规则恢复。
 
-锁定过程分为四个阶段：
-  - 当前锁定：继续跟踪并射击当前装甲板。
-  - 预切换：提前确定下一块候选装甲板，但枪口仍主要跟踪当前装甲板。
-  - 切换中：枪口开始减速并转向下一块装甲板，此时一般暂时禁止开火。
-  - 装甲板锁定（Stabilizing）：下一块装甲板进入稳定射击窗口并连续满足
-    lock_stable_frames 后完成锁定。
+  PlannerConfig 中对应的配置为：
+  ```
+  double score_switch_threshold{0.10};
+  ```
 
-代码额外使用 Unlocked 表示当前没有装甲板锁定。四阶段状态由
-ArmorTrackingPhase 保存，current_armor_id 和 next_armor_id 分别保存
-当前装甲板与预切换候选。
+锁定过程的主要阶段：
+  - 当前锁定（Tracking）：稳定跟踪当前装甲板；只有命中时刻处于
+    射击窗口内才允许开火。
+  - 切换中（Switching）：枪口转向下一块装甲板，此时禁止开火。
+  - 稳定确认（Stabilizing）：下一块装甲板已对准，连续确认若干帧，
+    此时仍禁止开火；观测不新鲜会清零连续确认帧数。
+  - 未锁定（Unlocked）：当前没有可跟踪装甲板。
+
+只有目标时间戳严格晚于上一帧观测时间戳时才视为新鲜观测；重复或倒退
+的时间戳按丢帧处理，不参与连续稳定确认，也不允许开火。
+
+状态转换大致如下：
+  Unlocked
+     ↓ 找到候选
+  Switching
+     ↓ 云台对准
+  Stabilizing
+     ↓ 连续稳定若干帧
+  Tracking
+     ↓ 同一候选的评分收益连续 3 帧超过 score_switch_threshold
+  Switching
+
+Tracking 主动换板由同一候选连续 score_switch_stable_frames 帧满足
+评分收益阈值触发 Switching，默认需要连续 3 帧。候选变化、评分优势
+消失、观测不新鲜或当前候选失效都会清零确认计数。current_armor_id
+和 next_armor_id 分别保存当前装甲板与切换候选。
+切换或稳定确认期间若 next_armor_id 对应候选失效，原装甲板仍有效时
+取消切换并恢复 Tracking；原装甲板也失效时改选其他有效候选；全部候选
+均失效时等待 max_lost_frames，超过阈值后解锁。
 
 ### 锁定需要考虑的核心条件
   1. 目标身份一致
@@ -418,12 +447,14 @@ ArmorTrackingPhase 保存，current_armor_id 和 next_armor_id 分别保存
 
      应判断预测命中时刻的：
      delta_angle = armor_yaw - center_yaw;
-     而不是只判断当前观测角度。已经锁定时采用“离开窗口”，未锁定时采用“进入窗口”，形成滞回，避免装甲板在边界附近反复切换。
+     而不是只判断当前观测角度。窗口质量可以参与评分，但窗口本身不
+     强制 Tracking 状态换板；是否允许开火单独检查
+     within_firing_window。
 
   6. 旋转方向和可持续跟踪性
       - 根据 yaw_rate 判断装甲板正在转入还是转出正面。
       - 优先锁定即将转入正面、预计射击窗口更长的装甲板。
-      - 如果当前装甲板即将快速转出，而下一块装甲板即将转入，可以提前进入切换状态。
+      - 已锁定时是否换板由评分收益阈值决定，不因转出窗口直接强制切换。
 
 
 TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即 装甲板朝向角－方位角）：
@@ -440,8 +471,11 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
   - 装甲板进入角：70°
   - 装甲板离开角：30°
 
-2  保持与上一周期装甲板 ID 的连续性，当前锁定装甲板仍处于可射击窗口时，优先选择上一周期锁定的装甲板
-若5帧内未能找到已锁定的装甲板，则重新锁定
+2  保持与上一周期装甲板 ID 的连续性。当前候选有效时继续跟踪；其他
+候选只有在评分高出 score_switch_threshold 后才触发主动换板。射击
+窗口不强制换板，仅控制 fire_permitted。当前候选短暂失效时，在
+max_lost_frames 宽限期内保持当前装甲板 ID 并禁止开火；连续失效超过
+阈值后，才按 prefer_entering 强优先规则选择其他候选并切换。
 
 
 
@@ -454,7 +488,8 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
 
 5  命中时刻的可射击性：
   - 使用预测命中时刻，而不是当前时刻的装甲板位姿
-  - 预测到命中时刻仍处于可射击角度窗口的装甲板才能成为候选
+  - 窗口外的有效装甲板仍可成为跟踪候选并参与评分
+  - 只有预测命中时刻仍处于射击窗口内时，最终才允许开火
 
 6  弹道可解性：
   - 弹道必须可解
@@ -482,8 +517,7 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
       std::optional<ArmorCandidate> selected;
 
       ArmorTrackingPhase phase{ArmorTrackingPhase::Unlocked};
-      bool switching{false};
-      bool fire_permitted{false};
+      bool tracking_ready{false}; // 稳定锁定且本周期观测可支持跟踪
       bool valid{false};
 
       SelectionReason reason{
@@ -491,10 +525,11 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
   };
 --------------------------------------------------------------------------------------------------------------------------
 三、发布最佳装甲板的信息
-分为是否使用MPC，为方便l5调用，这里将追踪装甲板的信息和MPC控制信息放在同个结构体里
-由AimPlan中成员；由using_MPC明确告诉L5应读取哪组控制量：
-- `using_MPC=false`：L5读取AimPlan.reference；
-- `using_MPC=true`：L5读取AimPlan.samples.front()；
+分为是否使用MPC，为方便l5调用，这里将追踪装甲板的信息和MPC控制信息放在同个结构体里。
+`AimPlan` 直接继承 `AimReference`；
+由 `using_MPC` 明确告诉L5应读取哪组控制量：
+- `using_MPC=false`：L5直接读取AimPlan继承的 `yaw`、`pitch` 等参考量；
+- `using_MPC=true`：L5读取 `AimPlan.samples.front()`；
 --------------------------------------------------------------------------------------------------------------------------
 四、MPC产生平滑角加速度控制枪口运动/若不使用MPC则将使用传统方案（跟踪装甲板）
 
@@ -526,7 +561,7 @@ pitch 加速度范围= [-100, 100] rad/s^2
   3. 较小的 jerk 代价
   4. 较高的角度跟踪权重
 
-MPC接收AimPlan.reference中的理想瞄准目标，求解后仍输出同一个AimPlan协议：
+MPC接收AimPlan继承的AimReference理想瞄准目标，求解后仍输出同一个AimPlan协议：
 
   struct AimReference  // 非MPC模式的瞄准参考
   {
@@ -562,24 +597,27 @@ MPC接收AimPlan.reference中的理想瞄准目标，求解后仍输出同一个
       double pitch_jerk{0.0};      // pitch角加加速度，单位rad/s^3
   };
 
-  struct AimPlan
+  struct AimPlan : AimReference
   {
       TimePoint generated_at{};    // 本次AimPlan生成完成的时刻
 
-      AimReference reference;      // 弹道和目标预测得到的理想瞄准参考
-      bool using_MPC{false};       // false使用reference，true使用samples
       std::vector<AimSample> samples; // MPC轨迹，按execute_time升序排列
+      bool using_MPC{false};       // false直接使用继承的参考量，true使用samples
 
       ArmorTrackingPhase tracking_phase{ArmorTrackingPhase::Unlocked};
-      bool armor_switching{false}; // 切换中或等待新装甲板稳定
-      bool ballistic_valid{false}; // 最终瞄准点是否存在有效弹道解
-      bool fire_permitted{false};  // L4是否允许进入后续射击判断
+      bool fire_permitted{false};  // 稳定跟踪、位于射击窗口内且弹道有效
       bool valid{false};           // 规划结果是否有效
   };
 
+给l5的火控为：
+plan.fire_permitted =
+    selection.tracking_ready
+    && selected.within_firing_window;
+
+
 协议约束：
 - 非MPC规划器设置`using_MPC=false`、保持`samples`为空，并填充AimPlan
-  的reference成员；
+  继承的AimReference成员；
 - MPC规划器设置`using_MPC=true`，填充按execute_time排序的samples，
   并保证samples.front()是当前周期应执行的控制点；
 - L5始终接收AimPlan，不再接收独立的参考点向量。

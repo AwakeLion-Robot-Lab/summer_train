@@ -39,7 +39,7 @@ struct FireConfig {
 
 struct FireInput {
   std::optional<L3Estimation::TargetState> target;
-  L4Planning::Plan plan;
+  L4Planning::AimPlan plan;
   L1Sensor::RobotState robot_state;
 
   std::chrono::steady_clock::time_point now{};

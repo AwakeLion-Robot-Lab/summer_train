@@ -1,8 +1,6 @@
 #include "l1_sensor/serial/robot_state.hpp"
 #include "l3_estimation/types.hpp"
 #include "l4_planning/planner.hpp"
-#include "l5_control/controller.hpp"
-#include "l5_control/fire_decision.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -76,35 +74,50 @@ int main()
     return 2;
   }
 
-  const L4Planning::AimPlan switching = run_observed(kPi / 2.0);
-  if (!switching.valid || switching.armor_id != 3
-      || switching.fire_permitted || !switching.armor_switching
-      || switching.tracking_phase
-           != L4Planning::ArmorTrackingPhase::Stabilizing) {
-    std::cerr << "invalid current armor did not start a safe switch\n";
-    return 3;
-  }
-  const L5Control::Controller controller;
-  if (L5Control::shouldFire(switching)
-      || controller.makeCommand(switching).shoot) {
-    std::cerr << "downstream control ignored switch fire inhibition\n";
-    return 3;
-  }
-
-  const L4Planning::AimPlan relocked = run_observed(kPi / 2.0);
-  if (!relocked.valid || relocked.armor_id != 3
-      || !relocked.fire_permitted || relocked.armor_switching
-      || relocked.tracking_phase
+  robot_state.timestamp = timestamp;
+  context.planning_time = timestamp;
+  const L4Planning::AimPlan repeated_timestamp = planner.plan(
+    std::optional<L3Estimation::TargetState>{
+      makeTarget(timestamp, 0.0)},
+    robot_state,
+    context);
+  if (!repeated_timestamp.valid || repeated_timestamp.armor_id != 0
+      || repeated_timestamp.fire_permitted
+      || repeated_timestamp.tracking_phase
            != L4Planning::ArmorTrackingPhase::Tracking) {
-    std::cerr << "new armor did not finish stable locking\n";
-    return 4;
-  }
-  if (!L5Control::shouldFire(relocked)
-      || !controller.makeCommand(relocked).shoot) {
-    std::cerr << "downstream control rejected a stable locked armor\n";
-    return 4;
+    std::cerr << "repeated observation timestamp was treated as fresh\n";
+    return 9;
   }
 
+  for (int confirmation_frame = 1; confirmation_frame < 3;
+       ++confirmation_frame) {
+    const L4Planning::AimPlan pending_switch =
+      run_observed(kPi / 2.0);
+    if (!pending_switch.valid || pending_switch.armor_id != 0
+        || pending_switch.tracking_phase
+             != L4Planning::ArmorTrackingPhase::Tracking) {
+      std::cerr << "score advantage switched armor before three frames\n";
+      return 10;
+    }
+  }
+
+  const L4Planning::AimPlan retained = run_observed(kPi / 2.0);
+  if (!retained.valid || retained.armor_id == 0
+      || retained.fire_permitted
+      || retained.tracking_phase
+           != L4Planning::ArmorTrackingPhase::Stabilizing) {
+    std::cerr << "higher-scored armor did not start a stable switch\n";
+    return 3;
+  }
+  const L4Planning::AimPlan retained_again = run_observed(kPi / 2.0);
+  if (!retained_again.valid
+      || retained_again.armor_id != retained.armor_id
+      || !retained_again.fire_permitted
+      || retained_again.tracking_phase
+           != L4Planning::ArmorTrackingPhase::Tracking) {
+    std::cerr << "higher-scored armor did not finish relocking\n";
+    return 4;
+  }
   const auto run_missing =
     [&]() {
       timestamp += 10ms;
@@ -116,8 +129,9 @@ int main()
   const L4Planning::AimPlan missing_twice = run_missing();
   if (!missing_once.valid || !missing_twice.valid
       || missing_once.fire_permitted || missing_twice.fire_permitted
-      || missing_once.armor_id != 3 || missing_twice.armor_id != 3) {
-    std::cerr << "short target loss was not predicted safely\n";
+      || missing_once.armor_id != retained.armor_id
+      || missing_twice.armor_id != retained.armor_id) {
+    std::cerr << "stale tracking did not retain aim while inhibiting fire\n";
     return 5;
   }
 
@@ -129,69 +143,43 @@ int main()
     return 6;
   }
 
-  L4Planning::Planner rotating_planner;
-  L4Planning::PlannerContext rotating_context;
-  rotating_context.config.lock_stable_frames = 2;
-  rotating_context.config.switch_dead_zone = 5.0;
-  L1Sensor::RobotState rotating_robot = robot_state;
-  rotating_robot.rpy.yaw = 0.0;
-  rotating_robot.rpy.pitch = 0.0;
-  auto rotating_time = L4Planning::TimePoint{2s};
-  const auto run_rotating =
+  // 将阈值设为评分的完整量程，验证窗口状态本身不会强制换板。
+  L4Planning::Planner threshold_planner;
+  L4Planning::PlannerContext threshold_context;
+  threshold_context.config.lock_stable_frames = 2;
+  threshold_context.config.switch_dead_zone = 180.0;
+  threshold_context.config.score_switch_threshold = 1.0;
+  L1Sensor::RobotState threshold_robot = robot_state;
+  auto threshold_time = L4Planning::TimePoint{2s};
+  const auto run_threshold =
     [&](double yaw) {
-      rotating_time += 10ms;
-      rotating_robot.timestamp = rotating_time;
-      rotating_context.planning_time = rotating_time;
-      return rotating_planner.plan(
+      threshold_time += 10ms;
+      threshold_robot.timestamp = threshold_time;
+      threshold_context.planning_time = threshold_time;
+      return threshold_planner.plan(
         std::optional<L3Estimation::TargetState>{
-          makeTarget(rotating_time, yaw, 1.0)},
-        rotating_robot,
-        rotating_context);
+          makeTarget(threshold_time, yaw)},
+        threshold_robot,
+        threshold_context);
     };
 
-  (void)run_rotating(-0.35);
-  const L4Planning::AimPlan rotating_locked = run_rotating(-0.35);
-  if (!rotating_locked.valid || rotating_locked.armor_id != 0
-      || rotating_locked.tracking_phase
+  (void)run_threshold(0.0);
+  const L4Planning::AimPlan threshold_locked = run_threshold(0.0);
+  if (!threshold_locked.valid || threshold_locked.armor_id != 0
+      || threshold_locked.tracking_phase
            != L4Planning::ArmorTrackingPhase::Tracking) {
-    std::cerr << "rotating target did not establish the initial lock\n";
+    std::cerr << "threshold test did not establish the initial lock\n";
     return 7;
   }
 
-  const L4Planning::AimPlan pre_switch = run_rotating(-0.10);
-  if (!pre_switch.valid || pre_switch.armor_id != 0
-      || !pre_switch.fire_permitted || pre_switch.armor_switching
-      || pre_switch.tracking_phase
-           != L4Planning::ArmorTrackingPhase::PreSwitch
-      || !rotating_planner.trackingState().next_armor_id.has_value()
-      || *rotating_planner.trackingState().next_armor_id != 3) {
-    std::cerr << "outgoing armor did not prepare its adjacent successor\n";
+  const L4Planning::AimPlan threshold_retained =
+    run_threshold(kPi / 2.0);
+  if (!threshold_retained.valid || threshold_retained.armor_id != 0
+      || threshold_retained.fire_permitted
+      || threshold_retained.tracking_phase
+           != L4Planning::ArmorTrackingPhase::Tracking) {
+    std::cerr << "window state forced a switch or allowed firing\n";
     return 8;
-  }
-
-  rotating_robot.rpy.yaw = 1.0;
-  const L4Planning::AimPlan rotating_switch = run_rotating(0.40);
-  if (!rotating_switch.valid || rotating_switch.armor_id != 3
-      || rotating_switch.fire_permitted || !rotating_switch.armor_switching
-      || rotating_switch.tracking_phase
-           != L4Planning::ArmorTrackingPhase::Switching) {
-    std::cerr << "preselected armor did not enter the switching phase\n";
-    return 9;
-  }
-
-  rotating_robot.rpy.yaw = 0.0;
-  const L4Planning::AimPlan rotating_stabilizing = run_rotating(0.40);
-  const L4Planning::AimPlan rotating_relocked = run_rotating(0.40);
-  if (!rotating_stabilizing.valid
-      || rotating_stabilizing.tracking_phase
-           != L4Planning::ArmorTrackingPhase::Stabilizing
-      || rotating_stabilizing.fire_permitted
-      || !rotating_relocked.valid || rotating_relocked.armor_id != 3
-      || rotating_relocked.tracking_phase
-           != L4Planning::ArmorTrackingPhase::Tracking
-      || !rotating_relocked.fire_permitted) {
-    std::cerr << "rotating armor did not stabilize and relock\n";
-    return 10;
   }
 
   std::cout << "Planner armor tracking smoke test passed\n";
