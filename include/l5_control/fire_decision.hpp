@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace L5Control {
@@ -18,7 +19,7 @@ struct FireConfig {
   std::optional<double> bullet_diameter;  // meter; 17 mm projectile = 0.017
   std::optional<double> min_bullet_speed;  // meter per second
   std::optional<double> max_bullet_speed;  // meter per second
-  std::optional<double> heat_limit;
+ 
 //云台机械范围
   std::optional<double> min_yaw;   //目标装甲板最小 yaw（机械范围）
   std::optional<double> max_yaw;    //目标装甲板最大 yaw
@@ -26,13 +27,17 @@ struct FireConfig {
   std::optional<double> max_pitch;   //目标装甲板最大 pitch
 
 
-//误差和跳变限制
-  std::optional<double> max_aim_yaw_error;   //目标装甲板最大 yaw_error(判断云台是否对准目标)
-  std::optional<double> max_aim_pitch_error;   //目标装甲板最大 pitch_error
-std::optional<double> max_yaw_command_jump;       // yaw命令最大允许跳变量
-  std::optional<double> max_pitch_command_jump;     // pitch命令最大允许跳变量
-  std::optional<double> max_yaw_error;              // 云台就位时允许的yaw误差
-  std::optional<double> max_pitch_error;            // 云台就位时允许的pitch误差  
+// 根据目标距离选择 yaw 误差和跳变限制。代码内部角度统一使用 rad。
+  std::optional<double> yaw_distance_boundary;          // meter
+  std::optional<double> near_max_yaw_command_jump;      // rad
+  std::optional<double> near_max_yaw_error;             // rad
+  std::optional<double> far_max_yaw_command_jump;       // rad
+  std::optional<double> far_max_yaw_error;              // rad
+
+// pitch 暂时继续使用固定限制。
+  std::optional<double> max_aim_pitch_error;             // rad
+  std::optional<double> max_pitch_command_jump;          // rad
+  std::optional<double> max_pitch_error;                 // rad
   std::chrono::milliseconds max_robot_state_age{50};
   std::chrono::milliseconds max_gimbal_pose_age{20};
   std::chrono::milliseconds max_plan_age{30};
@@ -41,14 +46,25 @@ std::optional<double> max_yaw_command_jump;       // yaw命令最大允许跳变
   [[nodiscard]] bool parametersReady() const noexcept
   {
     return bullet_diameter.has_value() && min_bullet_speed.has_value() &&
-           max_bullet_speed.has_value() && heat_limit.has_value() &&
+           max_bullet_speed.has_value() && 
            min_yaw.has_value() && max_yaw.has_value() &&
-           min_pitch.has_value() && max_pitch.has_value()&& max_aim_yaw_error.has_value() && max_aim_pitch_error.has_value() &&
-           max_yaw_command_jump.has_value() && max_pitch_command_jump.has_value() && max_yaw_error.has_value() 
-           && max_pitch_error.has_value()&& max_robot_state_age.count() > 0 && max_gimbal_pose_age.count() > 0 
-           && max_plan_age.count() > 0  ;
+           min_pitch.has_value() && max_pitch.has_value() &&
+           yaw_distance_boundary.has_value() &&
+           near_max_yaw_command_jump.has_value() &&
+           near_max_yaw_error.has_value() &&
+           far_max_yaw_command_jump.has_value() &&
+           far_max_yaw_error.has_value() &&
+           max_aim_pitch_error.has_value() &&
+           max_pitch_command_jump.has_value() &&
+           max_pitch_error.has_value() &&
+           max_robot_state_age.count() > 0 &&
+           max_gimbal_pose_age.count() > 0 &&
+           max_plan_age.count() > 0;
   }
 };
+
+// 从 YAML 文件读取火控参数。YAML 中角度使用 degree，读取后转换为 rad。
+FireConfig loadFireConfig(const std::string& config_path);
 
 struct FireInput {
   std::optional<L3Estimation::TargetState> target;
@@ -84,8 +100,8 @@ private:
   std::optional<double> last_command_pitch_;
   std::optional<double> last_fly_time_;
 
-  std::size_t stable_tracking_frames_{0};
-  TimePoint last_switch_time_{};
+  std::size_t stable_tracking_frames_{0};//表示稳定追踪多少帧
+  TimePoint last_switch_time_{};//表示上一次切换目标或装甲板的时间
 };
 
 

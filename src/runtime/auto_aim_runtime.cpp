@@ -6,6 +6,7 @@
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/pnp_solver.hpp"
+#include "l5_control/fire_decision.hpp"
 #include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
@@ -75,6 +76,11 @@ void AutoAimRuntime::run() {
   L6Telemetry::FpsCounter fps_counter;
   // 启动时只加载一次模型；每帧仅执行预处理、推理和 Decoder。
   L2Perception::ArmorDetector armor_detector = makeArmorDetector();
+
+  // 火控配置只在启动时从 YAML 加载一次，FireEvaluator 在后续每帧复用。
+  const L5Control::FireConfig fire_config =
+    L5Control::loadFireConfig("config/fire_config.yaml");
+  [[maybe_unused]] L5Control::FireEvaluator fire_evaluator{fire_config};
 
   //配置并启动串口
   auto serial_config = L1Sensor::loadSerialConfig("config/serial_config.yaml");
