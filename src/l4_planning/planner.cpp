@@ -20,6 +20,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kOutpostRobotId = 6;
+constexpr double kEnteringWindowLeadAngle = 10.0 * kPi / 180.0;
 
 // 角度差统一归一化，保证跨越 ±pi 时仍取最短角距离。
 [[nodiscard]] double normalizeAngle(double angle) noexcept
@@ -443,9 +444,11 @@ AimPlan Planner::plan(
         candidate.within_firing_window =
           candidate.phase_angle >= -enter_angle
           && candidate.phase_angle <= leave_angle;
+        // 预进入区位于正式射击窗口之前：从进入角外侧 10 degree
+        // 到进入角边界。它不属于射击窗口，仅用于提前选择下一块板。
         candidate.entering_firing_window =
-          candidate.phase_angle >= -enter_angle
-          && candidate.phase_angle <= 0.0;
+          candidate.phase_angle >= -(enter_angle + kEnteringWindowLeadAngle)
+          && candidate.phase_angle < -enter_angle;
         candidate.remaining_window_time =
           candidate.within_firing_window
             ? std::max(
@@ -541,6 +544,10 @@ AimPlan Planner::plan(
   const SelectionResult selection =
     selectArmor(selection_request, selection_time, config);
   plan.tracking_phase = selection.phase;
+  if (selection.phase == ArmorTrackingPhase::Unlocked) {
+    plan.tracking = false;
+    plan.target_id = -1;
+  }
   if (!selection.valid || !selection.selected.has_value()) {
     return plan;
   }
@@ -563,4 +570,4 @@ AimPlan Planner::plan(
   return plan;
 }
 
-}  // namespace L4Planning
+}

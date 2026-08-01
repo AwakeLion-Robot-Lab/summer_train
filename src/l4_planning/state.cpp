@@ -33,50 +33,24 @@ constexpr double kPi = 3.14159265358979323846;
   return &*candidate;
 }
 
-[[nodiscard]] const ArmorCandidate* bestValidCandidate(
-  const std::vector<ArmorCandidate>& candidates,
-  std::optional<int> excluded_armor_id,
-  bool prefer_entering) noexcept
-{
-  const auto is_eligible =
-    [excluded_armor_id](const ArmorCandidate& candidate) {
-      return candidate.valid
-             && (!excluded_armor_id.has_value()
-                 || candidate.armor.armor_id != *excluded_armor_id);
-    };
-  const auto choose_best =
-    [&candidates, &is_eligible](bool entering_only) {
-      const ArmorCandidate* best = nullptr;
-      for (const auto& candidate : candidates) {
-        if (!is_eligible(candidate)
-            || (entering_only && !candidate.entering_firing_window)) {
-          continue;
-        }
-        if (best == nullptr
-            || candidate.score.quality > best->score.quality) {
-          best = &candidate;
-        }
-      }
-      return best;
-    };
-
-  if (prefer_entering) {
-    if (const ArmorCandidate* entering = choose_best(true)) {
-      return entering;
-    }
-  }
-  return choose_best(false);
-}
-
 [[nodiscard]] const ArmorCandidate* bestScoredCandidate(
   const std::vector<ArmorCandidate>& candidates,
-  std::optional<int> excluded_armor_id) noexcept
+  std::optional<int> excluded_armor_id,
+  bool require_within_window = false,
+  bool require_entering_window = false,
+  bool require_selectable_window = false) noexcept
 {
   const ArmorCandidate* best = nullptr;
   for (const auto& candidate : candidates) {
     if (!candidate.valid
         || (excluded_armor_id.has_value()
-            && candidate.armor.armor_id == *excluded_armor_id)) {
+            && candidate.armor.armor_id == *excluded_armor_id)
+        || (require_within_window && !candidate.within_firing_window)
+        || (require_entering_window
+            && !candidate.entering_firing_window)
+        || (require_selectable_window
+            && !candidate.within_firing_window
+            && !candidate.entering_firing_window)) {
       continue;
     }
     if (best == nullptr
@@ -94,6 +68,14 @@ constexpr double kPi = 3.14159265358979323846;
   const double threshold = config.switch_dead_zone * kPi / 180.0;
   return std::isfinite(candidate.aim_angle_error)
          && candidate.aim_angle_error <= threshold;
+}
+
+[[nodiscard]] bool selectableWindow(
+  const ArmorCandidate& candidate) noexcept
+{
+  return candidate.valid
+         && (candidate.within_firing_window
+             || candidate.entering_firing_window);
 }
 
 }  // namespace
@@ -126,8 +108,19 @@ SelectionResult Planner::selectArmor(
     };
   const auto choose_next =
     [&request](std::optional<int> excluded_armor_id) {
-      return bestValidCandidate(
-        request.candidates, excluded_armor_id, true);
+      const ArmorCandidate* next = bestScoredCandidate(
+        request.candidates,
+        excluded_armor_id,
+        true,
+        false);
+      if (next != nullptr) {
+        return next;
+      }
+      return bestScoredCandidate(
+        request.candidates,
+        excluded_armor_id,
+        false,
+        true);
     };
   const auto begin_switch =
     [this, &set_phase, &finish, &request, &config](
@@ -211,13 +204,45 @@ SelectionResult Planner::selectArmor(
             return begin_switch(
               next, SelectionReason::SwitchToCandidate);
           }
-          tracking_state_ = {};
+          resetTracking();
           return finish(nullptr, false, SelectionReason::NoCandidate);
         }
 
         tracking_state_.current_lost_frames = 0;
+
+        // 当前板在预计命中时刻已经出窗时，不再等待评分优势连续
+        // score_switch_stable_frames 帧。先选择窗口内最高分候选，再选择
+        // 位于进入角外 10 degree 预进入区的最高分候选；两者都不存在
+        // 时立即解除装甲板锁定。
+        if (!current->within_firing_window) {
+          tracking_state_.score_candidate_id.reset();
+          tracking_state_.score_stable_frames = 0;
+          const ArmorCandidate* next = bestScoredCandidate(
+            request.candidates,
+            tracking_state_.current_armor_id,
+            true,
+            false);
+          if (next == nullptr) {
+            next = bestScoredCandidate(
+              request.candidates,
+              tracking_state_.current_armor_id,
+              false,
+              true);
+          }
+          if (next != nullptr) {
+            return begin_switch(
+              next, SelectionReason::SwitchToCandidate);
+          }
+          resetTracking();
+          return finish(nullptr, false, SelectionReason::NoCandidate);
+        }
+
         const ArmorCandidate* best = bestScoredCandidate(
-          request.candidates, tracking_state_.current_armor_id);
+          request.candidates,
+          tracking_state_.current_armor_id,
+          false,
+          false,
+          true);
         if (best != nullptr
             && best->score.quality
                  > current->score.quality + config.score_switch_threshold
@@ -251,33 +276,27 @@ SelectionResult Planner::selectArmor(
           request.candidates,
           tracking_state_.next_armor_id,
           true);
-        if (next == nullptr) {
-          const ArmorCandidate* current = findCandidate(
-            request.candidates,
-            tracking_state_.current_armor_id,
-            true);
-          if (current != nullptr) {
+        if (next == nullptr || !selectableWindow(*next)) {
+          const std::optional<int> expired_next_id =
+            tracking_state_.next_armor_id;
+          next = choose_next(expired_next_id);
+          if (next == nullptr) {
+            resetTracking();
+            return finish(nullptr, false, SelectionReason::NoCandidate);
+          }
+          if (tracking_state_.current_armor_id
+              == next->armor.armor_id) {
             tracking_state_.next_armor_id.reset();
             tracking_state_.current_lost_frames = 0;
             tracking_state_.next_stable_frames = 0;
             set_phase(ArmorTrackingPhase::Tracking);
             return finish(
-              current,
+              next,
               request.observation_fresh,
               SelectionReason::KeepCurrent);
           }
-
-          next = choose_next(tracking_state_.current_armor_id);
-          if (next == nullptr) {
-            ++tracking_state_.current_lost_frames;
-            if (tracking_state_.current_lost_frames
-                > config.max_lost_frames) {
-              tracking_state_ = {};
-            }
-            return finish(nullptr, false, SelectionReason::NoCandidate);
-          }
-          tracking_state_.next_armor_id = next->armor.armor_id;
-          tracking_state_.next_stable_frames = 0;
+          return begin_switch(
+            next, SelectionReason::SwitchToCandidate);
         }
         tracking_state_.current_lost_frames = 0;
 
@@ -302,37 +321,27 @@ SelectionResult Planner::selectArmor(
           request.candidates,
           tracking_state_.next_armor_id,
           true);
-        if (next == nullptr) {
-          const ArmorCandidate* current = findCandidate(
-            request.candidates,
-            tracking_state_.current_armor_id,
-            true);
-          if (current != nullptr) {
+        if (next == nullptr || !selectableWindow(*next)) {
+          const std::optional<int> expired_next_id =
+            tracking_state_.next_armor_id;
+          next = choose_next(expired_next_id);
+          if (next == nullptr) {
+            resetTracking();
+            return finish(nullptr, false, SelectionReason::NoCandidate);
+          }
+          if (tracking_state_.current_armor_id
+              == next->armor.armor_id) {
             tracking_state_.next_armor_id.reset();
             tracking_state_.current_lost_frames = 0;
             tracking_state_.next_stable_frames = 0;
             set_phase(ArmorTrackingPhase::Tracking);
             return finish(
-              current,
+              next,
               request.observation_fresh,
               SelectionReason::KeepCurrent);
           }
-
-          next = choose_next(tracking_state_.current_armor_id);
-          if (next == nullptr) {
-            ++tracking_state_.current_lost_frames;
-            if (tracking_state_.current_lost_frames
-                > config.max_lost_frames) {
-              tracking_state_ = {};
-            }
-            return finish(nullptr, false, SelectionReason::NoCandidate);
-          }
-          tracking_state_.next_armor_id = next->armor.armor_id;
-          tracking_state_.current_lost_frames = 0;
-          tracking_state_.next_stable_frames = 0;
-          set_phase(ArmorTrackingPhase::Switching);
-          return finish(
-            next, false, SelectionReason::SwitchToCandidate);
+          return begin_switch(
+            next, SelectionReason::SwitchToCandidate);
         }
         tracking_state_.current_lost_frames = 0;
 

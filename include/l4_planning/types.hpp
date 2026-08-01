@@ -127,7 +127,7 @@ struct AimPlan : AimReference {
   bool valid{false};           // 规划结果是否有效
 };
 
-struct PlanConfig {
+struct PlannerConfig {
   int max_iterations{20}; // 单块装甲板最大固定点迭代次数
   std::chrono::microseconds fly_time_tolerance{200}; // 飞行时间收敛阈值
   double position_tolerance{0.005};  // meter
@@ -154,7 +154,7 @@ struct PlanConfig {
   double normal_leave_angle{20.0};   // degree
   double outpost_enter_angle{70.0};  // degree
   double outpost_leave_angle{30.0};  // degree
-  int max_lost_frames{5};
+  int max_lost_frames{3};
 
   double yaw_angle_weight{9000000.0};
   double yaw_velocity_weight{0.0};
@@ -168,12 +168,5 @@ struct PlanConfig {
   double max_pitch_acceleration{100.0};
 
 };
-
-// 兼容当前代码中已经使用的名称。
-using DelayBreakdown = Delay;
-using BallisticResult = Ballistic;
-using PlannerType = PlanType;
-using PlannerConfig = PlanConfig;
-using PlanRejectReason = PlanError;
 
 }  // namespace L4Planning

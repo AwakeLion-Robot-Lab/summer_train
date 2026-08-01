@@ -42,7 +42,7 @@ int main()
   context.config.lock_stable_frames = 2;
   // 本测试只验证选择状态机，放宽枪口到候选弹道角的稳定阈值。
   context.config.switch_dead_zone = 180.0;
-  context.config.max_lost_frames = 2;
+  context.config.max_lost_frames = 3;
 
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 30.0;
@@ -89,24 +89,13 @@ int main()
     return 9;
   }
 
-  for (int confirmation_frame = 1; confirmation_frame < 3;
-       ++confirmation_frame) {
-    const L4Planning::AimPlan pending_switch =
-      run_observed(kPi / 2.0);
-    if (!pending_switch.valid || pending_switch.armor_id != 0
-        || pending_switch.tracking_phase
-             != L4Planning::ArmorTrackingPhase::Tracking) {
-      std::cerr << "score advantage switched armor before three frames\n";
-      return 10;
-    }
-  }
-
+  // 当前板出窗后绕过三帧评分确认，立即开始切换。
   const L4Planning::AimPlan retained = run_observed(kPi / 2.0);
   if (!retained.valid || retained.armor_id == 0
       || retained.fire_permitted
       || retained.tracking_phase
            != L4Planning::ArmorTrackingPhase::Stabilizing) {
-    std::cerr << "higher-scored armor did not start a stable switch\n";
+    std::cerr << "out-of-window armor did not switch immediately\n";
     return 3;
   }
   const L4Planning::AimPlan retained_again = run_observed(kPi / 2.0);
@@ -143,7 +132,7 @@ int main()
     return 6;
   }
 
-  // 将阈值设为评分的完整量程，验证窗口状态本身不会强制换板。
+  // 将阈值设为评分的完整量程，验证当前板出窗仍会绕过评分确认换板。
   L4Planning::Planner threshold_planner;
   L4Planning::PlannerContext threshold_context;
   threshold_context.config.lock_stable_frames = 2;
@@ -172,13 +161,13 @@ int main()
     return 7;
   }
 
-  const L4Planning::AimPlan threshold_retained =
+  const L4Planning::AimPlan threshold_switched =
     run_threshold(kPi / 2.0);
-  if (!threshold_retained.valid || threshold_retained.armor_id != 0
-      || threshold_retained.fire_permitted
-      || threshold_retained.tracking_phase
-           != L4Planning::ArmorTrackingPhase::Tracking) {
-    std::cerr << "window state forced a switch or allowed firing\n";
+  if (!threshold_switched.valid || threshold_switched.armor_id == 0
+      || threshold_switched.fire_permitted
+      || threshold_switched.tracking_phase
+           != L4Planning::ArmorTrackingPhase::Stabilizing) {
+    std::cerr << "leaving the window did not force an immediate switch\n";
     return 8;
   }
 

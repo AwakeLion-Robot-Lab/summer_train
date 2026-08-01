@@ -340,8 +340,8 @@ Q_aim_cost 越大表示云台转向距离越短、转向代价越小。云台 ya
   struct ArmorScoreWeights 
 {
   double facing_weight{0.40};
-  double window_weight{0.40};
-  double aim_cost_weight{0.20};
+  double window_weight{0.50};
+  double aim_cost_weight{0.10};
 };
 
 struct ArmorScoreComponents
@@ -477,7 +477,19 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
 max_lost_frames 宽限期内保持当前装甲板 ID 并禁止开火；连续失效超过
 阈值后，才按 prefer_entering 强优先规则选择其他候选并切换。
 
+3   entering_firing_window 是正式进入角之前的 10° 预进入区：[-(enter_angle + 10°), -enter_angle]
 
+  - 当前装甲板仍在射击窗口：
+      - 按综合价值进行比较；
+      - 要求超过 score_switch_threshold；
+      - 连续满足 score_switch_stable_frames 后换板。
+
+  - 当前装甲板离开射击窗口：
+      - 优先选择窗口内价值最高的其他有效装甲板；
+      - 其次选择预进入区内价值最高的其他有效装甲板；
+      - 直接开始切换，不进行三帧价值优势确认；
+      - 都不存在时执行 resetTracking()，清除目标缓存并进入 Unlocked；
+      - 返回的 AimPlan 同时设置 tracking=false、target_id=-1。
 
 未锁定：
 

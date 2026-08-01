@@ -12,8 +12,8 @@ namespace L4Planning {
 // 装甲板质量评分的权重。三项权重之和为 1。
 struct ArmorScoreWeights {
   double facing_weight{0.40};
-  double window_weight{0.40};
-  double aim_cost_weight{0.20};
+  double window_weight{0.50};
+  double aim_cost_weight{0.10};
 };
 
 // 三项归一化质量分量，取值范围均为 [0, 1]。
@@ -53,7 +53,8 @@ struct ArmorCandidate {
   double relative_yaw_rate{0.0};  // 装甲板法线相对目标方位的角速度，rad/s
   double phase_angle{0.0};        // 沿旋转方向递增的窗口相位，rad
   double remaining_window_time{0.0}; // 到离开射击窗口的预计时间，s
-  bool entering_firing_window{false}; // 是否位于车辆中心前的转入区间
+  // 是否位于正式进入角之前 10 degree 的预进入区间。
+  bool entering_firing_window{false};
   bool converged{false};          // 时间误差和位置/角度误差是否收敛
   bool within_firing_window{false}; // 命中时刻是否仍在可射击窗口
   bool valid{false};              // 除射击窗口外的跟踪、预测和弹道条件有效
