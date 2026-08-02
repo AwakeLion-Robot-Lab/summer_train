@@ -53,6 +53,7 @@ SerialConfig loadSerialConfig(const std::string &config_path) {
   const auto yaml = tools::load(config_path);
 
   config.enable = readOptional(yaml, "enable", config.enable);
+  config.tx_enable = readOptional(yaml, "tx_enable", config.tx_enable);
   config.device = readOptional(yaml, "device", config.device);
   config.baud_rate = readOptional(yaml, "baud_rate", config.baud_rate);
   config.read_timeout_ms =

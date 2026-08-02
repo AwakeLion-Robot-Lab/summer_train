@@ -15,15 +15,15 @@ const char* kCommandLineKeys =
   "{help h usage ? |                     | Show command line help}"
   "{@input-dir     |                     | Saver image session directory}"
   "{output-dir o   | calibration_results | Result directory root}"
-  "{cols           | 10                  | Checkerboard inner-corner columns}"
-  "{rows           | 7                   | Checkerboard inner-corner rows}"
+  "{cols           | 11                  | Checkerboard inner-corner columns}"
+  "{rows           | 8                   | Checkerboard inner-corner rows}"
   "{square-size    | 15.0                 | Checker square size in one consistent unit}"
   "{max-views      | 1000                 | Maximum diverse views used}"
   "{min-views      | 20                  | Minimum views required}"
   "{max-sharpness  | 3.0                 | Maximum edge transition width in pixels}"
   "{min-contrast   | 50.0                | Minimum black-white gray-level difference}"
   "{min-area       | 0.005               | Minimum inner-corner hull/image area ratio}"
-  "{bootstrap      | 20                  | Parameter bootstrap iterations; 0 disables}"
+  "{bootstrap      | 0                   | Parameter bootstrap iterations; 0 disables}"
   "{preview        | false               | Preview detected corners; q/Esc aborts}";
 
 void printMatrix(const cv::Mat& matrix)

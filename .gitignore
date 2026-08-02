@@ -3,3 +3,7 @@
 /build/
 /.deps/
 /records/
+/calibration_images/
+/calibration_results/
+*.log
+*.png

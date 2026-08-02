@@ -38,7 +38,9 @@ bool SerialWorker::start() {
 
   try {
     rx_thread_ = std::thread(&SerialWorker::rxLoop, this);
-    tx_thread_ = std::thread(&SerialWorker::txLoop, this);
+    if (config_.tx_enable) {
+      tx_thread_ = std::thread(&SerialWorker::txLoop, this);
+    }
   } catch (const std::exception &e) {
     running_ = false;
     if (rx_thread_.joinable()) {
@@ -49,7 +51,9 @@ bool SerialWorker::start() {
     return false;
   }
 
-  L6Telemetry::logInfo("serial worker started", config_.device);
+  L6Telemetry::logInfo(
+      "serial worker started", config_.device,
+      "tx", config_.tx_enable ? "enabled" : "disabled");
   return true;
 }
 

@@ -8,6 +8,7 @@ namespace L1Sensor {
 // 串口运行参数；默认值用于快速跑通，也可由 YAML 覆盖。
 struct SerialConfig {
   bool enable = true;
+  bool tx_enable = true;// 打开录制工具时关闭串口
   std::string device = "/dev/ttyACM0";
   int baud_rate = 1000000;
   int read_timeout_ms = 20;

@@ -5486,3 +5486,7 @@
 [2026-07-29 15:37:08.088082852] [[WARN]] MV_CC_EnumDevices failed: {:#x} 2147483654
 [2026-07-29 15:37:08.188288292] [[WARN]] Unable to open usb!
 [2026-07-29 15:37:08.188423937] [[WARN]] MV_CC_EnumDevices failed: {:#x} 2147483654
+[2026-08-02 16:41:21.884106130] [[INFO]] serial configured /dev/ttyACM0 115200
+[2026-08-02 16:41:21.884239482] [[INFO]] serial worker started /dev/ttyACM0 tx disabled
+[2026-08-02 16:41:21.884243853] [[INFO]] waiting for first gimbal pose serial /dev/ttyACM0
+[2026-08-02 16:41:21.884555538] [[WARN]] serial open failed /dev/ttyACM0 IO Exception (2): No such file or directory, file tools/serial/src/impl/unix.cc, line 151.

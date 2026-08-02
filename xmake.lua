@@ -104,6 +104,13 @@ target("camera_capture")
     add_files("tools/camera_calibration/camera_capture.cpp")
     add_deps("newvision")
 
+target("record_capture")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/record_capture.cpp")
+    add_deps("newvision")
+
 target("camera_calibrator")
     set_kind("binary")
     set_default(false)

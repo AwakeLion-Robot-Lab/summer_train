@@ -1,5 +1,8 @@
 enable: true
 
+# 是否启动视觉到下位机的控制命令发送线程；只采集数据时应关闭。
+tx_enable: true
+
 # 串口设备名；常见值为 /dev/ttyACM0、/dev/ttyUSB0、/dev/ttyUART。
 device: "/dev/ttyACM0"
 

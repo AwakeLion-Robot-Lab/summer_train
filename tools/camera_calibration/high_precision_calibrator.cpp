@@ -1,4 +1,4 @@
-#include "tools/camera_calibration/high_precision_calibrator.hpp"
+#include "tools/camera_calibration/high_precision_calibrator.hpp".
 
 #include <algorithm>
 #include <array>
