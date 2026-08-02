@@ -22,6 +22,12 @@ option("use_system_deps")
     set_description("Use system OpenCV and yaml-cpp development packages")
 option_end()
 
+option("use_openvino")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Enable the optional OpenVINO inference backend")
+option_end()
+
 if has_config("use_xrepo_deps") then
     add_requires("opencv", {optional = true})
     add_requires("yaml-cpp", {optional = true})
@@ -30,10 +36,20 @@ end
 target("newvision")
     set_kind("static")
     add_files("src/**/*.cpp")
+    add_files("tools/recorder.cpp")
+    add_files("tools/camera_calibration/timed_image_saver.cpp")
     add_files("tools/camera_sdk/hikrobot/hikrobot.cpp")
     add_files("tools/camera_sdk/mindvision/mindvision.cpp")
+    add_files("tools/serial/src/serial.cc")
+    add_files("tools/serial/src/impl/unix.cc")
     add_headerfiles("include/**/*.hpp")
+    add_headerfiles("tools/recorder.hpp")
+    add_headerfiles("tools/camera_calibration/timed_image_saver.hpp")
+    add_headerfiles("tools/serial/include/**/*.h")
     add_includedirs("include", {public = true})
+    add_includedirs(".", {public = true})
+    add_includedirs("/usr/include/eigen3", {public = true})
+    add_includedirs("tools/serial/include", {public = true})
     add_includedirs("tools/config_set/include", {public = true})
     add_includedirs("tools/LatesBuffer/include", {public = true})
     add_includedirs("tools/camera_sdk", {public = true})
@@ -46,11 +62,32 @@ target("newvision")
     add_linkdirs("tools/camera_sdk/hikrobot/lib/amd64", "tools/camera_sdk/mindvision/lib/amd64", {public = true})
     add_rpathdirs("$(projectdir)/tools/camera_sdk/hikrobot/lib/amd64", "$(projectdir)/tools/camera_sdk/mindvision/lib/amd64", {public = true})
     add_links("MvCameraControl", "MVSDK", "usb-1.0", {public = true})
+    add_syslinks("pthread", "rt", {public = true})
     if has_config("use_xrepo_deps") then
         add_packages("opencv", "yaml-cpp", {public = true})
     elseif has_config("use_system_deps") then
         add_includedirs("/usr/include/opencv4", {public = true})
         add_links("opencv_core", "opencv_imgproc", "opencv_imgcodecs", "opencv_videoio", "opencv_calib3d", "opencv_dnn", "opencv_highgui", "yaml-cpp", {public = true})
+    end
+    if has_config("use_openvino") then
+        -- 只使用已经安装并由 pkg-config 暴露的 OpenVINO，避免 xrepo 再下载一套 SDK。
+        on_load(function (target)
+            import("lib.detect.find_package")
+            local openvino = find_package("pkgconfig::openvino", {version = true})
+            assert(openvino,
+                "OpenVINO was not found through pkg-config; source setupvars.sh first")
+
+            target:add("includedirs", openvino.includedirs)
+            if openvino.defines then
+                target:add("defines", openvino.defines)
+            end
+            target:add("defines", "NEWVISION_HAS_OPENVINO=1")
+
+            -- newvision 是静态库，最终可执行文件仍需要继承 Runtime 链接和 RUNPATH。
+            target:add("linkdirs", openvino.linkdirs, {public = true})
+            target:add("rpathdirs", openvino.linkdirs, {public = true})
+            target:add("links", "openvino", {public = true})
+        end)
     end
 
 target("auto_aim")
@@ -58,6 +95,36 @@ target("auto_aim")
     set_default(false)
     set_rundir("$(projectdir)")
     add_files("tests/main.cpp")
+    add_deps("newvision")
+
+target("camera_capture")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/camera_capture.cpp")
+    add_deps("newvision")
+
+target("record_capture")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/record_capture.cpp")
+    add_deps("newvision")
+
+target("camera_calibrator")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/camera_calibrator.cpp")
+    add_files("tools/camera_calibration/high_precision_calibrator.cpp")
+    add_deps("newvision")
+
+target("camera_calibrator_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/camera_calibrator_smoke.cpp")
+    add_files("tools/camera_calibration/high_precision_calibrator.cpp")
     add_deps("newvision")
 
 target("logger_smoke")
@@ -77,6 +144,55 @@ target("latest_buffer_smoke")
     add_files("tests/latest_buffer_smoke.cpp")
     add_includedirs("tools/LatesBuffer/include")
 
+target("recorder_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/recorder_smoke.cpp")
+    add_deps("newvision")
+
+target("timed_image_saver_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/timed_image_saver_smoke.cpp")
+    add_deps("newvision")
+
+target("camera_calibration_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/camera_calibration_smoke.cpp")
+    add_deps("newvision")
+
+target("ekf_tracker_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/ekf_tracker_smoke.cpp")
+    add_deps("newvision")
+
+target("pnp_solver_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/pnp_solver_smoke.cpp")
+    add_deps("newvision")
+
+target("l3_baseline_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/l3_baseline_smoke.cpp")
+    add_deps("newvision")
+
+target("yaw_optimizer_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/yaw_optimizer_smoke.cpp")
+    add_deps("newvision")
+
 target("fps_counter_smoke")
     set_kind("binary")
     set_default(false)
@@ -84,3 +200,97 @@ target("fps_counter_smoke")
     add_files("tests/fps_counter_smoke.cpp")
     add_files("src/l6_telemetry/fps_counter.cpp")
     add_includedirs("include")
+
+target("udp_json_sender_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/udp_json_sender_smoke.cpp")
+    add_files("src/l6_telemetry/udp_json_sender.cpp")
+    add_includedirs("include")
+    add_includedirs("tools/logger/include/3rdparty")
+    add_syslinks("pthread")
+
+if has_config("use_openvino") then
+target("openvino_armor_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/openvino_armor_smoke.cpp")
+    add_deps("newvision")
+
+target("target_estimator_demo_replay")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/target_estimator_demo_replay.cpp")
+    -- 视频文件在本测试中充当 L1 输入，只链接 L2/L3 所需实现，
+    -- 避免 L4/L5/Runtime 的开发状态阻塞 TargetEstimator 回放测试。
+    add_files("src/l2_perception/armor/armor_decoder.cpp")
+    add_files("src/l2_perception/armor/armor_detector.cpp")
+    add_files("src/l2_perception/inference/inference_backend.cpp")
+    add_files("src/l2_perception/inference/image_preprocessor.cpp")
+    add_files("src/l2_perception/inference/backends/openvino_backend.cpp")
+    add_files("src/l3_estimation/pnp_solver.cpp")
+    add_files("src/l3_estimation/target_estimator.cpp")
+    add_files("src/l3_estimation/ekf_tracker.cpp")
+    add_files("src/l3_estimation/config.cpp")
+    add_files("src/l3_estimation/yaw_optimizer.cpp")
+    -- ArmorDetector 的错误路径和测试入口需要共用项目日志。
+    add_files("src/l6_telemetry/logger.cpp")
+    add_files("src/l6_telemetry/udp_json_sender.cpp")
+    add_includedirs("include")
+    add_includedirs("/usr/include/eigen3")
+    add_includedirs("tools/logger/include")
+    add_includedirs("tools/logger/include/3rdparty")
+    if has_config("use_xrepo_deps") then
+        add_packages("opencv", "yaml-cpp")
+    elseif has_config("use_system_deps") then
+        add_includedirs("/usr/include/opencv4")
+        add_links("opencv_core", "opencv_imgproc", "opencv_videoio",
+                  "opencv_highgui", "opencv_calib3d", "yaml-cpp")
+    end
+    on_load(function (target)
+        import("lib.detect.find_package")
+        local openvino = find_package("pkgconfig::openvino", {version = true})
+        assert(openvino,
+            "OpenVINO was not found through pkg-config; source setupvars.sh first")
+
+        target:add("includedirs", openvino.includedirs)
+        if openvino.defines then
+            target:add("defines", openvino.defines)
+        end
+        target:add("defines", "NEWVISION_HAS_OPENVINO=1")
+        target:add("linkdirs", openvino.linkdirs)
+        target:add("rpathdirs", openvino.linkdirs)
+        target:add("links", "openvino")
+    end)
+end
+
+target("serial_protocol_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/serial_protocol_smoke.cpp")
+    add_files("src/l1_sensor/serial/serial_protocol.cpp")
+    add_files("src/l6_telemetry/logger.cpp")
+    add_includedirs("include")
+    add_includedirs("tools/logger/include")
+    add_includedirs("tools/logger/include/3rdparty")
+
+if is_plat("linux") then
+target("serial_worker_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/serial_worker_smoke.cpp")
+    add_deps("newvision")
+    add_syslinks("util")
+end
+
+target("serial_hardware_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/serial_hardware_smoke.cpp")
+    add_deps("newvision")

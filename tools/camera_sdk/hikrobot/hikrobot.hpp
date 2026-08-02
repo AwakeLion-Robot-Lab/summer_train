@@ -9,7 +9,7 @@
 
 #include "MvCameraControl.h"
 #include "latesbuffer.hpp"
-#include "l1_sensor/camera.hpp"
+#include "l1_sensor/camera/camera.hpp"
 
 
 namespace io
@@ -19,7 +19,11 @@ class HikRobot : public L1Sensor::CameraBase
 public:
   HikRobot(double exposure_ms, double gain, const std::string & vid_pid);
   ~HikRobot() override;
-  void read(cv::Mat & img, std::chrono::steady_clock::time_point & timestamp) override;
+  bool read(
+    cv::Mat & img,
+    std::chrono::steady_clock::time_point & timestamp,
+    std::chrono::milliseconds timeout) override;
+  void stop() override;
 
 private:
   struct CameraData

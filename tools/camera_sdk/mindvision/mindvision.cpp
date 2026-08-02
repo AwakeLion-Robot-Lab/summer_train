@@ -19,9 +19,6 @@ namespace io
 MindVision::MindVision(double exposure_ms, double gamma, const std::string & vid_pid)
 : exposure_ms_(exposure_ms),
   gamma_(gamma),
-  handle_(-1),
-  quit_(false),
-  ok_(false),
   vid_(-1),
   pid_(-1)
 {
@@ -34,17 +31,27 @@ MindVision::MindVision(double exposure_ms, double gamma, const std::string & vid
 
   try_open();
 
-  // 守护线程
+  // 守护线程独占重连、关闭和重开；关闭 SDK 前始终先等待采集线程退出。
   daemon_thread_ = std::thread{[this] {
-    while (!quit_) {
+    while (!stop_requested_.load()) {
       std::this_thread::sleep_for(100ms);
 
-      if (ok_) continue;
+      if (stop_requested_.load() || healthy_.load()) {
+        continue;
+      }
 
-      if (capture_thread_.joinable()) capture_thread_.join();
+      if (capture_thread_.joinable()) {
+        capture_thread_.join();
+      }
 
       close();
+      if (stop_requested_.load()) {
+        break;
+      }
       reset_usb();
+      if (stop_requested_.load()) {
+        break;
+      }
       try_open();
     }
   }};
@@ -52,24 +59,48 @@ MindVision::MindVision(double exposure_ms, double gamma, const std::string & vid
 
 MindVision::~MindVision()
 {
-  quit_ = true;
-  if (daemon_thread_.joinable()) daemon_thread_.join();
-  if (capture_thread_.joinable()) capture_thread_.join();
+  stop();
+  if (daemon_thread_.joinable()) {
+    daemon_thread_.join();
+  }
+  if (capture_thread_.joinable()) {
+    capture_thread_.join();
+  }
   close();
   L6Telemetry::logInfo("Mindvision destructed.");
 }
 
-void MindVision::read(cv::Mat & img, std::chrono::steady_clock::time_point & timestamp)
+bool MindVision::read(
+  cv::Mat & img,
+  std::chrono::steady_clock::time_point & timestamp,
+  std::chrono::milliseconds timeout)
 {
   CameraData data;
-  buffer_.read(data);
+  const auto result = buffer_.readFor(data, timeout);
+  if (result != tools::LatestBuffer<CameraData>::ReadStatus::Value) {
+    img.release();
+    timestamp = {};
+    return false;
+  }
 
   img = data.img;
   timestamp = data.timestamp;
+  return true;
+}
+
+void MindVision::stop()
+{
+  stop_requested_.store(true);
+  healthy_.store(false);
+  buffer_.close();
 }
 
 void MindVision::open()
 {
+  if (stop_requested_.load()) {
+    return;
+  }
+
   int camera_num = 1;
   tSdkCameraDevInfo camera_info_list;
   tSdkCameraCapbility camera_capbility;
@@ -97,10 +128,10 @@ void MindVision::open()
   // 取图线程
   capture_thread_ = std::thread{[this] {
     tSdkFrameHead head;
-    BYTE * raw;
+    BYTE * raw = nullptr;
 
-    ok_ = true;
-    while (!quit_) {
+    healthy_.store(true);
+    while (!stop_requested_.load()) {
       std::this_thread::sleep_for(1ms);
 
       auto img = cv::Mat(height_, width_, CV_8UC3);
@@ -109,16 +140,28 @@ void MindVision::open()
       auto timestamp = std::chrono::steady_clock::now();
 
       if (status != CAMERA_STATUS_SUCCESS) {
-        L6Telemetry::logWarn("Camera dropped!");
-        ok_ = false;
+        if (!stop_requested_.load()) {
+          L6Telemetry::logWarn("Camera dropped!");
+        }
+        healthy_.store(false);
         break;
       }
 
-      CameraImageProcess(handle_, raw, img.data, &head);
-      CameraReleaseImageBuffer(handle_, raw);
+      const auto process_status = CameraImageProcess(handle_, raw, img.data, &head);
+      const auto release_status = CameraReleaseImageBuffer(handle_, raw);
+      raw = nullptr;
+      if (process_status != CAMERA_STATUS_SUCCESS || release_status != CAMERA_STATUS_SUCCESS) {
+        L6Telemetry::logWarn("MindVision image process or release failed.");
+        healthy_.store(false);
+        break;
+      }
 
-      buffer_.write({img, timestamp});
+      if (!buffer_.write({img, timestamp})) {
+        break;
+      }
     }
+
+    healthy_.store(false);
   }};
 
   L6Telemetry::logInfo("Mindvision opened.");
@@ -126,9 +169,15 @@ void MindVision::open()
 
 void MindVision::try_open()
 {
+  if (stop_requested_.load()) {
+    return;
+  }
+
   try {
     open();
   } catch (const std::exception & e) {
+    healthy_.store(false);
+    close();
     L6Telemetry::logWarn("{}", e.what());
   }
 }
@@ -137,6 +186,9 @@ void MindVision::close()
 {
   if (handle_ == -1) return;
   CameraUnInit(handle_);
+  handle_ = -1;
+  width_ = 0;
+  height_ = 0;
 }
 
 void MindVision::set_vid_pid(const std::string & vid_pid)

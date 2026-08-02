@@ -1,13 +1,14 @@
 #include "l4_planning/predictor.hpp"
 
+#include "l3_estimation/types.hpp"
+#include "l4_planning/types.hpp"
+
 namespace L4Planning {
 
 L3Estimation::TargetState Predictor::predict(const L3Estimation::TargetState& target, double dt) const
 {
   auto predicted = target;
-  predicted.position.x += target.velocity.x * dt;
-  predicted.position.y += target.velocity.y * dt;
-  predicted.position.z += target.velocity.z * dt;
+  predicted.center += target.velocity * dt;
   return predicted;
 }
 
