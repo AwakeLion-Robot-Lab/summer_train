@@ -17,6 +17,7 @@ enum class RejectReason {
   RobotStateStale,
   GimbalPoseStale,
   BadBulletSpeed,
+  HeatLimit,
   OutOfRange,
   
   OutsideHitWindow,

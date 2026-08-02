@@ -22,6 +22,7 @@ FireEvaluator::FireEvaluator(FireConfig config)
 FireDecision FireEvaluator::evaluate(const FireInput& input)
 {
   FireDecision decision{};
+  bool heat_safe = false;
 
   // 选择本帧真正下发的角度：普通模式使用 Plan，MPC 使用首个控制点。
   double command_yaw = input.plan.yaw;
@@ -94,10 +95,14 @@ FireDecision FireEvaluator::evaluate(const FireInput& input)
         input.robot_state.bullet_speed > *config_.max_bullet_speed) {
       decision.reasons.push_back(RejectReason::BadBulletSpeed);
     }
-
-    if (input.robot_state.heat >= *config_.heat_limit) {
+    // 基础版本预留下一发热量；预计发射后超过 Q0 时禁止开火。
+    const double predicted_heat =
+      input.robot_state.heat + *config_.heat_per_shot;
+    heat_safe = predicted_heat <= *config_.heat_limit;
+    if (!heat_safe) {
       decision.reasons.push_back(RejectReason::HeatLimit);
     }
+
 
     if (command_valid &&
         (command_yaw < *config_.min_yaw ||
@@ -190,14 +195,14 @@ FireDecision FireEvaluator::evaluate(const FireInput& input)
     last_fly_time_ = input.plan.fly_time;
   }
 
-  decision.fire_feasible = decision.reasons.empty();
+  decision.fire_feasible = heat_safe && decision.reasons.empty();
 
   if (!config_.shoot_enable) {
     decision.reasons.push_back(RejectReason::ShootDisabled);
   }
 
   decision.shoot =
-    decision.fire_feasible && config_.shoot_enable;
+    heat_safe && decision.fire_feasible && config_.shoot_enable;
 
   return decision;
 }

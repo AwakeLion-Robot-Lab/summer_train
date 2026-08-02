@@ -31,8 +31,6 @@ std::string toString(RejectReason reason)
       return "bad_bullet_speed";
     case RejectReason::OutOfRange:
       return "out_of_range";
-    case RejectReason::HeatLimit:
-      return "heat_limit";
     case RejectReason::OutsideHitWindow:
       return "outside_hit_window";
     case RejectReason::ArmorSwitching:

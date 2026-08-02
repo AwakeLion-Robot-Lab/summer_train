@@ -6,6 +6,7 @@
 #include "l5_control/reject_reason.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <vector>
@@ -19,6 +20,8 @@ struct FireConfig {
   std::optional<double> bullet_diameter;  // meter; 17 mm projectile = 0.017
   std::optional<double> min_bullet_speed;  // meter per second
   std::optional<double> max_bullet_speed;  // meter per second
+  std::optional<double> heat_limit;
+  std::optional<double> heat_per_shot;
  
 //云台机械范围
   std::optional<double> min_yaw;   //目标装甲板最小 yaw（机械范围）
@@ -45,18 +48,25 @@ struct FireConfig {
 
   [[nodiscard]] bool parametersReady() const noexcept
   {
-    return bullet_diameter.has_value() && min_bullet_speed.has_value() &&
-           max_bullet_speed.has_value() && 
-           min_yaw.has_value() && max_yaw.has_value() &&
-           min_pitch.has_value() && max_pitch.has_value() &&
-           yaw_distance_boundary.has_value() &&
-           near_max_yaw_command_jump.has_value() &&
-           near_max_yaw_error.has_value() &&
-           far_max_yaw_command_jump.has_value() &&
-           far_max_yaw_error.has_value() &&
-           max_aim_pitch_error.has_value() &&
-           max_pitch_command_jump.has_value() &&
-           max_pitch_error.has_value() &&
+    const auto finite = [](const std::optional<double>& value) {
+      return value.has_value() && std::isfinite(*value);
+    };
+
+    return finite(bullet_diameter) && *bullet_diameter > 0.0 &&
+           finite(min_bullet_speed) && finite(max_bullet_speed) &&
+           *min_bullet_speed > 0.0 && *min_bullet_speed < *max_bullet_speed &&
+           finite(heat_limit) && *heat_limit > 0.0 &&
+           finite(heat_per_shot) && *heat_per_shot > 0.0 &&
+           finite(min_yaw) && finite(max_yaw) && *min_yaw < *max_yaw &&
+           finite(min_pitch) && finite(max_pitch) && *min_pitch < *max_pitch &&
+           finite(yaw_distance_boundary) && *yaw_distance_boundary > 0.0 &&
+           finite(near_max_yaw_command_jump) && *near_max_yaw_command_jump > 0.0 &&
+           finite(near_max_yaw_error) && *near_max_yaw_error > 0.0 &&
+           finite(far_max_yaw_command_jump) && *far_max_yaw_command_jump > 0.0 &&
+           finite(far_max_yaw_error) && *far_max_yaw_error > 0.0 &&
+           finite(max_aim_pitch_error) && *max_aim_pitch_error > 0.0 &&
+           finite(max_pitch_command_jump) && *max_pitch_command_jump > 0.0 &&
+           finite(max_pitch_error) && *max_pitch_error > 0.0 &&
            max_robot_state_age.count() > 0 &&
            max_gimbal_pose_age.count() > 0 &&
            max_plan_age.count() > 0;

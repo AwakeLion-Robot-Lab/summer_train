@@ -5,7 +5,9 @@
 #include "l2_perception/armor.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
-#include "l3_estimation/pnp_solver.hpp"
+#include "l3_estimation/target_estimator.hpp"
+#include "l4_planning/planner.hpp"
+#include "l5_control/controller.hpp"
 #include "l5_control/fire_decision.hpp"
 #include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
@@ -14,11 +16,27 @@
 
 #include <exception>
 #include <filesystem>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 namespace {
+
+bool isFiniteTarget(const L3Estimation::TargetState& target) noexcept
+{
+  return target.robot_id >= 0 &&
+         target.center.allFinite() &&
+         target.velocity.allFinite() &&
+         std::isfinite(target.yaw) &&
+         std::isfinite(target.yaw_rate) &&
+         std::isfinite(target.radius) &&
+         std::isfinite(target.radius_offset) &&
+         std::isfinite(target.height_offset) &&
+         target.covariance.allFinite();
+}
 
 // L1 的 enemy_color 是下位机给出的目标阵营；L2 的 ArmorColor 是图像识别结果。
 // 任何一侧未知时都不允许作为自瞄目标，避免误击友军。
@@ -80,7 +98,9 @@ void AutoAimRuntime::run() {
   // 火控配置只在启动时从 YAML 加载一次，FireEvaluator 在后续每帧复用。
   const L5Control::FireConfig fire_config =
     L5Control::loadFireConfig("config/fire_config.yaml");
-  [[maybe_unused]] L5Control::FireEvaluator fire_evaluator{fire_config};
+  L5Control::FireEvaluator fire_evaluator{fire_config};
+  L5Control::Controller controller;
+  L4Planning::Planner planner;
 
   //配置并启动串口
   auto serial_config = L1Sensor::loadSerialConfig("config/serial_config.yaml");
@@ -88,6 +108,23 @@ void AutoAimRuntime::run() {
   const bool serial_started = serial.start();
   if (!serial_started && serial_config.enable) {
     L6Telemetry::logWarn("Failed to start serial worker.");
+  }
+
+  std::unique_ptr<L3Estimation::TargetEstimator> target_estimator;
+  const auto& camera_calibration = camera->calibration();
+  if (camera_calibration && camera_calibration->barrelExtrinsicsReady()) {
+    const Eigen::Isometry3d& camera_to_control =
+      *camera_calibration->T_barrel_camera;
+    target_estimator = std::make_unique<L3Estimation::TargetEstimator>(
+      *camera_calibration,
+      camera_to_control.rotation(),
+      camera_to_control.translation(),
+      [&serial](L3Estimation::TimePoint time) {
+        return serial.gimbalPoseAt(time);
+      });
+  } else {
+    L6Telemetry::logWarn(
+      "auto aim calibration unavailable; L5 will remain fail-closed");
   }
   cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
 
@@ -107,8 +144,12 @@ void AutoAimRuntime::run() {
       const auto robot_state = serial.latestState();
       if (robot_state) {
         const auto &state = *robot_state;
-        const auto gimbal_pose = serial.gimbalPoseAt(timestamp);
-        (void)gimbal_pose;
+        std::optional<L3Estimation::TargetState> target;
+        L4Planning::AimPlan plan;
+        const bool calibration_ready =
+          target_estimator != nullptr &&
+          camera_calibration->matchesImageSize(frame.size());
+
         switch (state.mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
@@ -118,6 +159,16 @@ void AutoAimRuntime::run() {
           std::erase_if(armors, [&state](const auto &armor) {
             return !isEnemyArmor(armor.color, state.enemy_color);
           });
+
+          if (calibration_ready) {
+            const auto targets = target_estimator->update(armors, timestamp);
+            // 正式的多目标选择策略尚未实现；多于一个候选时保持关火，
+            // 避免 Runtime 在 L4 之外擅自引入目标优先级。
+            if (targets.size() == 1 && isFiniteTarget(targets.front())) {
+              target = targets.front();
+            }
+            plan = planner.plan(target, state);
+          }
           break;
         }
 
@@ -137,6 +188,19 @@ void AutoAimRuntime::run() {
           // 待机
           break;
         }
+
+
+        const L5Control::FireInput fire_input{
+          .target = target,
+          .plan = plan,
+          .robot_state = state,
+          .now = std::chrono::steady_clock::now(),
+          .calibration_ready = calibration_ready};
+        const L5Control::FireDecision fire_decision =
+          fire_evaluator.evaluate(fire_input);
+        const L5Control::SerialCommand command =
+          controller.makeCommand(plan, fire_decision, state);
+        serial.updateCommand(command);
       }
     }
 

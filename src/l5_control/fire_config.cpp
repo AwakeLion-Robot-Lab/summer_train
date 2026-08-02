@@ -98,8 +98,10 @@ FireConfig loadFireConfig(const std::string& config_path)
     readOptionalDouble(yaml, "min_bullet_speed_mps");
   config.max_bullet_speed =
     readOptionalDouble(yaml, "max_bullet_speed_mps");
-  
-
+  config.heat_limit =
+    readOptionalDouble(yaml, "heat_limit");
+  config.heat_per_shot =
+    readOptionalDouble(yaml, "heat_per_shot");
   config.min_yaw = readOptionalAngle(yaml, "min_yaw_deg");
   config.max_yaw = readOptionalAngle(yaml, "max_yaw_deg");
   config.min_pitch = readOptionalAngle(yaml, "min_pitch_deg");

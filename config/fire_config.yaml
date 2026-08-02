@@ -6,6 +6,8 @@ bullet_diameter_m: 0.017
 min_bullet_speed_mps: 10.0
 max_bullet_speed_mps: 35.0
 heat_limit: 260.0
+# 17 mm 弹丸每发增加 10 热量；42 mm 应配置为 100。
+heat_per_shot: 10.0
 
 # 云台机械范围，单位 degree。
 min_yaw_deg: -180.0
