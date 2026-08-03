@@ -289,40 +289,26 @@ within_firing_window 只在最终开火门控中使用。这样即使候选当�
  2. 剩余窗口 Q_window
 使用目标旋转角速度减去目标中心方位角速度，得到相对旋转角速度
 relative_yaw_rate。对旋转方向归一化后，phase_angle 始终沿装甲板
-转动方向递增：
-```
-phase_angle = sign(relative_yaw_rate) * delta_angle
-```
+转动方向递增：  phase_angle = sign(relative_yaw_rate) * delta_angle
 
-普通车辆的窗口为：
-```
--normal_enter_angle <= phase_angle <= normal_leave_angle
-```
+普通车辆的窗口为：  -normal_enter_angle <= phase_angle <= normal_leave_angle
 
-前哨站的窗口为：
-```
--outpost_enter_angle <= phase_angle <= outpost_leave_angle
-```
+前哨站的窗口为：  -outpost_enter_angle <= phase_angle <= outpost_leave_angle
 
-剩余窗口时间：
-```
-remaining_window_time =
-    (leave_angle - phase_angle) / abs(relative_yaw_rate)
-```
+剩余窗口时间：   remaining_window_time = (leave_angle - phase_angle) / abs(relative_yaw_rate)
+
 
 Q_window 在进入边界为1，在离开边界平滑下降到0。角速度小于
 rotation_rate_dead_zone 时按近似静止处理，窗口内 Q_window=1。
 
  3. 转向代价 Q_aim_cost
 使用当前云台姿态和候选装甲板最终弹道角计算合成角差：
-```
 yaw_error = abs(normalize_angle(candidate.ballistic.yaw - robot_state.rpy.yaw))
 pitch_error = abs(candidate.ballistic.pitch - robot_state.rpy.pitch)
 aim_angle_error = hypot(yaw_error, pitch_error)
-```
+
 
 使用 PlannerConfig 中的两个角度阈值平滑归一化：
-```
 good_angle_rad = aim_cost_good_angle * pi / 180
 bad_angle_rad = aim_cost_bad_angle * pi / 180
 x = clamp(
@@ -331,11 +317,9 @@ x = clamp(
     0,
     1)
 Q_aim_cost = 1 - x*x*(3 - 2*x)
-```
 
 Q_aim_cost 越大表示云台转向距离越短、转向代价越小。云台 yaw、pitch
 和候选弹道角的单位统一为 rad，两个配置阈值的单位为 degree。
-
 
   struct ArmorScoreWeights 
 {
@@ -375,19 +359,12 @@ struct ArmorScore
   其余有效候选中选最高分。
 
   锁定后：
-  每周期比较当前装甲板与其他有效候选的评分。只有满足
-  ```
-  best.score.quality
-      > current.score.quality + config.score_switch_threshold
-  ```
+  每周期比较当前装甲板与其他有效候选的评分。只有满足best.score.quality > current.score.quality + config.score_switch_threshold
   才主动换板，避免评分微小波动造成频繁切换。Tracking 状态下的主动
   换板不使用射击窗口作为强制切换条件；窗口外的高质量候选可以击败
   窗口内候选。当前装甲板失效时，仍使用 prefer_entering 规则恢复。
 
-  PlannerConfig 中对应的配置为：
-  ```
-  double score_switch_threshold{0.10};
-  ```
+  PlannerConfig 中对应的配置为：double score_switch_threshold{0.10};
 
 锁定过程的主要阶段：
   - 当前锁定（Tracking）：稳定跟踪当前装甲板；只有命中时刻处于
@@ -400,16 +377,21 @@ struct ArmorScore
 只有目标时间戳严格晚于上一帧观测时间戳时才视为新鲜观测；重复或倒退
 的时间戳按丢帧处理，不参与连续稳定确认，也不允许开火。
 
-状态转换大致如下：
+状态转换如下：
   Unlocked
-     ↓ 找到候选
-  Switching
-     ↓ 云台对准
-  Stabilizing
-     ↓ 连续稳定若干帧
-  Tracking
-     ↓ 同一候选的评分收益连续 3 帧超过 score_switch_threshold
-  Switching
+     │ 选出候选
+     ▼
+  Switching ──瞄准误差进入死区──▶ Stabilizing
+     ▲                              │
+     │ 瞄准误差重新变大             │ 连续稳定足够帧
+     └──────────────────────────────┤
+                                    ▼
+                                 Tracking
+                                    │
+                                    │ 当前板失效、出窗
+                                    │ 或其他板持续明显更优
+                                    ▼
+                                 Switching
 
 Tracking 主动换板由同一候选连续 score_switch_stable_frames 帧满足
 评分收益阈值触发 Switching，默认需要连续 3 帧。候选变化、评分优势
@@ -419,42 +401,6 @@ Tracking 主动换板由同一候选连续 score_switch_stable_frames 帧满足
 取消切换并恢复 Tracking；原装甲板也失效时改选其他有效候选；全部候选
 均失效时等待 max_lost_frames，超过阈值后解锁。
 
-### 锁定需要考虑的核心条件
-  1. 目标身份一致
-      - robot_id 与当前目标一致。
-      - armor_id 连续，不能仅凭最近距离关联。
-      - 装甲板类型与目标车型匹配。
-      - 需要防止切换到相邻车辆的装甲板。
-
-  2. 时序连续性
-      - 当前装甲板与上一周期锁定装甲板 ID 相同。
-      - 预测位置、速度和朝向变化合理，不能发生不符合车辆运动模型的跳变。
-      - 时间戳有效，观测和规划时间差不能过大。
-
-  3. 短时丢失容忍
-      - 文档规定可以连续丢失最多约 5 帧。
-      - 5 帧以内继续用运动模型预测，并保持锁定状态。
-      - 超过 5 帧，或预测不确定度过大，解除锁定并重新选择。
-
-  4. 预测结果有效
-      - PredictionResult.valid == true。
-      - 对应 ArmorPose.valid == true。
-      - 迭代拦截计算已经收敛。
-      - 飞行时间误差、位置误差和迭代次数处于允许范围。
-      - 协方差或预测置信度不能过差。
-
-  5. 命中时刻的装甲板朝向
-
-     应判断预测命中时刻的：
-     delta_angle = armor_yaw - center_yaw;
-     而不是只判断当前观测角度。窗口质量可以参与评分，但窗口本身不
-     强制 Tracking 状态换板；是否允许开火单独检查
-     within_firing_window。
-
-  6. 旋转方向和可持续跟踪性
-      - 根据 yaw_rate 判断装甲板正在转入还是转出正面。
-      - 优先锁定即将转入正面、预计射击窗口更长的装甲板。
-      - 已锁定时是否换板由评分收益阈值决定，不因转出窗口直接强制切换。
 
 
 TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即 装甲板朝向角－方位角）：
