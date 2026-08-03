@@ -139,7 +139,7 @@ void HikRobot::capture_start() {
       std::this_thread::sleep_for(1ms);
 
       unsigned int ret;
-      unsigned int nMsec = 10;
+      unsigned int nMsec = 100;
 
       ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
       if (ret != MV_OK) {
@@ -159,10 +159,10 @@ void HikRobot::capture_start() {
       // L1 对上层统一输出 OpenCV 的 BGR。MindVision 同样配置为 BGR，L2 因此不需要
       // 根据相机品牌猜测通道顺序，也不会把红蓝装甲板识别反。
       const static std::unordered_map<MvGvspPixelType, cv::ColorConversionCodes>
-          type_map = {{PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGR2BGR},
-                      {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRG2BGR},
-                      {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGB2BGR},
-                      {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBG2BGR}};
+          type_map = {{PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGRBG2BGR},
+                     {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRGGB2BGR},
+                     {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGBRG2BGR},
+                     {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBGGR2BGR}};
       const auto conversion = type_map.find(pixel_type);
       if (conversion == type_map.end()) {
         L6Telemetry::logWarn("Unsupported HikRobot pixel type",

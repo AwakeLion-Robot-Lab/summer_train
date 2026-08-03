@@ -21,7 +21,7 @@ const char* kCommandLineKeys =
   "{max-views      | 1000                 | Maximum diverse views used}"
   "{min-views      | 20                  | Minimum views required}"
   "{max-sharpness  | 3.0                 | Maximum edge transition width in pixels}"
-  "{min-contrast   | 50.0                | Minimum black-white gray-level difference}"
+  "{min-contrast   | 30.0                | Minimum black-white gray-level difference}"
   "{min-area       | 0.005               | Minimum inner-corner hull/image area ratio}"
   "{bootstrap      | 0                   | Parameter bootstrap iterations; 0 disables}"
   "{preview        | false               | Preview detected corners; q/Esc aborts}";
