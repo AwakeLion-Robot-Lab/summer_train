@@ -16,7 +16,7 @@ l6_telemetry   日志、trace、调试观测
 runtime        主循环和系统装配
 ```
 
-但当前核心算法还未完成：`EkfTracker::reset()` 为空实现，`TargetEstimator::update()` 直接返回 `nullopt`，`Planner::plan()` 只判断目标是否存在，`BallisticSolver::solvePitch()` 还未解弹道。因此路线必须先补“可运行闭环”，再引入高级估计和 MPC。
+该路线从补齐“可运行闭环”开始，再逐步引入高级估计和 MPC；当前弹道求解统一通过 `BallisticSolver::solve()` 接口完成。
 
 最终推荐路线：
 
@@ -621,7 +621,7 @@ struct TrajectoryPoint {
   double pitch_acc;
 };
 
-struct AimPlan {
+struct AimReference {
   double yaw;
   double pitch;
   double yaw_rate;
@@ -631,16 +631,22 @@ struct AimPlan {
   double fly_time;
   double prediction_time;
   int selected_armor_id;
+  bool valid;
+};
+
+struct AimPlan : AimReference {
   PlannerKind planner_kind;
-  std::vector<TrajectoryPoint> reference_trajectory;
-  std::vector<TrajectoryPoint> planned_trajectory;
+  bool using_MPC;
+  std::vector<TrajectoryPoint> samples;
   bool valid;
   bool fire;
   std::string reject_reason;
 };
 ```
 
-第一版 `SetpointPlanner` 可以只填当前命令点：`reference_trajectory/planned_trajectory` 各放 1 个点，`yaw_acc/pitch_acc = 0`，`planner_kind = Setpoint`。这样控制层、串口层、日志层不需要知道后续是否启用 MPC。
+第一版 `SetpointPlanner` 直接填充继承的参考字段，设置 `using_MPC=false` 并保持
+`samples` 为空。MPC 规划器设置 `using_MPC=true`，并保证 `samples.front()`
+是本周期立即执行的控制点。
 
 建议接口：
 
@@ -687,7 +693,8 @@ q(T) = q1, q'(T) = v1, q''(T) = acc1
 
 落地建议：
 
-- 第一版不做 MPC，先输出 yaw/pitch/yaw_rate/pitch_rate，并保留 `yaw_acc/pitch_acc/reference_trajectory/planned_trajectory` 字段。
+- 第一版不做 MPC，先输出 yaw/pitch/yaw_rate/pitch_rate，并保留
+  `yaw_acc/pitch_acc/using_MPC/samples` 字段。
 - TinyMPC 阶段先复现 sp_vision 当前实现，验证日志和火控。
 - 小陀螺切板稳定后，再实现 `QuinticSwitchBridge`，作为 TinyMPC 的轻量分支或高转速专项策略。
 - 五次多项式必须基于已锁定的切板时刻和前后两块装甲板轨迹；切板预测不稳定时不要启用。
@@ -722,7 +729,9 @@ pitch_thresh = atan(shooting_height / 2 / distance)
 - `Detection` 改为固定 4 点数组，并记录角点顺序。
 - 增加 `ArmorPose`、`ArmorObservation`、`TrackerState`。
 - `RobotState` 补充子弹速度、敌方颜色、模式、云台 yaw/pitch。
-- 增加 `PlannerInterface`、`AimPlan`、`TrajectoryPoint`、`PlannerKind`。第一版实现 `SetpointPlanner`，但接口字段包含 `yaw_acc/pitch_acc/reference_trajectory/planned_trajectory`，为 MPC 保留位置。
+- 增加 `PlannerInterface`、`AimPlan`、`TrajectoryPoint`、`PlannerKind`。
+  第一版实现 `SetpointPlanner`，接口字段包含
+  `yaw_acc/pitch_acc/using_MPC/samples`，为 MPC 保留位置。
 - 配置文件定义相机内参、畸变、外参、装甲板尺寸、弹速默认值。
 
 ### 第 1 阶段：可运行闭环
