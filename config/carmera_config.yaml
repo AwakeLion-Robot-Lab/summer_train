@@ -4,7 +4,7 @@
 # vid_pid: "f622:d13a" //需要更改
 
 camera_name: "hikrobot"
-exposure_ms: 4
+exposure_ms: 20
 gain: 10.0
 # lsusb | grep 2bdf
 vid_pid: "2bdf:0001"

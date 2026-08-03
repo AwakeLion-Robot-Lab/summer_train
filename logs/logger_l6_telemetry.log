@@ -5490,3 +5490,24 @@
 [2026-08-02 16:41:21.884239482] [[INFO]] serial worker started /dev/ttyACM0 tx disabled
 [2026-08-02 16:41:21.884243853] [[INFO]] waiting for first gimbal pose serial /dev/ttyACM0
 [2026-08-02 16:41:21.884555538] [[WARN]] serial open failed /dev/ttyACM0 IO Exception (2): No such file or directory, file tools/serial/src/impl/unix.cc, line 151.
+[2026-08-02 18:56:20.940829523] [[INFO]] serial configured /dev/ttyACM0 115200
+[2026-08-02 18:56:20.940950882] [[INFO]] serial worker started /dev/ttyACM0 tx disabled
+[2026-08-02 18:56:20.940954905] [[INFO]] waiting for first gimbal pose serial /dev/ttyACM0
+[2026-08-02 18:56:20.941316303] [[WARN]] serial open failed /dev/ttyACM0 IO Exception (2): No such file or directory, file tools/serial/src/impl/unix.cc, line 151.
+[2026-08-02 18:59:12.691006918] [[INFO]] camera calibration loaded config/carmera_config.yaml image 1440 1080 distortion_coefficients 5
+[2026-08-02 18:59:12.691876723] [[INFO]] camera capture started config config/carmera_config.yaml fps 1 output calibration_images/2026-08-02_18-59-12
+[2026-08-02 18:59:12.692043180] [[INFO]] HikRobot's daemon thread started.
+[2026-08-02 18:59:14.008956931] [[INFO]] HikRobot's capture thread started.
+[2026-08-02 19:02:54.304058556] [[INFO]] HikRobot's capture thread stopped.
+[2026-08-02 19:02:54.308987952] [[INFO]] camera capture stopped saved 218 output calibration_images/2026-08-02_18-59-12
+[2026-08-02 19:02:54.479494560] [[INFO]] Reset usb successfully :)
+[2026-08-02 19:02:54.479545364] [[INFO]] HikRobot's daemon thread stopped.
+[2026-08-02 19:02:54.480196810] [[INFO]] HikRobot destructed.
+[2026-08-02 19:15:13.926420396] [[INFO]] camera calibration loaded config/carmera_config.yaml image 1440 1080 distortion_coefficients 5
+[2026-08-02 19:15:13.926762627] [[INFO]] camera capture started config config/carmera_config.yaml fps 1 output calibration_images/2026-08-02_19-15-13
+[2026-08-02 19:15:13.926835991] [[INFO]] HikRobot's daemon thread started.
+[2026-08-02 19:15:15.157029588] [[INFO]] HikRobot's capture thread started.
+[2026-08-02 19:15:47.390693317] [[INFO]] camera capture stopped saved 32 output calibration_images/2026-08-02_19-15-13
+[2026-08-02 19:15:47.402739802] [[INFO]] HikRobot's capture thread stopped.
+[2026-08-02 19:15:47.413071580] [[INFO]] HikRobot's daemon thread stopped.
+[2026-08-02 19:15:47.413172090] [[INFO]] HikRobot destructed.
