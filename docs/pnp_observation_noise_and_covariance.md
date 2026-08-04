@@ -359,3 +359,279 @@ R = 0.5 * (R + R.transpose());
 
 在第 5 步完成前，当前“保留协方差接口但禁止进入 EKF”的策略是有意的安全
 边界，而不是把单位阵当作已经可用的观测噪声。
+
+ ## 最相关的论文
+
+  ### 1. MonoRUn：直接推导 PnP 位姿协方差
+
+  Hansheng Chen 等，CVPR 2021：
+
+  MonoRUn: Monocular 3D Object Detection by Reconstruction and Uncertainty
+  Propagation (https://arxiv.org/abs/2103.12605)
+
+  论文第 3.4 节给出的核心关系是：
+
+  PnP 位姿协方差：
+
+  P_pose ≈ inverse(H)
+
+  其中 (H) 是负对数似然函数在 PnP 最优解处的 Hessian。
+
+  为了避免计算二阶导数，论文使用 Gauss–Newton 近似：
+
+  H ≈ Jᵀ × J
+
+  所以：
+
+  P_pose ≈ inverse(Jᵀ × J)
+
+  如果像素残差具有协方差 Σ_pixel，把残差白化以后就得到：
+
+  P_pose ≈
+  inverse(
+      Jᵀ × inverse(Σ_pixel) × J
+  )
+
+  这正是我们前面推导的公式。
+
+  更重要的是，作者发现这个理论协方差通常会低估实际误差，因为神经网络输出的不同像
+  素并不真正独立。因此论文又增加了协方差校准：
+
+  P_calibrated = D × inverse(Jᵀ × J) × D
+
+  其中：
+
+  D = diag(exp(k))
+
+  这与前面提到的缩放系数 (\alpha) 思路基本一致，只不过论文允许不同位姿方向使用不
+  同缩放系数。
+
+  对自瞄而言，可以改成：
+
+  D = diag(
+      scale_x,
+      scale_y,
+      scale_z,
+      scale_roll,
+      scale_pitch,
+      scale_yaw
+  )
+
+  比只使用一个标量 (\alpha) 更合理。
+
+  ———
+
+  ### 2. MLPnP：最大似然 PnP 和内部精度估计
+
+  Steffen Urban 等，ISPRS 2016：
+
+  MLPnP – A Real-Time Maximum Likelihood Solution to the Perspective-n-Point
+  Problem (https://isprs-annals.copernicus.org/articles/III-3/131/2016/)
+
+  这是 PnP 不确定性领域非常直接的一篇论文，重点包括：
+
+  - 将二维观测协方差加入 PnP；
+  - 使用最大似然而不是普通最小二乘；
+  - 将像素协方差传播到单位观测射线的切平面；
+  - 给出旋转和平移参数的内部精度估计；
+  - 支持一般中心投影相机。
+
+  它采用的基本统计模型也是：
+
+  观测 = 理论值 + 高斯噪声
+
+  对应优化目标：
+
+  cost =
+  residualᵀ
+  × inverse(observation_covariance)
+  × residual
+
+  如果你想从传统几何方法出发，而不依赖神经网络，这篇最值得先读。
+
+  ———
+
+  ### 3. CEPPnP：每个角点拥有不同的二维协方差
+
+  Luis Ferraz 等，BMVC 2014：
+
+  Leveraging Feature Uncertainty in the PnP Problem
+  (https://bmva-archive.org.uk/bmvc/2014/papers/paper065/index.html)
+
+  论文提出 CEPPnP，将每个二维特征点建模为各向异性高斯分布：
+
+  corner_i ~ N(mean_i, Σ_i)
+
+  每个角点对应自己的：
+
+  Σ_i =
+  [variance_u       covariance_uv
+   covariance_uv    variance_v]
+
+  PnP 优化的不再是普通欧氏距离，而是 Mahalanobis 距离：
+
+  error_i =
+  residual_iᵀ × inverse(Σ_i) × residual_i
+
+  所以：
+
+  - 清晰角点权重大；
+  - 模糊角点权重小；
+  - 水平方向模糊时，只降低水平方向权重；
+  - 不需要把所有角点都假设成相同的 1 px 噪声。
+
+  这篇论文还讨论了平面目标，和 RoboMaster 装甲板的四点共面结构比较接近。
+
+  ———
+
+  ### 4. PVNet：从网络输出中计算关键点协方差
+
+  Sida Peng 等，CVPR 2019：
+
+  PVNet: Pixel-Wise Voting Network for 6DoF Pose Estimation
+  (https://openaccess.thecvf.com/content_CVPR_2019/html/Peng_PVNet_Pixel-Wise_Vo
+ting_Network_for_6DoF_Pose_Estimation_CVPR_2019_paper.html)
+
+  PVNet 不仅输出关键点位置，还通过大量像素投票得到每个关键点的位置分布。
+
+  对第 (i) 个关键点，先计算加权均值：
+
+  μ_i =
+  sum(weight_j × hypothesis_j)
+  /
+  sum(weight_j)
+
+  再计算协方差：
+
+  Σ_i =
+  sum(
+      weight_j
+      × (hypothesis_j - μ_i)
+      × (hypothesis_j - μ_i)ᵀ
+  )
+  /
+  sum(weight_j)
+
+  然后把这些关键点协方差用于 uncertainty-driven PnP。
+
+  这篇论文对自瞄的意义是：如果装甲检测网络能输出角点热力图、投票点或多个角点候
+  选，就不需要手动设置固定的像素噪声，可以直接从检测分布计算 Σ_pixel。
+
+  ———
+
+  ### 5. 同时考虑二维角点和三维模型误差
+
+  Alexander Vakhitov 等，CVPR 2021：
+
+  Uncertainty-Aware Camera Pose Estimation From Points and Lines
+  (https://openaccess.thecvf.com/content/CVPR2021/html/Vakhitov_Uncertainty-Awar
+e_Camera_Pose_Estimation_From_Points_and_Lines_CVPR_2021_paper.html)
+
+  前面的 MLPnP 和 CEPPnP 主要考虑二维特征误差。这篇论文进一步同时考虑：
+
+  二维角点位置误差
+  +
+  三维模型点误差
+
+  对自瞄来说，三维模型误差可能来自：
+
+  - 实际装甲板尺寸与标准尺寸存在偏差；
+  - 大小装甲分类错误；
+  - 灯条中心不等于物理角点；
+  - 装甲板弯曲；
+  - 角点定义与 PnP 三维点定义不一致。
+
+  论文还提出迭代更新协方差的 uncertainty-aware refinement，因为三维点误差投影到
+  图像后的协方差会随当前姿态变化。
+
+  ———
+
+  ### 6. 完整概率分布和 PnP 多解
+
+  Hansheng Chen 等，CVPR 2022：
+
+  EPro-PnP: Generalized End-to-End Probabilistic Perspective-N-Points
+  (https://openaccess.thecvf.com/content/CVPR2022/html/Chen_EPro-PnP_Generalized
+_End-to-End_Probabilistic_Perspective-N-Points_for_Monocular_Object_Pose_Estimat
+ion_CVPR_2022_paper.html)
+
+  EPro-PnP 不再只输出：
+
+  一个最优位姿 + 一个协方差
+
+  而是输出 (SE(3)) 上的完整位姿概率分布。
+
+  它适合处理：
+
+  - 平面 PnP 双解；
+  - 对称目标；
+  - 部分遮挡；
+  - 位姿分布明显非高斯；
+  - 多个姿态具有相近重投影误差。
+
+  装甲板四点共面时，PnP 有时不是“一个高斯峰”，而是“两个可能解”。这种情况下，无论
+  怎样增大单个 (R_k)，都不能正确表达双峰分布，EPro-PnP 的思想更完整。
+
+  不过它更适合端到端网络，工程改造成本明显高于 Hessian 协方差方法。
+
+  ———
+
+  ### 7. 用 PnP 协方差训练角点网络
+
+  Fulin Liu 等，ICCV 2023：
+
+  Linear-Covariance Loss for End-to-End Learning of 6D Pose Estimation
+  (https://openaccess.thecvf.com/content/ICCV2023/html/Liu_Linear-Covariance_Los
+s_for_End-to-End_Learning_of_6D_Pose_Estimation_ICCV_2023_paper.html)
+
+  这篇论文明确对 PnP 进行线性化并计算位姿分布协方差，然后用协方差设计训练损失。
+
+  它关注的不是运行时滤波，而是：
+
+  怎样训练角点网络，
+  让角点误差经过 PnP 后产生尽可能小的位姿误差
+
+  这很有价值，因为同样是 1 px 误差：
+
+  - 某些角点方向的误差几乎不影响距离；
+  - 某些方向的误差会严重放大深度；
+  - 单纯最小化平均角点误差未必最有利于 PnP。
+
+  ———
+
+  ## 针对自瞄最推荐的阅读顺序
+
+  建议按下面顺序读：
+
+  1. MonoRUn
+     重点看 PnP Covariance Estimation 和 Covariance Calibration
+
+  2. MLPnP
+     理解带观测协方差的最大似然 PnP
+
+  3. Leveraging Feature Uncertainty in the PnP Problem
+     理解每个角点的各向异性二维协方差
+
+  4. PVNet
+     学习如何从网络输出得到角点协方差
+
+  5. EPro-PnP
+     研究平面双解和非高斯位姿分布
+
+  对于当前 RoboMaster 四角点装甲板，我最建议落地的组合是：
+
+  PVNet 的角点协方差思想
+          ↓
+  MLPnP / CEPPnP 的加权重投影优化
+          ↓
+  MonoRUn 的 inverse-Hessian 位姿协方差
+          ↓
+  离线数据或 NIS 协方差校准
+          ↓
+  作为状态估计器每一帧的 R_k
+
+  需要特别注意：四个共面角点的数据量太少，不适合根据单帧 PnP 重投影残差同时估计
+  完整噪声分布。更稳妥的是离线估计角点噪声尺度，每帧只利用 Jacobian 改变协方差的
+  形状和大小。
+
+

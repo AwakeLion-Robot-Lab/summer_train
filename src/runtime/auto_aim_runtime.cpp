@@ -12,12 +12,14 @@
 #include "runtime/auto_aim_config.hpp"
 #include <opencv2/opencv.hpp>
 
+#include <cmath>
 #include <exception>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -35,6 +37,29 @@ namespace {
   }
 
   return false;
+}
+
+[[nodiscard]] L3Estimation::Armor toArmorObservation(
+  const L2Perception::Armor& detection,
+  L3Estimation::TimePoint timestamp)
+{
+  L3Estimation::Armor observation;
+  observation.class_id = detection.class_id;
+  observation.points = detection.corners;
+  observation.confidence = detection.confidence;
+  observation.timestamp = timestamp;
+
+  double twice_signed_area = 0.0;
+  for (std::size_t index = 0; index < detection.corners.size(); ++index) {
+    const auto& current = detection.corners[index];
+    const auto& next =
+      detection.corners[(index + 1) % detection.corners.size()];
+    twice_signed_area +=
+      static_cast<double>(current.x) * static_cast<double>(next.y) -
+      static_cast<double>(current.y) * static_cast<double>(next.x);
+  }
+  observation.area = std::abs(twice_signed_area) * 0.5;
+  return observation;
 }
 
 L2Perception::ArmorDetector makeArmorDetector()
@@ -135,6 +160,16 @@ void AutoAimRuntime::run() {
           std::erase_if(armors, [&state](const auto &armor) {
             return !isEnemyArmor(armor.color, state.enemy_color);
           });
+
+          // L2 检测和 L3 观测保持为不同类型，跨层字段在这里显式复制。
+          [[maybe_unused]] std::vector<L3Estimation::Armor> observations;
+          observations.reserve(armors.size());
+          if (pnp_solver && pnp_solver->ready() && q_world_barrel) {
+            for (const auto& armor : armors) {
+              observations.push_back(toArmorObservation(armor, timestamp));
+              pnp_solver->single_pnp(observations.back());
+            }
+          }
           break;
         }
 

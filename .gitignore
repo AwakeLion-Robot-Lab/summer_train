@@ -1,0 +1,42 @@
+# xmake and build outputs
+/.xmake/
+/build/
+/install/
+/out/
+
+# CMake-generated files
+/CMakeCache.txt
+/CMakeFiles/
+/cmake_install.cmake
+/compile_commands.json
+/cmake-build-*/
+
+# Runtime-generated logs and traces
+/logs/*
+!/logs/.gitkeep
+
+# Test and coverage artifacts
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+/Testing/
+
+# Editor and language-server files
+/.clangd/
+/.ccls-cache/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Crash dumps
+/core
+/core.*
+/vgcore.*
