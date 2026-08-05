@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root>
+ <tabbed_widget parent="main_window" name="Main Window">
+  <Tab tab_name="L3 RPY" containers="1">
+   <Container>
+    <DockSplitter sizes="0.333333;0.333333;0.333334" count="3" orientation="-">
+     <DockArea name="roll">
+      <plot mode="TimeSeries" style="Lines" flip_x="false" flip_y="false">
+       <range left="0" right="10" bottom="-3.2" top="3.2"/>
+       <limitY/>
+       <curve name="/gimbal/rpy_rad/roll" color="#1f77b4"/>
+       <curve name="/l3/observation/raw_rpy_rad/roll" color="#ff7f0e"/>
+       <curve name="/l3/observation/optimized_rpy_rad/roll" color="#2ca02c"/>
+      </plot>
+     </DockArea>
+     <DockArea name="pitch">
+      <plot mode="TimeSeries" style="Lines" flip_x="false" flip_y="false">
+       <range left="0" right="10" bottom="-1.6" top="1.6"/>
+       <limitY/>
+       <curve name="/gimbal/rpy_rad/pitch" color="#1f77b4"/>
+       <curve name="/l3/observation/raw_rpy_rad/pitch" color="#ff7f0e"/>
+       <curve name="/l3/observation/optimized_rpy_rad/pitch" color="#2ca02c"/>
+      </plot>
+     </DockArea>
+     <DockArea name="yaw">
+      <plot mode="TimeSeries" style="Lines" flip_x="false" flip_y="false">
+       <range left="0" right="10" bottom="-3.2" top="3.2"/>
+       <limitY/>
+       <curve name="/gimbal/rpy_rad/yaw" color="#1f77b4"/>
+       <curve name="/l3/observation/raw_rpy_rad/yaw" color="#ff7f0e"/>
+       <curve name="/l3/observation/optimized_rpy_rad/yaw" color="#2ca02c"/>
+       <curve name="/l3/target/yaw_rad" color="#d62728"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab tab_name="Position and time" containers="1">
+   <Container>
+    <DockSplitter sizes="0.34;0.33;0.33" count="3" orientation="-">
+     <DockArea name="position">
+      <plot mode="TimeSeries" style="Lines" flip_x="false" flip_y="false">
+       <range left="0" right="10" bottom="-5" top="5"/>
+       <limitY/>
+       <curve name="/l3/observation/position_m/x" color="#1f77b4"/>
+       <curve name="/l3/observation/position_m/y" color="#ff7f0e"/>
+       <curve name="/l3/observation/position_m/z" color="#2ca02c"/>
+      </plot>
+     </DockArea>
+     <DockArea name="timing">
+      <plot mode="TimeSeries" style="Lines" flip_x="false" flip_y="false">
+       <range left="0" right="10" bottom="0" top="30"/>
+       <limitY/>
+       <curve name="/performance/l2_ms" color="#9467bd"/>
+       <curve name="/performance/l3_ms" color="#8c564b"/>
+      </plot>
+     </DockArea>
+     <DockArea name="realtime">
+      <plot mode="TimeSeries" style="Lines" flip_x="false" flip_y="false">
+       <range left="0" right="10" bottom="0" top="30"/>
+       <limitY/>
+       <curve name="/performance/realtime_lag_ms" color="#d62728"/>
+       <curve name="/performance/skipped_frames" color="#7f7f7f"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab tab_name="Vehicle geometry" containers="1">
+   <Container>
+    <DockSplitter sizes="0.5;0.5" count="2" orientation="-">
+     <DockArea name="radii">
+      <plot mode="TimeSeries" style="Lines" flip_x="false" flip_y="false">
+       <range left="0" right="10" bottom="0" top="0.6"/>
+       <limitY/>
+       <curve name="/l3/target/geometry/radius_1_m" color="#1f77b4"/>
+       <curve name="/l3/target/geometry/radius_2_m" color="#ff7f0e"/>
+      </plot>
+     </DockArea>
+     <DockArea name="minimum corner angle">
+      <plot mode="TimeSeries" style="Lines" flip_x="false" flip_y="false">
+       <range left="0" right="10" bottom="0" top="1.7"/>
+       <limitY/>
+       <curve name="/l3/target/geometry/minimum_corner_angle_rad" color="#2ca02c"/>
+       <curve name="/geometry_constraints_enabled" color="#d62728"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <currentTabIndex index="0"/>
+ </tabbed_widget>
+ <use_relative_time_offset enabled="1"/>
+ <Plugins>
+  <plugin ID="UDP Server"/>
+  <plugin ID="Quaternion to RPY"/>
+ </Plugins>
+ <previouslyLoaded_Datafiles/>
+ <previouslyLoaded_Streamer name="UDP Server"/>
+ <customMathEquations/>
+ <snippets/>
+</root>

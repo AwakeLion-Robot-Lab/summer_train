@@ -54,6 +54,12 @@ cv::Matx33d cvRotation(const Eigen::Matrix3d& rotation)
   return result;
 }
 
+Eigen::Vector3d rotationToRpy(const Eigen::Matrix3d& rotation)
+{
+  const Eigen::Vector3d ypr = rotation.eulerAngles(2, 1, 0);
+  return {ypr.z(), ypr.y(), ypr.x()};
+}
+
 }  // namespace
 
 YawOptimizer::YawOptimizer(
@@ -219,6 +225,7 @@ std::optional<YawOptimizationResult> YawOptimizer::optimize(
     return std::nullopt;
   }
   return YawOptimizationResult{
+    .rpy_raw_world = rotationToRpy(R_world_armor_raw),
     .yaw_raw_world = yaw_raw_world,
     .yaw_optimized_world = normalizeAngle(best_yaw),
     .pnp_reprojection_error_px = pose.reprojection_error_px,

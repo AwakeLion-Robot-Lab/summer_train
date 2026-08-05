@@ -156,6 +156,14 @@ int main()
       kPitch);
     require(result.has_value(), "1-degree yaw search failed");
     require(
+      result->rpy_raw_world.allFinite()
+        && angleError(result->rpy_raw_world.x(), 0.0) < 1e-9
+        && angleError(result->rpy_raw_world.y(), kPitch) < 1e-9
+        && angleError(
+             result->rpy_raw_world.z(),
+             kExpectedYaw + 0.20) < 1e-9,
+      "raw world RPY does not match the PnP pose");
+    require(
       angleError(result->yaw_optimized_world, kExpectedYaw)
         <= 1.1 * std::numbers::pi / 180.0,
       "1-degree yaw search did not recover the known yaw");

@@ -8,7 +8,7 @@ xmake run camera_capture -- config/carmera_config.yaml \
 
 接着调用cv标定
 xmake run camera_calibrator -- \
-  calibration_images/2026-08-02_18-59-12
+  calibration_images/2026-08-05_11-43-56
   
 文件名记得改成刚拍下来那个
 

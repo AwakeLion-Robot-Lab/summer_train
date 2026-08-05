@@ -162,7 +162,7 @@ void HikRobot::capture_start() {
           type_map = {{PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGRBG2BGR},
                      {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRGGB2BGR},
                      {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGBRG2BGR},
-                     {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBGGR2BGR}};
+                     {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBGGR2BGR}};//如果报错就检查当前小电脑的opencv版本
       const auto conversion = type_map.find(pixel_type);
       if (conversion == type_map.end()) {
         L6Telemetry::logWarn("Unsupported HikRobot pixel type",

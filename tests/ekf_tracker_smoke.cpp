@@ -1,5 +1,6 @@
 #include "l3_estimation/ekf_tracker.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -144,6 +145,127 @@ void testFourArmorTracker()
     "stale observation changed the current filter state");
 }
 
+void testFourArmorGeometryConstraints()
+{
+  constexpr double kDegree = std::numbers::pi / 180.0;
+  require(
+    std::abs(
+      L3Estimation::fourArmorMinimumCornerAngle(0.20, 0.20)
+      - 90.0 * kDegree) < 1e-12,
+    "equal radii did not produce a 90 degree corner");
+  require(
+    std::abs(
+      L3Estimation::fourArmorMinimumCornerAngle(
+        0.20, 0.20 * std::tan(25.0 * kDegree))
+      - 50.0 * kDegree) < 1e-12,
+    "50 degree radius-ratio boundary is incorrect");
+  require(
+    L3Estimation::fourArmorMinimumCornerAngle(0.50, 0.05)
+      < 50.0 * kDegree,
+    "elongated four-armor geometry was not identified");
+
+  L3Estimation::EkfTrackerConfig config;
+  config.confirmation_hits = 1;
+  config.initial_radius = 0.20;
+  config.association_position_gate = 0.40;
+  config.association_yaw_gate = 0.80;
+  config.association_radius_gate = 0.30;
+  config.minimum_four_armor_corner_angle_rad = 50.0 * kDegree;
+  const Eigen::Vector3d center{3.0, 0.2, 0.5};
+  constexpr double kYaw = 0.25;
+
+  L3Estimation::EkfTracker rejected_tracker{
+    kRobotId,
+    L3Estimation::TargetModel::FourArmorVehicle,
+    config};
+  (void)rejected_tracker.update({
+    makeObservation(
+      L3Estimation::TargetModel::FourArmorVehicle,
+      center,
+      kYaw,
+      0,
+      0.20,
+      timestampAt(0))});
+  const auto rejected = rejected_tracker.update({
+    makeObservation(
+      L3Estimation::TargetModel::FourArmorVehicle,
+      center,
+      kYaw,
+      1,
+      0.05,
+      timestampAt(20))});
+  require(
+    rejected_tracker.trackerState()
+        == L3Estimation::TrackerState::TemporaryLost
+      && std::none_of(
+        rejected.begin(), rejected.end(),
+        [](const auto& diagnostic) { return diagnostic.accepted; }),
+    "sub-50-degree association passed the geometry gate");
+
+  config.enable_vehicle_geometry_constraints = false;
+  L3Estimation::EkfTracker baseline_tracker{
+    kRobotId,
+    L3Estimation::TargetModel::FourArmorVehicle,
+    config};
+  (void)baseline_tracker.update({
+    makeObservation(
+      L3Estimation::TargetModel::FourArmorVehicle,
+      center,
+      kYaw,
+      0,
+      0.20,
+      timestampAt(0))});
+  const auto elongated_face = makeObservation(
+    L3Estimation::TargetModel::FourArmorVehicle,
+    center,
+    kYaw,
+    1,
+    0.05,
+    timestampAt(20));
+  const auto baseline = baseline_tracker.update({
+    elongated_face, elongated_face});
+  require(
+    baseline_tracker.trackerState() == L3Estimation::TrackerState::Tracking
+      && std::count_if(
+           baseline.begin(), baseline.end(),
+           [](const auto& diagnostic) { return diagnostic.accepted; }) == 2,
+    "disabled geometry constraints did not restore baseline association");
+
+  config.enable_vehicle_geometry_constraints = true;
+  L3Estimation::EkfTracker equal_radius_tracker{
+    kRobotId,
+    L3Estimation::TargetModel::FourArmorVehicle,
+    config};
+  (void)equal_radius_tracker.update({
+    makeObservation(
+      L3Estimation::TargetModel::FourArmorVehicle,
+      center,
+      kYaw,
+      0,
+      0.20,
+      timestampAt(0))});
+  const auto duplicate_face = makeObservation(
+    L3Estimation::TargetModel::FourArmorVehicle,
+    center,
+    kYaw,
+    1,
+    0.20,
+    timestampAt(20));
+  const auto accepted = equal_radius_tracker.update({
+    duplicate_face, duplicate_face});
+  require(
+    equal_radius_tracker.trackerState()
+        == L3Estimation::TrackerState::Tracking
+      && std::count_if(
+           accepted.begin(), accepted.end(),
+           [](const auto& diagnostic) { return diagnostic.accepted; }) == 1
+      && accepted.front().associated_face_id == 1
+      && std::abs(
+           accepted.front().minimum_corner_angle_rad
+           - 90.0 * kDegree) < 1e-12,
+    "equal-radius association or one-face-one-observation constraint failed");
+}
+
 void testOutpostConstraints()
 {
   L3Estimation::EkfTrackerConfig config;
@@ -188,6 +310,7 @@ int main()
 {
   try {
     testFourArmorTracker();
+    testFourArmorGeometryConstraints();
     testOutpostConstraints();
   } catch (const std::exception& error) {
     std::cerr << "EkfTracker smoke test failed: "
