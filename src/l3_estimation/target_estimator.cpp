@@ -119,6 +119,7 @@ Eigen::Vector3d TargetEstimator::positionInWorld(
 
 std::optional<ArmorObservation> TargetEstimator::makeObservation(
   const L2Perception::ArmorDetection& armor,
+  std::size_t source_detection_index,
   TimePoint timestamp,
   const Eigen::Quaterniond& R_world_barrel) const
 {
@@ -153,10 +154,16 @@ std::optional<ArmorObservation> TargetEstimator::makeObservation(
   }
 
   return ArmorObservation{
+    .source_detection_index = source_detection_index,
     .robot_id = robot_id,
     .armor_class = L2Perception::armorClassFromId(armor.class_id),
     .model = *model,
     .position_world = position_world,
+    .rpy_raw_world = yaw->rpy_raw_world,
+    .rpy_constrained_world = {
+      0.0,
+      config_.armor.parameters(*model).pitch_rad,
+      yaw->yaw_optimized_world},
     .yaw_raw_world = yaw->yaw_raw_world,
     .yaw_world = yaw->yaw_optimized_world,
     .confidence = armor.confidence,
@@ -176,9 +183,11 @@ std::vector<ArmorObservation> TargetEstimator::buildObservations(
 {
   std::vector<ArmorObservation> observations;
   observations.reserve(armors.size());
-  for (const auto& armor : armors) {
+  for (std::size_t index = 0; index < armors.size(); ++index) {
+    const auto& armor = armors[index];
     if (auto observation = makeObservation(
           armor,
+          index,
           timestamp,
           R_world_barrel)) {
       observations.push_back(std::move(*observation));

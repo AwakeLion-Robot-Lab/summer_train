@@ -19,6 +19,8 @@ struct YawSearchConfig {
 };
 
 struct YawOptimizationResult {
+  // 世界系原始 PnP 姿态，顺序固定为 [roll, pitch, yaw]，单位 rad。
+  Eigen::Vector3d rpy_raw_world = Eigen::Vector3d::Zero();
   double yaw_raw_world = 0.0;
   double yaw_optimized_world = 0.0;
   double pnp_reprojection_error_px = 0.0;

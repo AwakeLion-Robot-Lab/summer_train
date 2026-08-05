@@ -4,7 +4,9 @@
 
 #include <Eigen/Core>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <numbers>
 #include <vector>
@@ -43,6 +45,23 @@ struct TargetModelTraits {
   return {};
 }
 
+// 四装甲模型俯视图中，相邻装甲中心连成的四边形具有两种内角。
+// r1/r2 是两组相对装甲到旋转中心的半径，返回较小内角，范围 (0, pi/2]。
+[[nodiscard]] inline double fourArmorMinimumCornerAngle(
+  double first_radius,
+  double second_radius) noexcept
+{
+  if (!std::isfinite(first_radius)
+      || !std::isfinite(second_radius)
+      || first_radius <= 0.0
+      || second_radius <= 0.0) {
+    return 0.0;
+  }
+  return 2.0 * std::atan2(
+    std::min(first_radius, second_radius),
+    std::max(first_radius, second_radius));
+}
+
 // 每次处理一帧时显式传入时间戳和图像尺寸。
 struct FrameContext {
   TimePoint timestamp{};
@@ -65,11 +84,17 @@ enum class TrackerState {
 
 // 一块二维装甲板经过 PnP、yaw 遍历和坐标变换后的世界系观测。
 struct ArmorObservation {
+  // 对应本帧 ArmorDetection 数组下标，供回放工具把 L3 信息画回检测框。
+  std::size_t source_detection_index = 0;
   int robot_id = -1;
   L2Perception::ArmorClass armor_class = L2Perception::ArmorClass::Unknown;
   TargetModel model = TargetModel::FourArmorVehicle;
 
   Eigen::Vector3d position_world = Eigen::Vector3d::Zero();
+  // RPY 顺序固定为 [roll, pitch, yaw]，单位 rad。
+  Eigen::Vector3d rpy_raw_world = Eigen::Vector3d::Zero();
+  // 基线姿态约束为 Rz(yaw)Ry(configured_pitch)，因此 roll 固定为 0。
+  Eigen::Vector3d rpy_constrained_world = Eigen::Vector3d::Zero();
   double yaw_raw_world = 0.0;
   double yaw_world = 0.0;
 
@@ -87,6 +112,9 @@ struct AssociationDiagnostic {
   int associated_face_id = -1;
   double position_error_m = 0.0;
   double yaw_error_rad = 0.0;
+  double implied_radius_m = 0.0;
+  double radius_error_m = 0.0;
+  double minimum_corner_angle_rad = 0.0;
   double match_cost = 0.0;
   Eigen::Vector4d innovation = Eigen::Vector4d::Zero();
   double nis = 0.0;

@@ -12,19 +12,19 @@
 namespace {
 
 const char* kCommandLineKeys =
-  "{help h usage ? |                     | Show command line help}"
-  "{@input-dir     |                     | Saver image session directory}"
-  "{output-dir o   | calibration_results | Result directory root}"
-  "{cols           | 11                  | Checkerboard inner-corner columns}"
-  "{rows           | 8                   | Checkerboard inner-corner rows}"
-  "{square-size    | 15.0                 | Checker square size in one consistent unit}"
-  "{max-views      | 1000                 | Maximum diverse views used}"
-  "{min-views      | 20                  | Minimum views required}"
-  "{max-sharpness  | 3.0                 | Maximum edge transition width in pixels}"
-  "{min-contrast   | 30.0                | Minimum black-white gray-level difference}"
-  "{min-area       | 0.005               | Minimum inner-corner hull/image area ratio}"
-  "{bootstrap      | 0                   | Parameter bootstrap iterations; 0 disables}"
-  "{preview        | false               | Preview detected corners; q/Esc aborts}";
+  "{help h usage ? |                     | 显示命令行帮助}"
+  "{@input-dir     |                     | 相机采集生成的图像会话目录}"
+  "{output-dir o   | calibration_results | 标定结果的根目录}"
+  "{cols           | 11                  | 棋盘格水平方向的内角点数量}"
+  "{rows           | 8                   | 棋盘格垂直方向的内角点数量}"
+  "{square-size    | 15.0                 | 棋盘格单格边长，单位须保持一致}"
+  "{max-views      | 1000                 | 最多使用的多样视角数量}"
+  "{min-views      | 20                  | 标定所需的最少有效视角数量}"
+  "{max-sharpness  | 5.0                 | 最大边缘过渡宽度，单位为像素，越小越清晰}"
+  "{min-contrast   | 30.0                | 黑白区域的最小灰度差}"
+  "{min-area       | 0.005               | 内角点凸包占图像面积的最小比例}"
+  "{bootstrap      | 0                   | 参数重采样次数，0 表示关闭}"
+  "{preview        | false               | 预览角点检测结果，按 q 或 Esc 终止}";
 
 void printMatrix(const cv::Mat& matrix)
 {
@@ -45,8 +45,8 @@ int run(int argc, char* argv[])
 {
   cv::CommandLineParser parser(argc, argv, kCommandLineKeys);
   parser.about(
-    "High-precision checkerboard camera calibration from saver images.\n"
-    "Pattern dimensions are inner corners: an 11x8-square board is 10x7.");
+    "使用相机采集图像进行高精度棋盘格相机标定。\n"
+    "cols 和 rows 表示内角点数量，不是黑白方格数量。");
   if (parser.has("help")) {
     parser.printMessage();
     return 0;

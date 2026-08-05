@@ -12,6 +12,7 @@
 namespace L3Estimation {
 
 struct EkfTrackerConfig {
+  bool enable_vehicle_geometry_constraints = true;
   double initial_radius = 0.20;
   StateVector initial_variance =
     (StateVector{} << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0,
@@ -31,12 +32,16 @@ struct EkfTrackerConfig {
 
   double association_position_gate = 0.60;
   double association_yaw_gate = std::numbers::pi / 3.0;
+  double association_radius_gate = 0.20;
   double association_position_weight = 1.0;
   double association_yaw_weight = 1.0;
+  double association_radius_weight = 0.5;
   double nis_reference_threshold = 9.4877;
 
   double min_radius = 0.05;
   double max_radius = 0.50;
+  double minimum_four_armor_corner_angle_rad =
+    50.0 * std::numbers::pi / 180.0;
   double max_abs_height_offset = 0.30;
 };
 
@@ -78,6 +83,9 @@ private:
     int face_id = -1;
     double position_error_m = 0.0;
     double yaw_error_rad = 0.0;
+    double implied_radius_m = 0.0;
+    double radius_error_m = 0.0;
+    double minimum_corner_angle_rad = 0.0;
     double match_cost = 0.0;
   };
 

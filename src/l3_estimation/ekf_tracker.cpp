@@ -13,6 +13,7 @@ namespace L3Estimation {
 namespace {
 
 constexpr double kCovarianceTolerance = 1e-9;
+constexpr double kGeometryTolerance = 1e-12;
 
 bool validConfig(const EkfTrackerConfig& config) noexcept
 {
@@ -39,10 +40,14 @@ bool validConfig(const EkfTrackerConfig& config) noexcept
          && std::isfinite(config.association_yaw_gate)
          && config.association_yaw_gate > 0.0
          && config.association_yaw_gate <= std::numbers::pi
+         && std::isfinite(config.association_radius_gate)
+         && config.association_radius_gate > 0.0
          && std::isfinite(config.association_position_weight)
          && config.association_position_weight >= 0.0
          && std::isfinite(config.association_yaw_weight)
          && config.association_yaw_weight >= 0.0
+         && std::isfinite(config.association_radius_weight)
+         && config.association_radius_weight >= 0.0
          && std::isfinite(config.nis_reference_threshold)
          && config.nis_reference_threshold > 0.0
          && std::isfinite(config.min_radius)
@@ -51,6 +56,10 @@ bool validConfig(const EkfTrackerConfig& config) noexcept
          && config.max_radius > config.min_radius
          && config.initial_radius >= config.min_radius
          && config.initial_radius <= config.max_radius
+         && std::isfinite(config.minimum_four_armor_corner_angle_rad)
+         && config.minimum_four_armor_corner_angle_rad > 0.0
+         && config.minimum_four_armor_corner_angle_rad
+              <= std::numbers::pi / 2.0
          && std::isfinite(config.max_abs_height_offset)
          && config.max_abs_height_offset >= 0.0;
 }
@@ -356,14 +365,9 @@ std::vector<EkfTracker::Association> EkfTracker::associateObservations(
   const std::vector<ArmorObservation>& observations,
   const std::vector<std::size_t>& observation_indices) const
 {
-  std::vector<Association> associations;
+  std::vector<Association> candidates;
   for (const std::size_t observation_index : observation_indices) {
     const auto& observation = observations[observation_index];
-    Association best;
-    best.observation_index = observation_index;
-    best.match_cost = std::numeric_limits<double>::infinity();
-
-    // 基线版本逐块观测选择一个代价最低的物理面。
     for (int face_id = 0; face_id < armorFaceCount(); ++face_id) {
       const Eigen::Vector3d predicted_position =
         armorPosition(x_, face_id);
@@ -373,10 +377,42 @@ std::vector<EkfTracker::Association> EkfTracker::associateObservations(
         normalizeAngle(x_[YAW] + faceAngle(face_id));
       const double yaw_error = std::abs(normalizeAngle(
         observation.yaw_world - predicted_yaw));
+      const double expected_radius = x_[RADIUS]
+        + (usesSecondGeometryGroup(face_id) ? x_[RADIUS_OFFSET] : 0.0);
+      const Eigen::Vector2d face_normal{
+        std::cos(predicted_yaw), std::sin(predicted_yaw)};
+      const Eigen::Vector2d center_to_observation{
+        x_[XC] - observation.position_world.x(),
+        x_[YC] - observation.position_world.y()};
+      const double implied_radius =
+        center_to_observation.dot(face_normal);
+      const double radius_error =
+        std::abs(implied_radius - expected_radius);
+
+      double minimum_corner_angle = 0.0;
+      if (model_ == TargetModel::FourArmorVehicle) {
+        const double candidate_first_radius =
+          usesSecondGeometryGroup(face_id) ? x_[RADIUS] : implied_radius;
+        const double candidate_second_radius =
+          usesSecondGeometryGroup(face_id)
+            ? implied_radius
+            : x_[RADIUS] + x_[RADIUS_OFFSET];
+        minimum_corner_angle = fourArmorMinimumCornerAngle(
+          candidate_first_radius, candidate_second_radius);
+      }
       if (!std::isfinite(position_error)
           || !std::isfinite(yaw_error)
           || position_error > config_.association_position_gate
-          || yaw_error > config_.association_yaw_gate) {
+          || yaw_error > config_.association_yaw_gate
+          || (config_.enable_vehicle_geometry_constraints
+              && (!std::isfinite(implied_radius)
+                  || !std::isfinite(radius_error)
+                  || implied_radius < config_.min_radius
+                  || implied_radius > config_.max_radius
+                  || radius_error > config_.association_radius_gate
+                  || (model_ == TargetModel::FourArmorVehicle
+                      && minimum_corner_angle + kGeometryTolerance
+                           < config_.minimum_four_armor_corner_angle_rad)))) {
         continue;
       }
 
@@ -384,30 +420,54 @@ std::vector<EkfTracker::Association> EkfTracker::associateObservations(
         position_error / config_.association_position_gate;
       const double normalized_yaw =
         yaw_error / config_.association_yaw_gate;
+      const double normalized_radius =
+        radius_error / config_.association_radius_gate;
       const double cost =
         config_.association_position_weight
           * normalized_position * normalized_position
         + config_.association_yaw_weight
-          * normalized_yaw * normalized_yaw;
-      if (cost < best.match_cost) {
-        best.face_id = face_id;
-        best.position_error_m = position_error;
-        best.yaw_error_rad = yaw_error;
-        best.match_cost = cost;
-      }
-    }
-
-    if (best.face_id >= 0) {
-      associations.push_back(best);
+          * normalized_yaw * normalized_yaw
+        + (config_.enable_vehicle_geometry_constraints
+             ? config_.association_radius_weight
+                 * normalized_radius * normalized_radius
+             : 0.0);
+      candidates.push_back({
+        .observation_index = observation_index,
+        .face_id = face_id,
+        .position_error_m = position_error,
+        .yaw_error_rad = yaw_error,
+        .implied_radius_m = implied_radius,
+        .radius_error_m = radius_error,
+        .minimum_corner_angle_rad = minimum_corner_angle,
+        .match_cost = cost});
     }
   }
 
   std::sort(
-    associations.begin(),
-    associations.end(),
+    candidates.begin(),
+    candidates.end(),
     [](const auto& lhs, const auto& rhs) {
       return lhs.match_cost < rhs.match_cost;
     });
+
+  // 几何约束开启时，一个物理面只能使用一次；关闭时保留原基线行为，
+  // 每块观测独立选择最低代价物理面，便于同数据 A/B 对比。
+  std::vector<Association> associations;
+  std::vector<bool> observation_used(observations.size(), false);
+  std::vector<bool> face_used(
+    static_cast<std::size_t>(armorFaceCount()), false);
+  for (const auto& candidate : candidates) {
+    if (observation_used[candidate.observation_index]
+        || (config_.enable_vehicle_geometry_constraints
+            && face_used[static_cast<std::size_t>(candidate.face_id)])) {
+      continue;
+    }
+    observation_used[candidate.observation_index] = true;
+    if (config_.enable_vehicle_geometry_constraints) {
+      face_used[static_cast<std::size_t>(candidate.face_id)] = true;
+    }
+    associations.push_back(candidate);
+  }
   return associations;
 }
 
@@ -421,6 +481,9 @@ AssociationDiagnostic EkfTracker::correct(
     .associated_face_id = association.face_id,
     .position_error_m = association.position_error_m,
     .yaw_error_rad = association.yaw_error_rad,
+    .implied_radius_m = association.implied_radius_m,
+    .radius_error_m = association.radius_error_m,
+    .minimum_corner_angle_rad = association.minimum_corner_angle_rad,
     .match_cost = association.match_cost,
     .lifecycle_before = tracker_state_,
     .lifecycle_after = tracker_state_};
@@ -561,6 +624,12 @@ std::vector<AssociationDiagnostic> EkfTracker::update(
       .observation_index = anchor_index,
       .robot_id = robot_id_,
       .associated_face_id = 0,
+      .implied_radius_m = config_.initial_radius,
+      .radius_error_m = 0.0,
+      .minimum_corner_angle_rad =
+        model_ == TargetModel::FourArmorVehicle
+          ? std::numbers::pi / 2.0
+          : 0.0,
       .innovation = Eigen::Vector4d::Zero(),
       .nis = 0.0,
       .nis_valid = true,
@@ -681,6 +750,10 @@ bool EkfTracker::validateState(
       state[RADIUS] + state[RADIUS_OFFSET];
     if (second_radius < config_.min_radius
         || second_radius > config_.max_radius
+        || (config_.enable_vehicle_geometry_constraints
+            && fourArmorMinimumCornerAngle(first_radius, second_radius)
+                 + kGeometryTolerance
+                 < config_.minimum_four_armor_corner_angle_rad)
         || std::abs(state[HEIGHT_OFFSET])
              > config_.max_abs_height_offset) {
       return false;

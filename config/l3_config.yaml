@@ -43,8 +43,10 @@ observation_noise:
 association:
   position_gate_m: 0.60
   yaw_gate_rad: 1.0471975511965976
+  radius_gate_m: 0.20
   position_weight: 1.0
   yaw_weight: 1.0
+  radius_weight: 0.5
   # 第一版只记录标准 NIS，不用该值拒绝观测。
   nis_reference_threshold: 9.4877
 
@@ -53,9 +55,12 @@ lifecycle:
   max_predict_interval_ms: 100
 
 tracker:
+  enable_vehicle_geometry_constraints: true
   # [xc, vx, yc, vy, zc, vz, yaw, yaw_rate, r1, r2-r1, z2-z1]
   initial_variance: [1.0, 64.0, 1.0, 64.0, 1.0, 64.0, 0.4, 100.0, 0.01, 0.01, 0.01]
   geometry_random_walk_variance: 0.00001
   minimum_radius_m: 0.05
   maximum_radius_m: 0.50
+  # 四装甲中心连成四边形的最小内角，50°。
+  minimum_four_armor_corner_angle_rad: 0.8726646259971648
   maximum_absolute_height_offset_m: 0.30

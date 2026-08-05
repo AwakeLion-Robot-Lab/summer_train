@@ -1,7 +1,6 @@
 # XMake local state and generated build outputs.
 /.xmake/
 /build/
-/.deps/
 /records/
 /calibration_images/
 /calibration_results/

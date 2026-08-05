@@ -146,12 +146,17 @@ bool isValidL3Config(const L3Config& config) noexcept
     && finitePositive(tracker.association_position_gate)
     && finitePositive(tracker.association_yaw_gate)
     && tracker.association_yaw_gate <= std::numbers::pi
+    && finitePositive(tracker.association_radius_gate)
     && finiteNonNegative(tracker.association_position_weight)
     && finiteNonNegative(tracker.association_yaw_weight)
+    && finiteNonNegative(tracker.association_radius_weight)
     && finitePositive(tracker.nis_reference_threshold)
     && finitePositive(tracker.min_radius)
     && finitePositive(tracker.max_radius)
     && tracker.max_radius > tracker.min_radius
+    && finitePositive(tracker.minimum_four_armor_corner_angle_rad)
+    && tracker.minimum_four_armor_corner_angle_rad
+         <= std::numbers::pi / 2.0
     && finiteNonNegative(tracker.max_abs_height_offset);
 
   return finitePositive(dimensions.small_width)
@@ -282,6 +287,11 @@ L3Config loadL3Config(const std::filesystem::path& path)
       association,
       "yaw_gate_rad",
       source);
+  config.tracker.association_radius_gate =
+    requiredValue<double>(
+      association,
+      "radius_gate_m",
+      source);
   config.tracker.association_position_weight =
     requiredValue<double>(
       association,
@@ -291,6 +301,11 @@ L3Config loadL3Config(const std::filesystem::path& path)
     requiredValue<double>(
       association,
       "yaw_weight",
+      source);
+  config.tracker.association_radius_weight =
+    requiredValue<double>(
+      association,
+      "radius_weight",
       source);
   config.tracker.nis_reference_threshold =
     requiredValue<double>(
@@ -313,6 +328,11 @@ L3Config loadL3Config(const std::filesystem::path& path)
 
   // 11 维状态的初始方差和车辆几何安全范围。
   const YAML::Node tracker = requiredMap(root, "tracker", source);
+  config.tracker.enable_vehicle_geometry_constraints =
+    requiredValue<bool>(
+      tracker,
+      "enable_vehicle_geometry_constraints",
+      source);
   config.tracker.initial_variance =
     requiredStateVector(
       tracker,
@@ -332,6 +352,11 @@ L3Config loadL3Config(const std::filesystem::path& path)
     requiredValue<double>(
       tracker,
       "maximum_radius_m",
+      source);
+  config.tracker.minimum_four_armor_corner_angle_rad =
+    requiredValue<double>(
+      tracker,
+      "minimum_four_armor_corner_angle_rad",
       source);
   config.tracker.max_abs_height_offset =
     requiredValue<double>(

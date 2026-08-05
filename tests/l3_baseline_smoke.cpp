@@ -129,6 +129,14 @@ void testModelTraitsAndConfig()
            L3Estimation::TargetModel::ThreeArmorOutpost)
            .angular_acceleration_variance == 0.1,
     "outpost-specific parameters were not loaded");
+  require(
+    config.tracker.enable_vehicle_geometry_constraints
+      && std::abs(
+      config.tracker.minimum_four_armor_corner_angle_rad
+      - 50.0 * std::numbers::pi / 180.0) < 1e-12
+      && std::abs(config.tracker.association_radius_gate - 0.20) < 1e-12
+      && std::abs(config.tracker.association_radius_weight - 0.5) < 1e-12,
+    "vehicle radius geometry parameters were not loaded");
 }
 
 void testVehicleEstimator()
@@ -175,17 +183,43 @@ void testVehicleEstimator()
     "single detection did not produce one observation");
   const auto& observation = estimator.lastObservations().front();
   require(
-    observation.position_world.allFinite()
+    observation.source_detection_index == 0
+      && observation.position_world.allFinite()
+      && observation.rpy_raw_world.allFinite()
+      && observation.rpy_constrained_world.allFinite()
       && std::isfinite(observation.yaw_world)
       && observation.optimized_reprojection_error_px
            <= observation.raw_yaw_reprojection_error_px,
     "baseline PnP/yaw observation is invalid");
+  require(
+    std::abs(observation.rpy_constrained_world.x()) < 1e-12
+      && std::abs(
+           observation.rpy_constrained_world.y()
+           - config.armor.four_armor_vehicle.pitch_rad) < 1e-12
+      && std::abs(std::remainder(
+           observation.rpy_constrained_world.z()
+             - observation.yaw_world,
+           2.0 * std::numbers::pi)) < 1e-12,
+    "constrained world RPY does not match the L3 armor model");
   require(
     estimator.lastAssociationDiagnostics().size() == 1
       && estimator.lastAssociationDiagnostics().front().accepted
       && estimator.lastAssociationDiagnostics().front()
            .associated_face_id == 0,
     "baseline initialization diagnostic is invalid");
+
+  auto ignored_detection = detection;
+  ignored_detection.class_id =
+    static_cast<int>(L2Perception::ArmorClass::BaseSmall);
+  (void)estimator.update(
+    {ignored_detection, detection},
+    L3Estimation::FrameContext{
+      .timestamp = timestamp + std::chrono::milliseconds{10},
+      .image_size = calibration.image_size});
+  require(
+    estimator.lastObservations().size() == 1
+      && estimator.lastObservations().front().source_detection_index == 1,
+    "observation did not preserve its source detection index");
 
   bool rejected_mismatched_size = false;
   try {

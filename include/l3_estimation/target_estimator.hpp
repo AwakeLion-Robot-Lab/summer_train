@@ -52,6 +52,7 @@ private:
 
   [[nodiscard]] std::optional<ArmorObservation> makeObservation(
     const L2Perception::ArmorDetection& armor,
+    std::size_t source_detection_index,
     TimePoint timestamp,
     const Eigen::Quaterniond& R_world_barrel) const;
 
