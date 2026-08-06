@@ -128,6 +128,12 @@ struct Target {
   double second_radius{0.0};
   double height_diff{0.0};
 
+  // 是否已经关联到过 0 号以外的装甲板。为 false 时整车 yaw、第二组半径和
+  // 高度差几乎不可观测——只见过一块板的话，其余板的位置完全由初值猜出来。
+  // L4 必须据此只瞄当前观测到的那块板，否则等于拿伪造的几何去开火，违反
+  // "缺失标定保持缺失"的约定。一旦观测到过就保持为 true。
+  bool multi_armor_observed{false};
+
   // P 与 vector() 使用完全相同的九维元素顺序。
   TargetCovariance P{TargetCovariance::Identity()};
   TrackState track_state{TrackState::Lost};

@@ -19,6 +19,10 @@ public:
   ArmorType armor_type{ArmorType::Small};
   // jumped 表示本次观测关联到的不是编号 0 的装甲板。
   bool jumped{false};
+  // multi_armor_observed 是 jumped 的粘滞版本：只要关联到过 0 号以外的板就
+  // 一直为 true。两者语义不同——jumped 回答"这一帧看的是哪块板"，
+  // multi_armor_observed 回答"整车几何到底可不可观测"。L4 需要的是后者。
+  bool multi_armor_observed{false};
   int last_id{0};
 
   TrackedTarget() = default;

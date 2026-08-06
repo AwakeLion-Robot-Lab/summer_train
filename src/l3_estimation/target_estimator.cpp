@@ -232,6 +232,8 @@ void TrackedTarget::update(const Armor &armor) {
   }
 
   jumped = id != 0;
+  // 粘滞标志：只有真正观测到过第二块板，r2-r1 和 z2-z1 才被数据约束过。
+  multi_armor_observed = multi_armor_observed || jumped;
   is_switch_ = id != last_id;
   if (is_switch_)
     ++switch_count_;
@@ -344,6 +346,7 @@ TargetState TrackedTarget::toTargetState(TrackState track_state,
   const bool has_second_set = armor_num_ == 4;
   target.second_radius = has_second_set ? ekf_.x[8] + ekf_.x[9] : ekf_.x[8];
   target.height_diff = has_second_set ? ekf_.x[10] : 0.0;
+  target.multi_armor_observed = multi_armor_observed;
   target.P = ekf_.P.topLeftCorner<9, 9>();
   target.track_state = track_state;
   target.timestamp = t_;
