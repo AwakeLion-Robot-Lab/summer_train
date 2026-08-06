@@ -4,7 +4,6 @@
 #include "l2_perception/armor.hpp"
 
 #include <Eigen/Core>
-#include <Eigen/Geometry>
 
 #include <array>
 #include <chrono>
@@ -13,58 +12,49 @@
 
 namespace L3Estimation {
 
+// L3 中的时间戳统一使用单调时钟，避免系统时间校准造成负时间差。
 using TimePoint = std::chrono::steady_clock::time_point;
+// 对外目标状态固定为九维，元素顺序见 Target::vector()。
 using TargetVector = Eigen::Matrix<double, 9, 1>;
 using TargetCovariance = Eigen::Matrix<double, 9, 9>;
-using ArmorCovariance = Eigen::Matrix4d;
 using ArmorName = L2Perception::ArmorClass;
 
-// 物理装甲板尺寸。Armor::name 表示车辆编号，type 只表示板型。
+// 物理装甲板板型只决定 PnP 几何尺寸，车辆类别由 Armor::name 单独表示。
 enum class ArmorType : std::uint8_t {
-  Small,
-  Big
+  Small,  // 小装甲板
+  Big     // 大装甲板
 };
 
-// 第一版只使用 Single；DoubleYaw 为后续双板联合 yaw 观测预留。
-enum class ObservationMode : std::uint8_t {
-  Single,
-  DoubleYaw
-};
-
+// Tracker 的四态生命周期。
 enum class TrackState : std::uint8_t {
-  Lost,
-  Detecting,
-  Tracking,
-  TempLost
+  Lost,       // 当前没有可用目标
+  Detecting,  // 已发现目标，等待连续帧确认
+  Tracking,   // 稳定跟踪
+  TempLost    // 短时丢失，继续输出预测状态
 };
 
-// 不把多个质量条件压成一个 bool，便于 L6 分别记录失败原因。
+// 不把多个质量条件压成一个 bool，便于分别记录失败原因。
 struct ArmorQuality {
-  bool pnp_ok{false};
-  bool covariance_ok{false};
-  bool reprojection_ok{false};
-  bool geometry_ok{false};
-  bool finite{false};
-  // 两个可用 IPPE 解的像素误差过于接近时，rpy_in_world.z() 不可信。
-  bool yaw_ambiguous{false};
+  bool pnp_ok{false};           // PnP 求解器返回成功
+  bool reprojection_ok{false};  // 像素重投影误差未超过门限
+  bool geometry_ok{false};      // 所有物理角点均位于相机前方
+  bool finite{false};           // 输出位姿和误差均为有限值
 
+  // 只有全部质量检查通过的观测才能进入目标跟踪器。
   [[nodiscard]] bool valid() const noexcept
   {
-    return pnp_ok && covariance_ok && reprojection_ok && geometry_ok && finite;
+    return pnp_ok && reprojection_ok && geometry_ok && finite;
   }
 };
 
-// L3 只补充观测协方差和时间同步状态；相机内参及静态机械外参
-// 由 L1 持有。
+// 相机内参及静态机械外参由 L1 持有，L3 只补充时间同步状态。
 struct AimCalibration {
+  // 内参、畸变参数以及 camera -> barrel 的静态外参。
   L1Sensor::CameraCalibration camera;
-
-  // 对应观测 [x, y, z, yaw] 的共享标定和姿态同步不确定度。
-  ArmorCovariance R_calibration{ArmorCovariance::Zero()};
-  ArmorCovariance R_pose_sync{ArmorCovariance::Zero()};
-
+  // 图像曝光时刻与枪管姿态已经完成时间对齐。
   bool time_sync_ok{false};
 
+  // 这里只检查 PnP 所需矩阵是否存在，矩阵数值由 PnpSolver 进一步验证。
   [[nodiscard]] bool intrinsicsOk() const noexcept
   {
     return !camera.camera_matrix.empty() &&
@@ -82,62 +72,60 @@ struct AimCalibration {
   }
 };
 
-// 一帧图像进入 L3 时的附加信息，姿态必须对应图像曝光时刻。
-struct FrameInfo {
-  TimePoint timestamp{};
-  Eigen::Quaterniond q_world_barrel{Eigen::Quaterniond::Identity()};
-  bool barrel_pose_ok{false};
-};
-
 // L3 对 L2 输出的 Armor 执行单板 PnP 和坐标变换后得到的观测。
-// R 的变量顺序固定为 [x_world, y_world, z_world, yaw_world]。
 struct Armor {
+  // 分类信息。name 是车辆类别，type 是实际采用的物理板型。
   ArmorName name{ArmorName::Unknown};
   ArmorType type{ArmorType::Small};
   int class_id{-1};
-  int id{-1};  // 与整车物理装甲板关联后的 0~3 编号
 
+  // 图像角点顺序固定为左上、右上、右下、左下，单位为 pixel。
   std::array<cv::Point2f, 4> points{};
+  // L2 检测得到的四角点几何中心，单位为 pixel。
+  cv::Point2f center{};
 
+  // 平移量单位均为 meter。
   Eigen::Vector3d xyz_in_camera{Eigen::Vector3d::Zero()};
   Eigen::Vector3d xyz_in_world{Eigen::Vector3d::Zero()};
-  // 固定顺序为 [roll, pitch, yaw]，采用 Rz(yaw)Ry(pitch)Rx(roll)。
-  Eigen::Vector3d rpy_in_camera{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d rpy_in_world{Eigen::Vector3d::Zero()};
+  // 固定顺序为 [yaw, pitch, roll]，采用 Rz(yaw)Ry(pitch)Rx(roll)。
+  Eigen::Vector3d ypr_in_camera{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d ypr_in_world{Eigen::Vector3d::Zero()};
+  // [方位角, 俯仰角, 距离]，角度单位为 radian，距离单位为 meter。
   Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};
 
   // 四个角点的二维像素 RMSE。
   double reprojection_error{std::numeric_limits<double>::infinity()};
-  // 第二个几何有效 IPPE 候选的像素 RMSE；不存在时为无穷大。
-  double second_reprojection_error{
-    std::numeric_limits<double>::infinity()};
+  // 检测置信度和四边形像素面积从 L2 原样传入。
   double confidence{0.0};
   double area{0.0};
-  double facing{0.0};
 
-  ObservationMode mode{ObservationMode::Single};
-  ArmorCovariance R{ArmorCovariance::Identity()};
   ArmorQuality quality;
+  // 对应原始图像的曝光时刻。
   TimePoint timestamp{};
 };
 
-// 普通四板车辆的九维整车状态：
+// 跨层输出使用的九维整车状态：
 // [xc, vx, yc, vy, z, vz, yaw, v_yaw, radius]。
 struct Target {
+  // 当前跟踪车辆和最近一次关联到的物理装甲板编号。
   ArmorName name{ArmorName::Unknown};
   int target_id{-1};
   int armor_id{-1};
 
+  // 旋转中心在世界坐标系中的位置和速度，单位分别为 meter、meter/second。
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
+  // 整车中心 yaw、角速度以及当前主半径，单位为 radian、radian/second、meter。
   double yaw{0.0};
   double v_yaw{0.0};
   double radius{0.0};
 
+  // P 与 vector() 使用完全相同的九维元素顺序。
   TargetCovariance P{TargetCovariance::Identity()};
   TrackState track_state{TrackState::Lost};
   TimePoint timestamp{};
 
+  // nis 是最近一次滤波更新的创新统计量；updated 表示本帧使用了观测更新。
   double nis{0.0};
   bool updated{false};
 
@@ -151,26 +139,26 @@ struct Target {
 };
 
 struct ArmorConfig {
+  // 装甲板几何尺寸，单位为 meter。
   double small_width{0.135};
-  double big_width{0.225};
-  double height{0.055};
-  double corner_noise{0.8};  // pixel standard deviation
+  double big_width{0.230};
+  double height{0.056};
+  // 单位分别为 pixel RMSE 和 pixel²。
   double max_reprojection_error{3.0};
-  double ambiguity_error_gap{0.25};  // pixel RMSE
-  double ambiguity_error_ratio{1.2};
   double min_area{20.0};
 };
 
 struct TrackerConfig {
-  int min_detect_count{3};
-  std::chrono::milliseconds max_temp_lost{100};
-  double default_radius{0.22};
-  double min_radius{0.12};
-  double max_radius{0.45};
-  double nis_gate{18.5};
+  // 从 Detecting 转入 Tracking 所需的连续有效观测帧数。
+  int min_detect_count{5};
+  // 非 Lost 状态允许的最大相邻帧间隔。
+  std::chrono::milliseconds max_frame_interval{100};
+  // 临时丢失按连续帧数计数；前哨站允许更长的无观测预测窗口。
+  int max_temp_lost_count{15};
+  int outpost_max_temp_lost_count{75};
 };
 
-// 与设计文档中的名称兼容，业务代码优先使用上面的短名称。
+// 跨层接口使用的语义别名。
 using ArmorObservation = Armor;
 using TargetState = Target;
 using TrackStatus = TrackState;

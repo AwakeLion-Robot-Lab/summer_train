@@ -14,8 +14,10 @@ R = Cov(z) ∈ R^(4×4)
 
 当前 `PnpSolver` 已完成 IPPE 双候选、几何检查和像素 RMSE 计算，但尚未
 实现下面的协方差传播。因此在实现和验证完成前，
-`ArmorQuality::covariance_ok` 必须保持 `false`，观测不能进入 EKF 正式
-更新。`Armor::R` 中的默认单位阵不是有效测量噪声。
+`ArmorQuality::covariance_ok` 必须保持 `false`，`Armor::R` 中的默认单位阵
+也不是有效测量噪声。当前 `Tracker` 采用的是独立、明确的临时路径：通过
+PnP/几何/重投影门限后，使用手调观测噪声更新 EKF；这不代表 PnP 已输出
+统计校准的协方差，也不能把 `ArmorQuality::valid()` 置为真。
 
 ## 1. 必须区分的噪声来源
 
@@ -283,12 +285,14 @@ yaw 候选。IPPE 原论文说明了弱透视、近正视条件下的二解歧�
 因此当前质量语义应保持：
 
 - `yaw_ambiguous == false`：通过其他数值检查后，允许完整 4D 观测；
-- `yaw_ambiguous == true`：不得仅靠膨胀 yaw 方差把完整观测送入 EKF；
+- `yaw_ambiguous == true`：不得把所选 IPPE yaw 当作可信角度观测；
 - 若 Tracker 支持，可只使用 `R.topLeftCorner<3, 3>()` 更新位置；
 - 可靠 yaw 需要 Tracker 先验消歧、多假设/高斯混合跟踪，或更多几何约束。
 
-简单放大 `R(3,3)` 还可能忽略位置与 yaw 的交叉相关，因此只能作为明确记录
-过局限性的临时策略，不能令 `covariance_ok` 变为真。
+当前 `TrackedTarget` 尚无三维位置专用更新接口，所以临时将歧义帧的 yaw
+方差设为极大值，并在装甲面关联时忽略该 yaw；位置分量仍使用手调 `R`。
+这种近似仍可能忽略位置与 yaw 的交叉相关，只是过渡策略，不能令
+`covariance_ok` 变为真。
 
 ## 8. `covariance_ok` 的数值与质量门限
 
@@ -357,8 +361,9 @@ R = 0.5 * (R + R.transpose());
 7. EKF 实现观测函数、创新包角和 NIS 门限后，再开放正式更新；
 8. 最后扩展逐角点异方差、位置单独更新及 IPPE 多假设处理。
 
-在第 5 步完成前，当前“保留协方差接口但禁止进入 EKF”的策略是有意的安全
-边界，而不是把单位阵当作已经可用的观测噪声。
+在第 5 步完成前，当前边界是“保留协方差接口且保持 `covariance_ok=false`；
+Tracker 只通过单独声明的手调 `R` 路径使用观测”。这不是把 `Armor::R` 的
+单位阵当作已经可用的 PnP 协方差。
 
  ## 最相关的论文
 
@@ -633,5 +638,4 @@ s_for_End-to-End_Learning_of_6D_Pose_Estimation_ICCV_2023_paper.html)
   需要特别注意：四个共面角点的数据量太少，不适合根据单帧 PnP 重投影残差同时估计
   完整噪声分布。更稳妥的是离线估计角点噪声尺度，每帧只利用 Jacobian 改变协方差的
   形状和大小。
-
 

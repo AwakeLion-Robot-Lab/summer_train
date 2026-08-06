@@ -243,6 +243,27 @@ void SerialWorker::txLoop() {
   }
 }
 
+// 把下位机上报的姿态转换成 L3 需要的 barrel -> world。
+//
+// 本项目 world 直接取 imu_abs（IMU 轴向），barrel 则是独立定义的右手系，
+// 因此两者之间就是一次普通的链式复合，而不是相似变换：
+//   R_world_barrel = R_world_imu * R_imu_barrel
+// 只有当 world 自身也跟着 barrel 一起重标记时（例如 sp_vision）才会退化成
+// R_imu_barrel^T * R_world_imu * R_imu_barrel，本项目不采用那套约定。
+//
+// 这一步必须留在 L1：L3 收到的姿态必须已经是 barrel -> world，否则每个用到
+// gimbalPoseAt 的下游都要各自补一遍轴向转换。
+Eigen::Quaterniond SerialWorker::toBarrelPose(
+    const Eigen::Quaterniond &q_world_imu) const {
+  if (!config_.imuBarrelRotationNeeded()) {
+    return q_world_imu.normalized();
+  }
+
+  const Eigen::Matrix3d R_world_barrel =
+      q_world_imu.toRotationMatrix() * config_.R_imu_barrel;
+  return Eigen::Quaterniond(R_world_barrel).normalized();
+}
+
 // 按时间戳查询云台姿态；找到前后两帧 RPY 后再转四元数并 slerp。
 std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
     std::chrono::steady_clock::time_point timestamp) const {
@@ -253,6 +274,9 @@ std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
     return std::nullopt;
   }
 
+  // 先在 IMU 约定下完成 slerp，最后统一右乘一次 R_imu_barrel。
+  // 右乘常量与 slerp 可交换（slerp(q1*C, q2*C, t) == slerp(q1, q2, t)*C），
+  // 所以插值前转还是插值后转结果一致，转一次更省。
   const auto to_quaternion = [](const RobotState &state) {
     return L6Telemetry::rpyToQuaternion(state.rpy.roll, state.rpy.pitch,
                                         state.rpy.yaw);
@@ -260,12 +284,12 @@ std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
 
   if (timestamp <= gimbal_history_.front().timestamp) {
     L6Telemetry::logDebug("gimbal pose before history");
-    return to_quaternion(gimbal_history_.front());
+    return toBarrelPose(to_quaternion(gimbal_history_.front()));
   }
 
   if (timestamp >= gimbal_history_.back().timestamp) {
     L6Telemetry::logDebug("gimbal pose after history");
-    return to_quaternion(gimbal_history_.back());
+    return toBarrelPose(to_quaternion(gimbal_history_.back()));
   }
 
   const auto upper = std::lower_bound(
@@ -287,15 +311,15 @@ std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
       std::chrono::duration<double>(after.timestamp - before.timestamp).count();
   if (interval <= 0.0) {
     L6Telemetry::logWarn("gimbal pose interval invalid");
-    return to_quaternion(before);
+    return toBarrelPose(to_quaternion(before));
   }
 
   const double elapsed =
       std::chrono::duration<double>(timestamp - before.timestamp).count();
   const double ratio = elapsed / interval;
 
-  return L6Telemetry::slerpQuaternion(to_quaternion(before),
-                                      to_quaternion(after), ratio);
+  return toBarrelPose(L6Telemetry::slerpQuaternion(
+      to_quaternion(before), to_quaternion(after), ratio));
 }
 
 } // namespace L1Sensor

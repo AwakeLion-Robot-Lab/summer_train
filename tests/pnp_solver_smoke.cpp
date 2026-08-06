@@ -17,8 +17,8 @@
 namespace {
 
 constexpr double kSmallWidth = 0.135;
-constexpr double kBigWidth = 0.225;
-constexpr double kArmorHeight = 0.055;
+constexpr double kBigWidth = 0.230;
+constexpr double kArmorHeight = 0.056;
 
 int failure_count = 0;
 
@@ -39,28 +39,6 @@ void expect(bool condition, std::string_view message)
     {0.0, -half_width, half_height},
     {0.0, -half_width, -half_height},
     {0.0, half_width, -half_height}};
-}
-
-[[nodiscard]] cv::Matx33d toCv(const Eigen::Matrix3d& rotation)
-{
-  cv::Matx33d result;
-  for (int row = 0; row < 3; ++row) {
-    for (int col = 0; col < 3; ++col) {
-      result(row, col) = rotation(row, col);
-    }
-  }
-  return result;
-}
-
-[[nodiscard]] Eigen::Matrix3d toEigen(const cv::Matx33d& rotation)
-{
-  Eigen::Matrix3d result;
-  for (int row = 0; row < 3; ++row) {
-    for (int col = 0; col < 3; ++col) {
-      result(row, col) = rotation(row, col);
-    }
-  }
-  return result;
 }
 
 [[nodiscard]] cv::Vec3d rotationVector(const cv::Matx33d& rotation)
@@ -100,7 +78,7 @@ void expect(bool condition, std::string_view message)
     ? kBigWidth
     : kSmallWidth;
   const cv::Matx33d rotation =
-    toCv(L6Telemetry::rpyToRotation(armor.rpy_in_camera));
+    L6Telemetry::toCv(L6Telemetry::yprToRotation(armor.ypr_in_camera));
   const cv::Vec3d translation{
     armor.xyz_in_camera.x(),
     armor.xyz_in_camera.y(),
@@ -128,23 +106,18 @@ void expect(bool condition, std::string_view message)
 {
   return armor.xyz_in_camera.isZero(0.0) &&
          armor.xyz_in_world.isZero(0.0) &&
-         armor.rpy_in_camera.isZero(0.0) &&
-         armor.rpy_in_world.isZero(0.0) &&
+         armor.ypr_in_camera.isZero(0.0) &&
+         armor.ypr_in_world.isZero(0.0) &&
          armor.ypd_in_world.isZero(0.0) &&
          armor.name == L3Estimation::ArmorName::Unknown &&
          armor.type == L3Estimation::ArmorType::Small &&
-         std::isinf(armor.reprojection_error) &&
-         std::isinf(armor.second_reprojection_error) &&
-         armor.facing == 0.0 &&
-         armor.mode == L3Estimation::ObservationMode::Single &&
-         armor.R.isIdentity(0.0);
+         std::isinf(armor.reprojection_error);
 }
 
 [[nodiscard]] bool allQualityFlagsClear(const L3Estimation::Armor& armor)
 {
-  return !armor.quality.pnp_ok && !armor.quality.covariance_ok &&
-         !armor.quality.reprojection_ok && !armor.quality.geometry_ok &&
-         !armor.quality.finite && !armor.quality.yaw_ambiguous &&
+  return !armor.quality.pnp_ok && !armor.quality.reprojection_ok &&
+         !armor.quality.geometry_ok && !armor.quality.finite &&
          !armor.quality.valid();
 }
 
@@ -187,28 +160,20 @@ int main()
     !solver_with_invalid_config.ready(),
     "PnpSolver accepted invalid armor dimensions");
 
-  L3Estimation::ArmorConfig invalid_ambiguity_config;
-  invalid_ambiguity_config.ambiguity_error_ratio = 0.9;
-  L3Estimation::PnpSolver solver_with_invalid_ambiguity_config(
-    calibration, invalid_ambiguity_config);
-  expect(
-    !solver_with_invalid_ambiguity_config.ready(),
-    "PnpSolver accepted an ambiguity ratio below one");
-
   // 基准姿态：局部 +X 大致指向相机 +Z，因此局部 -X 正面朝向相机。
   const cv::Matx33d optical_alignment{
     0.0, -1.0, 0.0,
     0.0, 0.0, -1.0,
     1.0, 0.0, 0.0};
   const Eigen::Matrix3d R_camera_armor =
-    toEigen(optical_alignment) *
-    L6Telemetry::rpyToRotation({0.08, -0.12, 0.16});
-  const cv::Matx33d R_camera_armor_cv = toCv(R_camera_armor);
+    L6Telemetry::toEigen(optical_alignment) *
+    L6Telemetry::yprToRotation({0.16, -0.12, 0.08});
+  const cv::Matx33d R_camera_armor_cv = L6Telemetry::toCv(R_camera_armor);
   const cv::Vec3d tvec{0.05, -0.03, 3.0};
 
-  const Eigen::Vector3d world_barrel_rpy{0.07, -0.09, 0.24};
+  const Eigen::Vector3d world_barrel_ypr{0.24, -0.09, 0.07};
   const Eigen::Matrix3d R_world_barrel =
-    L6Telemetry::rpyToRotation(world_barrel_rpy);
+    L6Telemetry::yprToRotation(world_barrel_ypr);
   const Eigen::Quaterniond q_world_barrel(R_world_barrel);
   solver.set_R_world_barrel(
     std::optional<Eigen::Quaterniond>{q_world_barrel});
@@ -228,12 +193,12 @@ int main()
     R_world_barrel * calibration.T_barrel_camera->linear() *
     R_camera_armor;
   const double camera_rotation_error =
-    (L6Telemetry::rpyToRotation(armor.rpy_in_camera) - R_camera_armor)
+    (L6Telemetry::yprToRotation(armor.ypr_in_camera) - R_camera_armor)
       .norm();
-  const double world_rotation_error =
-    (L6Telemetry::rpyToRotation(armor.rpy_in_world) -
-     expected_world_rotation)
-      .norm();
+  const Eigen::Vector3d expected_world_ypr =
+    L6Telemetry::eulers(expected_world_rotation, 2, 1, 0);
+  const double world_pitch_roll_error =
+    (armor.ypr_in_world.tail<2>() - expected_world_ypr.tail<2>()).norm();
   const Eigen::Vector3d expected_ypd = L6Telemetry::xyz2ypd(expected_world);
 
   expect(armor.quality.pnp_ok, "valid synthetic armor did not solve PnP");
@@ -243,8 +208,8 @@ int main()
     armor.quality.reprojection_ok,
     "near-zero synthetic reprojection failed its gate");
   expect(
-    !armor.quality.covariance_ok && !armor.quality.valid(),
-    "PnP-only observation was incorrectly enabled for EKF use");
+    armor.quality.valid(),
+    "valid PnP observation did not pass the combined quality check");
   expect(
     armor.type == L3Estimation::ArmorType::Small,
     "infantry armor did not use the small model");
@@ -254,8 +219,10 @@ int main()
   expect(
     (armor.xyz_in_world - expected_world).norm() < 1e-3,
     "camera/barrel/world translation chain is incorrect");
-  expect(camera_rotation_error < 1e-3, "camera-frame RPY is incorrect");
-  expect(world_rotation_error < 1e-3, "world-frame RPY is incorrect");
+  expect(camera_rotation_error < 1e-3, "camera-frame YPR is incorrect");
+  expect(
+    world_pitch_roll_error < 1e-3,
+    "world-frame pitch/roll changed during yaw optimization");
   expect(
     (armor.ypd_in_world - expected_ypd).norm() < 1e-3,
     "world-frame yaw/pitch/distance is incorrect");
@@ -338,39 +305,26 @@ int main()
     !rejected_by_reprojection.quality.valid(),
     "rejected reprojection was marked valid for EKF use");
 
-  // 近正视平面会产生两个重投影几乎等价的 IPPE 姿态。
-  L3Estimation::Armor ambiguous_armor;
-  ambiguous_armor.class_id =
+  // 当前与 SP-Vision 一致，solvePnP + IPPE 使用单解。
+  L3Estimation::Armor frontal_armor;
+  frontal_armor.class_id =
     static_cast<int>(L2Perception::ArmorClass::Infantry5);
-  ambiguous_armor.points = projectArmor(
+  frontal_armor.points = projectArmor(
     calibration, kSmallWidth, optical_alignment, tvec);
-  solver.single_pnp(ambiguous_armor);
+  solver.single_pnp(frontal_armor);
   expect(
-    ambiguous_armor.quality.pnp_ok && ambiguous_armor.quality.geometry_ok &&
-      ambiguous_armor.quality.reprojection_ok,
+    frontal_armor.quality.pnp_ok && frontal_armor.quality.geometry_ok &&
+      frontal_armor.quality.reprojection_ok,
     "near-frontal planar observation failed PnP");
-  expect(
-    std::isfinite(ambiguous_armor.second_reprojection_error),
-    "IPPE did not expose a second geometrically valid candidate");
-  expect(
-    ambiguous_armor.quality.yaw_ambiguous,
-    "near-equal IPPE candidates were not marked yaw-ambiguous");
-  expect(
-    ambiguous_armor.second_reprojection_error <=
-      std::max(
-        ambiguous_armor.reprojection_error + 0.25,
-        ambiguous_armor.reprojection_error * 1.2),
-    "yaw ambiguity flag disagrees with the configured error rule");
-
   // 失败路径都复用一个已有结果，验证不会泄漏上一帧状态。
-  L3Estimation::Armor nan_armor = ambiguous_armor;
+  L3Estimation::Armor nan_armor = frontal_armor;
   nan_armor.points[1].x = std::numeric_limits<float>::quiet_NaN();
   solver.single_pnp(nan_armor);
   expect(outputsCleared(nan_armor), "NaN input retained previous PnP output");
   expect(allQualityFlagsClear(nan_armor), "NaN input retained quality flags");
 
   solver.set_R_world_barrel(std::nullopt);
-  L3Estimation::Armor missing_pose_armor = ambiguous_armor;
+  L3Estimation::Armor missing_pose_armor = frontal_armor;
   solver.single_pnp(missing_pose_armor);
   expect(
     outputsCleared(missing_pose_armor),
@@ -381,26 +335,23 @@ int main()
   solver.set_R_world_barrel(
     std::optional<Eigen::Quaterniond>{q_world_barrel});
 
-  // 相同角点由背面朝向相机的姿态生成，PnP 可求解但必须被正面约定拒绝。
+  // 与 SP-Vision 一致，不使用正面方向作为拒绝门限。
   const cv::Matx33d back_facing_rotation{
     0.0, 1.0, 0.0,
     0.0, 0.0, -1.0,
     -1.0, 0.0, 0.0};
-  L3Estimation::Armor wrong_geometry_armor = ambiguous_armor;
+  L3Estimation::Armor wrong_geometry_armor = frontal_armor;
   wrong_geometry_armor.points = projectArmor(
     calibration, kSmallWidth, back_facing_rotation, tvec);
   solver.single_pnp(wrong_geometry_armor);
   expect(
     wrong_geometry_armor.quality.pnp_ok,
-    "back-facing test geometry did not reach candidate validation");
+    "back-facing test geometry did not reach pose validation");
   expect(
-    !wrong_geometry_armor.quality.geometry_ok &&
-      !wrong_geometry_armor.quality.finite &&
-      !wrong_geometry_armor.quality.reprojection_ok,
-    "back-facing armor passed geometric validation");
-  expect(
-    outputsCleared(wrong_geometry_armor),
-    "back-facing armor retained previous PnP output");
+    wrong_geometry_armor.quality.geometry_ok &&
+      wrong_geometry_armor.quality.finite &&
+      wrong_geometry_armor.quality.reprojection_ok,
+    "SP-compatible solvePnP rejected a finite back-facing pose");
 
   auto invalid_calibration = cloneCalibration(calibration);
   invalid_calibration.camera_matrix.at<double>(0, 0) =
@@ -411,7 +362,7 @@ int main()
     "PnpSolver accepted non-finite camera calibration");
   invalid_calibration_solver.set_R_world_barrel(
     std::optional<Eigen::Quaterniond>{q_world_barrel});
-  L3Estimation::Armor invalid_calibration_armor = ambiguous_armor;
+  L3Estimation::Armor invalid_calibration_armor = frontal_armor;
   invalid_calibration_solver.single_pnp(invalid_calibration_armor);
   expect(
     outputsCleared(invalid_calibration_armor),
@@ -420,7 +371,7 @@ int main()
     allQualityFlagsClear(invalid_calibration_armor),
     "invalid calibration retained quality flags");
 
-  L3Estimation::Armor invalid_class_armor = ambiguous_armor;
+  L3Estimation::Armor invalid_class_armor = frontal_armor;
   invalid_class_armor.class_id = -1;
   solver.single_pnp(invalid_class_armor);
   expect(

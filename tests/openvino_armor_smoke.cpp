@@ -113,8 +113,8 @@ int main(int argc, char** argv)
     L2Perception::InferenceModelConfig model_config;
     model_config.model_path = model_path;
     model_config.device = device;
-    // 与 FosuVision 的实际在线推理保持一致：OpenCV 图像按 BGR 输入模型。
-    model_config.model_color_order = L2Perception::ModelColorOrder::Bgr;
+    // 与 SP-Vision 一致：宿主输入是 OpenCV BGR，OpenVINO 在模型前转换为 RGB。
+    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
     model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
 

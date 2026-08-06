@@ -41,6 +41,8 @@ enum class ArmorClass : int {
 struct Armor {
   // 顺序固定为：左上、右上、右下、左下；PnP 必须沿用同一顺序。
   std::array<cv::Point2f, 4> corners{};
+  // 四个角点在原图像素坐标系中的几何中心。
+  cv::Point2f center{};
   // Fosu 约定：0~8 分别为 G、1、2、3、4、5、O、Bs、Bb。
   int class_id{-1};
   ArmorColor color{ArmorColor::Unknown};
@@ -48,9 +50,10 @@ struct Armor {
 
   Eigen::Vector3d xyz_in_barrel{Eigen::Vector3d::Zero()};  // 单位：m
   Eigen::Vector3d xyz_in_world{Eigen::Vector3d::Zero()};   // 单位：m
-  Eigen::Vector3d rpy_in_barrel{Eigen::Vector3d::Zero()};  // [roll,pitch,yaw]，rad
-  Eigen::Vector3d rpy_in_world{Eigen::Vector3d::Zero()};   // [roll,pitch,yaw]，rad
-  Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};   // 球坐标系
+  // 固定顺序为 [yaw, pitch, roll]。
+  Eigen::Vector3d ypr_in_barrel{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d ypr_in_world{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};   // 方位角加距离
 };
 
 // 保留检测层原有接口名称，避免后端和测试因数据结构改名而失效。

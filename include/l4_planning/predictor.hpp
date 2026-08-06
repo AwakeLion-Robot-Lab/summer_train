@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l3_estimation/target_estimator.hpp"
+#include "l3_estimation/types.hpp"
 
 namespace L4Planning {
 

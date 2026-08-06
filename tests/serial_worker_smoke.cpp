@@ -1,5 +1,9 @@
 #include "l1_sensor/serial/serial_worker.hpp"
 
+#include "l6_telemetry/math.hpp"
+
+#include <Eigen/Geometry>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -109,6 +113,66 @@ bool isNextSequence(std::uint8_t previous, std::uint8_t current)
   return current == static_cast<std::uint8_t>(previous + 1U);
 }
 
+std::uint8_t crc8(std::span<const std::uint8_t> bytes)
+{
+  std::uint8_t crc = 0xFF;
+  for (const auto byte : bytes) {
+    crc ^= byte;
+    for (int bit = 0; bit < 8; ++bit) {
+      crc = (crc & 0x01) != 0
+              ? static_cast<std::uint8_t>((crc >> 1) ^ 0x8C)
+              : static_cast<std::uint8_t>(crc >> 1);
+    }
+  }
+  return crc;
+}
+
+std::uint16_t crc16(std::span<const std::uint8_t> bytes)
+{
+  std::uint16_t crc = 0xFFFF;
+  for (const auto byte : bytes) {
+    crc ^= byte;
+    for (int bit = 0; bit < 8; ++bit) {
+      crc = (crc & 0x0001) != 0
+              ? static_cast<std::uint16_t>((crc >> 1) ^ 0x8408)
+              : static_cast<std::uint16_t>(crc >> 1);
+    }
+  }
+  return crc;
+}
+
+// 构造一帧下位机状态，用于让 gimbal 历史里出现可查询的姿态。
+std::vector<std::uint8_t> makeStatePacket(
+  std::uint8_t seq, float roll, float pitch, float yaw)
+{
+  Protocol::RxPacket packet{};
+  packet.frame_header.sof = 0xA0;
+  packet.frame_header.data_length = sizeof(Protocol::RxPayload);
+  packet.frame_header.seq = seq;
+  packet.frame_header.cmd_id = 0x0002;
+  packet.data.roll = roll;
+  packet.data.pitch = pitch;
+  packet.data.yaw = yaw;
+  packet.data.bullet_speed = 23.0F;
+  packet.data.heat = 42.0F;
+  packet.data.enemy_color = 1;
+  packet.data.mode = 1;
+
+  const auto header = std::span{
+    reinterpret_cast<const std::uint8_t*>(&packet.frame_header),
+    offsetof(Protocol::HeaderFrame, crc8)};
+  packet.frame_header.crc8 = crc8(header);
+
+  const auto body = std::span{
+    reinterpret_cast<const std::uint8_t*>(&packet),
+    sizeof(packet) - sizeof(packet.crc16)};
+  packet.crc16 = crc16(body);
+
+  std::vector<std::uint8_t> bytes(sizeof(packet));
+  std::memcpy(bytes.data(), &packet, sizeof(packet));
+  return bytes;
+}
+
 }  // namespace
 
 int main()
@@ -127,6 +191,8 @@ int main()
   config.command_timeout_ms = 80;
   config.reconnect_interval_ms = 5;
   config.packet_loss_check_enable = false;
+  // 取一个非单位阵的合法右手旋转（绕 z 转 180 度），让轴向转换真正生效。
+  config.R_imu_barrel = Eigen::Vector3d{-1.0, -1.0, 1.0}.asDiagonal();
 
   int result = 0;
   {
@@ -189,6 +255,54 @@ int main()
             std::abs(sent_command->pitch + 0.5) > 1e-6) {
           std::cerr << "SerialWorker did not retain the last written command\n";
           result = 8;
+        }
+      }
+
+      // gimbalPoseAt 必须返回 barrel -> world，即在下位机上报的姿态右乘一次
+      // R_imu_barrel。roll 和 pitch 都取非零值，这样单边右乘、单边左乘和
+      // 双边相似变换三种写法互不相同，写反了这里就会失败。
+      if (result == 0) {
+        const auto state_packet = makeStatePacket(0, 0.1F, 0.2F, 0.3F);
+        if (::write(pty.masterFd(), state_packet.data(), state_packet.size()) !=
+            static_cast<ssize_t>(state_packet.size())) {
+          std::cerr << "Failed to inject a state packet\n";
+          result = 9;
+        }
+
+        std::optional<L1Sensor::RobotState> state;
+        const auto state_deadline = Clock::now() + std::chrono::milliseconds(500);
+        while (result == 0 && Clock::now() < state_deadline) {
+          state = worker.latestState();
+          if (state) {
+            break;
+          }
+          pollfd idle{pty.masterFd(), 0, 0};
+          ::poll(&idle, 1, 5);
+        }
+
+        if (result == 0 && !state) {
+          std::cerr << "SerialWorker did not parse the injected state\n";
+          result = 10;
+        }
+
+        if (result == 0) {
+          const auto pose = worker.gimbalPoseAt(Clock::now());
+          if (!pose) {
+            std::cerr << "SerialWorker returned no gimbal pose\n";
+            result = 11;
+          } else {
+            // 用解析出来的 rpy 反推期望值，避免 float 精度参与比较。
+            const Eigen::Matrix3d R_world_imu =
+              L6Telemetry::rpyToQuaternion(
+                state->rpy.roll, state->rpy.pitch, state->rpy.yaw)
+                .toRotationMatrix();
+            const Eigen::Matrix3d expected = R_world_imu * config.R_imu_barrel;
+            if (!pose->toRotationMatrix().isApprox(expected, 1e-9)) {
+              std::cerr
+                << "SerialWorker composed R_imu_barrel the wrong way round\n";
+              result = 12;
+            }
+          }
         }
       }
     }

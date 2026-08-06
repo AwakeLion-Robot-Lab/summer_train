@@ -5,21 +5,19 @@
 #include "l2_perception/armor.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
-#include "l3_estimation/pnp_solver.hpp"
+#include "l3_estimation/tracker.hpp"
 #include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include <opencv2/opencv.hpp>
 
-#include <cmath>
 #include <exception>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <utility>
-#include <vector>
 
 namespace {
 
@@ -39,29 +37,6 @@ namespace {
   return false;
 }
 
-[[nodiscard]] L3Estimation::Armor toArmorObservation(
-  const L2Perception::Armor& detection,
-  L3Estimation::TimePoint timestamp)
-{
-  L3Estimation::Armor observation;
-  observation.class_id = detection.class_id;
-  observation.points = detection.corners;
-  observation.confidence = detection.confidence;
-  observation.timestamp = timestamp;
-
-  double twice_signed_area = 0.0;
-  for (std::size_t index = 0; index < detection.corners.size(); ++index) {
-    const auto& current = detection.corners[index];
-    const auto& next =
-      detection.corners[(index + 1) % detection.corners.size()];
-    twice_signed_area +=
-      static_cast<double>(current.x) * static_cast<double>(next.y) -
-      static_cast<double>(current.y) * static_cast<double>(next.x);
-  }
-  observation.area = std::abs(twice_signed_area) * 0.5;
-  return observation;
-}
-
 L2Perception::ArmorDetector makeArmorDetector()
 {
   const std::filesystem::path model_path{"model/armor_model/armor.xml"};
@@ -71,8 +46,8 @@ L2Perception::ArmorDetector makeArmorDetector()
     L2Perception::InferenceModelConfig model_config;
     model_config.model_path = model_path;
     model_config.device = "CPU";
-    // 这份 armor.xml 沿用 FosuVision 的 BGR 输入契约；不要在后端交换红蓝通道。
-    model_config.model_color_order = L2Perception::ModelColorOrder::Bgr;
+    // SP-Vision 的宿主图像是 BGR，但模型输入在 OpenVINO 预处理图中转换为 RGB。
+    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
     model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
 
@@ -110,20 +85,23 @@ void AutoAimRuntime::run() {
   if (!serial_started && serial_config.enable) {
     L6Telemetry::logWarn("Failed to start serial worker.");
   }
-  // PnP 使用启动时加载的静态内参、畸变、枪管外参和装甲板尺寸参数。
-    // 标定缺失时 runtime 继续运行检测和显示，
-    // 但后续不得生成有效瞄准/开火命令。
+  // L3 Tracker 持有 PnP 和 EKF。标定缺失时 runtime 继续运行检测和显示，
+  // 但后续不得生成有效瞄准/开火命令。
   AutoAimConfig auto_aim_config;
-  std::optional<L3Estimation::PnpSolver> pnp_solver;
+  std::optional<L3Estimation::Tracker> tracker;
   const auto& camera_calibration = camera->calibration();
   if (!camera_calibration) {
-    L6Telemetry::logWarn("PnP disabled: camera calibration is missing");
+    L6Telemetry::logWarn("Tracker disabled: camera calibration is missing");
   } else {
-    pnp_solver.emplace(*camera_calibration, auto_aim_config.armor);
-    if (pnp_solver->ready()) {
-      L6Telemetry::logInfo("PnP solver configured");
+    tracker.emplace(
+      *camera_calibration,
+      auto_aim_config.armor,
+      auto_aim_config.tracker);
+    if (tracker->ready()) {
+      L6Telemetry::logInfo("L3 tracker configured");
     } else {
-      L6Telemetry::logWarn("PnP disabled: calibration or armor config is invalid");
+      L6Telemetry::logWarn(
+        "Tracker disabled: calibration, armor, or tracker config is invalid");
     }
   }
 
@@ -148,9 +126,6 @@ void AutoAimRuntime::run() {
         // 图像曝光时刻的枪管系 -> 世界系旋转；
         // 当前模型忽略两坐标系原点平移。
         const auto q_world_barrel = serial.gimbalPoseAt(timestamp);
-        if (pnp_solver) {
-          pnp_solver->set_R_world_barrel(q_world_barrel);
-        }
         switch (state.mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
@@ -161,14 +136,10 @@ void AutoAimRuntime::run() {
             return !isEnemyArmor(armor.color, state.enemy_color);
           });
 
-          // L2 检测和 L3 观测保持为不同类型，跨层字段在这里显式复制。
-          [[maybe_unused]] std::vector<L3Estimation::Armor> observations;
-          observations.reserve(armors.size());
-          if (pnp_solver && pnp_solver->ready() && q_world_barrel) {
-            for (const auto& armor : armors) {
-              observations.push_back(toArmorObservation(armor, timestamp));
-              pnp_solver->single_pnp(observations.back());
-            }
+          // L2 -> L3 转换、逐板 PnP、状态机和 EKF 更新均由 Tracker 完成。
+          [[maybe_unused]] std::optional<L3Estimation::TargetState> target;
+          if (tracker && tracker->ready()) {
+            target = tracker->track(armors, q_world_barrel, timestamp);
           }
           break;
         }
