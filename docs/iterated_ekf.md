@@ -72,9 +72,20 @@ K_i     = P_pri H_iᵀ (H_i P_pri H_iᵀ + R)⁻¹
   地推出物理范围。这是迭代暴露了既有整定问题，不是迭代本身的错。
 - **投影 + 迭代是净收益**：相比原基线，tracking 帧 444 → 467（+5.2%），复位
   14 → 9（−36%）。
-- **迭代在第 2 次就收敛**，iter=2/3/5 的跟踪结果完全一致。默认 5 只是安全上限，
-  `step_threshold` 会提前退出；实测 tracker 平均耗时 0.289 ms → 0.300 ms（+4%），
-  相对 detector 的 11 ms 可忽略。
+- **迭代在第 2 次就收敛**，iter=2/3/5 的跟踪结果完全一致。实测 tracker 平均耗时
+  0.289 ms → 0.300 ms（+4%），相对 detector 的 11 ms 可忽略。
+
+## 当前默认：主干路走普通 EKF
+
+`TrackerConfig::ekf_max_iterations` 默认为 **1**，即 runtime 主干路是单次线性化的
+普通 EKF，与引入迭代前的行为逐位一致。迭代实现保留在代码里、随时可开，但在实车
+验收前不作为默认路径——上面的收益只在一段离线回放上验证过，样本量不足以支撑改
+默认。
+
+注意**半径投影和 `diverged()` 的贴边判据不受这个开关影响**，它们是独立于迭代的修正，
+默认生效。单看这一项相对改动前基线就是净收益（tracking 444 → 462，复位 14 → 10）。
+
+要开启迭代：把 `ekf_max_iterations` 调到 2~5，或用 `auto_aim_test --ekf-iterations`。
 
 NIS 均值 0.24~0.28 远低于 4 维观测的理想值 4，说明 `R` 整体偏大、滤波器过于保守。
 这是独立于本次改动的既有整定问题，见 `pnp_observation_noise_and_covariance.md`。
@@ -84,9 +95,13 @@ NIS 均值 0.24~0.28 远低于 4 维观测的理想值 4，说明 `R` 整体偏�
 ```bash
 xmake run ieskf_smoke                                    # 单元行为测试，无需硬件
 xmake f --use_openvino=y
-xmake run auto_aim_test -- --ekf-iterations=1            # 单次线性化基线
-xmake run auto_aim_test -- --ekf-iterations=5            # 默认，Gauss-Newton 迭代
+xmake run auto_aim_test -- --ekf-iterations=1            # 默认，单次线性化普通 EKF
+xmake run auto_aim_test -- --ekf-iterations=5            # 开启 Gauss-Newton 迭代
+xmake run auto_aim_test -- --ekf-iterations=5 --show=true  # 附带回放窗口和 yaw-cost 图
 ```
+
+`--show` 默认 `false`，且 OpenCV 的 `CommandLineParser` 对 bool 只认 `true` 和 `1`，
+其它字符串一律静默当作 false——打错字不会报错，只是不弹窗。
 
 运行时通过 `TrackerConfig::ekf_max_iterations` 和 `ekf_step_threshold` 配置。
 

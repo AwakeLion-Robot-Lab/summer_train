@@ -55,7 +55,7 @@ const std::string kCommandLineKeys =
   "{end-index n | 0 | last frame index, zero means all}"
   "{show-from-index | -1 | first displayed frame; earlier frames still update Tracker}"
   "{csv | logs/sp_auto_aim_replay.csv | per-frame output path}"
-  "{ekf-iterations | 5 | EKF Gauss-Newton relinearizations; 1 disables iteration}"
+  "{ekf-iterations | 1 | EKF Gauss-Newton relinearizations; 1 disables iteration}"
   "{show | false | show replay window}"
   "{@input-path | tests/data/sp_auto_aim/demo | base path of .avi and .txt}";
 
