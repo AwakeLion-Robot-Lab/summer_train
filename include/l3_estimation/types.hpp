@@ -120,6 +120,14 @@ struct Target {
   double v_yaw{0.0};
   double radius{0.0};
 
+  // 整车几何的其余部分。L4 需要靠这三个字段自行展开全部物理装甲板并外推到
+  // 命中时刻，否则只能拿到当前帧的装甲板位置，无法做延迟补偿和选板。
+  // second_radius 是四板车奇数板使用的另一组半径（已含 r2-r1），height_diff
+  // 是对应的高度差 z2-z1；三板车两者与主半径、0 相同。
+  int armor_num{4};
+  double second_radius{0.0};
+  double height_diff{0.0};
+
   // P 与 vector() 使用完全相同的九维元素顺序。
   TargetCovariance P{TargetCovariance::Identity()};
   TrackState track_state{TrackState::Lost};

@@ -338,6 +338,12 @@ TargetState TrackedTarget::toTargetState(TrackState track_state,
   target.yaw = ekf_.x[6];
   target.v_yaw = ekf_.x[7];
   target.radius = ekf_.x[8];
+  // 展开整车几何供 L4 外推使用。三板车没有第二组半径和高度差，直接与主
+  // 半径对齐，L4 就不必再判断板数。
+  target.armor_num = armor_num_;
+  const bool has_second_set = armor_num_ == 4;
+  target.second_radius = has_second_set ? ekf_.x[8] + ekf_.x[9] : ekf_.x[8];
+  target.height_diff = has_second_set ? ekf_.x[10] : 0.0;
   target.P = ekf_.P.topLeftCorner<9, 9>();
   target.track_state = track_state;
   target.timestamp = t_;

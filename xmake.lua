@@ -137,6 +137,13 @@ target("image_preprocessor_smoke")
     add_files("tests/image_preprocessor_smoke.cpp")
     add_deps("newvision")
 
+target("planner_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/planner_smoke.cpp")
+    add_deps("newvision")
+
 target("ieskf_smoke")
     set_kind("binary")
     set_default(false)
