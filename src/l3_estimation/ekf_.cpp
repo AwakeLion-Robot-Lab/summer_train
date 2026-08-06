@@ -37,8 +37,10 @@ constexpr double kNormal95 = 1.6448536269514722;
 
 ExtendedKalmanFilter::ExtendedKalmanFilter(
   const Eigen::VectorXd & x0, const Eigen::MatrixXd & P0,
-  std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> x_add)
-: x(x0), P(P0), I(Eigen::MatrixXd::Identity(x0.rows(), x0.rows())), x_add(x_add)
+  std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> x_add,
+  std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> x_minus)
+: x(x0), P(P0), I(Eigen::MatrixXd::Identity(x0.rows(), x0.rows())), x_add(x_add),
+  x_minus(x_minus)
 {
   // 预创建固定键，遥测侧可以在第一次更新前安全读取完整字段集合。
   data["residual_yaw"] = 0.0;
@@ -96,13 +98,21 @@ Eigen::VectorXd ExtendedKalmanFilter::update(
   // 通过 x_add 注入修正量，使角度等周期状态可以在加法后归一化。
   x = x_add(x, K * residual);
 
+  recordConsistency(residual, S_inverse, x_prior);
+  return x;
+}
+
+void ExtendedKalmanFilter::recordConsistency(
+  const Eigen::VectorXd & residual, const Eigen::MatrixXd & S_inverse,
+  const Eigen::VectorXd & x_prior)
+{
   // NIS 衡量观测与先验预测的一致性。这里的 nees 缺少真值，实际是本次状态
   // 修正量相对后验协方差的归一化幅度，只作为辅助的异常指标。
   double nis = residual.transpose() * S_inverse * residual;
   double nees = (x - x_prior).transpose() * P.inverse() * (x - x_prior);
 
   // 门限取对应自由度的卡方 95% 上分位数：NIS 用观测维数，nees 用状态维数。
-  const double nis_threshold = chiSquare95(z.rows());
+  const double nis_threshold = chiSquare95(residual.rows());
   const double nees_threshold = chiSquare95(x.rows());
 
   // S 接近奇异时 nis 可能是 NaN，此时比较运算恒为假会被误判成通过，
@@ -128,16 +138,17 @@ Eigen::VectorXd ExtendedKalmanFilter::update(
   int recent_failures = std::accumulate(recent_nis_failures.begin(), recent_nis_failures.end(), 0);
   double recent_rate = static_cast<double>(recent_failures) / recent_nis_failures.size();
 
-  // 当前四维观测顺序为 [方位角, 俯仰角, 距离, 装甲板 yaw]。
-  data["residual_yaw"] = residual[0];
-  data["residual_pitch"] = residual[1];
-  data["residual_distance"] = residual[2];
-  data["residual_angle"] = residual[3];
+  // 当前四维观测顺序为 [方位角, 俯仰角, 距离, 装甲板 yaw]。观测维数不足
+  // 时跳过，避免越界读取——本类不限定观测维数，调用方可能只更新子集。
+  if (residual.rows() >= 4) {
+    data["residual_yaw"] = residual[0];
+    data["residual_pitch"] = residual[1];
+    data["residual_distance"] = residual[2];
+    data["residual_angle"] = residual[3];
+  }
   data["nis"] = nis;
   data["nees"] = nees;
   data["recent_nis_failures"] = recent_rate;
-
-  return x;
 }
 
 }  // namespace L3Estimation

@@ -12,6 +12,12 @@
 
 namespace {
 
+// 车辆旋转半径的物理范围，同时用于状态投影和发散判定，两处必须一致。
+constexpr double kMinRadius = 0.05;
+constexpr double kMaxRadius = 0.5;
+// 允许半径连续贴边的更新次数；约 100 FPS 下对应 0.1 秒。
+constexpr int kMaxRadiusPinnedCount = 10;
+
 // 计算笛卡尔坐标 [x, y, z] 到 [方位角, 俯仰角, 距离] 的 Jacobian。
 Eigen::Matrix3d xyzToYpdJacobian(const Eigen::Vector3d &xyz) {
   const double x = xyz.x();
@@ -43,10 +49,15 @@ namespace L3Estimation {
 TrackedTarget::TrackedTarget(const Armor &armor,
                              std::chrono::steady_clock::time_point t,
                              double radius, int armor_num,
-                             Eigen::VectorXd P0_dig)
-    : name(armor.name), armor_type(armor.type), armor_num_(armor_num), t_(t) {
+                             Eigen::VectorXd P0_dig, int max_iterations,
+                             double step_threshold)
+    : name(armor.name), armor_type(armor.type), armor_num_(armor_num),
+      max_iterations_(max_iterations), step_threshold_(step_threshold), t_(t) {
   if (armor_num_ < 1) {
     throw std::invalid_argument("armor_num must be positive");
+  }
+  if (max_iterations_ < 1) {
+    throw std::invalid_argument("max_iterations must be at least 1");
   }
   if (P0_dig.size() != 11) {
     throw std::invalid_argument(
@@ -67,14 +78,28 @@ TrackedTarget::TrackedTarget(const Armor &armor,
       0.0, 0.0;
   const Eigen::MatrixXd P0 = P0_dig.asDiagonal();
 
-  // yaw 是周期量，每次注入滤波修正后都归一化到统一范围。
+  // yaw 是周期量，每次注入滤波修正后都归一化到统一范围；两个旋转半径
+  // 投影回车辆物理范围。半径的 P0 是 1.0 m²（σ 达 1 米，而物理范围只有
+  // 5~50 厘米），先验极松，单次观测就能把 r 拽成负数——迭代重线性化会
+  // 把这个过冲放大。投影是最简单的约束卡尔曼形式，对迭代路径同样生效。
   auto x_add = [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
     Eigen::VectorXd result = a + b;
+    result[6] = L6Telemetry::limit_rad(result[6]);
+    result[8] = std::clamp(result[8], kMinRadius, kMaxRadius);
+    const double second_radius =
+        std::clamp(result[8] + result[9], kMinRadius, kMaxRadius);
+    result[9] = second_radius - result[8];
+    return result;
+  };
+  // 迭代更新求先验残差 x_pri ⊟ x_i 时必须走最短圆周差，否则 yaw 跨越
+  // ±π 会产生 2π 的伪残差，把 Gauss-Newton 推向错误的工作点。
+  auto x_minus = [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
+    Eigen::VectorXd result = a - b;
     result[6] = L6Telemetry::limit_rad(result[6]);
     return result;
   };
 
-  ekf_ = ExtendedKalmanFilter(x0, P0, std::move(x_add));
+  ekf_ = IteratedKalmanFilter(x0, P0, std::move(x_add), std::move(x_minus));
   isinit = true;
 }
 
@@ -85,13 +110,23 @@ TrackedTarget::TrackedTarget(double x, double vyaw, double radius,
   x0 << x, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, vyaw, radius, 0.0, height;
   const Eigen::MatrixXd P0 = Eigen::MatrixXd::Zero(11, 11);
 
+  // 与上面的构造入口保持同一套流形运算，避免两条初始化路径行为分叉。
   auto x_add = [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
     Eigen::VectorXd result = a + b;
+    result[6] = L6Telemetry::limit_rad(result[6]);
+    result[8] = std::clamp(result[8], kMinRadius, kMaxRadius);
+    const double second_radius =
+        std::clamp(result[8] + result[9], kMinRadius, kMaxRadius);
+    result[9] = second_radius - result[8];
+    return result;
+  };
+  auto x_minus = [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
+    Eigen::VectorXd result = a - b;
     result[6] = L6Telemetry::limit_rad(result[6]);
     return result;
   };
 
-  ekf_ = ExtendedKalmanFilter(x0, P0, std::move(x_add));
+  ekf_ = IteratedKalmanFilter(x0, P0, std::move(x_add), std::move(x_minus));
   isinit = true;
 }
 
@@ -212,8 +247,11 @@ void TrackedTarget::update(const Armor &armor) {
 }
 
 void TrackedTarget::update_ypda(const Armor &armor, int id) {
-  // 四维观测为 [方位角, 俯仰角, 距离, 装甲板 yaw]。
-  const Eigen::MatrixXd H = h_jacobian(ekf_.x, id);
+  // 四维观测为 [方位角, 俯仰角, 距离, 装甲板 yaw]。Jacobian 交给迭代滤波器
+  // 按工作点反复求值，因此这里传函数而不是在先验点算好的矩阵。
+  auto jacobian = [this, id](const Eigen::VectorXd &x) {
+    return h_jacobian(x, id);
+  };
   const double center_yaw =
       std::atan2(armor.xyz_in_world.y(), armor.xyz_in_world.x());
   const double delta_angle =
@@ -254,7 +292,21 @@ void TrackedTarget::update_ypda(const Armor &armor, int id) {
   Eigen::VectorXd z(4);
   z << armor.ypd_in_world.x(), armor.ypd_in_world.y(), armor.ypd_in_world.z(),
       armor.ypr_in_world[0];
-  ekf_.update(z, H, R, observation, subtract_observation);
+  ekf_.update(z, jacobian, R, observation, subtract_observation,
+              max_iterations_, step_threshold_);
+
+  // 统计半径是否被投影顶在物理边界上，供 diverged() 判断长期矛盾。
+  constexpr double kBoundEpsilon = 1e-9;
+  const double second_radius = ekf_.x[8] + ekf_.x[9];
+  const auto at_bound = [](double radius) {
+    return radius <= kMinRadius + kBoundEpsilon ||
+           radius >= kMaxRadius - kBoundEpsilon;
+  };
+  if (at_bound(ekf_.x[8]) || at_bound(second_radius)) {
+    ++radius_pinned_count_;
+  } else {
+    radius_pinned_count_ = 0;
+  }
 }
 
 Eigen::VectorXd TrackedTarget::ekf_x() const { return ekf_.x; }
@@ -306,15 +358,15 @@ bool TrackedTarget::diverged() const {
   if (ekf_.x.size() < 10)
     return true;
 
-  // 主半径和由差值恢复出的第二半径都必须落在车辆物理范围内。
-  const bool first_radius_ok = ekf_.x[8] > 0.05 && ekf_.x[8] < 0.5;
-  const double second_radius = ekf_.x[8] + ekf_.x[9];
-  const bool second_radius_ok = second_radius > 0.05 && second_radius < 0.5;
-  if (first_radius_ok && second_radius_ok)
+  // 半径已由 x_add 投影回物理范围，所以越界本身不再是发散信号。改判
+  // "持续贴边"：偶发一两帧被夹住是观测噪声，连续贴边说明观测与整车模型
+  // 长期矛盾，此时该放弃当前目标而不是继续跟一个被约束顶住的状态。
+  if (radius_pinned_count_ < kMaxRadiusPinnedCount)
     return false;
 
-  L6Telemetry::logDebug("TrackedTarget radius diverged: r1, r2", ekf_.x[8],
-                        second_radius);
+  L6Telemetry::logDebug("TrackedTarget radius pinned at bound: r1, r2, count",
+                        ekf_.x[8], ekf_.x[8] + ekf_.x[9],
+                        radius_pinned_count_);
   return true;
 }
 

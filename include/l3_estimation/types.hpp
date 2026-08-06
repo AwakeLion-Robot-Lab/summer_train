@@ -156,6 +156,11 @@ struct TrackerConfig {
   // 临时丢失按连续帧数计数；前哨站允许更长的无观测预测窗口。
   int max_temp_lost_count{15};
   int outpost_max_temp_lost_count{75};
+  // 整车 EKF 观测更新的 Gauss-Newton 重线性化上限。设为 1 时退化成单次
+  // 线性化的普通 EKF，与引入迭代前的行为逐位一致，便于离线回放做 A/B。
+  int ekf_max_iterations{5};
+  // 迭代收敛阈值，判据为相邻两次线性化工作点之差的范数。
+  double ekf_step_threshold{1e-4};
 };
 
 // 跨层接口使用的语义别名。

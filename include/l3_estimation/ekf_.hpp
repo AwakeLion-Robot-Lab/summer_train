@@ -22,10 +22,14 @@ public:
   ExtendedKalmanFilter() = default;
 
   // x_add 用于处理普通向量加法不适用的状态分量，例如周期角度归一化。
+  // x_minus 是它在流形上的逆运算，迭代更新求先验残差时必须用它，否则
+  // yaw 跨越 ±π 时会产生 2π 的伪残差，把迭代推向错误的工作点。
   ExtendedKalmanFilter(
     const Eigen::VectorXd & x0, const Eigen::MatrixXd & P0,
     std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> x_add =
-      [](const Eigen::VectorXd & a, const Eigen::VectorXd & b) { return a + b; });
+      [](const Eigen::VectorXd & a, const Eigen::VectorXd & b) { return a + b; },
+    std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> x_minus =
+      [](const Eigen::VectorXd & a, const Eigen::VectorXd & b) { return a - b; });
 
   // 使用线性状态转移 x = F*x 执行预测。
   Eigen::VectorXd predict(const Eigen::MatrixXd & F, const Eigen::MatrixXd & Q);
@@ -55,11 +59,22 @@ public:
   std::size_t window_size{100};
   double last_nis{0.0};
 
-private:
-  // 与状态维度相同的单位阵，以及用于注入修正量的状态加法函数。
+// 迭代实现 (ieskf.hpp) 继承本类，复用状态加减法、单位阵和一致性统计，
+// 保证两条更新路径对 Tracker 暴露完全相同的健康检查语义。没有虚函数，
+// 派生类只增加新的 update 重载，因此始终按值持有、绝不通过基类指针删除。
+protected:
+  // 与状态维度相同的单位阵，以及用于注入修正量的状态加减法函数。
   Eigen::MatrixXd I;
   std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> x_add{
     [](const Eigen::VectorXd & a, const Eigen::VectorXd & b) { return a + b; }};
+  std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> x_minus{
+    [](const Eigen::VectorXd & a, const Eigen::VectorXd & b) { return a - b; }};
+
+  // 记录本次更新的 NIS/NEES 与残差。必须在 x、P 完成更新后调用，且传入
+  // 的残差和 S 取自先验线性化点，否则统计量不再服从卡方分布。
+  void recordConsistency(
+    const Eigen::VectorXd & residual, const Eigen::MatrixXd & S_inverse,
+    const Eigen::VectorXd & x_prior);
 
   int nees_count_ = 0;
   int nis_count_ = 0;

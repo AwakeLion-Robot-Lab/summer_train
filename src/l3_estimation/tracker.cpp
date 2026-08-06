@@ -17,7 +17,9 @@ namespace {
          config.max_frame_interval > std::chrono::milliseconds::zero() &&
          config.max_temp_lost_count > 0 &&
          config.outpost_max_temp_lost_count > 0 &&
-         config.outpost_max_temp_lost_count >= config.max_temp_lost_count;
+         config.outpost_max_temp_lost_count >= config.max_temp_lost_count &&
+         config.ekf_max_iterations >= 1 &&
+         config.ekf_step_threshold > 0.0;
 }
 
 [[nodiscard]] bool isBase(ArmorName name) noexcept
@@ -228,7 +230,9 @@ bool Tracker::initializeTarget(
     timestamp,
     radius,
     armor_count,
-    std::move(covariance_diagonal));
+    std::move(covariance_diagonal),
+    tracker_config_.ekf_max_iterations,
+    tracker_config_.ekf_step_threshold);
   return true;
 }
 
