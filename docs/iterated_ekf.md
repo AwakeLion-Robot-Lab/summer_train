@@ -75,17 +75,43 @@ K_i     = P_pri H_iᵀ (H_i P_pri H_iᵀ + R)⁻¹
 - **迭代在第 2 次就收敛**，iter=2/3/5 的跟踪结果完全一致。实测 tracker 平均耗时
   0.289 ms → 0.300 ms（+4%），相对 detector 的 11 ms 可忽略。
 
-## 当前默认：主干路走普通 EKF
+## 当前状态：主干路不接迭代
 
-`TrackerConfig::ekf_max_iterations` 默认为 **1**，即 runtime 主干路是单次线性化的
-普通 EKF，与引入迭代前的行为逐位一致。迭代实现保留在代码里、随时可开，但在实车
-验收前不作为默认路径——上面的收益只在一段离线回放上验证过，样本量不足以支撑改
-默认。
+`TrackedTarget` 持有的是 `ExtendedKalmanFilter`，`update_ypda` 在先验点算好矩阵
+`H` 后调用基类的五参数 `update()`。**主干路完全不经过 `ieskf.cpp`**——符号表可验证：
+`target_estimator.cpp.o` 只引用 `ExtendedKalmanFilter` 的构造、`predict`、`update`
+三个符号，`IteratedKalmanFilter::update` 在库里已定义但无人引用。
 
-注意**半径投影和 `diverged()` 的贴边判据不受这个开关影响**，它们是独立于迭代的修正，
-默认生效。单看这一项相对改动前基线就是净收益（tracking 444 → 462，复位 14 → 10）。
+`IteratedKalmanFilter` 及其测试、本文档全部保留。上面的收益只在一段离线回放上
+验证过，样本量不足以支撑把它设为默认；实车验收前不接入主干路。
 
-要开启迭代：把 `ekf_max_iterations` 调到 2~5，或用 `auto_aim_test --ekf-iterations`。
+注意**半径投影和 `diverged()` 的贴边判据与迭代无关，始终生效**。单看这一项相对
+改动前基线就是净收益（tracking 444 → 462，复位 14 → 10）。
+
+### 接回迭代要改什么
+
+只有两处，都在 `TrackedTarget`：
+
+1. `target_estimator.hpp` 的成员类型 `ExtendedKalmanFilter ekf_` 改成
+   `IteratedKalmanFilter ekf_`，并 include `ieskf.hpp`。
+2. `target_estimator.cpp` 的 `update_ypda` 把
+
+   ```cpp
+   const Eigen::MatrixXd H = h_jacobian(ekf_.x, id);
+   ...
+   ekf_.update(z, H, R, observation, subtract_observation);
+   ```
+
+   换成
+
+   ```cpp
+   auto jacobian = [this, id](const Eigen::VectorXd &x) { return h_jacobian(x, id); };
+   ...
+   ekf_.update(z, jacobian, R, observation, subtract_observation, max_iterations, step_threshold);
+   ```
+
+`x_minus` 已经在两个构造函数里备好了，不用再动。若要做 A/B，再给 `TrackerConfig`
+加回 `ekf_max_iterations` / `ekf_step_threshold` 两个字段并透传即可。
 
 NIS 均值 0.24~0.28 远低于 4 维观测的理想值 4，说明 `R` 整体偏大、滤波器过于保守。
 这是独立于本次改动的既有整定问题，见 `pnp_observation_noise_and_covariance.md`。
@@ -93,17 +119,17 @@ NIS 均值 0.24~0.28 远低于 4 维观测的理想值 4，说明 `R` 整体偏�
 ## 使用
 
 ```bash
-xmake run ieskf_smoke                                    # 单元行为测试，无需硬件
+xmake run ieskf_smoke                          # 迭代滤波器的单元行为测试，无需硬件
 xmake f --use_openvino=y
-xmake run auto_aim_test -- --ekf-iterations=1            # 默认，单次线性化普通 EKF
-xmake run auto_aim_test -- --ekf-iterations=5            # 开启 Gauss-Newton 迭代
-xmake run auto_aim_test -- --ekf-iterations=5 --show=true  # 附带回放窗口和 yaw-cost 图
+xmake run auto_aim_test                        # 回放，主干路（普通 EKF）
+xmake run auto_aim_test -- --show=true         # 附带回放窗口和 yaw-cost 图
 ```
+
+`ieskf_smoke` 不依赖 `TrackedTarget`，直接测 `IteratedKalmanFilter` 本身，所以即使
+主干路没接迭代，它仍然守着这份代码不腐坏。
 
 `--show` 默认 `false`，且 OpenCV 的 `CommandLineParser` 对 bool 只认 `true` 和 `1`，
 其它字符串一律静默当作 false——打错字不会报错，只是不弹窗。
-
-运行时通过 `TrackerConfig::ekf_max_iterations` 和 `ekf_step_threshold` 配置。
 
 ## 未做的事
 

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "l3_estimation/ekf_.hpp"
-#include "l3_estimation/ieskf.hpp"
 #include "l3_estimation/types.hpp"
 
 #include <chrono>
@@ -24,10 +23,9 @@ public:
 
   TrackedTarget() = default;
   // 使用首个装甲板观测反推旋转中心并初始化十一维状态。
-  // max_iterations 为 1 时观测更新退化成单次线性化的普通 EKF。
   TrackedTarget(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
-    Eigen::VectorXd P0_dig, int max_iterations = 5, double step_threshold = 1e-4);
+    Eigen::VectorXd P0_dig);
   // 构造指定旋转状态的目标，主要用于无观测的确定性初始化。
   TrackedTarget(double x, double vyaw, double radius, double h);
 
@@ -67,10 +65,9 @@ private:
   bool is_switch_{false};
   bool is_converged_{false};
 
-  // 迭代滤波器；按值持有，ekf() 以基类引用暴露只读结果。
-  IteratedKalmanFilter ekf_;
-  int max_iterations_{5};
-  double step_threshold_{1e-4};
+  // 主干路使用单次线性化的普通 EKF。迭代实现见 ieskf.hpp，接回的方法写在
+  // docs/iterated_ekf.md，改动只涉及本成员的类型和 update_ypda 的传参。
+  ExtendedKalmanFilter ekf_;
   std::chrono::steady_clock::time_point t_{};
 
   // 使用 [方位角, 俯仰角, 距离, 装甲板 yaw] 观测更新指定物理装甲板。

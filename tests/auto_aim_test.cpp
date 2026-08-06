@@ -55,7 +55,6 @@ const std::string kCommandLineKeys =
   "{end-index n | 0 | last frame index, zero means all}"
   "{show-from-index | -1 | first displayed frame; earlier frames still update Tracker}"
   "{csv | logs/sp_auto_aim_replay.csv | per-frame output path}"
-  "{ekf-iterations | 1 | EKF Gauss-Newton relinearizations; 1 disables iteration}"
   "{show | false | show replay window}"
   "{@input-path | tests/data/sp_auto_aim/demo | base path of .avi and .txt}";
 
@@ -1592,8 +1591,6 @@ int main(int argc, char** argv)
     const auto enemy_color = parseEnemyColor(cli.get<std::string>("enemy"));
     const int start_index = cli.get<int>("start-index");
     const int end_index = cli.get<int>("end-index");
-    const int ekf_iterations = cli.get<int>("ekf-iterations");
-    require(ekf_iterations >= 1, "--ekf-iterations must be at least 1");
     const int requested_show_from_index = cli.get<int>("show-from-index");
     const int show_from_index = requested_show_from_index < 0
       ? start_index
@@ -1624,13 +1621,8 @@ int main(int argc, char** argv)
     require(detector.ready(), "current ArmorDetector is not ready");
 
     const L3Estimation::ArmorConfig armor_config;
-    // 迭代次数走命令行，方便同一段回放对照单次线性化和 Gauss-Newton 迭代。
-    L3Estimation::TrackerConfig tracker_config;
-    tracker_config.ekf_max_iterations = ekf_iterations;
-    L3Estimation::Tracker tracker(calibration, armor_config, tracker_config);
+    L3Estimation::Tracker tracker(calibration, armor_config);
     require(tracker.ready(), "current Tracker rejected replay calibration");
-    std::cout << "ekf_max_iterations = " << tracker_config.ekf_max_iterations
-              << '\n';
     L3Estimation::PnpSolver diagnostic_solver(calibration, armor_config);
     require(
       diagnostic_solver.ready(),

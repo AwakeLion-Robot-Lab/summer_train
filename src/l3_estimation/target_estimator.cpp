@@ -49,15 +49,10 @@ namespace L3Estimation {
 TrackedTarget::TrackedTarget(const Armor &armor,
                              std::chrono::steady_clock::time_point t,
                              double radius, int armor_num,
-                             Eigen::VectorXd P0_dig, int max_iterations,
-                             double step_threshold)
-    : name(armor.name), armor_type(armor.type), armor_num_(armor_num),
-      max_iterations_(max_iterations), step_threshold_(step_threshold), t_(t) {
+                             Eigen::VectorXd P0_dig)
+    : name(armor.name), armor_type(armor.type), armor_num_(armor_num), t_(t) {
   if (armor_num_ < 1) {
     throw std::invalid_argument("armor_num must be positive");
-  }
-  if (max_iterations_ < 1) {
-    throw std::invalid_argument("max_iterations must be at least 1");
   }
   if (P0_dig.size() != 11) {
     throw std::invalid_argument(
@@ -99,7 +94,7 @@ TrackedTarget::TrackedTarget(const Armor &armor,
     return result;
   };
 
-  ekf_ = IteratedKalmanFilter(x0, P0, std::move(x_add), std::move(x_minus));
+  ekf_ = ExtendedKalmanFilter(x0, P0, std::move(x_add), std::move(x_minus));
   isinit = true;
 }
 
@@ -126,7 +121,7 @@ TrackedTarget::TrackedTarget(double x, double vyaw, double radius,
     return result;
   };
 
-  ekf_ = IteratedKalmanFilter(x0, P0, std::move(x_add), std::move(x_minus));
+  ekf_ = ExtendedKalmanFilter(x0, P0, std::move(x_add), std::move(x_minus));
   isinit = true;
 }
 
@@ -247,11 +242,9 @@ void TrackedTarget::update(const Armor &armor) {
 }
 
 void TrackedTarget::update_ypda(const Armor &armor, int id) {
-  // 四维观测为 [方位角, 俯仰角, 距离, 装甲板 yaw]。Jacobian 交给迭代滤波器
-  // 按工作点反复求值，因此这里传函数而不是在先验点算好的矩阵。
-  auto jacobian = [this, id](const Eigen::VectorXd &x) {
-    return h_jacobian(x, id);
-  };
+  // 四维观测为 [方位角, 俯仰角, 距离, 装甲板 yaw]。普通 EKF 只在先验点线性化
+  // 一次，所以这里直接算好矩阵；换成迭代滤波器时需要改传 Jacobian 函数。
+  const Eigen::MatrixXd H = h_jacobian(ekf_.x, id);
   const double center_yaw =
       std::atan2(armor.xyz_in_world.y(), armor.xyz_in_world.x());
   const double delta_angle =
@@ -292,8 +285,7 @@ void TrackedTarget::update_ypda(const Armor &armor, int id) {
   Eigen::VectorXd z(4);
   z << armor.ypd_in_world.x(), armor.ypd_in_world.y(), armor.ypd_in_world.z(),
       armor.ypr_in_world[0];
-  ekf_.update(z, jacobian, R, observation, subtract_observation,
-              max_iterations_, step_threshold_);
+  ekf_.update(z, H, R, observation, subtract_observation);
 
   // 统计半径是否被投影顶在物理边界上，供 diverged() 判断长期矛盾。
   constexpr double kBoundEpsilon = 1e-9;
