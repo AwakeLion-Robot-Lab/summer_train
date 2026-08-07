@@ -10,6 +10,7 @@
 namespace L3Estimation {
 namespace {
 
+// YAML 读取辅助：字段缺失、类型错误或范围非法统一抛异常。
 [[noreturn]] void invalidConfig(
   const std::string& source,
   const std::string& reason)
@@ -18,6 +19,7 @@ namespace {
     "invalid L3 config '" + source + "': " + reason);
 }
 
+// 读取必填的 YAML 映射节点。
 YAML::Node requiredMap(
   const YAML::Node& parent,
   const char* key,
@@ -131,7 +133,7 @@ bool isValidL3Config(const L3Config& config) noexcept
 {
   const auto& dimensions = config.armor.dimensions;
   const auto& pnp = config.pnp;
-  const auto& yaw = config.yaw_search;
+  const auto& yaw = config.yaw_optimization;
   const auto& tracker = config.tracker;
   const bool tracker_base_valid =
     tracker.initial_variance.allFinite()
@@ -177,10 +179,9 @@ bool isValidL3Config(const L3Config& config) noexcept
          && finitePositive(pnp.maximum_distance_m)
          && pnp.maximum_distance_m > pnp.minimum_distance_m
          && finitePositive(pnp.maximum_reprojection_error_px)
-         && finitePositive(yaw.search_half_range_rad)
-         && yaw.search_half_range_rad <= std::numbers::pi
-         && finitePositive(yaw.search_step_rad)
-         && yaw.search_step_rad <= yaw.search_half_range_rad
+         && yaw.max_iterations > 0
+         && finitePositive(yaw.parameter_step)
+         && finitePositive(yaw.convergence_tolerance)
          && tracker_base_valid;
 }
 
@@ -230,11 +231,21 @@ L3Config loadL3Config(const std::filesystem::path& path)
       "three_armor_outpost",
       source);
 
-  // 第一版 PnP：单个 IPPE 解及其输入、距离和像素误差门限。
+  // PnP：IPPE 双候选及其输入、距离和像素误差门限。
   const YAML::Node pnp = requiredMap(root, "pnp", source);
   if (requiredValue<std::string>(pnp, "method", source) != "IPPE") {
     invalidConfig(source, "pnp.method must be IPPE");
   }
+  config.pnp.enable_ippe_dual_candidates =
+    requiredValue<bool>(
+      pnp,
+      "enable_ippe_dual_candidates",
+      source);
+  config.pnp.enable_predicted_face_yaw_selection =
+    requiredValue<bool>(
+      pnp,
+      "enable_predicted_face_yaw_selection",
+      source);
   config.pnp.minimum_corner_area_px =
     requiredValue<double>(pnp, "minimum_corner_area_px", source);
   config.pnp.minimum_distance_m =
@@ -247,14 +258,17 @@ L3Config loadL3Config(const std::filesystem::path& path)
       "maximum_reprojection_error_px",
       source);
 
-  // 第一版 yaw：固定位置和 pitch，只配置遍历范围与步长。
-  const YAML::Node yaw = requiredMap(root, "yaw_search", source);
-  config.yaw_search.enabled =
+  // 连续 yaw 优化参数（位置保持 PnP）。
+  const YAML::Node yaw =
+    requiredMap(root, "yaw_optimization", source);
+  config.yaw_optimization.enabled =
     requiredValue<bool>(yaw, "enabled", source);
-  config.yaw_search.search_half_range_rad =
-    requiredValue<double>(yaw, "half_range_rad", source);
-  config.yaw_search.search_step_rad =
-    requiredValue<double>(yaw, "step_rad", source);
+  config.yaw_optimization.max_iterations =
+    requiredValue<int>(yaw, "max_iterations", source);
+  config.yaw_optimization.parameter_step =
+    requiredValue<double>(yaw, "parameter_step", source);
+  config.yaw_optimization.convergence_tolerance =
+    requiredValue<double>(yaw, "convergence_tolerance", source);
 
   // 第一版 EKF：读取观测噪声、简单关联和生命周期参数。
   const YAML::Node noise =

@@ -1,8 +1,8 @@
 #include "l3_estimation/yaw_optimizer.hpp"
+#include "l3_estimation/angle_utils.hpp"
 
 #include <cmath>
 #include <limits>
-#include <numbers>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -11,24 +11,6 @@
 
 namespace L3Estimation {
 namespace {
-
-double normalizeAngle(double angle) noexcept
-{
-  constexpr double kTwoPi = 2.0 * std::numbers::pi;
-  angle = std::remainder(angle, kTwoPi);
-  return angle <= -std::numbers::pi ? angle + kTwoPi : angle;
-}
-
-bool isRotationMatrix(const Eigen::Matrix3d& rotation) noexcept
-{
-  if (!rotation.allFinite()) {
-    return false;
-  }
-  const Eigen::Matrix3d error =
-    rotation.transpose() * rotation - Eigen::Matrix3d::Identity();
-  return error.norm() < 1e-5
-         && std::abs(rotation.determinant() - 1.0) < 1e-5;
-}
 
 Eigen::Matrix3d rotationFromRvec(const cv::Vec3d& rvec)
 {
@@ -65,7 +47,7 @@ Eigen::Vector3d rotationToRpy(const Eigen::Matrix3d& rotation)
 YawOptimizer::YawOptimizer(
   L1Sensor::CameraCalibration calibration,
   ArmorDimensions dimensions,
-  YawSearchConfig config)
+  YawOptimizationConfig config)
   : calibration_(std::move(calibration)),
     dimensions_(dimensions),
     config_(config)
@@ -76,11 +58,11 @@ YawOptimizer::YawOptimizer(
   }
   R_barrel_camera_ = calibration_.T_barrel_camera->linear();
   if (!isRotationMatrix(R_barrel_camera_)
-      || !std::isfinite(config_.search_half_range_rad)
-      || config_.search_half_range_rad <= 0.0
-      || config_.search_half_range_rad > std::numbers::pi
-      || !std::isfinite(config_.search_step_rad)
-      || config_.search_step_rad <= 0.0) {
+      || config_.max_iterations <= 0
+      || !std::isfinite(config_.parameter_step)
+      || config_.parameter_step <= 0.0
+      || !std::isfinite(config_.convergence_tolerance)
+      || config_.convergence_tolerance <= 0.0) {
     throw std::invalid_argument(
       "YawOptimizer received an invalid configuration");
   }
@@ -100,13 +82,30 @@ std::array<cv::Point3d, 4> YawOptimizer::objectPoints(
            {0.0,  half_width, -half_height}}};
 }
 
-std::optional<YawOptimizationResult> YawOptimizer::optimize(
+std::optional<YawOptimizationResult> YawOptimizer::raw(
   const L2Perception::ArmorDetection& detection,
   ArmorSize size,
   const ArmorPose& pose,
   const Eigen::Quaterniond& R_world_barrel,
   double configured_armor_pitch_rad) const
 {
+  // 只返回 raw 评估结果（不做 yaw 搜索）。
+  return evaluateRaw(
+    detection,
+    size,
+    pose,
+    R_world_barrel,
+    configured_armor_pitch_rad);
+}
+
+std::optional<YawOptimizationResult> YawOptimizer::evaluateRaw(
+  const L2Perception::ArmorDetection& detection,
+  ArmorSize size,
+  const ArmorPose& pose,
+  const Eigen::Quaterniond& R_world_barrel,
+  double configured_armor_pitch_rad) const
+{
+  // 校验输入，计算世界系 raw yaw 与固定 pitch 模型的 raw 重投影误差。
   if (!R_world_barrel.coeffs().allFinite()
       || R_world_barrel.norm() <= 1e-9
       || !std::isfinite(configured_armor_pitch_rad)) {
@@ -126,112 +125,214 @@ std::optional<YawOptimizationResult> YawOptimizer::optimize(
   const double yaw_raw_world = normalizeAngle(std::atan2(
     R_world_armor_raw(1, 0),
     R_world_armor_raw(0, 0)));
-  const double barrel_yaw_world = normalizeAngle(std::atan2(
-    R_world_barrel_matrix(1, 0),
-    R_world_barrel_matrix(0, 0)));
-
   const Eigen::Matrix3d R_camera_world =
     (R_world_barrel_matrix * R_barrel_camera_).transpose();
   const auto object_points = objectPoints(size);
 
-  // 给定一个世界系 yaw，固定 pitch 和 PnP 位置后计算四角点二维 RMSE。
-  const auto reprojection_error =
-    [&](double yaw) -> std::optional<double> {
-    const Eigen::Matrix3d R_world_armor =
-      Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix()
-      * Eigen::AngleAxisd(
-          configured_armor_pitch_rad,
-          Eigen::Vector3d::UnitY()).toRotationMatrix();
-    const Eigen::Matrix3d R_camera_armor_constrained =
-      R_camera_world * R_world_armor;
-    if (!isRotationMatrix(R_camera_armor_constrained)) {
-      return std::nullopt;
-    }
-
-    for (const auto& point : object_points) {
-      const Eigen::Vector3d point_camera =
-        R_camera_armor_constrained
-          * Eigen::Vector3d{point.x, point.y, point.z}
-        + Eigen::Vector3d{pose.tvec[0], pose.tvec[1], pose.tvec[2]};
-      if (!point_camera.allFinite() || point_camera.z() <= 0.0) {
-        return std::nullopt;
-      }
-    }
-
-    cv::Vec3d constrained_rvec;
-    cv::Rodrigues(
-      cvRotation(R_camera_armor_constrained),
-      constrained_rvec);
-    std::vector<cv::Point2d> projected;
-    cv::projectPoints(
-      object_points,
-      constrained_rvec,
-      pose.tvec,
-      calibration_.camera_matrix,
-      calibration_.distortion_coefficients,
-      projected);
-    if (projected.size() != detection.corners.size()) {
-      return std::nullopt;
-    }
-
-    double squared_error_sum = 0.0;
-    for (std::size_t index = 0; index < projected.size(); ++index) {
-      const double dx =
-        projected[index].x - detection.corners[index].x;
-      const double dy =
-        projected[index].y - detection.corners[index].y;
-      if (!std::isfinite(dx) || !std::isfinite(dy)) {
-        return std::nullopt;
-      }
-      squared_error_sum += dx * dx + dy * dy;
-    }
-    return std::sqrt(
-      squared_error_sum / static_cast<double>(projected.size()));
-  };
-
-  const auto raw_error = reprojection_error(yaw_raw_world);
-  if (!raw_error) {
+  const Eigen::Vector4d theta_raw{
+    pose.tvec[0],
+    pose.tvec[1],
+    pose.tvec[2],
+    yaw_raw_world};
+  const auto raw_residual = reprojectionResidual(
+    theta_raw,
+    configured_armor_pitch_rad,
+    R_camera_world,
+    object_points,
+    detection);
+  if (!raw_residual) {
     return std::nullopt;
   }
+  const double raw_error = residualRmse(*raw_residual);
 
-  double best_yaw = yaw_raw_world;
-  double best_error = *raw_error;
-  int evaluated_yaw_count = 1;
-  if (config_.enabled) {
-    const int half_step_count = static_cast<int>(
-      std::floor(
-        config_.search_half_range_rad / config_.search_step_rad));
-    for (int step = -half_step_count;
-         step <= half_step_count;
-         ++step) {
-      const double yaw = normalizeAngle(
-        barrel_yaw_world
-        + static_cast<double>(step) * config_.search_step_rad);
-      const auto error = reprojection_error(yaw);
-      if (!error) {
-        continue;
-      }
-      ++evaluated_yaw_count;
-      if (*error < best_error) {
-        best_error = *error;
-        best_yaw = yaw;
-      }
-    }
-  }
-
-  // 与 tongjiceshi 基线一致：重投影误差用于选 yaw 和诊断，
-  // 不在这一层拒绝已经通过 PnP 检查的观测。
-  if (!std::isfinite(best_error)) {
-    return std::nullopt;
-  }
   return YawOptimizationResult{
     .rpy_raw_world = rotationToRpy(R_world_armor_raw),
     .yaw_raw_world = yaw_raw_world,
-    .yaw_optimized_world = normalizeAngle(best_yaw),
+    .yaw_optimized_world = normalizeAngle(yaw_raw_world),
+    .tvec_optimized_camera = pose.tvec,
     .pnp_reprojection_error_px = pose.reprojection_error_px,
-    .raw_yaw_reprojection_error_px = *raw_error,
-    .optimized_reprojection_error_px = best_error,
-    .evaluated_yaw_count = evaluated_yaw_count};
+    .raw_yaw_reprojection_error_px = raw_error,
+    .optimized_reprojection_error_px = raw_error,
+    .evaluation_count = 1};
+}
+
+std::optional<YawOptimizer::ResidualVector>
+YawOptimizer::reprojectionResidual(
+  const Eigen::Vector4d& theta,
+  double configured_armor_pitch_rad,
+  const Eigen::Matrix3d& R_camera_world,
+  const std::array<cv::Point3d, 4>& object_points,
+  const L2Perception::ArmorDetection& detection) const
+{
+  // 固定 pitch 模型下投影四个角点并求 8 维像素残差；投影非法返回 nullopt。
+  const Eigen::Vector3d tvec{theta[0], theta[1], theta[2]};
+  const Eigen::Matrix3d R_world_armor =
+    Eigen::AngleAxisd(theta[3], Eigen::Vector3d::UnitZ()).toRotationMatrix()
+    * Eigen::AngleAxisd(
+        configured_armor_pitch_rad,
+        Eigen::Vector3d::UnitY()).toRotationMatrix();
+  const Eigen::Matrix3d R_camera_armor_constrained =
+    R_camera_world * R_world_armor;
+  if (!isRotationMatrix(R_camera_armor_constrained)) {
+    return std::nullopt;
+  }
+
+  for (const auto& point : object_points) {
+    const Eigen::Vector3d point_camera =
+      R_camera_armor_constrained
+        * Eigen::Vector3d{point.x, point.y, point.z}
+      + tvec;
+    if (!point_camera.allFinite() || point_camera.z() <= 0.0) {
+      return std::nullopt;
+    }
+  }
+
+  cv::Vec3d constrained_rvec;
+  cv::Rodrigues(
+    cvRotation(R_camera_armor_constrained),
+    constrained_rvec);
+  const cv::Vec3d tvec_cv{tvec[0], tvec[1], tvec[2]};
+  std::vector<cv::Point2d> projected;
+  cv::projectPoints(
+    object_points,
+    constrained_rvec,
+    tvec_cv,
+    calibration_.camera_matrix,
+    calibration_.distortion_coefficients,
+    projected);
+  if (projected.size() != detection.corners.size()) {
+    return std::nullopt;
+  }
+
+  ResidualVector residual = ResidualVector::Zero();
+  for (std::size_t index = 0; index < projected.size(); ++index) {
+    const double dx =
+      projected[index].x - detection.corners[index].x;
+    const double dy =
+      projected[index].y - detection.corners[index].y;
+    if (!std::isfinite(dx) || !std::isfinite(dy)) {
+      return std::nullopt;
+    }
+    residual[2 * index] = dx;
+    residual[2 * index + 1] = dy;
+  }
+  return residual;
+}
+
+double YawOptimizer::residualRmse(
+  const ResidualVector& residual) noexcept
+{
+  return std::sqrt(residual.squaredNorm() / 8.0);
+}
+
+std::optional<YawOptimizationResult> YawOptimizer::optimize(
+  const L2Perception::ArmorDetection& detection,
+  ArmorSize size,
+  const ArmorPose& pose,
+  const Eigen::Quaterniond& R_world_barrel,
+  double configured_armor_pitch_rad) const
+{
+  // 连续 Gauss-Newton：θ = [yaw]（PnP 位置与模型 pitch 固定），初值为
+  // raw yaw。每一步只在改进残差平方和时接受；优化失败或未改进时保留
+  // raw 结果，不丢弃已经通过 PnP 检查的观测。
+  const auto raw_result = evaluateRaw(
+    detection,
+    size,
+    pose,
+    R_world_barrel,
+    configured_armor_pitch_rad);
+  if (!raw_result) {
+    return std::nullopt;
+  }
+  if (!config_.enabled) {
+    return raw_result;
+  }
+
+  const Eigen::Matrix3d R_world_barrel_matrix =
+    R_world_barrel.normalized().toRotationMatrix();
+  const Eigen::Matrix3d R_camera_world =
+    (R_world_barrel_matrix * R_barrel_camera_).transpose();
+  const auto object_points = objectPoints(size);
+
+  Eigen::Vector4d theta{
+    pose.tvec[0],
+    pose.tvec[1],
+    pose.tvec[2],
+    raw_result->yaw_raw_world};
+  auto residual = reprojectionResidual(
+    theta,
+    configured_armor_pitch_rad,
+    R_camera_world,
+    object_points,
+    detection);
+  if (!residual) {
+    return raw_result;
+  }
+  int evaluation_count = 1;
+
+  // 连续 Gauss-Newton：θ = [yaw]，PnP 位置保持固定。
+  double cost = residual->squaredNorm();
+  for (int iteration = 0; iteration < config_.max_iterations; ++iteration) {
+    Eigen::Vector4d perturbed = theta;
+    perturbed[3] += config_.parameter_step;
+    const auto perturbed_residual = reprojectionResidual(
+      perturbed,
+      configured_armor_pitch_rad,
+      R_camera_world,
+      object_points,
+      detection);
+    ++evaluation_count;
+    if (!perturbed_residual) {
+      break;
+    }
+    const Eigen::Matrix<double, 8, 1> jacobian =
+      (*perturbed_residual - *residual) / config_.parameter_step;
+    const double normal = jacobian.squaredNorm();
+    const double gradient = jacobian.dot(*residual);
+    if (!std::isfinite(normal) || normal <= 0.0
+        || !std::isfinite(gradient)) {
+      break;
+    }
+    const double step = -gradient / normal;
+
+    Eigen::Vector4d candidate = theta;
+    candidate[3] += step;
+    const auto candidate_residual = reprojectionResidual(
+      candidate,
+      configured_armor_pitch_rad,
+      R_camera_world,
+      object_points,
+      detection);
+    ++evaluation_count;
+    if (!candidate_residual) {
+      break;
+    }
+    const double candidate_cost = candidate_residual->squaredNorm();
+    if (!(candidate_cost < cost)) {
+      break;
+    }
+    theta = candidate;
+    residual = candidate_residual;
+    cost = candidate_cost;
+    if (std::abs(step) < config_.convergence_tolerance) {
+      break;
+    }
+  }
+
+  const double optimized_error = residualRmse(*residual);
+  if (!std::isfinite(optimized_error)) {
+    return raw_result;
+  }
+  return YawOptimizationResult{
+    .rpy_raw_world = raw_result->rpy_raw_world,
+    .yaw_raw_world = raw_result->yaw_raw_world,
+    .yaw_optimized_world = normalizeAngle(theta[3]),
+    .tvec_optimized_camera = {theta[0], theta[1], theta[2]},
+    .pnp_reprojection_error_px = raw_result->pnp_reprojection_error_px,
+    .raw_yaw_reprojection_error_px =
+      raw_result->raw_yaw_reprojection_error_px,
+    .optimized_reprojection_error_px = optimized_error,
+    .evaluation_count = evaluation_count};
 }
 
 }  // namespace L3Estimation

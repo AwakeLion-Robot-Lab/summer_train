@@ -15,24 +15,29 @@
 
 namespace L3Estimation {
 
+// 单调时钟时间戳，回放与实机共用。
 using TimePoint = std::chrono::steady_clock::time_point;
 
+// 装甲板尺寸：小/大，对应不同板宽。
 enum class ArmorSize {
   Small,
   Large
 };
 
+// 目标模型：普通四板车 / 三板前哨站。
 enum class TargetModel {
   FourArmorVehicle,
   ThreeArmorOutpost
 };
 
+// 目标模型的几何特征：面数、面间隔、是否交替使用第二组半径/高度。
 struct TargetModelTraits {
   int armor_count = 4;
   double face_angle_interval_rad = std::numbers::pi / 2.0;
   bool uses_alternating_radius_and_height = true;
 };
 
+// 按模型返回几何特征。
 [[nodiscard]] constexpr TargetModelTraits targetModelTraits(
   TargetModel model) noexcept
 {
@@ -68,13 +73,16 @@ struct FrameContext {
   cv::Size image_size{};
 };
 
-// 单次 IPPE 解出的 armor→camera 位姿，长度单位为米。
+// 单个 IPPE 候选解出的 armor→camera 位姿，长度单位为米。
 struct ArmorPose {
   cv::Vec3d rvec{};
   cv::Vec3d tvec{};
   double reprojection_error_px = 0.0;
+  // solvePnPGeneric 返回的候选下标（0 或 1），用于诊断和确定性平手选择。
+  int ippe_candidate_index = 0;
 };
 
+// 单假设目标生命周期。
 enum class TrackerState {
   Lost,
   Detecting,
@@ -119,11 +127,13 @@ struct AssociationDiagnostic {
   Eigen::Vector4d innovation = Eigen::Vector4d::Zero();
   double nis = 0.0;
   bool nis_valid = false;
+  // 观测-预测残差 [x,y,z,yaw] 与标准 NIS；第一版只记录，不参与拒绝。
   bool accepted = false;
   TrackerState lifecycle_before = TrackerState::Lost;
   TrackerState lifecycle_after = TrackerState::Lost;
 };
 
+// 每次帧更新后汇总的质量指标。
 struct TargetQualityMetrics {
   float mean_detection_confidence = 0.0F;
   double mean_reprojection_error_px = 0.0;
@@ -171,6 +181,7 @@ struct TargetState {
   double height_offset = 0.0;
 
   StateCovariance covariance = StateCovariance::Identity();
+  // filter 时间戳 / 最近一次观测时间 / 本帧是否有观测参与更新。
   TimePoint timestamp{};
   TimePoint last_observation_time{};
   bool updated_this_frame = false;

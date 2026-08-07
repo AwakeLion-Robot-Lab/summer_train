@@ -1,4 +1,5 @@
 #include "l3_estimation/ekf_tracker.hpp"
+#include "l3_estimation/angle_utils.hpp"
 
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
@@ -15,6 +16,7 @@ namespace {
 constexpr double kCovarianceTolerance = 1e-9;
 constexpr double kGeometryTolerance = 1e-12;
 
+// 配置合法性检查（范围、有限性、一致性）。
 bool validConfig(const EkfTrackerConfig& config) noexcept
 {
   return std::isfinite(config.initial_radius)
@@ -64,6 +66,7 @@ bool validConfig(const EkfTrackerConfig& config) noexcept
          && config.max_abs_height_offset >= 0.0;
 }
 
+// 观测字段基本校验：robot/model 匹配、有限且非负。
 bool validObservation(
   const ArmorObservation& observation,
   int robot_id,
@@ -107,15 +110,9 @@ EkfTracker::EkfTracker(
   reset();
 }
 
-double EkfTracker::normalizeAngle(double angle) noexcept
-{
-  constexpr double kTwoPi = 2.0 * std::numbers::pi;
-  angle = std::remainder(angle, kTwoPi);
-  return angle <= -std::numbers::pi ? angle + kTwoPi : angle;
-}
-
 void EkfTracker::reset()
 {
+  // 重置到 Lost，清空状态并发布空状态。
   x_.setZero();
   covariance_.setIdentity();
   tracker_state_ = TrackerState::Lost;
@@ -147,9 +144,9 @@ bool EkfTracker::usesSecondGeometryGroup(int face_id) const noexcept
 
 void EkfTracker::initialize(const ArmorObservation& observation)
 {
+  // 用首块观测定义 0 号面，由初始半径反推旋转中心。
   const double yaw = normalizeAngle(observation.yaw_world);
 
-  // 将第一块看到的装甲定义为 0 号面，并由半径反推旋转中心。
   x_.setZero();
   x_[XC] = observation.position_world.x()
            + config_.initial_radius * std::cos(yaw);
@@ -173,6 +170,7 @@ void EkfTracker::initialize(const ArmorObservation& observation)
 
 StateCovariance EkfTracker::buildTransition(double dt) const noexcept
 {
+  // 匀速 + 匀角速度的状态转移矩阵。
   StateCovariance transition = StateCovariance::Identity();
   transition(XC, VX) = dt;
   transition(YC, VY) = dt;
@@ -183,6 +181,7 @@ StateCovariance EkfTracker::buildTransition(double dt) const noexcept
 
 StateCovariance EkfTracker::buildProcessNoise(double dt) const noexcept
 {
+  // 位置/yaw 分段白噪声加速度 + 几何量随机游走的过程噪声。
   StateCovariance process_noise = StateCovariance::Zero();
   const double dt2 = dt * dt;
   const double dt3 = dt2 * dt;
@@ -215,6 +214,7 @@ StateCovariance EkfTracker::buildProcessNoise(double dt) const noexcept
 
 void EkfTracker::predict(TimePoint timestamp)
 {
+  // 推进到 timestamp；时间倒退、超间隔或状态非法时安全重置。
   updated_this_frame_ = false;
   if (!initialized_) {
     publishState();
@@ -263,6 +263,7 @@ Eigen::Vector3d EkfTracker::armorPosition(
   const StateVector& state,
   int face_id) const noexcept
 {
+  // 第 face_id 面装甲中心的预测位置。
   const double angle = normalizeAngle(state[YAW] + faceAngle(face_id));
   const bool second_group = usesSecondGeometryGroup(face_id);
   const double radius =
@@ -317,6 +318,7 @@ EkfTracker::MeasurementJacobian EkfTracker::measurementJacobian(
 EkfTracker::MeasurementCovariance EkfTracker::measurementNoise(
   const ArmorObservation& observation) const noexcept
 {
+  // 距离相关的位置噪声与 yaw 噪声，按检测置信度缩放。
   const double distance = observation.position_world.norm();
   const double position_standard_deviation =
     config_.position_standard_deviation_base_m
@@ -365,6 +367,9 @@ std::vector<EkfTracker::Association> EkfTracker::associateObservations(
   const std::vector<ArmorObservation>& observations,
   const std::vector<std::size_t>& observation_indices) const
 {
+  // 对每块观测枚举所有物理面：先按位置/yaw 门限和几何约束生成候选，
+  // 代价用各自门限归一化（位置、yaw、半径加权平方和）；最后按代价排序，
+  // 几何约束开启时保证一块观测和一个物理面最多使用一次。
   std::vector<Association> candidates;
   for (const std::size_t observation_index : observation_indices) {
     const auto& observation = observations[observation_index];
@@ -475,6 +480,7 @@ AssociationDiagnostic EkfTracker::correct(
   const ArmorObservation& observation,
   const Association& association)
 {
+  // 单块观测对当前状态的 EKF 校正；Joseph 形式，NIS 只记录不拒绝。
   AssociationDiagnostic diagnostic{
     .observation_index = association.observation_index,
     .robot_id = robot_id_,
@@ -546,6 +552,7 @@ AssociationDiagnostic EkfTracker::correct(
 
 void EkfTracker::finishFrame(bool found)
 {
+  // 帧末统一推进生命周期：命中推进确认计数，漏检按状态降级/重置。
   if (found) {
     if (tracker_state_ == TrackerState::Detecting) {
       ++successful_frame_count_;
@@ -570,6 +577,9 @@ void EkfTracker::finishFrame(bool found)
 std::vector<AssociationDiagnostic> EkfTracker::update(
   const std::vector<ArmorObservation>& observations)
 {
+  // 帧内更新流程：收集本帧有效观测的最新时间戳 → 预测到该时刻 →
+  // 未初始化则用最佳观测建立新目标 → 关联并逐个校正 → 帧末统一更新
+  // 生命周期 → 汇总质量诊断并发布状态。
   const TrackerState lifecycle_before = tracker_state_;
   std::vector<std::size_t> valid_indices;
   TimePoint update_time{};
@@ -604,6 +614,7 @@ std::vector<AssociationDiagnostic> EkfTracker::update(
   std::vector<const ArmorObservation*> accepted_observations;
   bool initialized_this_frame = false;
   std::size_t anchor_index = std::numeric_limits<std::size_t>::max();
+  // 首次观测初始化：选置信度最高、重投影误差最小的观测作为 0 号面锚点。
   if (!initialized_ && !valid_indices.empty()) {
     anchor_index = *std::max_element(
       valid_indices.begin(),
@@ -720,6 +731,7 @@ void EkfTracker::applyModelConstraints(
   StateVector& state,
   StateCovariance& covariance) const noexcept
 {
+  // 前哨站锁零 radius_offset 与 height_offset。
   if (model_ != TargetModel::ThreeArmorOutpost) {
     return;
   }
@@ -736,6 +748,7 @@ bool EkfTracker::validateState(
   const StateVector& state,
   const StateCovariance& covariance) const
 {
+  // 有限性、半径/几何/高度约束与协方差半正定检查。
   if (!state.allFinite() || !covariance.allFinite()) {
     return false;
   }
@@ -783,6 +796,8 @@ void EkfTracker::publishState()
   state_.last_observation_time = last_seen_;
   state_.updated_this_frame = updated_this_frame_;
   state_.quality = last_quality_;
+  // Detecting 阶段不发布数值状态（state 保持默认值，yaw 为 0），
+  // 调用方不应在未确认前使用 state() 的位置/yaw。
   if (!initialized_
       || (tracker_state_ != TrackerState::Tracking
           && tracker_state_ != TrackerState::TemporaryLost)) {
@@ -818,6 +833,7 @@ TrackerState EkfTracker::trackerState() const noexcept
 
 bool EkfTracker::expired(TimePoint now) const noexcept
 {
+  // 超过过期时间或从未初始化即视为过期。
   if (!initialized_ || tracker_state_ == TrackerState::Lost
       || now < last_seen_) {
     return true;

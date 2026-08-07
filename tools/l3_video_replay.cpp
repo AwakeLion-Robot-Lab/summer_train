@@ -53,6 +53,8 @@ const char* kCommandLineKeys =
   "{plotjuggler-host | 127.0.0.1 | PlotJuggler UDP IPv4 地址}"
   "{plotjuggler-port | 9870 | PlotJuggler UDP 端口}"
   "{no-geometry-constraints | | 关闭整车半径/夹角/一对一关联约束}"
+  "{no-ippe-dual-candidates | | 关闭 IPPE 双候选，恢复单候选基线}"
+  "{no-predicted-face-yaw-selection | | 关闭预测 face yaw 选解，恢复 yaw 误差选解}"
   "{show-armor-text | | 启动时显示装甲板详细文字}"
   "{no-gui | | 关闭 OpenCV 界面并禁用键盘控制}"
   "{no-plotjuggler | | 关闭 PlotJuggler UDP 输出}"
@@ -686,6 +688,12 @@ int run(int argc, char** argv)
   auto l3_parameters = L3Estimation::loadL3Config(l3_config);
   if (cli.has("no-geometry-constraints")) {
     l3_parameters.tracker.enable_vehicle_geometry_constraints = false;
+  }
+  if (cli.has("no-ippe-dual-candidates")) {
+    l3_parameters.pnp.enable_ippe_dual_candidates = false;
+  }
+  if (cli.has("no-predicted-face-yaw-selection")) {
+    l3_parameters.pnp.enable_predicted_face_yaw_selection = false;
   }
   const bool geometry_constraints_enabled =
     l3_parameters.tracker.enable_vehicle_geometry_constraints;

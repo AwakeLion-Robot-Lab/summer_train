@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -22,6 +23,18 @@ bool finiteVector(const cv::Vec3d& vector) noexcept
   return std::isfinite(vector[0])
          && std::isfinite(vector[1])
          && std::isfinite(vector[2]);
+}
+
+std::optional<cv::Vec3d> toVec3d(const cv::Mat& mat) noexcept
+{
+  if (mat.total() != 3 || mat.type() != CV_64FC1) {
+    return std::nullopt;
+  }
+  const cv::Mat column = mat.reshape(1, 3);
+  return cv::Vec3d{
+    column.at<double>(0),
+    column.at<double>(1),
+    column.at<double>(2)};
 }
 
 }  // namespace
@@ -79,7 +92,7 @@ std::array<cv::Point3f, 4> PnpSolver::objectPoints(
            {0.0F,  half_width, -half_height}}};
 }
 
-std::optional<ArmorPose> PnpSolver::solve(
+std::vector<ArmorPose> PnpSolver::solve(
   const L2Perception::ArmorDetection& detection,
   ArmorSize size) const
 {
@@ -88,7 +101,7 @@ std::optional<ArmorPose> PnpSolver::solve(
         detection.corners.begin(),
         detection.corners.end(),
         finitePoint)) {
-    return std::nullopt;
+    return {};
   }
   const std::vector<cv::Point2f> contour(
     detection.corners.begin(),
@@ -96,22 +109,78 @@ std::optional<ArmorPose> PnpSolver::solve(
   if (!cv::isContourConvex(contour)
       || std::abs(cv::contourArea(contour))
            < config_.minimum_corner_area_px) {
-    return std::nullopt;
+    return {};
   }
 
   const auto object_points = objectPoints(size);
-  cv::Vec3d rvec;
-  cv::Vec3d tvec;
-  const bool solved = cv::solvePnP(
-    object_points,
-    detection.corners,
-    calibration_.camera_matrix,
-    calibration_.distortion_coefficients,
-    rvec,
-    tvec,
-    false,
-    cv::SOLVEPNP_IPPE);
-  if (!solved || !finiteVector(rvec) || !finiteVector(tvec)) {
+  std::vector<ArmorPose> poses;
+
+  if (config_.enable_ippe_dual_candidates) {
+    std::vector<cv::Mat> rvecs;
+    std::vector<cv::Mat> tvecs;
+    const int count = cv::solvePnPGeneric(
+      object_points,
+      detection.corners,
+      calibration_.camera_matrix,
+      calibration_.distortion_coefficients,
+      rvecs,
+      tvecs,
+      false,
+      cv::SOLVEPNP_IPPE);
+    const int candidate_count = std::min(count, 2);
+    for (int index = 0; index < candidate_count; ++index) {
+      const auto rvec =
+        toVec3d(rvecs[static_cast<std::size_t>(index)]);
+      const auto tvec =
+        toVec3d(tvecs[static_cast<std::size_t>(index)]);
+      if (!rvec || !tvec) {
+        continue;
+      }
+      if (auto pose = makeCandidate(
+            index,
+            *rvec,
+            *tvec,
+            detection,
+            object_points)) {
+        poses.push_back(*pose);
+      }
+    }
+  } else {
+    // 关闭开关时恢复旧单候选路径，保证与升级前行为严格一致。
+    cv::Vec3d rvec;
+    cv::Vec3d tvec;
+    const bool solved = cv::solvePnP(
+      object_points,
+      detection.corners,
+      calibration_.camera_matrix,
+      calibration_.distortion_coefficients,
+      rvec,
+      tvec,
+      false,
+      cv::SOLVEPNP_IPPE);
+    if (solved) {
+      if (auto pose = makeCandidate(
+            0,
+            rvec,
+            tvec,
+            detection,
+            object_points)) {
+        poses.push_back(*pose);
+      }
+    }
+  }
+  return poses;
+}
+
+std::optional<ArmorPose> PnpSolver::makeCandidate(
+  int candidate_index,
+  const cv::Vec3d& rvec,
+  const cv::Vec3d& tvec,
+  const L2Perception::ArmorDetection& detection,
+  const std::array<cv::Point3f, 4>& object_points) const
+{
+  // 对单个候选依次做有限性、正深度、距离与四角点 RMSE 检查。
+  if (!finiteVector(rvec) || !finiteVector(tvec)) {
     return std::nullopt;
   }
 
@@ -158,7 +227,8 @@ std::optional<ArmorPose> PnpSolver::solve(
   return ArmorPose{
     .rvec = rvec,
     .tvec = tvec,
-    .reprojection_error_px = reprojection_error};
+    .reprojection_error_px = reprojection_error,
+    .ippe_candidate_index = candidate_index};
 }
 
 }  // namespace L3Estimation
