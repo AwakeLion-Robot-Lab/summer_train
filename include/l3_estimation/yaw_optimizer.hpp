@@ -12,10 +12,14 @@
 
 namespace L3Estimation {
 
-struct YawSearchConfig {
+// 连续 yaw 优化的迭代与收敛参数。
+struct YawOptimizationConfig {
   bool enabled = true;
-  double search_half_range_rad = 1.2217304763960306;  // 70°
-  double search_step_rad = 0.0174532925199433;        // 1°
+  int max_iterations = 12;
+  // 数值雅可比有限差分步长，仅用于 yaw 分量，单位 rad。
+  double parameter_step = 1.0e-4;
+  // 参数更新量绝对值上限（yaw，rad）。
+  double convergence_tolerance = 1.0e-6;
 };
 
 struct YawOptimizationResult {
@@ -23,19 +27,32 @@ struct YawOptimizationResult {
   Eigen::Vector3d rpy_raw_world = Eigen::Vector3d::Zero();
   double yaw_raw_world = 0.0;
   double yaw_optimized_world = 0.0;
+  // armor 中心在相机系中的位置，单位 m；当前保持 PnP 原值，
+  // 位置精化随第 5 项（阻尼/Huber）接入后再改为优化值。
+  cv::Vec3d tvec_optimized_camera{};
   double pnp_reprojection_error_px = 0.0;
   double raw_yaw_reprojection_error_px = 0.0;
   double optimized_reprojection_error_px = 0.0;
-  int evaluated_yaw_count = 0;
+  // 残差求值次数（raw 评估固定为 1）。
+  int evaluation_count = 0;
 };
 
-// 基线版本固定 PnP 位置和装甲 pitch，只遍历世界系 yaw。
+// 固定装甲 pitch 和 PnP 位置，连续优化 yaw 的重投影误差；也提供 raw 评估。
 class YawOptimizer {
 public:
   YawOptimizer(
     L1Sensor::CameraCalibration calibration,
     ArmorDimensions dimensions,
-    YawSearchConfig config);
+    YawOptimizationConfig config);
+
+  // 只做 raw 评估（世界系 raw yaw 与对应重投影误差），不遍历 yaw，
+  // 用于选解前廉价比较不同 IPPE 候选。
+  [[nodiscard]] std::optional<YawOptimizationResult> raw(
+    const L2Perception::ArmorDetection& detection,
+    ArmorSize size,
+    const ArmorPose& pose,
+    const Eigen::Quaterniond& R_world_barrel,
+    double configured_armor_pitch_rad) const;
 
   [[nodiscard]] std::optional<YawOptimizationResult> optimize(
     const L2Perception::ArmorDetection& detection,
@@ -45,12 +62,35 @@ public:
     double configured_armor_pitch_rad) const;
 
 private:
+  using ResidualVector = Eigen::Matrix<double, 8, 1>;
+
+  // 按装甲尺寸生成 armor 局部系四角点。
   [[nodiscard]] std::array<cv::Point3d, 4> objectPoints(
     ArmorSize size) const;
 
+  // 校验输入并计算 raw yaw 与对应重投影误差（不做搜索）。
+  [[nodiscard]] std::optional<YawOptimizationResult> evaluateRaw(
+    const L2Perception::ArmorDetection& detection,
+    ArmorSize size,
+    const ArmorPose& pose,
+    const Eigen::Quaterniond& R_world_barrel,
+    double configured_armor_pitch_rad) const;
+
+  // 固定 pitch 模型下，给定 θ=[tx,ty,tz,yaw] 求四角点 8 维像素残差。
+  [[nodiscard]] std::optional<ResidualVector> reprojectionResidual(
+    const Eigen::Vector4d& theta,
+    double configured_armor_pitch_rad,
+    const Eigen::Matrix3d& R_camera_world,
+    const std::array<cv::Point3d, 4>& object_points,
+    const L2Perception::ArmorDetection& detection) const;
+
+  // 残差向量转四角点 RMSE（px）。
+  [[nodiscard]] static double residualRmse(
+    const ResidualVector& residual) noexcept;
+
   L1Sensor::CameraCalibration calibration_;
   ArmorDimensions dimensions_;
-  YawSearchConfig config_;
+  YawOptimizationConfig config_;
   Eigen::Matrix3d R_barrel_camera_ = Eigen::Matrix3d::Identity();
 };
 

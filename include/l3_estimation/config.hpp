@@ -9,6 +9,7 @@
 
 namespace L3Estimation {
 
+// 单个目标模型的固定参数：pitch、初始半径、过程噪声和过期时间。
 struct TargetModelParameters {
   double pitch_rad = 0.0;
   double initial_radius_m = 0.20;
@@ -17,6 +18,7 @@ struct TargetModelParameters {
   std::chrono::milliseconds expiration_timeout{500};
 };
 
+// 装甲尺寸与两个模型的独立参数。
 struct ArmorModelConfig {
   ArmorDimensions dimensions{};
   TargetModelParameters four_armor_vehicle{};
@@ -27,6 +29,7 @@ struct ArmorModelConfig {
     .angular_acceleration_variance = 0.1,
     .expiration_timeout = std::chrono::milliseconds{2500}};
 
+  // 按模型取参数。
   [[nodiscard]] const TargetModelParameters& parameters(
     TargetModel model) const noexcept
   {
@@ -36,13 +39,15 @@ struct ArmorModelConfig {
   }
 };
 
+// L3 全量配置：图像尺寸校验、装甲/PnP/yaw 优化/tracker。
 struct L3Config {
   bool require_matching_image_size = true;
   ArmorModelConfig armor{};
   PnpSolverConfig pnp{};
-  YawSearchConfig yaw_search{};
+  YawOptimizationConfig yaw_optimization{};
   EkfTrackerConfig tracker{};
 
+  // 把模型专属参数并入通用 tracker 配置。
   [[nodiscard]] EkfTrackerConfig trackerConfig(
     TargetModel model) const noexcept
   {
@@ -59,6 +64,7 @@ struct L3Config {
   }
 };
 
+// 全量配置合法性检查（范围、有限性、一致性）。
 [[nodiscard]] bool isValidL3Config(const L3Config& config) noexcept;
 
 // 字段缺失或单位、范围错误时直接抛出，避免带着部分默认值运行。

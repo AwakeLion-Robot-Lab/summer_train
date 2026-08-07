@@ -129,7 +129,7 @@ int main()
       {},
       {}};
 
-    // 故意把原始 yaw 旋转偏离真值，验证 1°遍历能找回附近最小值。
+    // 故意把 yaw 和位置都偏离真值，验证连续优化能找回最小值。
     const Eigen::Matrix3d R_world_armor_wrong =
       Eigen::AngleAxisd(
         kExpectedYaw + 0.20,
@@ -143,9 +143,13 @@ int main()
         calibration.T_barrel_camera->linear().transpose()
         * R_world_armor_wrong),
       wrong_rvec);
+    const cv::Vec3d perturbed_tvec{
+      tvec[0] + 0.01,
+      tvec[1] - 0.01,
+      tvec[2] + 0.05};
     const L3Estimation::ArmorPose pose{
       .rvec = wrong_rvec,
-      .tvec = tvec,
+      .tvec = perturbed_tvec,
       .reprojection_error_px = 0.0};
 
     const auto result = optimizer.optimize(
@@ -154,7 +158,7 @@ int main()
       pose,
       Eigen::Quaterniond::Identity(),
       kPitch);
-    require(result.has_value(), "1-degree yaw search failed");
+    require(result.has_value(), "Gauss-Newton optimization failed");
     require(
       result->rpy_raw_world.allFinite()
         && angleError(result->rpy_raw_world.x(), 0.0) < 1e-9
@@ -163,17 +167,45 @@ int main()
              result->rpy_raw_world.z(),
              kExpectedYaw + 0.20) < 1e-9,
       "raw world RPY does not match the PnP pose");
+    const double yaw_error =
+      angleError(result->yaw_optimized_world, kExpectedYaw);
+    const double raw_yaw_error =
+      angleError(result->yaw_raw_world, kExpectedYaw);
     require(
-      angleError(result->yaw_optimized_world, kExpectedYaw)
-        <= 1.1 * std::numbers::pi / 180.0,
-      "1-degree yaw search did not recover the known yaw");
+      yaw_error < raw_yaw_error && yaw_error < 5.0e-2,
+      "Gauss-Newton did not approach the known yaw");
+    require(
+      cv::norm(result->tvec_optimized_camera - perturbed_tvec) == 0.0,
+      "Gauss-Newton changed the PnP position");
     require(
       result->optimized_reprojection_error_px
         <= result->raw_yaw_reprojection_error_px,
-      "yaw search made the constrained reprojection error worse");
+      "optimization made the constrained reprojection error worse");
     require(
-      result->evaluated_yaw_count >= 140,
-      "yaw search did not cover the configured range");
+      result->evaluation_count <= 1 + 12 * 2,
+      "Gauss-Newton exceeded the configured evaluation budget");
+
+    // raw 评估不做优化，输出与 optimize 的 raw 字段一致。
+    const auto raw_result = optimizer.raw(
+      detection,
+      L3Estimation::ArmorSize::Small,
+      pose,
+      Eigen::Quaterniond::Identity(),
+      kPitch);
+    require(raw_result.has_value(), "raw yaw evaluation failed");
+    require(
+      angleError(raw_result->yaw_raw_world, result->yaw_raw_world) < 1e-9
+        && angleError(
+             raw_result->yaw_optimized_world,
+             raw_result->yaw_raw_world) < 1e-9
+        && raw_result->optimized_reprojection_error_px
+             == raw_result->raw_yaw_reprojection_error_px
+        && raw_result->raw_yaw_reprojection_error_px
+             == result->raw_yaw_reprojection_error_px
+        && cv::norm(raw_result->tvec_optimized_camera - perturbed_tvec)
+             == 0.0
+        && raw_result->evaluation_count == 1,
+      "raw yaw evaluation fields are inconsistent");
   } catch (const std::exception& error) {
     std::cerr << "YawOptimizer smoke test failed: "
               << error.what() << '\n';
