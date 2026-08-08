@@ -147,9 +147,21 @@ struct Armor {
 // 跨层输出使用的九维整车状态：
 // [xc, vx, yc, vy, z, vz, yaw, v_yaw, radius]。
 struct Target {
-  // 当前跟踪车辆和最近一次关联到的物理装甲板编号。
   ArmorName name{ArmorName::Unknown};
   int target_id{-1};
+
+  // 本帧**最后一个**被处理的观测关联到的物理装甲板编号。仅供调试，
+  // 对应 sp_vision Target 里那个标了 "debug only" 的 last_id。
+  //
+  // 不要拿它选板、也不要拿它画曲线。Tracker::updateTarget 对每个同类观测各调
+  // 一次 update()，这个字段留的是最后一次的结果，而观测按到图像中心的距离排序
+  // ——两块板都可见时它报的是**离画面中心更远**的那块，可见板数在 1 和 2 之间
+  // 变化时它就跟着变。实测 records/3m_run_mid：159 次变化里 134 次只是因为第二
+  // 块板出现或消失，其中 30 次是"切过去又切回"。
+  //
+  // 该瞄哪块板由 L4 回答：Planner::selectArmor 在命中时刻的整车几何上选，带
+  // front_window 和 switch_hysteresis，结果在 Plan::armor_id。同一段录像上它
+  // 只切 129 次，没有抖动。
   int armor_id{-1};
 
   // 旋转中心在世界坐标系中的位置和速度，单位分别为 meter、meter/second。
