@@ -10,6 +10,7 @@
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/pnp_solver.hpp"
 #include "l3_estimation/tracker.hpp"
+#include "l4_planning/planner.hpp"
 #include "l4_planning/predictor.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
@@ -56,6 +57,7 @@ const std::string kCommandLineKeys =
   "{convention | imu | 录像四元数约定：imu / sp}"
   "{serial-config | config/serial_config.yaml | convention=imu 时读 R_imu_barrel}"
   "{predict-time p | 0.1 | 开环预测时长（秒）}"
+  "{bullet-speed | 23.0 | 喂给 L4 的弹速（m/s）}"
   "{start-index s | 0 | 视频起始帧下标}"
   "{end-index e | 0 | 视频结束帧下标，0 表示到结尾}"
   "{require-quality | false | 观测是否必须通过全部 ArmorQuality 门限}"
@@ -344,6 +346,8 @@ int main(int argc, char* argv[])
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
     const L4Planning::Predictor predictor;
+    L4Planning::Planner planner;
+    const double bullet_speed = cli.get<double>("bullet-speed");
 
     cv::VideoCapture video(video_path);
     require(video.isOpened(), "无法打开录像：" + video_path);
@@ -368,6 +372,12 @@ int main(int argc, char* argv[])
                  "xc,vx,yc,vy,z,vz,yaw_deg,v_yaw,r1,r2,dz,armor_id,jumped,multi,"
                  "updated,nis,face0,face1,res_az_deg,res_el_deg,res_dist,res_yaw_deg,reset\n";
     frame_csv << std::fixed;
+
+    std::ofstream aim_csv(out_dir / "aim.csv");
+    aim_csv << "frame,t,plan_valid,plan_armor_id,aim_phase,aim_x,aim_y,aim_z,"
+               "cmd_yaw_deg,cmd_pitch_deg,fly_time,before_fire,fire_admissible,"
+               "fire_delta_deg,aim_jump\n";
+    aim_csv << std::fixed;
 
     std::ofstream pred_csv(out_dir / "pred.csv");
     pred_csv << "frame,t,horizon,center_err,armor_err,armor_yaw_err_deg,obs_err\n";
@@ -409,6 +419,11 @@ int main(int argc, char* argv[])
     std::optional<double> previous_obs_yaw;
     std::optional<Eigen::Vector3d> previous_obs_xyz;
     std::optional<L3Estimation::TargetState> previous_target;
+    std::optional<Eigen::Vector3d> last_aim_point;
+    int last_aim_armor_id = -1;
+    std::vector<double> aim_jumps;
+    std::vector<double> switch_jumps;
+    std::vector<double> steady_jumps;
 
     for (int frame_index = start_index;; ++frame_index) {
       if (end_index > 0 && frame_index > end_index) break;
@@ -582,6 +597,40 @@ int main(int argc, char* argv[])
                 << res_yaw_value << ',' << (reset ? 1 : 0) << '\n';
       previous_target = target;
 
+      // L4 规划：瞄准点的稳定性只能在这里量，Tracker 自己不产生瞄准点。
+      L1Sensor::RobotState robot_state;
+      robot_state.bullet_speed = bullet_speed;
+      robot_state.mode = L1Sensor::WorkMode::AutoAim;
+      robot_state.rpy.yaw = gimbal_yaw;
+      robot_state.timestamp = timestamp;
+      const auto plan = planner.plan(target, robot_state, timestamp);
+
+      double aim_jump = std::numeric_limits<double>::quiet_NaN();
+      if (plan.valid && last_aim_point) {
+        aim_jump = (plan.aim_point - *last_aim_point).norm();
+        aim_jumps.push_back(aim_jump);
+        if (plan.armor_id != last_aim_armor_id) {
+          switch_jumps.push_back(aim_jump);
+        } else {
+          steady_jumps.push_back(aim_jump);
+        }
+      }
+      if (plan.valid) {
+        last_aim_point = plan.aim_point;
+        last_aim_armor_id = plan.armor_id;
+      } else {
+        last_aim_point.reset();
+        last_aim_armor_id = -1;
+      }
+
+      aim_csv << frame_index << ',' << pose.seconds << ',' << (plan.valid ? 1 : 0) << ','
+              << plan.armor_id << ',' << static_cast<int>(plan.aim_phase) << ','
+              << plan.aim_point.x() << ',' << plan.aim_point.y() << ','
+              << plan.aim_point.z() << ',' << plan.yaw * kRadToDeg << ','
+              << plan.pitch * kRadToDeg << ',' << plan.fly_time << ','
+              << plan.delay.beforeFire() << ',' << (plan.fire_admissible ? 1 : 0) << ','
+              << plan.fire_delta_angle * kRadToDeg << ',' << aim_jump << '\n';
+
       // 开环预测：缓存 t 时刻外推 predict_time 后的整车，等真到那一刻再对账。
       if (target && predict_time > 0.0) {
         PendingPrediction entry;
@@ -625,6 +674,7 @@ int main(int argc, char* argv[])
       }
     }
 
+    aim_csv.close();
     obs_csv.close();
     frame_csv.close();
     pred_csv.close();
@@ -680,6 +730,15 @@ int main(int argc, char* argv[])
               << "装甲板 vs 原始 PnP  mean " << mean(pred_obs_err) << "  p90 "
               << percentile(pred_obs_err, 0.9) << "  max " << percentile(pred_obs_err, 1.0)
               << " m\n"
+              << "-- 瞄准点帧间位移（m）--\n"
+              << "全部   mean " << mean(aim_jumps) << "  p90 " << percentile(aim_jumps, 0.9)
+              << "  max " << percentile(aim_jumps, 1.0) << "  n=" << aim_jumps.size() << '\n'
+              << "未换板 mean " << mean(steady_jumps) << "  p90 "
+              << percentile(steady_jumps, 0.9) << "  max "
+              << percentile(steady_jumps, 1.0) << "  n=" << steady_jumps.size() << '\n'
+              << "换板帧 mean " << mean(switch_jumps) << "  p90 "
+              << percentile(switch_jumps, 0.9) << "  max "
+              << percentile(switch_jumps, 1.0) << "  n=" << switch_jumps.size() << '\n'
               << "CSV 写入 " << out_dir.string() << '\n';
 
     L6Telemetry::flushLogger();

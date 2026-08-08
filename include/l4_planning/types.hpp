@@ -147,15 +147,30 @@ struct SelectorConfig {
 
 // 瞄准档位的切换阈值，单位 radian/second。上下行阈值不同构成施密特触发。
 //
-// 数值取自 awakening 的 `config/*.yaml`（`pair_center_up/down = 16.5/15.0`），
-// 不是 talos —— talos 虽然有同构的 FSM，但它 `vision_base.toml` 里的
-// `whole_pair_up = 8.5 < whole_pair_down = 9.5` 与相邻一档的方向相反，上下行
-// 阈值是拧着的，不能照抄。
+// single_to_whole 取 awakening 与 talos 共有的 1.5 / 1.0。
+//
+// whole_to_center 原先取的是 awakening `config/leg.yaml` 的 pair_center_up/down
+// = 16.5 / 15.0。那是**头文件默认值级别**的数字：talos 的 `config.hpp` 里也写着
+// 同样的 16.5 / 15.0，但它实际部署的 `vision_base.toml` 覆盖成了 9.0 / 6.0。
+// 已经上过场的那份配置更可信，这里跟它。
+//
+// 16.5 rad/s 是 945 度/秒，实战里的小陀螺很少到这个量级，这一档几乎永远进不去
+// ——records/3m_run_mid 的目标转 3 rad/s，全程 0 帧进入 WholeCarCenter。
+//
+// 注意 9.0 仍然高于常见的 2~4 rad/s 小陀螺，所以那类目标依然逐板瞄准，瞄准点在
+// 每次换板时会跨过相邻两板的间距（3 米处约 180 像素）。这是逐板瞄准的固有代价，
+// 不是缺陷：转速 3 rad/s 时装甲板有约 89% 的时间落在 ±coming_angle 窗口内，换成
+// 中心档等于把这段可击发时间让出去。要不要为了指令连续性而下调到 3 以下，是一个
+// 需要云台阶跃响应数据才能回答的取舍，所有参考实现都没有这么低。
+//
+// 顺带记录：awakening 的 leg.yaml 里 whole_pair_up = 17.5 > pair_center_up = 16.5，
+// talos toml 里 whole_pair_up = 8.5 < whole_pair_down = 9.5，两处的上下行阈值都是
+// 拧着的。本项目把 Pair 并进了 WholeCarArmor，只留一组边界，不复制那个问题。
 struct AimPhaseConfig {
   double single_to_whole_up{1.5};
   double single_to_whole_down{1.0};
-  double whole_to_center_up{16.5};
-  double whole_to_center_down{15.0};
+  double whole_to_center_up{9.0};
+  double whole_to_center_down{6.0};
 
   // 条件连续成立多少帧才换档。相机 200 fps 时 30 帧约 150 ms。
   int transfer_count{30};
@@ -190,7 +205,7 @@ struct BallisticConfig {
 
 struct PlanConfig {
   int max_iterations{10};
-  std::chrono::microseconds fly_time_tolerance{100};
+  std::chrono::microseconds fly_time_tolerance{25};
   double switch_dead_zone{5.0};  // degree
 
   // 弹速缺失或明显异常时使用的兜底初速，单位 m/s。裁判系统上电初期会

@@ -252,6 +252,20 @@ void TrackedTarget::update_ypda(const Armor &armor, int id) {
   const double delta_angle =
       L6Telemetry::limit_rad(armor.ypr_in_world[0] - center_yaw);
 
+  // 方位角/俯仰角方差。原值 4e-3（sigma 3.62 度）是手调的，比实际大一个数量级：
+  // records/3m_run_mid 上实测方位角单步创新均值 0.217 度，反推 sigma 约 0.27 度。
+  // R 过松的后果不是"保守一点"而是滤波器几乎不用位置观测、死抱恒速预测——目标
+  // 横向变向时恒速预测恰好是唯一错的东西，误差因此持续得更久。
+  //
+  // 1e-4 对应 sigma 0.573 度，约为实测噪声的两倍，留给模型误差的余量。该值是全
+  // 段扫描出来的拐点：再收紧到 1e-5 时滤波器开始追观测噪声，100 ms 开环预测误差
+  // 反而回升（0.0553 -> 0.0564 m）。
+  //
+  // 只动这一项。同时收紧距离项（把 log1p 系数从 1.0 降到 0.03）实测是净亏：换向
+  // 窗口 0.0932 -> 0.0842 m，但稳态 0.0580 -> 0.0689 m，全段从 0.0553 涨到
+  // 0.0619 m。斜视时深度确实不准，那个 log1p 编码的是真实效应，不该砍。
+  constexpr double kAngleVariance = 1e-4;
+
   Eigen::VectorXd R_diagonal(4);
   // 距离越远时适当增大 yaw 方差；位置观测仍使用固定基础噪声。
   const double armor_yaw_variance =
@@ -262,7 +276,7 @@ void TrackedTarget::update_ypda(const Armor &armor, int id) {
   constexpr double kDistanceVarianceFloor = 2.5e-3;
   const double distance_variance =
     kDistanceVarianceFloor + std::log1p(std::abs(delta_angle));
-  R_diagonal << 4e-3, 4e-3, distance_variance, armor_yaw_variance;
+  R_diagonal << kAngleVariance, kAngleVariance, distance_variance, armor_yaw_variance;
   const Eigen::MatrixXd R = R_diagonal.asDiagonal();
 
   // 将十一维整车状态映射到指定物理装甲板的四维观测空间。
