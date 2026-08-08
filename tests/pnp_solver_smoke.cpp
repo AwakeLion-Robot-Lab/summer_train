@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -39,6 +40,21 @@ void expect(bool condition, std::string_view message)
     {0.0, -half_width, half_height},
     {0.0, -half_width, -half_height},
     {0.0, half_width, -half_height}};
+}
+
+// 复刻 PnpSolver 内部的 armor -> world 旋转：安装倾角固定 15 度，只有 yaw 自由。
+// 这里必须独立写一遍而不是调求解器，否则两边一起写错就测不出来。
+[[nodiscard]] Eigen::Matrix3d armorRotationInWorldReference(double yaw)
+{
+  const double sin_yaw = std::sin(yaw);
+  const double cos_yaw = std::cos(yaw);
+  const double pitch = 15.0 * std::numbers::pi / 180.0;
+  const double sin_pitch = std::sin(pitch);
+  const double cos_pitch = std::cos(pitch);
+  return Eigen::Matrix3d{
+    {cos_yaw * cos_pitch, -sin_yaw, cos_yaw * sin_pitch},
+    {sin_yaw * cos_pitch, cos_yaw, sin_yaw * sin_pitch},
+    {-sin_pitch, 0.0, cos_pitch}};
 }
 
 [[nodiscard]] cv::Vec3d rotationVector(const cv::Matx33d& rotation)
@@ -229,6 +245,13 @@ int main()
   expect(
     armor.reprojection_error < 1e-3,
     "noise-free synthetic armor does not have near-zero pixel RMSE");
+  // yaw_sigma 来自高斯牛顿收敛点的曲率。上界取得很宽松：这里只确认它确实
+  // 被算了出来且量级合理，真正的标定留给实机数据。为零说明曲率被当成了
+  // 无穷大，那种情况下 EKF 会无条件相信这个 yaw，比不给还危险。
+  expect(
+    std::isfinite(armor.yaw_sigma) && armor.yaw_sigma > 0.0 &&
+      armor.yaw_sigma < 1.0,
+    "yaw sigma from Gauss-Newton curvature is missing or implausible");
 
   // Hero 独占大装甲尺寸；包括 BaseLarge 在内的其余合法 class_id 都用小装甲。
   for (int class_id = static_cast<int>(L2Perception::ArmorClass::Guard);
@@ -378,6 +401,61 @@ int main()
     outputsCleared(invalid_class_armor) &&
       allQualityFlagsClear(invalid_class_armor),
     "invalid class_id retained previous PnP state");
+
+  // reproject_armor 内部为了 yaw 搜索的速度自己实现了 Brown-Conrady 畸变，
+  // 而不是每次都调 cv::projectPoints。这一段是那份复刻的唯一防线：只要两者
+  // 出现分歧，yaw 搜索最小化的就不是真正的重投影误差，而这种错误在整车
+  // 结果上表现为缓慢的偏差，不会有任何显式报错。
+  {
+    double worst_pixel_error = 0.0;
+    for (int yaw_degrees = -180; yaw_degrees < 180; yaw_degrees += 7) {
+      const double yaw =
+        static_cast<double>(yaw_degrees) * std::numbers::pi / 180.0;
+      const auto fast = solver.reproject_armor(
+        expected_world, yaw, L3Estimation::ArmorType::Small,
+        L3Estimation::ArmorName::Infantry3);
+      if (fast.empty()) {
+        continue;
+      }
+
+      // 用求解器给出的位姿反推 armor -> camera，再走一次 OpenCV 参考实现。
+      const Eigen::Matrix3d R_armor_world = armorRotationInWorldReference(yaw);
+      const Eigen::Matrix3d R_camera_barrel =
+        calibration.T_barrel_camera->linear();
+      const Eigen::Vector3d t_camera_barrel =
+        calibration.T_barrel_camera->translation();
+      const Eigen::Matrix3d R_armor_camera = R_camera_barrel.transpose() *
+        R_world_barrel.transpose() * R_armor_world;
+      const Eigen::Vector3d t_armor_camera = R_camera_barrel.transpose() *
+        (R_world_barrel.transpose() * expected_world - t_camera_barrel);
+
+      std::vector<cv::Point2d> reference;
+      cv::projectPoints(
+        armorPoints(kSmallWidth),
+        rotationVector(L6Telemetry::toCv(R_armor_camera)),
+        cv::Vec3d{t_armor_camera.x(), t_armor_camera.y(), t_armor_camera.z()},
+        calibration.camera_matrix, calibration.distortion_coefficients,
+        reference);
+      expect(
+        reference.size() == fast.size(),
+        "fast reprojection returned a different number of corners");
+      for (std::size_t index = 0; index < reference.size(); ++index) {
+        // reproject_armor 对外返回 Point2f，700 像素量级上 float 本身就有约
+        // 6e-5 的量化台阶。把参考值同样降到 float 再比，剩下的差异才是两套
+        // 投影数学的差异；否则测的是浮点格式而不是公式。
+        worst_pixel_error = std::max(
+          worst_pixel_error,
+          std::hypot(
+            static_cast<double>(static_cast<float>(reference[index].x)) -
+              static_cast<double>(fast[index].x),
+            static_cast<double>(static_cast<float>(reference[index].y)) -
+              static_cast<double>(fast[index].y)));
+      }
+    }
+    expect(
+      worst_pixel_error < 1e-4,
+      "fast reprojection disagrees with cv::projectPoints");
+  }
 
   if (failure_count != 0) {
     std::cerr << failure_count << " PnpSolver smoke assertion(s) failed\n";

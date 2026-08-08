@@ -4,6 +4,7 @@
 #include "l2_perception/armor.hpp"
 #include "l3_estimation/types.hpp"
 
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -40,16 +41,48 @@ public:
     ArmorName name) const;
 
 private:
-  // 在枪管朝向附近搜索使角点重投影误差最小的世界系 yaw。
+  // 整周粗扫锁定重投影代价的全局极小谷，再在谷内做高斯牛顿细化，
+  // 只改动世界系 yaw。同时给出该 yaw 的标准差 Armor::yaw_sigma。
   void optimize_yaw(Armor& armor) const;
 
-  // 返回四角点重投影距离之和；无法重投影时返回正无穷。
-  [[nodiscard]] double armor_reprojection_error(
+  // 不分配堆内存的重投影核心。reproject_armor 和 yaw 搜索共用它，
+  // 保证代价曲线和求解器看到的是同一个函数，不会悄悄分叉。
+  [[nodiscard]] bool project_armor_points(
+    const Eigen::Vector3d& xyz_in_world,
+    double yaw,
+    ArmorType type,
+    ArmorName name,
+    std::array<cv::Point2d, 4>& image_points) const;
+
+  // 四角点的八维像素残差 [dx0, dy0, ..., dx3, dy3]，观测减重投影。
+  // 高斯牛顿要的是残差向量而不是标量代价，因此单独提供。
+  [[nodiscard]] bool yaw_residual(
     const Armor& armor,
-    double yaw) const;
+    double yaw,
+    std::array<double, 8>& residual) const;
+
+  // 上面那个残差的平方和；无法重投影时返回正无穷。
+  [[nodiscard]] double yaw_squared_cost(const Armor& armor, double yaw) const;
+
+  // 针孔 + Brown-Conrady 内参的展开缓存，避免逐次从 cv::Mat 取元素。
+  // 只覆盖零斜切且畸变系数为 4 或 5 个的常规标定；其余情况 usable 为 false，
+  // 重投影回退到 cv::projectPoints，数值以后者为准。
+  struct PinholeIntrinsics {
+    double fx{0.0};
+    double fy{0.0};
+    double cx{0.0};
+    double cy{0.0};
+    double k1{0.0};
+    double k2{0.0};
+    double p1{0.0};
+    double p2{0.0};
+    double k3{0.0};
+    bool usable{false};
+  };
 
   // 静态 camera -> barrel 外参，以及逐帧更新的 barrel -> world 旋转。
   L1Sensor::CameraCalibration calibration_;
+  PinholeIntrinsics intrinsics_{};
   Eigen::Matrix3d R_camera2barrel_{Eigen::Matrix3d::Identity()};
   Eigen::Vector3d t_camera2barrel_{Eigen::Vector3d::Zero()};
   Eigen::Matrix3d R_barrel2world_{Eigen::Matrix3d::Identity()};

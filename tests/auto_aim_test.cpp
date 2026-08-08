@@ -2,9 +2,10 @@
 // 读取 records/ 下的 avi + txt（每行 "t w x y z"），逐帧跑
 // 识别 -> PnP -> 整车跟踪，并把当前观测的 PnP yaw 搜索代价曲线画出来。
 //
-// 代价曲线是这个测试存在的主要理由：PnpSolver::optimize_yaw 在枪管 yaw
-// 附近搜索使四角点重投影距离之和最小的世界系 yaw，曲线能直接看出该代价
-// 是否单峰、最小值是否唯一、求解器落点是否就是曲线最小点。
+// 代价曲线是这个测试存在的主要理由：PnpSolver::optimize_yaw 搜索使四角点
+// 重投影平方和最小的世界系 yaw，曲线能直接看出该代价有几个坑、求解器落点
+// 是不是全局最小点。代价在整周有两个极小值是常态而不是异常，所以横轴画
+// 整周而不是开窗——开窗会把另一个坑藏起来，正好藏住最需要看见的东西。
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l1_sensor/serial/serial_config.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
@@ -46,13 +47,10 @@ namespace {
 constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 constexpr double kDegToRad = std::numbers::pi / 180.0;
 
-// 曲线绘制窗口：枪管 yaw ± 70 度，对应 optimize_yaw 里的 SEARCH_RANGE。
-constexpr double kSearchRangeDegrees = 140.0;
-// optimize_yaw 的三分搜索实际跑在**绝对** yaw ∈ [-pi/2, pi/2] 上，与上面这个
-// 以枪管为中心的窗口不是一回事，枪管转起来两者会错开。真值落在边界外时搜索
-// 只会顶在边界上，所以图里把这两条边界单独画出来。改了求解器要同步这里。
-constexpr double kSolverYawBound = std::numbers::pi / 2.0;
-// 曲线采样步长比求解器的 1 度更细，方便看清极小值附近的形状。
+// 曲线覆盖整周，与 optimize_yaw 的粗扫范围一致。
+constexpr double kSearchRangeDegrees = 360.0;
+// 曲线采样步长比求解器 10 度的粗扫细得多，用来核对高斯牛顿细化后的落点
+// 是不是真的落在坑底，而不只是落在正确的坑里。
 constexpr double kCostStepDegrees = 0.5;
 
 const std::string kCommandLineKeys =
@@ -375,6 +373,8 @@ void drawFilterInputArmors(
   const L3Estimation::Armor& armor,
   double yaw)
 {
+  // 必须和 PnpSolver::yaw_squared_cost 用同一个定义（像素残差平方和），
+  // 否则画出来的最小点不是求解器真正在找的那个，对账就失去意义。
   const std::vector<cv::Point2f> projected =
     solver.reproject_armor(armor.xyz_in_world, yaw, armor.type, armor.name);
   if (projected.size() != armor.points.size()) {
@@ -382,7 +382,9 @@ void drawFilterInputArmors(
   }
   double cost = 0.0;
   for (std::size_t index = 0; index < armor.points.size(); ++index) {
-    cost += cv::norm(armor.points[index] - projected[index]);
+    const cv::Point2f difference = armor.points[index] - projected[index];
+    cost += static_cast<double>(difference.x) * difference.x +
+      static_cast<double>(difference.y) * difference.y;
   }
   return cost;
 }
@@ -626,10 +628,6 @@ void drawFilterInputArmors(
     cv::circle(
       plot, {x_of(offset), y_of(cost)}, 6, color, cv::FILLED, cv::LINE_AA);
   };
-  // 求解器真正的搜索边界（绝对 yaw ±90 度）。枪管一转，它相对本图横轴就会
-  // 平移；边界跑出画面说明这一侧已经被截断了。
-  draw_marker(-kSolverYawBound, {160, 130, 90}, "win-", 4);
-  draw_marker(kSolverYawBound, {160, 130, 90}, "win+", 4);
   draw_marker(armor->yaw_raw, {255, 255, 0}, "raw", 0);
   draw_marker(armor->ypr_in_world[0], {0, 255, 0}, "input", 1);
   draw_cost_marker(

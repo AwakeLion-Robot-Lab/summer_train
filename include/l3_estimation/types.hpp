@@ -124,12 +124,20 @@ struct Armor {
   Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};
   Eigen::Vector3d ypd_in_barrel{Eigen::Vector3d::Zero()};
 
-  // 四个角点的二维像素 RMSE。
+  // 四个角点的二维像素 RMSE，取自 IPPE 在相机系的原始解，与 yaw 优化无关。
   double reprojection_error{std::numeric_limits<double>::infinity()};
   // 检测置信度和四边形像素面积从 L2 原样传入。
   double confidence{0.0};
   double yaw_raw{0.0};
   double area{0.0};
+  // yaw 优化收敛点的标准差，单位 radian，由高斯牛顿的曲率 J^T J 给出：
+  // sigma_yaw^2 = corner_noise_px^2 / (J^T J)。正对装甲板时 yaw 几乎不可
+  // 观测（转动几乎不改变投影），该值会显著变大，这正是固定方差表达不出来的
+  // 信息。优化未收敛时保持无穷。
+  //
+  // 注意：L3 的 EKF 目前仍用 update_ypda 里手调的 armor_yaw_variance，
+  // 还没有消费这个字段。换过去是单独一步，需要重新标定 corner_noise_px。
+  double yaw_sigma{std::numeric_limits<double>::infinity()};
 
   ArmorQuality quality;
   // 对应原始图像的曝光时刻。
@@ -192,6 +200,10 @@ struct ArmorConfig {
   // 单位分别为 pixel RMSE 和 pixel²。
   double max_reprojection_error{3.0};
   double min_area{20.0};
+  // 单个角点坐标的像素噪声标准差，用于把 yaw 搜索的曲率换算成 Armor::yaw_sigma。
+  // 1.0 是标称值，不是实测值：真正的角点噪声取决于网络回归精度和是否做过灯条
+  // 精修，改动这里等于整体缩放 yaw_sigma，接入 EKF 之前必须先标定。
+  double corner_noise_px{1.0};
 };
 
 struct TrackerConfig {
