@@ -3,6 +3,7 @@
 #include <Eigen/Core>
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <numbers>
 #include <optional>
@@ -103,10 +104,16 @@ struct Plan {
   AimPhase aim_phase{};
   bool aim_on_armor{true};
 
-  // 火控视角的实体装甲板：命中时刻最接近正对枪口的那块，及其法线夹角。
-  // 与 armor_id 的区别只在 WholeCarCenter 档才显现。
+  // 火控视角的实体装甲板：命中时刻最接近正对枪口的那块，及其法线夹角和位置。
+  // 与 armor_id 的区别只在 WholeCarCenter 档才显现。talos 用两条独立的
+  // reference trajectory 表达同一件事（fire_aim_phase 把 WholeCarCenter 降级成
+  // WholeCarArmor），这里用同一个 Plan 上的两组字段，省掉一次完整重算。
+  //
+  // fire_armor_point 是命中时刻这块板在枪管系下的位置，L5 用它把装甲板的物理
+  // 尺寸换算成该距离上的角度容差。
   int fire_armor_id{-1};
   double fire_delta_angle{0.0};
+  Eigen::Vector3d fire_armor_point{Eigen::Vector3d::Zero()};
   bool fire_admissible{false};
 
   PlanType type{PlanType::Setpoint};
@@ -138,8 +145,12 @@ struct SelectorConfig {
   double outpost_leaving_angle{30.0 * std::numbers::pi / 180.0};
 };
 
-// 瞄准档位的切换阈值，单位 radian/second。上下行阈值不同构成施密特触发，
-// 数值沿用 talos AimerConfig 的标定值。
+// 瞄准档位的切换阈值，单位 radian/second。上下行阈值不同构成施密特触发。
+//
+// 数值取自 awakening 的 `config/*.yaml`（`pair_center_up/down = 16.5/15.0`），
+// 不是 talos —— talos 虽然有同构的 FSM，但它 `vision_base.toml` 里的
+// `whole_pair_up = 8.5 < whole_pair_down = 9.5` 与相邻一档的方向相反，上下行
+// 阈值是拧着的，不能照抄。
 struct AimPhaseConfig {
   double single_to_whole_up{1.5};
   double single_to_whole_down{1.0};
@@ -155,11 +166,21 @@ struct BallisticConfig {
   // 上海地区重力加速度，与参考实现保持一致，便于对拍。
   double gravity{9.7833};
 
-  // 线性空气阻力系数，单位 1/m。0 表示真空模型，走闭式解不迭代。
-  // 实测标定值约 0.01~0.03。
+  // **二次**空气阻力系数，单位 1/m（见 ballistic_model.hpp 的推导）。
+  // 0 表示真空模型。两种模型都有闭式反解，不迭代。
+  //
+  // k = ρ·C_d·A/(2m)。17mm 弹丸（3.2 g，C_d≈0.45）理论值约 0.019，
+  // jlu_vision_26 标定出 0.01903，与理论吻合；FYT2024 / awakening 用的是
+  // 0.092，高一个量级，来源不明。实车标定前保持 0（真空）。
+  //
+  // **不要拿 Climber_Vision 的 air_resistance_k（0.0229）填这里**：那是两轴
+  // 线性阻力的系数，单位 1/s，和这里的 1/m 不是一回事。两者数值碰巧接近，
+  // 但按 1/s 解出来的阻力比物理值小约 20 倍（6 m 上速度只掉 0.6%，而二次
+  // 阻力掉 10.8%），填错了等于把阻力关掉还以为开着。
   double drag_coefficient{0.0};
 
-  // 反解发射角的迭代上限和高度收敛门限 (m)。真空模型用不到。
+  // 高度补偿迭代的上限和收敛门限 (m)。**只有没有闭式反解的模型才会用到**，
+  // 两个内置模型都用不上；保留是为了将来加 RK4 全阻力模型时不必改求解器。
   int max_iterations{20};
   double height_tolerance{5e-3};
 
@@ -179,8 +200,18 @@ struct PlanConfig {
   // 问题有没有解"——两处各设一道且数值不一致的话，落在夹缝里的弹速会既
   // 不触发兜底、又被求解器拒绝，最后报成 BallisticFailed 而不是
   // BadBulletSpeed，把真正的原因藏掉。
+  // 上下限都要判。只判下限的话，裁判系统回传一个明显错误的高值（比如 40）
+  // 会被直接采信，解出来的弹道偏平，而且不会有任何人报错 —— jlu_vision_26 的
+  // min/max/default 三件套就是为这个设的。
   double fallback_bullet_speed{23.0};
   double min_valid_bullet_speed{21.0};
+  double max_valid_bullet_speed{30.0};
+
+  [[nodiscard]] bool bulletSpeedValid(double speed) const noexcept
+  {
+    return std::isfinite(speed) && speed >= min_valid_bullet_speed &&
+           speed <= max_valid_bullet_speed;
+  }
 
   BallisticConfig ballistic;
   AimPhaseConfig aim_phase;

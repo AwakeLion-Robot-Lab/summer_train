@@ -137,11 +137,35 @@ target("image_preprocessor_smoke")
     add_files("tests/image_preprocessor_smoke.cpp")
     add_deps("newvision")
 
+-- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK，因此直接列出所需文件而不是
+-- add_deps("newvision")，保证在没有硬件库的机器上也能单独构建。
+target("armor_refiner_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/armor_refiner_smoke.cpp")
+    add_files("src/l2_perception/armor/armor_refiner.cpp")
+    add_includedirs("include")
+    add_includedirs("/usr/include/eigen3")
+    if has_config("use_xrepo_deps") then
+        add_packages("opencv")
+    elseif has_config("use_system_deps") then
+        add_includedirs("/usr/include/opencv4")
+        add_links("opencv_core", "opencv_imgproc")
+    end
+
 target("planner_smoke")
     set_kind("binary")
     set_default(false)
     set_rundir("$(projectdir)")
     add_files("tests/planner_smoke.cpp")
+    add_deps("newvision")
+
+target("fire_decision_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/fire_decision_smoke.cpp")
     add_deps("newvision")
 
 target("ieskf_smoke")
@@ -199,6 +223,23 @@ target("auto_aim_test")
     set_default(false)
     set_rundir("$(projectdir)")
     add_files("tests/auto_aim_test.cpp")
+    add_deps("newvision")
+
+-- 整车跟踪链路的离线诊断，输出 CSV，不需要显示器。
+target("track_diag")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/track_diag.cpp")
+    add_deps("newvision")
+
+-- 灯条精修/筛选的离线回放，需要模型和显示器，因此和 auto_aim_test 一样只在
+-- use_openvino=y 时存在。无显示器的机器请改跑 armor_refiner_smoke。
+target("armor_refiner_video_test")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/armor_refiner_video_test.cpp")
     add_deps("newvision")
 end
 

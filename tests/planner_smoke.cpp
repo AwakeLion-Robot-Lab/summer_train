@@ -105,12 +105,12 @@ void testBallisticRoundTrip()
   std::cout << "  [ok] vacuum ballistic round-trips\n";
 }
 
-// 阻力系数为 0 时线性阻力模型必须严格退化成真空模型，否则默认配置一改就
-// 会引入静默的弹道偏差。
-void testLinearDragDegradesToVacuum()
+// 阻力系数为 0 时阻力模型必须严格退化成真空模型，否则默认配置一改就会引入
+// 静默的弹道偏差。
+void testDragDegradesToVacuum()
 {
   const L4Planning::VacuumModel vacuum(9.7833);
-  const L4Planning::LinearDragModel drag(9.7833, 0.0);
+  const L4Planning::QuadraticDragModel drag(9.7833, 0.0);
 
   for (const double pitch : {-0.2, 0.0, 0.05, 0.3}) {
     const auto a = vacuum.impact(5.0, pitch, 23.0);
@@ -119,12 +119,17 @@ void testLinearDragDegradesToVacuum()
     require(std::abs(a->z - b->z) < 1e-12, "zero drag must match vacuum height");
     require(
       std::abs(a->fly_time - b->fly_time) < 1e-12, "zero drag must match vacuum time");
+
+    const auto la = vacuum.launch(5.0, 0.2, 23.0);
+    const auto lb = drag.launch(5.0, 0.2, 23.0);
+    require(la.has_value() && lb.has_value(), "both inverses must solve");
+    require(std::abs(la->pitch - lb->pitch) < 1e-12, "zero drag must match vacuum pitch");
   }
-  std::cout << "  [ok] linear drag degrades to vacuum at k=0\n";
+  std::cout << "  [ok] quadratic drag degrades to vacuum at k=0\n";
 }
 
-// 有阻力时子弹更慢、掉得更多，所以必须抬得更高、飞得更久。反解也必须收敛。
-void testLinearDragNeedsMorePitch()
+// 有阻力时子弹更慢、掉得更多，所以必须抬得更高、飞得更久。
+void testDragNeedsMorePitch()
 {
   L4Planning::BallisticConfig config;
   const L4Planning::BallisticSolver vacuum_solver(config);
@@ -136,15 +141,96 @@ void testLinearDragNeedsMorePitch()
   require(vacuum.valid && drag.valid, "both solvers must converge at 6 m");
   require(drag.pitch > vacuum.pitch, "drag must require a higher muzzle angle");
   require(drag.fly_time > vacuum.fly_time, "drag must lengthen the flight");
-
-  // 反解出的角度代回正向模型必须落回目标高度。
-  const auto impact = drag_solver.model().impact(6.0, drag.pitch, 23.0);
-  require(impact.has_value(), "forward model must accept the solved pitch");
-  require(
-    std::abs(impact->z) < config.height_tolerance,
-    "solved pitch must land at the target height");
-  std::cout << "  [ok] linear drag raises pitch by "
+  std::cout << "  [ok] quadratic drag raises pitch by "
             << (drag.pitch - vacuum.pitch) * 57.3 << " deg at 6 m\n";
+}
+
+// 反解是精确闭式解，不是迭代出来的近似。代回正向模型的残差必须落在机器精度，
+// 而不是 height_tolerance —— 后者是没有闭式解时才允许的兜底精度。
+//
+// 这条用例盯住的是一个具体的退化：FYT / talos 对同一个模型跑高度补偿迭代，在
+// 容差内提前退出，k=0.092、6 m 处留下约 0.02° 的系统性偏差；而且迭代次数随 k
+// 和距离增长，10 m 处要 12 次，再远就会撞上 max_iterations 直接报无解。
+void testDragInverseIsExact()
+{
+  for (const double k : {0.0, 0.019, 0.092}) {
+    L4Planning::BallisticConfig config;
+    config.drag_coefficient = k;
+    const L4Planning::BallisticSolver solver(config);
+
+    for (const double distance : {1.5, 4.0, 6.0, 10.0}) {
+      for (const double height : {-0.4, 0.0, 0.6}) {
+        const auto result = solver.solve(distance, height, 23.0);
+        require(result.valid, "closed form must solve inside the envelope");
+
+        const auto impact = solver.model().impact(distance, result.pitch, 23.0);
+        require(impact.has_value(), "forward model must accept the solved pitch");
+        require(
+          std::abs(impact->z - height) < 1e-9,
+          "closed-form inverse must be exact, not merely within tolerance");
+        require(
+          std::abs(impact->fly_time - result.fly_time) < 1e-12,
+          "fly time must agree between forward and inverse");
+      }
+    }
+  }
+  std::cout << "  [ok] drag inverse is exact to 1e-9 m at k = 0 / 0.019 / 0.092\n";
+}
+
+// 没有闭式反解的模型必须自动走高度补偿迭代，且解出来和闭式解一致。这条用例
+// 就是"将来加 RK4 全阻力模型不用改求解器"这句话的凭据。
+class ForwardOnlyDragModel final : public L4Planning::IBallisticModel {
+public:
+  ForwardOnlyDragModel(double gravity, double drag) noexcept : inner_(gravity, drag) {}
+
+  [[nodiscard]] std::optional<L4Planning::Impact> impact(
+    double range, double pitch, double v0) const noexcept override
+  {
+    return inner_.impact(range, pitch, v0);
+  }
+  // 刻意不覆盖 launch()，落到基类的 nullopt 上。
+  [[nodiscard]] std::string_view name() const noexcept override
+  {
+    return "forward_only";
+  }
+
+private:
+  L4Planning::QuadraticDragModel inner_;
+};
+
+void testIterativeFallbackMatchesClosedForm()
+{
+  const ForwardOnlyDragModel forward_only(9.7833, 0.02);
+  require(
+    !forward_only.launch(6.0, 0.2, 23.0).has_value(),
+    "a forward-only model must not advertise a closed form");
+
+  L4Planning::BallisticConfig config;
+  config.drag_coefficient = 0.02;
+  const L4Planning::BallisticSolver closed_form(config);
+
+  // 手工跑一遍求解器的兜底路径，确认它收敛到同一个角度。
+  const L4Planning::VacuumModel seed(config.gravity);
+  double aim_height = 0.2;
+  double pitch = 0.0;
+  for (int i = 0; i < config.max_iterations; ++i) {
+    const auto guess = seed.launch(6.0, aim_height, 23.0);
+    require(guess.has_value(), "seed must solve");
+    pitch = guess->pitch;
+    const auto impact = forward_only.impact(6.0, pitch, 23.0);
+    require(impact.has_value(), "forward model must solve");
+    const double error = 0.2 - impact->z;
+    if (std::abs(error) < config.height_tolerance) break;
+    aim_height += error;
+  }
+
+  const auto exact = closed_form.solve(6.0, 0.2, 23.0);
+  require(exact.valid, "closed form must solve");
+  require(
+    std::abs(pitch - exact.pitch) < 2e-3,
+    "iterative fallback must land near the closed-form solution");
+  std::cout << "  [ok] iterative fallback tracks the closed form within "
+            << std::abs(pitch - exact.pitch) * 57.3 << " deg\n";
 }
 
 void testBallisticRejectsBadInput()
@@ -260,7 +346,17 @@ void testPlannerFlagsBadBulletSpeed()
   require(
     between.error == L4Planning::PlanError::BadBulletSpeed,
     "the 10-21 m/s band must report BadBulletSpeed, not BallisticFailed");
-  std::cout << "  [ok] planner flags bad bullet speed but still aims\n";
+
+  // 上限同样要判。只判下限的话，裁判系统回传一个明显偏高的弹速会被直接采信，
+  // 解出来的弹道偏平，而且没有任何人报错。
+  robot_state.bullet_speed = 45.0;
+  const auto too_fast = planner.plan(makeTarget(0.0), robot_state, {});
+  require(too_fast.valid, "an absurdly high bullet speed must still yield aim angles");
+  require(!too_fast.fire_admissible, "an absurdly high bullet speed must block firing");
+  require(
+    too_fast.error == L4Planning::PlanError::BadBulletSpeed,
+    "bullet speed above the upper bound must report BadBulletSpeed");
+  std::cout << "  [ok] planner flags bad bullet speed on both bounds but still aims\n";
 }
 
 void testPlannerRejectsNoTarget()
@@ -431,8 +527,10 @@ int main()
   testPredictorAdvancesYaw();
   testPredictorTranslates();
   testBallisticRoundTrip();
-  testLinearDragDegradesToVacuum();
-  testLinearDragNeedsMorePitch();
+  testDragDegradesToVacuum();
+  testDragNeedsMorePitch();
+  testDragInverseIsExact();
+  testIterativeFallbackMatchesClosedForm();
   testBallisticRejectsBadInput();
   testAimPhaseHysteresis();
   testPlannerConverges();

@@ -18,31 +18,11 @@ namespace {
 // 角点深度小于该值时视为落在相机平面或相机后方。
 constexpr double kMinimumCornerDepth = 1e-6;
 
-// 将识别类别映射为实际 PnP 几何尺寸；未知类别不参与求解。
-// 场上只有四板车，大装甲板仅英雄使用：平衡步兵已不存在，基地虽然有
-// Bs/Bb 两个类别但装甲板实物都是小板，所以只有 Hero 走 Big 分支。
+// 将识别类别映射为实际 PnP 几何尺寸；未知类别不参与求解。映射本身放在
+// types.hpp，与 L5 火控共用同一份，避免两处各写一遍后悄悄分叉。
 [[nodiscard]] constexpr std::optional<ArmorType>
 armorTypeFromClassId(int class_id) noexcept {
-  using L2Perception::ArmorClass;
-
-  switch (L2Perception::armorClassFromId(class_id)) {
-  case ArmorClass::Hero:
-    return ArmorType::Big;
-
-  case ArmorClass::Guard:
-  case ArmorClass::Engineer:
-  case ArmorClass::Infantry3:
-  case ArmorClass::Infantry4:
-  case ArmorClass::Infantry5:
-  case ArmorClass::Outpost:
-  case ArmorClass::BaseSmall:
-  case ArmorClass::BaseLarge:
-    return ArmorType::Small;
-
-  case ArmorClass::Unknown:
-    break;
-  }
-  return std::nullopt;
+  return armorTypeOf(L2Perception::armorClassFromId(class_id));
 }
 
 [[nodiscard]] std::vector<cv::Point3d> armorPoints(ArmorType type,
@@ -192,8 +172,6 @@ void PnpSolver::single_pnp(Armor &armor) const {
   if (!solved) {
     return;
   }
-  // pnp_ok 只表示求解器成功返回，后续仍需数值和几何检查。
-  armor.quality.pnp_ok = true;
 
   // 板中心必须在相机前方，旋转向量和平移向量均不得含非有限值。
   if (!std::isfinite(rvec[0]) || !std::isfinite(rvec[1]) ||
@@ -203,68 +181,29 @@ void PnpSolver::single_pnp(Armor &armor) const {
     return;
   }
 
-  cv::Matx33d R_armor2camera_cv;
-  std::vector<cv::Point2d> reprojected_points;
-  // 同时生成旋转矩阵和重投影点，供坐标变换及像素误差计算复用。
-  try {
-    cv::Rodrigues(rvec, R_armor2camera_cv);
-    cv::projectPoints(object_points, rvec, tvec, calibration_.camera_matrix,
-                      calibration_.distortion_coefficients, reprojected_points);
-  } catch (const cv::Exception &error) {
-    L6Telemetry::logWarn("PnpSolver pose conversion failed", error.what());
-    return;
-  }
-
-  if (!cv::checkRange(cv::Mat(R_armor2camera_cv)) ||
-      reprojected_points.size() != image_points.size()) {
-    return;
-  }
-
-  // 中心在相机前方并不足够，倾斜时四个物理角点也必须全部可见。
-  for (const cv::Point3d &point : object_points) {
-    const cv::Vec3d point_in_camera =
-        R_armor2camera_cv * cv::Vec3d{point.x, point.y, point.z} + tvec;
-    if (!std::isfinite(point_in_camera[0]) ||
-        !std::isfinite(point_in_camera[1]) ||
-        !std::isfinite(point_in_camera[2]) ||
-        point_in_camera[2] <= kMinimumCornerDepth) {
-      return;
-    }
-  }
-
-  armor.quality.geometry_ok = true;
-
-  // 使用四角点二维欧氏误差的 RMSE 作为观测质量指标。
-  double squared_error_sum = 0.0;
-  for (std::size_t index = 0; index < image_points.size(); ++index) {
-    const double dx = reprojected_points[index].x - image_points[index].x;
-    const double dy = reprojected_points[index].y - image_points[index].y;
-    squared_error_sum += dx * dx + dy * dy;
-  }
-  const double reprojection_error =
-      std::sqrt(squared_error_sum / static_cast<double>(image_points.size()));
+  cv::Matx33d R_armor2camera_cv; 
+  cv::Rodrigues(rvec, R_armor2camera_cv);
 
   // solvePnP 给出 armor -> camera；静态外参再转换到 barrel 和 world。
   const Eigen::Vector3d xyz_in_camera{tvec[0], tvec[1], tvec[2]};
-  const Eigen::Vector3d xyz_in_barrel =
-      R_camera2barrel_ * xyz_in_camera + t_camera2barrel_;
+  const Eigen::Vector3d xyz_in_barrel = R_camera2barrel_ * xyz_in_camera + t_camera2barrel_;
   const Eigen::Vector3d xyz_in_world = R_barrel2world_ * xyz_in_barrel;
 
-  const Eigen::Matrix3d R_armor2camera =
-      L6Telemetry::toEigen(R_armor2camera_cv);
+  const Eigen::Matrix3d R_armor2camera = L6Telemetry::toEigen(R_armor2camera_cv);
   const Eigen::Matrix3d R_armor2barrel = R_camera2barrel_ * R_armor2camera;
   const Eigen::Matrix3d R_armor2world = R_barrel2world_ * R_armor2barrel;
-  const Eigen::Vector3d ypr_in_camera =
-      L6Telemetry::eulers(R_armor2camera, 2, 1, 0);
-  const Eigen::Vector3d ypr_in_world =
-      L6Telemetry::eulers(R_armor2world, 2, 1, 0);
+
+  //注意这个是朝向角
+  const Eigen::Vector3d ypr_in_camera = L6Telemetry::eulers(R_armor2camera, 2, 1, 0);
+  const Eigen::Vector3d ypr_in_barrel = L6Telemetry::eulers(R_armor2barrel, 2, 1, 0);
+  const Eigen::Vector3d ypr_in_world = L6Telemetry::eulers(R_armor2world, 2, 1, 0);
+  //注意这个是方位角
   const Eigen::Vector3d ypd_in_world = L6Telemetry::xyz2ypd(xyz_in_world);
 
   const bool finite = xyz_in_camera.allFinite() && xyz_in_barrel.allFinite() &&
                       xyz_in_world.allFinite() && R_armor2camera.allFinite() &&
                       R_armor2world.allFinite() && ypr_in_camera.allFinite() &&
-                      ypr_in_world.allFinite() && ypd_in_world.allFinite() &&
-                      std::isfinite(reprojection_error);
+                      ypr_in_world.allFinite() && ypd_in_world.allFinite();
   if (!finite) {
     return;
   }
@@ -272,103 +211,49 @@ void PnpSolver::single_pnp(Armor &armor) const {
   // 所有派生量通过有限性检查后再一次性提交，避免暴露半成品观测。
   armor.name = L2Perception::armorClassFromId(armor.class_id);
   armor.type = *armor_type;
+  //位置
   armor.xyz_in_camera = xyz_in_camera;
+  armor.xyz_in_barrel = xyz_in_barrel;
   armor.xyz_in_world = xyz_in_world;
+  //姿态
   armor.ypr_in_camera = ypr_in_camera;
+  armor.ypr_in_barrel = ypr_in_barrel;
   armor.ypr_in_world = ypr_in_world;
+  
   armor.ypd_in_world = ypd_in_world;
-  armor.reprojection_error = reprojection_error;
-  armor.quality.finite = true;
-  armor.quality.reprojection_ok =
-      reprojection_error <= config_.max_reprojection_error;
 
-  // 场上所有车辆都满足 reproject_armor 的固定安装倾角假设，
-  // 因此 yaw 优化对每块装甲板都执行。
+  // yaw 优化对每块装甲板都执行。
   optimize_yaw(armor);
 }
 
 void PnpSolver::optimize_yaw(Armor &armor) const {
-  // 代价曲线在整个搜索范围内并非单峰：实测约四分之一的帧存在两个局部极小，
-  // 典型间隔 70 度，来源是平面四点 PnP 的二义性。直接对全区间做黄金分割会
-  // 收敛到其中任意一个，因此先用粗网格锁定全局极小所在的谷，再在相邻两格
-  // 构成的区间内用黄金分割细化。
-  //
-  // 搜索在以枪管 yaw 为中心的展开区间内进行；代价只依赖 sin/cos，对 2*pi
-  // 平移不变，所以中途无需归一化，只在写回时归一化一次。
-  // 粗步长按回放实测选定：5 度时有约 0.4% 的帧会和逐度暴力搜索选到不同的
-  // 谷（都是两个极小代价相差不到 4% 的近简并情形），2.5 度则完全一致。
-  constexpr double kSearchRangeDegrees = 140.0;
-  constexpr double kCoarseStepDegrees = 2.5;
-  constexpr int kCoarseIntervals =
-      static_cast<int>(kSearchRangeDegrees / kCoarseStepDegrees);
-  // 细化到 0.03 度即可，远小于观测噪声，再细没有意义只会多算几次。
-  constexpr double kRefineToleranceDegrees = 0.03;
-  constexpr double kDegreeToRadian = std::numbers::pi / 180.0;
 
-  const Eigen::Vector3d barrel_ypr =
-      L6Telemetry::eulers(R_barrel2world_, 2, 1, 0);
-  const double barrel_yaw = barrel_ypr[0];
-  const double coarse_step = kCoarseStepDegrees * kDegreeToRadian;
-  const double yaw0 = barrel_yaw - kSearchRangeDegrees * 0.5 * kDegreeToRadian;
+  constexpr double SEARCH_RANGE = 140;  // degree
 
-  // 第一阶段：粗网格。只找全局最小所在的格点，不追求精度。
-  int best_index = -1;
-  double minimum_error = std::numeric_limits<double>::infinity();
-  for (int index = 0; index <= kCoarseIntervals; ++index) {
-    const double yaw = yaw0 + static_cast<double>(index) * coarse_step;
-    const double error = armor_reprojection_error(armor, yaw);
-    if (error < minimum_error) {
-      minimum_error = error;
-      best_index = index;
-    }
-  }
+  auto yaw0 = L6Telemetry::eulers(R_barrel2world_, 2, 1, 0);
 
-  // 全部格点都无法重投影时保持原 yaw，与逐度搜索的退化行为一致。
-  if (best_index < 0 || !std::isfinite(minimum_error)) {
-    return;
-  }
+  auto best_yaw = armor.ypr_in_world[0];
 
-  // 第二阶段：在最优格点两侧各扩一格作为搜索区间。谷宽至少两个粗步长时，
-  // 该区间必定包住真正的极小，且区间内单峰，黄金分割才成立。
-  double lower =
-      yaw0 + static_cast<double>(std::max(best_index - 1, 0)) * coarse_step;
-  double upper =
-      yaw0 +
-      static_cast<double>(std::min(best_index + 1, kCoarseIntervals)) *
-          coarse_step;
+  double epsilon = 1e-3;
+  double right = CV_PI/2;
+  double left = -CV_PI/2;
 
-  // 0.618...，每次迭代只需一次新的代价评估。
-  constexpr double kInverseGoldenRatio = 0.6180339887498949;
-  const double tolerance = kRefineToleranceDegrees * kDegreeToRadian;
-
-  double probe_low = upper - kInverseGoldenRatio * (upper - lower);
-  double probe_high = lower + kInverseGoldenRatio * (upper - lower);
-  double error_low = armor_reprojection_error(armor, probe_low);
-  double error_high = armor_reprojection_error(armor, probe_high);
-
-  while (upper - lower > tolerance) {
-    if (error_low < error_high) {
-      upper = probe_high;
-      probe_high = probe_low;
-      error_high = error_low;
-      probe_low = upper - kInverseGoldenRatio * (upper - lower);
-      error_low = armor_reprojection_error(armor, probe_low);
+  for (int iter = 0; right - left > epsilon; ++iter) {
+    double mid1 = left + (right - left) / 3;
+    double mid2 = right - (right - left) / 3;
+    
+    double f1 = armor_reprojection_error(armor, mid1);
+    double f2 = armor_reprojection_error(armor, mid2);
+    
+    if (f1 < f2) {
+        right = mid2;
     } else {
-      lower = probe_low;
-      probe_low = probe_high;
-      error_low = error_high;
-      probe_high = lower + kInverseGoldenRatio * (upper - lower);
-      error_high = armor_reprojection_error(armor, probe_high);
+        left = mid1;
     }
   }
-
-  // 细化结果可能落在重投影失败的区域，此时退回粗网格上的最优格点。
-  const double refined_yaw = 0.5 * (lower + upper);
-  const double refined_error = armor_reprojection_error(armor, refined_yaw);
-  const double coarse_best_yaw =
-      yaw0 + static_cast<double>(best_index) * coarse_step;
-  armor.ypr_in_world[0] = L6Telemetry::limit_rad(
-      refined_error <= minimum_error ? refined_yaw : coarse_best_yaw);
+    
+  armor.yaw_raw = armor.ypr_in_world[0];
+  armor.ypr_in_world[0] = (left + right) / 2;
 }
 
 double PnpSolver::armor_reprojection_error(const Armor &armor,
@@ -431,8 +316,7 @@ PnpSolver::reproject_armor(const Eigen::Vector3d &xyz_in_world, double yaw,
     }
   }
 
-  const cv::Vec3d tvec{t_armor2camera.x(), t_armor2camera.y(),
-                       t_armor2camera.z()};
+  const cv::Vec3d tvec{t_armor2camera.x(), t_armor2camera.y(), t_armor2camera.z()};
   std::vector<cv::Point2d> projected_points;
   // OpenCV projectPoints 接收 Rodrigues 旋转向量，因此先转换矩阵表示。
   try {

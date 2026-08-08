@@ -224,10 +224,9 @@ Plan Planner::plan(const PlanInput& input)
   }
 
   // 弹速为 0 是裁判系统上电初期的正常值。这里用兜底初速保证仍能解算并输出
-  // 瞄准角，但把 BadBulletSpeed 记进 error，由 L5 拒绝开火。
+  // 瞄准角，但把 BadBulletSpeed 记进 error，由 L5 拒绝开火。上下限都判。
   double bullet_speed = robot_state.bullet_speed;
-  const bool bullet_speed_ok = std::isfinite(bullet_speed) &&
-                               bullet_speed >= config_.min_valid_bullet_speed;
+  const bool bullet_speed_ok = config_.bulletSpeedValid(bullet_speed);
   if (!bullet_speed_ok) {
     bullet_speed = config_.fallback_bullet_speed;
   }
@@ -317,6 +316,12 @@ Plan Planner::plan(const PlanInput& input)
   }
   plan.fire_armor_id = fire_id;
   plan.fire_delta_angle = fire_id >= 0 ? fire_angle : 0.0;
+  if (fire_id >= 0) {
+    // 命中时刻这块板的位置。L5 要用它的距离把板宽换算成角度容差——用瞄准点的
+    // 距离是不对的，中心档瞄的是旋转圆上的代理点，比实体板近一个半径。
+    plan.fire_armor_point =
+      candidates[static_cast<std::size_t>(fire_id)].xyza.head<3>();
+  }
 
   const bool in_window = fire_id >= 0 && inFireWindow(*target, fire_angle);
   plan.fire_admissible = bullet_speed_ok && !degraded && in_window;

@@ -95,7 +95,9 @@ std::optional<TargetState> Tracker::track(
   for (const auto& detection : detections) {
     observations_.push_back(toArmorObservation(detection, timestamp));
     pnp_solver_.single_pnp(observations_.back());
+
   }
+
 
   // 时间戳倒退或跟踪期间帧间隔过大时，旧运动状态不再可信。
   if (last_timestamp_) {
@@ -166,10 +168,16 @@ void Tracker::reset() noexcept
 
 bool Tracker::observationUsable(const Armor& armor) const noexcept
 {
-  // 观测必须通过全部 PnP 质量检查、类别有效且像素面积达到门限。
-  return armor.quality.valid() &&
-         armor.name != ArmorName::Unknown &&
-         std::isfinite(armor.area) && armor.area >= armor_config_.min_area;
+  // 类别有效、像素面积达标、位姿有限是共同前提。name 只在 single_pnp 成功
+  // 提交结果的那一步才被赋值，任何失败路径上都保持 Unknown，所以这一条同时
+  // 就是"PnP 是否成功"。
+  if (armor.name == ArmorName::Unknown || !armor.xyz_in_world.allFinite() ||
+      !std::isfinite(armor.area) || armor.area < armor_config_.min_area) {
+    return false;
+  }
+
+  // 实机还要求通过全部 ArmorQuality 门限；回放调试可以只以 PnP 成功为准。
+  return !tracker_config_.require_quality || armor.quality.valid();
 }
 
 std::vector<const Armor*> Tracker::usableObservations() const

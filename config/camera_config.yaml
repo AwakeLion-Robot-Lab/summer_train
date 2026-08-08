@@ -1,0 +1,36 @@
+# camera_name: "mindvision"
+# exposure_ms: 2
+# gamma: 0.5
+# vid_pid: "f622:d13a" //需要更改
+
+camera_name: "hikrobot"
+exposure_ms: 4
+gain: 10.0
+# lsusb | grep 2bdf
+vid_pid: "2bdf:0001"
+
+# 实际棋盘格/Charuco 标定结果。标定只对生成它的分辨率有效，换 ROI、binning
+# 或分辨率后必须重标。
+calibration:
+  image_width: 1440
+  image_height: 1080
+  camera_matrix:
+    - [1637.2846389992001, 0, 708.16615879526182]
+    - [0, 1635.7446625406701, 560.71988764596608]
+    - [0.0, 0.0, 1.0]
+  distortion_coefficients: [-0.12708120858175301, 0.13500912916086708, -0.00052781395122133252, 0.00014277184772869901, 0]
+  # T_A_B 表示把 B 坐标系中的点转换到 A 坐标系，平移单位为米。
+  #
+  # 数值来自机械模型（URDF/xacro）：xyz = 0.06971 0.0655 0.040，rpy = 0 0 0。
+  # rpy 为零表示相机 link 与 barrel 无额外安装角，所以 rotation 就是纯轴向
+  # 部分：相机光学系 z 前 / x 右 / y 下 → barrel x 前 / y 左 / z 上。
+  # 校验：R * (0,0,1) = (1,0,0)，光轴对上枪口方向；det = +1。
+  #
+  # 注意这是名义值，不是手眼标定结果：装配公差、镜头光心偏移都没包含在内。
+  # 实机打不准时优先怀疑这里，用标定板重新标一次 camera -> barrel。
+  T_barrel_camera:
+    rotation:
+      - [0.0, 0.0, 1.0]
+      - [-1.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0]
+    translation: [0.06971, 0.0655, 0.040]

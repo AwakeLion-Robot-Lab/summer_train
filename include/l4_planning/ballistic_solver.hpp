@@ -11,13 +11,24 @@ namespace L4Planning {
 // world 系原点即枪管原点（PnpSolver 用 t_camera_barrel 平移后只做纯旋转到
 // world），所以 d = hypot(x, y)、h = z 直接可用，不需要再加枪口偏置。
 //
-// 求解器与物理模型解耦（见 ballistic_model.hpp）。真空模型有闭式解直接返回；
-// 有阻力时用 talos DirectSolver 的高度补偿迭代：从视线角出发，把实际落点与
-// 目标的高度差累加回瞄准高度，重新求角，直到落差小于门限。这一迭代天然收敛
-// 到低弧，因为起点就在低弧一侧。
+// 求解策略分两条路，由模型自己决定走哪条：
 //
-// 这里**不做**弹速合理性判断。低于多少 m/s 算异常是业务门限，归
-// PlanConfig::min_valid_bullet_speed 管；求解器只拒绝数学上无解的输入。
+//  1. **模型给得出闭式反解**（真空、水平二次阻力）→ 直接用，一次算完，精确。
+//  2. **模型给不出**（将来的全二次阻力 + RK4）→ 退化成 talos DirectSolver 的
+//     高度补偿迭代：把实际落点与目标的高度差累加回瞄准高度，重新求角，直到
+//     落差小于门限。内层映射用真空闭式解，比 talos 用视线角 atan2 收敛快。
+//
+// 现在两个内置模型都走第 1 条。保留第 2 条不是为了兼容，而是为了让"加一个没
+// 有闭式解的模型"不必改这个文件——迭代路径由 IBallisticModel::launch() 返回
+// nullopt 自动触发。
+//
+// 为什么不像 FYT / talos 那样一律迭代：这个模型有精确闭式解（awakening 推出
+// 来了）。迭代版在 height_tolerance 内提前退出，留下系统性偏差；而且迭代次数
+// 随 k 和距离增长，k=0.092、d=10 m 时要 12 次，逼近 max_iterations 上限，再远
+// 就会直接报无解。
+//
+// 这里**不做**弹速合理性判断。多少 m/s 算异常是业务门限，归 PlanConfig 的
+// min/max_valid_bullet_speed 管；求解器只拒绝数学上无解的输入。
 class BallisticSolver {
 public:
   explicit BallisticSolver(BallisticConfig config = {});
@@ -33,8 +44,8 @@ public:
   [[nodiscard]] const BallisticConfig& config() const noexcept { return config_; }
 
 private:
-  // 真空闭式解，同时用作有阻力时的迭代初值。
-  [[nodiscard]] std::optional<double> vacuumPitch(
+  // 模型没有闭式反解时的兜底：高度补偿迭代。
+  [[nodiscard]] Ballistic solveByHeightCompensation(
     double d, double h, double bullet_speed) const;
 
   BallisticConfig config_;

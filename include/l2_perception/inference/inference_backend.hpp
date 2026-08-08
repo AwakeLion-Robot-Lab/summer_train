@@ -31,6 +31,16 @@ struct InferenceModelConfig
 
   // 255 表示把像素除以 255，得到 [0, 1]。这是除数，不是原来的 1/255 乘数。
   float normalization_divisor{255.0F};
+
+  // 自瞄是单帧同步链路，要的是单次延迟而不是吞吐，因此固定用 LATENCY 提示。
+  bool latency_hint{true};
+
+  // 0 表示交给 OpenVINO 自行决定。在大小核 CPU 上把线程摊到 E 核会让 P 核在每个
+  // 同步点空等，实测反而更慢，所以宁可显式限制线程数，也不要默认铺满所有核。
+  std::size_t inference_num_threads{0};
+
+  // 大小核 CPU 上只用 P 核；非混合架构的 CPU 会忽略该提示，因此设置它是安全的。
+  bool prefer_performance_cores{true};
 };
 
 // 所有后端对宿主侧输入使用同一契约：uint8、NHWC、BGR，例如 {1, 640, 640, 3}。

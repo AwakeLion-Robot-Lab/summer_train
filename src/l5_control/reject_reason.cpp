@@ -31,6 +31,8 @@ std::string toString(RejectReason reason)
       return "heat_limit";
     case RejectReason::OutsideHitWindow:
       return "outside_hit_window";
+    case RejectReason::AimError:
+      return "aim_error";
     case RejectReason::ArmorSwitching:
       return "armor_switching";
     case RejectReason::CommandJump:

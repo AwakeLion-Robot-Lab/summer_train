@@ -38,7 +38,7 @@ packet_loss_check_enable: true
 # 加载时会校验正交且行列式为 +1，写错成镜像矩阵会被拒绝并回退到单位阵。
 #
 # !! 两条必须同时满足，否则不会报错但结果全错：
-#    1) carmera_config.yaml 的 T_barrel_camera 要标定到上面这个 barrel 系。
+#    1) camera_config.yaml 的 T_barrel_camera 要标定到上面这个 barrel 系。
 #       相机光学系是 z 前 / x 右 / y 下，转到 x 前 / y 左 / z 上的旋转是
 #       R_camera2barrel = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]。
 #    2) barrel 的 x 轴必须是瞄准方向，optimize_yaw 的搜索窗口以它为中心。

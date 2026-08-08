@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 namespace L3Estimation {
 
@@ -24,6 +25,33 @@ enum class ArmorType : std::uint8_t {
   Small,  // 小装甲板
   Big     // 大装甲板
 };
+
+// 识别类别 → 实际板型。场上只有四板车，大装甲板仅英雄使用：平衡步兵已不存在，
+// 基地虽然有 Bs/Bb 两个类别但装甲板实物都是小板，所以只有 Hero 走 Big 分支。
+//
+// 未知类别返回 nullopt，不猜板型：猜错会同时污染 PnP 几何和火控的角度容差。
+// L3 的 PnpSolver 和 L5 的 FireDecider 共用这一份映射，不各写一份。
+[[nodiscard]] constexpr std::optional<ArmorType> armorTypeOf(ArmorName name) noexcept
+{
+  switch (name) {
+    case ArmorName::Hero:
+      return ArmorType::Big;
+
+    case ArmorName::Guard:
+    case ArmorName::Engineer:
+    case ArmorName::Infantry3:
+    case ArmorName::Infantry4:
+    case ArmorName::Infantry5:
+    case ArmorName::Outpost:
+    case ArmorName::BaseSmall:
+    case ArmorName::BaseLarge:
+      return ArmorType::Small;
+
+    case ArmorName::Unknown:
+      break;
+  }
+  return std::nullopt;
+}
 
 // Tracker 的四态生命周期。
 enum class TrackState : std::uint8_t {
@@ -86,17 +114,21 @@ struct Armor {
 
   // 平移量单位均为 meter。
   Eigen::Vector3d xyz_in_camera{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d xyz_in_barrel{Eigen::Vector3d::Zero()};
   Eigen::Vector3d xyz_in_world{Eigen::Vector3d::Zero()};
   // 固定顺序为 [yaw, pitch, roll]，采用 Rz(yaw)Ry(pitch)Rx(roll)。
   Eigen::Vector3d ypr_in_camera{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d ypr_in_barrel{Eigen::Vector3d::Zero()};
   Eigen::Vector3d ypr_in_world{Eigen::Vector3d::Zero()};
   // [方位角, 俯仰角, 距离]，角度单位为 radian，距离单位为 meter。
   Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d ypd_in_barrel{Eigen::Vector3d::Zero()};
 
   // 四个角点的二维像素 RMSE。
   double reprojection_error{std::numeric_limits<double>::infinity()};
   // 检测置信度和四边形像素面积从 L2 原样传入。
   double confidence{0.0};
+  double yaw_raw{0.0};
   double area{0.0};
 
   ArmorQuality quality;
@@ -170,6 +202,13 @@ struct TrackerConfig {
   // 临时丢失按连续帧数计数；前哨站允许更长的无观测预测窗口。
   int max_temp_lost_count{15};
   int outpost_max_temp_lost_count{75};
+
+  // 观测是否必须通过 ArmorQuality 的全部门限才能进入滤波。
+  //
+  // 只有离线回放调试才允许关掉：关掉后门限退化成"single_pnp 成功产出了位姿"，
+  // 等于把未经重投影和角点可见性校验的 PnP 结果直接喂给 EKF，发散和跳变都属于
+  // 预期内的现象。实机必须保持 true，否则一次坏解就能把整车状态带跑。
+  bool require_quality{true};
 };
 
 // 跨层接口使用的语义别名。

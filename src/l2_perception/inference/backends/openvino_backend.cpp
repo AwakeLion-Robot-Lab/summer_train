@@ -191,7 +191,30 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
   input_spec_.shape.assign(input_shape.begin(), input_shape.end());
 
   // compile_model 才会选择 CPU/GPU 并生成可执行模型；请求池负责复用 InferRequest。
-  ov::CompiledModel compiled_model = impl_->core.compile_model(model, config.device);
+  // 编译属性只影响调度，不改变数值结果。
+  ov::AnyMap compile_properties;
+  if (config.latency_hint) {
+    // performance_mode 是设备无关的通用 hint，CPU 和 GPU 插件都接受。
+    compile_properties.emplace(
+      ov::hint::performance_mode.name(), ov::hint::PerformanceMode::LATENCY);
+  }
+
+  // 线程数和大小核调度只有 CPU 插件认识。GPU 插件收到这两项会直接抛异常而不是忽略，
+  // 所以必须按设备过滤；device 为 GPU 时它们无意义，静默跳过即可。
+  const bool cpu_device = config.device == "CPU" || config.device.starts_with("CPU.");
+  if (cpu_device) {
+    if (config.inference_num_threads > 0) {
+      compile_properties.emplace(
+        ov::inference_num_threads.name(), static_cast<int>(config.inference_num_threads));
+    }
+    if (config.prefer_performance_cores) {
+      compile_properties.emplace(
+        ov::hint::scheduling_core_type.name(), ov::hint::SchedulingCoreType::PCORE_ONLY);
+    }
+  }
+
+  ov::CompiledModel compiled_model =
+    impl_->core.compile_model(model, config.device, compile_properties);
   std::vector<std::string> output_names;
   output_names.reserve(compiled_model.outputs().size());
   for (std::size_t index = 0; index < compiled_model.outputs().size(); ++index) {

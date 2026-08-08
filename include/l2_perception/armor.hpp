@@ -38,9 +38,22 @@ enum class ArmorClass : int {
            : ArmorClass::Unknown;
 }
 
+// 角点的来源。传统灯条精修只在证据充分时才替换网络角点，
+// 因此下游需要能区分这两种角点的可信度。
+enum class CornerSource {
+  Network,  // 网络回归的原始角点
+  Refined   // 已由 ROI 内的灯条端点替换
+};
+
 struct Armor {
   // 顺序固定为：左上、右上、右下、左下；PnP 必须沿用同一顺序。
   std::array<cv::Point2f, 4> corners{};
+  // 精修前的网络原始角点，顺序与 corners 一致。精修生效时保留它，
+  // 是为了能离线对比两条通路的差异，否则无法验证精修是否真的有收益。
+  std::array<cv::Point2f, 4> network_corners{};
+  CornerSource corner_source{CornerSource::Network};
+  // 精修角点相对网络角点的最大位移，单位为像素；未精修时为 0。
+  float corner_shift{0.0F};
   // 四个角点在原图像素坐标系中的几何中心。
   cv::Point2f center{};
   // Fosu 约定：0~8 分别为 G、1、2、3、4、5、O、Bs、Bb。
