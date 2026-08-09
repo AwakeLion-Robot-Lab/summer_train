@@ -69,7 +69,9 @@ const std::string kCommandLineKeys =
   "{start-index s | 0 | 视频起始帧下标}"
   "{end-index e | 0 | 视频结束帧下标，0 表示到结尾}"
   "{wait w | 30 | 每帧 waitKey 毫秒，0 表示逐帧手动推进}"
-  "{plot | true | 是否显示 PnP 代价曲线窗口}"
+  "{view | sp | 叠加层：sp（只画当前 EKF 整车和瞄准板）/ full（全部调试层）}"
+  "{overlay-offset | 0 | full 视图下整车叠加层上移的像素数；sp 视图恒为 0}"
+  "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
   "{require-quality | false | 观测是否必须通过全部 ArmorQuality 门限}"
   "{bullet-speed | 23.0 | 回放没有裁判系统数据，用这个弹速喂 L4（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
@@ -734,7 +736,25 @@ int main(int argc, char** argv)
     const int start_index = cli.get<int>("start-index");
     const int end_index = cli.get<int>("end-index");
     const int wait_ms = cli.get<int>("wait");
-    const bool show_plot = cli.get<bool>("plot");
+
+    // 叠加层口径。sp 视图刻意只保留 sp_vision auto_aim_test 画的那两样东西：
+    // 当前 EKF 展开的全部装甲板（绿），和命中时刻瞄准的那块板（红）。这样
+    // "框贴不贴板"才是可以直接目视判断的——多画一层前瞻框或者整体偏移，
+    // 看到的就不再是姿态估计的对错，而是显示口径的差异。
+    const std::string view = cli.get<std::string>("view");
+    require(view == "sp" || view == "full", "view 必须是 sp 或 full");
+    const bool full_view = view == "full";
+    const int overlay_offset = full_view ? cli.get<int>("overlay-offset") : 0;
+    require(overlay_offset >= 0, "overlay-offset 不能为负");
+    // 代价曲线是 sp 没有的第二个窗口，sp 视图下除非显式要求否则不开。
+    // 用三态字符串而不是 cli.has("plot")：CommandLineParser 对带默认值的键
+    // 恒返回 true，has() 区分不出"用户写了"和"用了默认值"。
+    const std::string plot_option = cli.get<std::string>("plot");
+    require(
+      plot_option == "auto" || plot_option == "true" || plot_option == "false",
+      "plot 必须是 auto、true 或 false");
+    const bool show_plot =
+      plot_option == "auto" ? full_view : plot_option == "true";
     require(start_index >= 0, "start-index 不能为负");
     require(
       end_index == 0 || end_index >= start_index,
@@ -1018,44 +1038,64 @@ int main(int argc, char** argv)
         "ms tracker:",
         L6Telemetry::delta_time(track_end, track_start) * 1e3, "ms");
 
-      // L2 原始识别框：按识别颜色绘制，便于和红色滤波器输入位姿框对比。
-      for (const auto& armor : armors) {
-        const cv::Scalar color = armor.color == L2Perception::ArmorColor::Blue
-          ? cv::Scalar{0, 0, 255}
-          : armor.color == L2Perception::ArmorColor::Red
-          ? cv::Scalar{255, 0, 0}
-          : cv::Scalar{0, 255, 255};
-        for (std::size_t index = 0; index < armor.corners.size(); ++index) {
-          cv::line(
-            img, toPixel(armor.corners[index]),
-            toPixel(armor.corners[(index + 1) % armor.corners.size()]),
-            color, 2, cv::LINE_AA);
+      if (full_view) {
+        // L2 原始识别框：按识别颜色绘制，便于和红色滤波器输入位姿框对比。
+        for (const auto& armor : armors) {
+          const cv::Scalar color = armor.color == L2Perception::ArmorColor::Blue
+            ? cv::Scalar{0, 0, 255}
+            : armor.color == L2Perception::ArmorColor::Red
+            ? cv::Scalar{255, 0, 0}
+            : cv::Scalar{0, 255, 255};
+          for (std::size_t index = 0; index < armor.corners.size(); ++index) {
+            cv::line(
+              img, toPixel(armor.corners[index]),
+              toPixel(armor.corners[(index + 1) % armor.corners.size()]),
+              color, 2, cv::LINE_AA);
+          }
         }
+
+        // 当前帧真正送入滤波器的位姿：绿色重投影框和绿色朝向箭头。
+        drawFilterInputArmors(
+          img, observations, armor_config, tracker_config.require_quality, solver,
+          calibration, q_world_barrel);
       }
 
-      // 当前帧真正送入滤波器的位姿：绿色重投影框和绿色朝向箭头。
-      drawFilterInputArmors(
-        img, observations, armor_config, tracker_config.require_quality, solver,
-        calibration, q_world_barrel);
-
-      // 当前 EKF 框和预测框使用同一高度，并整体向上偏移；绿色是当前姿态，
-      // 橙色是预测姿态。这个偏移只改变显示位置。
+      // 绿色是当前 EKF 展开的全部物理装甲板，和 sp_vision 画的是同一个量：
+      // 直接压在图像上，不偏移、不前瞻，所以"贴不贴板"可以目视判断。
+      // full 视图额外画橙色的 predict_time 外推框，那是延迟补偿的目标位置，
+      // 本来就该领先绿框（100 ms 实测约 40 px），不要当成估计误差。
       if (target) {
         const auto armor_type =
           L3Estimation::armorTypeOf(target->name).value_or(
             L3Estimation::ArmorType::Small);
-        const cv::Point kFilterOverlayOffset{0, -64};
-        drawVehicle(
-          img, predicted_armor_poses, armor_type, target->name, solver,
-          {0, 165, 255}, 2, kFilterOverlayOffset);
+        const cv::Point overlay_shift{0, -overlay_offset};
+        if (full_view) {
+          drawVehicle(
+            img, predicted_armor_poses, armor_type, target->name, solver,
+            {0, 165, 255}, 2, overlay_shift);
+        }
         drawVehicle(
           img, target_armor_poses, armor_type, target->name, solver,
-          {0, 255, 0}, 2, kFilterOverlayOffset);
+          {0, 255, 0}, 2, overlay_shift);
+
+        // 红色是命中时刻真正瞄的那块板，对应 sp_vision 的 debug_aim_point。
+        // 用规划自己的时域（延迟 + 飞行时间）重新展开整车再取 armor_id，
+        // 而不是复用上面那个按 --predict-time 外推的快照——两者时域不同，
+        // 混用会画出一块规划从没瞄过的板。
+        if (plan.valid && plan.armor_id >= 0) {
+          const double aim_time = plan.delay.beforeFire() + plan.fly_time;
+          const auto aim_poses = predictor.armorPosesAt(*target, aim_time);
+          if (static_cast<std::size_t>(plan.armor_id) < aim_poses.size()) {
+            drawVehicle(
+              img, {aim_poses[static_cast<std::size_t>(plan.armor_id)]},
+              armor_type, target->name, solver, {0, 0, 255}, 2, overlay_shift);
+          }
+        }
       }
 
-      // 瞄准点和火控判据用的那块实体板，投到图上。两者在 WholeCarCenter 档
-      // 会明显分开——瞄的是旋转圆上的代理点，判的是板。
-      if (plan.valid) {
+      // 瞄准点和火控判据用的那块实体板。两者在 WholeCarCenter 档会明显分开
+      // ——瞄的是旋转圆上的代理点，判的是板。sp 没有这一层。
+      if (full_view && plan.valid) {
         const auto aim_pixel =
           projectWorldPoint(plan.aim_point, calibration, q_world_barrel);
         if (aim_pixel) {
@@ -1092,7 +1132,7 @@ int main(int argc, char** argv)
           L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
             kRadToDeg),
         {10, 62}, {255, 255, 255});
-      if (selected && isFilterInputArmor(
+      if (full_view && selected && isFilterInputArmor(
             observations[*selected], armor_config, tracker_config.require_quality)) {
         const auto& armor = observations[*selected];
         drawOutlinedText(
@@ -1101,7 +1141,7 @@ int main(int argc, char** argv)
                      armor.ypr_in_world[0] * kRadToDeg),
           {10, 92}, {0, 255, 0});
       }
-      if (target) {
+      if (full_view && target) {
         drawOutlinedText(
           img,
           cv::format(
@@ -1113,7 +1153,7 @@ int main(int argc, char** argv)
             target->armor_id),
           {10, 122}, {0, 255, 0}, 0.55);
       }
-      if (predicted) {
+      if (full_view && predicted) {
         drawOutlinedText(
           img,
           cv::format(
@@ -1135,16 +1175,18 @@ int main(int argc, char** argv)
               L6Telemetry::limit_rad(plan.pitch - gimbal_ypr[1]) * kRadToDeg,
               phaseName(plan.aim_phase), plan.armor_id, plan.fire_armor_id)
           : cv::format("CMD not sent (plan %s)", planErrorName(plan.error)),
-        {10, 182}, plan.valid ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160},
-        0.55);
-      drawOutlinedText(
-        img,
-        cv::format(
-          "FIRE feasible=%d shoot=%d | %s", fire_decision.fire_feasible ? 1 : 0,
-          command && command->shoot ? 1 : 0, rejectReasons(fire_decision).c_str()),
-        {10, 212},
-        fire_decision.fire_feasible ? cv::Scalar{0, 255, 0} : cv::Scalar{160, 160, 160},
-        0.5);
+        {10, full_view ? 182 : 92},
+        plan.valid ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
+      if (full_view) {
+        drawOutlinedText(
+          img,
+          cv::format(
+            "FIRE feasible=%d shoot=%d | %s", fire_decision.fire_feasible ? 1 : 0,
+            command && command->shoot ? 1 : 0, rejectReasons(fire_decision).c_str()),
+          {10, 212},
+          fire_decision.fire_feasible ? cv::Scalar{0, 255, 0} : cv::Scalar{160, 160, 160},
+          0.5);
+      }
       nlohmann::json data;
       data["gimbal_yaw"] =
         L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
