@@ -18,6 +18,7 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <deque>
@@ -191,6 +192,60 @@ void require(bool condition, const std::string& message)
     ? Eigen::Matrix3d{R_sp_flip.transpose() * R_world_imu * R_sp_flip}
     : Eigen::Matrix3d{R_world_imu * R_imu_barrel};
   return Eigen::Quaterniond(R_world_barrel).normalized();
+}
+
+// 把 world 系的一个点投到像素。overlay.csv 用它输出整车中心的像素位置，
+// 定义与 auto_aim_test 里画十字用的那个完全一致。
+[[nodiscard]] std::optional<cv::Point2d> projectWorldPoint(
+  const Eigen::Vector3d& point_in_world,
+  const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Quaterniond& q_world_barrel)
+{
+  if (!calibration.T_barrel_camera || !point_in_world.allFinite()) {
+    return std::nullopt;
+  }
+  Eigen::Isometry3d T_world_barrel = Eigen::Isometry3d::Identity();
+  T_world_barrel.linear() = q_world_barrel.toRotationMatrix();
+  const Eigen::Vector3d point_in_camera =
+    (T_world_barrel * *calibration.T_barrel_camera).inverse() * point_in_world;
+  if (!point_in_camera.allFinite() || point_in_camera.z() <= 1e-6) {
+    return std::nullopt;
+  }
+  std::vector<cv::Point2d> projected;
+  try {
+    cv::projectPoints(
+      std::vector<cv::Point3d>{
+        {point_in_camera.x(), point_in_camera.y(), point_in_camera.z()}},
+      cv::Vec3d::all(0.0), cv::Vec3d::all(0.0), calibration.camera_matrix,
+      calibration.distortion_coefficients, projected);
+  } catch (const cv::Exception&) {
+    return std::nullopt;
+  }
+  if (projected.size() != 1 || !std::isfinite(projected[0].x) ||
+      !std::isfinite(projected[0].y)) {
+    return std::nullopt;
+  }
+  return projected[0];
+}
+
+// 一块装甲板在图像上的"框中心"：四个投影角点的均值。这就是屏幕上看到的
+// 那个绿框的中心，和把三维板心单独投一次不完全相等（透视 + 畸变都非线性），
+// 但它才是目视对比的那个量，所以两边统一用这个定义。
+[[nodiscard]] std::optional<cv::Point2d> armorBoxCenter(
+  const L3Estimation::PnpSolver& solver, const Eigen::Vector4d& xyza,
+  L3Estimation::ArmorType type, L3Estimation::ArmorName name)
+{
+  const std::vector<cv::Point2f> corners =
+    solver.reproject_armor(xyza.head<3>(), xyza[3], type, name);
+  if (corners.size() != 4) {
+    return std::nullopt;
+  }
+  cv::Point2d sum{0.0, 0.0};
+  for (const auto& corner : corners) {
+    sum.x += corner.x;
+    sum.y += corner.y;
+  }
+  return cv::Point2d{sum.x / 4.0, sum.y / 4.0};
 }
 
 // PnpSolver::armor_reprojection_error 是私有的，这里用它公开的 reproject_armor
@@ -452,6 +507,16 @@ int main(int argc, char* argv[])
                "fire_delta_deg,aim_jump\n";
     aim_csv << std::fixed;
 
+    // 叠加层像素位置。目的是和 sp_vision 逐帧比"框画在哪儿"，所以这里只出
+    // 像素，不出世界坐标：世界坐标的差会被距离和视角放大或缩小，看不出屏幕上
+    // 到底差了多少。det*_u/v 是当帧 L2 检出的板心，作为"框该落在哪"的参照。
+    std::ofstream overlay_csv(out_dir / "overlay.csv");
+    overlay_csv << "frame,t,state,center_u,center_v,center_ok,"
+                   "a0_u,a0_v,a0_ok,a1_u,a1_v,a1_ok,a2_u,a2_v,a2_ok,"
+                   "a3_u,a3_v,a3_ok,ndet,det0_u,det0_v,det1_u,det1_v,"
+                   "nearest_px,nearest_id\n";
+    overlay_csv << std::fixed;
+
     std::ofstream pred_csv(out_dir / "pred.csv");
     pred_csv << "frame,t,horizon,center_err,armor_err,armor_yaw_err_deg,obs_err\n";
     pred_csv << std::fixed;
@@ -669,6 +734,76 @@ int main(int argc, char* argv[])
                 << ',' << res_dist_value << ','
                 << res_yaw_value << ',' << (reset ? 1 : 0) << '\n';
       previous_target = target;
+
+      // 叠加层像素位置：整车中心 + 四块板的框心，外加当帧检出的板心作参照。
+      {
+        overlay_csv << frame_index << ',' << pose.seconds << ','
+                    << stateName(state) << ',';
+        const auto center_px = target
+          ? projectWorldPoint(target->position, calibration, q_world_barrel)
+          : std::nullopt;
+        if (center_px) {
+          overlay_csv << center_px->x << ',' << center_px->y << ",1,";
+        } else {
+          overlay_csv << ",,0,";
+        }
+
+        const auto armor_poses = tracker.targetArmorPoses();
+        const auto armor_type = target
+          ? L3Estimation::armorTypeOf(target->name).value_or(
+              L3Estimation::ArmorType::Small)
+          : L3Estimation::ArmorType::Small;
+        std::array<std::optional<cv::Point2d>, 4> plate_px{};
+        for (std::size_t id = 0; id < 4; ++id) {
+          if (target && id < armor_poses.size()) {
+            plate_px[id] = armorBoxCenter(
+              solver, armor_poses[id], armor_type, target->name);
+          }
+          if (plate_px[id]) {
+            overlay_csv << plate_px[id]->x << ',' << plate_px[id]->y << ",1,";
+          } else {
+            overlay_csv << ",,0,";
+          }
+        }
+
+        // 检出的板心（像素），最多两块，按 L2 给出的顺序。
+        overlay_csv << armors.size() << ',';
+        for (std::size_t index = 0; index < 2; ++index) {
+          if (index < armors.size()) {
+            overlay_csv << armors[index].center.x << ',' << armors[index].center.y << ',';
+          } else {
+            overlay_csv << ",,";
+          }
+        }
+
+        // 每个检出的板心，到最近的那块 EKF 板框心的像素距离。这一列就是
+        // "框贴不贴板"，取整帧最大值——统计均值会把偶发的大偏差抹平。
+        double worst = -1.0;
+        int worst_id = -1;
+        for (const auto& detection : armors) {
+          double best = std::numeric_limits<double>::infinity();
+          int best_id = -1;
+          for (std::size_t id = 0; id < plate_px.size(); ++id) {
+            if (!plate_px[id]) continue;
+            const double dx = plate_px[id]->x - detection.center.x;
+            const double dy = plate_px[id]->y - detection.center.y;
+            const double distance = std::sqrt(dx * dx + dy * dy);
+            if (distance < best) {
+              best = distance;
+              best_id = static_cast<int>(id);
+            }
+          }
+          if (best_id >= 0 && best > worst) {
+            worst = best;
+            worst_id = best_id;
+          }
+        }
+        if (worst_id >= 0) {
+          overlay_csv << worst << ',' << worst_id << '\n';
+        } else {
+          overlay_csv << ",\n";
+        }
+      }
 
       // L4 规划：瞄准点的稳定性只能在这里量，Tracker 自己不产生瞄准点。
       L1Sensor::RobotState robot_state;
