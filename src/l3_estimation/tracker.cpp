@@ -236,7 +236,8 @@ bool Tracker::initializeTarget(
     timestamp,
     radius,
     armor_count,
-    std::move(covariance_diagonal));
+    std::move(covariance_diagonal),
+    tracker_config_.sp_compat);
   return true;
 }
 

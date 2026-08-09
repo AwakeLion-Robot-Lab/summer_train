@@ -27,9 +27,10 @@ public:
 
   TrackedTarget() = default;
   // 使用首个装甲板观测反推旋转中心并初始化十一维状态。
+  // sp_compat 逐项把行为切回 sp_vision 的实现，仅用于差分定位，见 SpCompatConfig。
   TrackedTarget(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
-    Eigen::VectorXd P0_dig);
+    Eigen::VectorXd P0_dig, SpCompatConfig sp_compat = {});
   // 构造指定旋转状态的目标，主要用于无观测的确定性初始化。
   TrackedTarget(double x, double vyaw, double radius, double h);
 
@@ -65,6 +66,8 @@ private:
   int update_count_{0};
   // 半径被投影顶在物理边界上的连续更新次数，超过门限视为发散。
   int radius_pinned_count_{0};
+  // sp_vision 行为复刻开关，构造后不再变化。
+  SpCompatConfig sp_compat_{};
 
   bool is_switch_{false};
   bool is_converged_{false};

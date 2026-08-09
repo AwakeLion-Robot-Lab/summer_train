@@ -98,6 +98,16 @@ Eigen::VectorXd ExtendedKalmanFilter::update(
   // 通过 x_add 注入修正量，使角度等周期状态可以在加法后归一化。
   x = x_add(x, K * residual);
 
+  if (consistency_mode == ConsistencyMode::SpPosterior) {
+    // sp_vision 的算法：残差和 S 都取更新之后的值。更新本身就是在压缩残差，
+    // 所以这个量恒偏小，不服从卡方分布——照抄是为了复现 sp 的复位行为，不是
+    // 因为它对。见 SpCompatConfig::posterior_nis。
+    const Eigen::VectorXd posterior_residual = z_subtract(z, h(x));
+    const Eigen::MatrixXd posterior_S = H * P * H.transpose() + R;
+    recordConsistency(posterior_residual, posterior_S.inverse(), x_prior);
+    return x;
+  }
+
   recordConsistency(residual, S_inverse, x_prior);
   return x;
 }
@@ -112,13 +122,25 @@ void ExtendedKalmanFilter::recordConsistency(
   double nees = (x - x_prior).transpose() * P.inverse() * (x - x_prior);
 
   // 门限取对应自由度的卡方 95% 上分位数：NIS 用观测维数，nees 用状态维数。
-  const double nis_threshold = chiSquare95(residual.rows());
-  const double nees_threshold = chiSquare95(x.rows());
+  //
+  // sp_vision 复刻模式下两者都固定 0.711。那个数注释写的是"自由度 4、置信度
+  // 95%"，但自由度 4 的卡方 95% **上**分位是 9.488，0.711 是**下** 5% 分位；
+  // 配上同样错位的后验 NIS，sp 的 "Bad Converge" 复位是在拿一个偏小的统计量
+  // 比一个偏小的门限。照抄是为了复现它的复位时机。
+  const bool sp_mode = consistency_mode == ConsistencyMode::SpPosterior;
+  constexpr double kSpFixedThreshold = 0.711;
+  const double nis_threshold =
+    sp_mode ? kSpFixedThreshold : chiSquare95(residual.rows());
+  const double nees_threshold =
+    sp_mode ? kSpFixedThreshold : chiSquare95(x.rows());
 
   // S 接近奇异时 nis 可能是 NaN，此时比较运算恒为假会被误判成通过，
-  // 因此非有限值一律按失败计入。
-  const bool nis_fail = !std::isfinite(nis) || nis > nis_threshold;
-  const bool nees_fail = !std::isfinite(nees) || nees > nees_threshold;
+  // 因此非有限值一律按失败计入。sp 没有这道保护，复刻模式下一并照抄：
+  // NaN > 门限为假，会被当成"通过"，复位反而不会触发。
+  const bool nis_fail =
+    sp_mode ? (nis > nis_threshold) : (!std::isfinite(nis) || nis > nis_threshold);
+  const bool nees_fail =
+    sp_mode ? (nees > nees_threshold) : (!std::isfinite(nees) || nees > nees_threshold);
 
   if (nis_fail) nis_count_++;
   if (nees_fail) nees_count_++;

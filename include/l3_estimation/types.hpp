@@ -231,6 +231,37 @@ struct ArmorConfig {
   double corner_noise_px{1.0};
 };
 
+// sp_vision 行为复刻开关。
+//
+// 用途是差分定位，不是"另一套调参"：把 L3 逐项切回 sp_vision 的实现——**包括
+// 它已知的 bug**——先确认 newvision 能复现 sp 的行为，再一项项关掉，看哪一项
+// 才是差异的来源。所以每个字段都必须严格等于 sp 的实现，不许"顺手改好一点"，
+// 否则复现失败时分不清是没抄对还是结论不成立。
+//
+// enable 为 false 时全部字段无效，走 newvision 自己的实现。
+struct SpCompatConfig {
+  bool enable{false};
+
+  // 观测噪声用 sp 的数值：方位角/俯仰角 4e-3（sigma 3.62 度，实测噪声的 13
+  // 倍），距离 log1p(|delta_angle|) + 1.0（正视时 sigma 就有 1 米）。
+  // newvision 现在是 1e-4 和 2.5e-3 + log1p(|delta_angle|)。
+  bool loose_observation_noise{true};
+
+  // x_add 里不把 r1 和 r2 投影回 [0.05, 0.5]。sp 不做这个投影，任由半径被
+  // 单次观测拽出物理范围，再靠 diverged() 把整个目标丢掉。
+  bool unclamped_radius{true};
+
+  // diverged() 用 sp 的瞬时判据：r 或 r2 一旦越界立刻判发散。newvision 是
+  // "连续贴边 10 次"，因为投影之后偶发越界已经不是发散信号。
+  bool instant_divergence{true};
+
+  // NIS 用 sp 的算法：后验残差 + 后验 P 组成的 S，门限固定 0.711。
+  // 这个量恒偏小、不服从卡方分布，而且 0.711 是自由度 4 的**下** 5% 分位
+  // （上分位是 9.488），所以 sp 的 "Bad Converge" 复位判据实际在拿一个错误
+  // 的统计量比一个错误的门限。Tracker 的复位行为直接受它影响，必须一起抄。
+  bool posterior_nis{true};
+};
+
 struct TrackerConfig {
   // 从 Detecting 转入 Tracking 所需的连续有效观测帧数。
   int min_detect_count{5};
@@ -246,6 +277,9 @@ struct TrackerConfig {
   // 等于把未经重投影和角点可见性校验的 PnP 结果直接喂给 EKF，发散和跳变都属于
   // 预期内的现象。实机必须保持 true，否则一次坏解就能把整车状态带跑。
   bool require_quality{true};
+
+  // sp_vision 行为复刻，见 SpCompatConfig。默认关闭，实机不要打开。
+  SpCompatConfig sp_compat{};
 };
 
 // 跨层接口使用的语义别名。

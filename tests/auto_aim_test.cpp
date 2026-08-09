@@ -73,6 +73,7 @@ const std::string kCommandLineKeys =
   "{overlay-offset | 0 | full 视图下整车叠加层上移的像素数；sp 视图恒为 0}"
   "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
   "{require-quality | false | 观测是否必须通过全部 ArmorQuality 门限}"
+  "{sp-compat | false | 复刻 sp_vision（含其 bug）：false/true，或逗号子项 noise,radius,diverge,nis,select,delay}"
   "{bullet-speed | 23.0 | 回放没有裁判系统数据，用这个弹速喂 L4（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
   "{fire-limits | false | 填一组占位火控参数，让 fire_feasible 时序可观测}"
@@ -96,6 +97,66 @@ struct YawCostCurve {
   // 算法会随初值落进不同的坑里。
   std::size_t local_minima{0};
 };
+
+// --sp-compat 的取值：false/none 关闭；true/all 全开；也可以给逗号分隔的子项，
+// 用于一项项关掉看是哪一项造成差异——这正是复刻的目的。
+//   noise    L3 观测噪声用 sp 的 4e-3 / 1.0
+//   radius   L3 不做半径投影
+//   diverge  L3 用瞬时越界判发散
+//   nis      L3 用后验 NIS + 0.711 门限
+//   select   L4 用 sp 的 choose_aim_point
+//   delay    L4 用 sp 的标量延迟模型
+struct SpCompatFlags {
+  bool noise{false};
+  bool radius{false};
+  bool diverge{false};
+  bool nis{false};
+  bool select{false};
+  bool delay{false};
+
+  [[nodiscard]] bool any() const noexcept
+  {
+    return noise || radius || diverge || nis || select || delay;
+  }
+};
+
+[[nodiscard]] SpCompatFlags parseSpCompat(const std::string& value)
+{
+  SpCompatFlags flags;
+  if (value.empty() || value == "false" || value == "none" || value == "0") {
+    return flags;
+  }
+  if (value == "true" || value == "all" || value == "1") {
+    return {true, true, true, true, true, true};
+  }
+
+  std::size_t begin = 0;
+  while (begin <= value.size()) {
+    const std::size_t end = value.find(',', begin);
+    const std::string item =
+      value.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (item == "noise") {
+      flags.noise = true;
+    } else if (item == "radius") {
+      flags.radius = true;
+    } else if (item == "diverge") {
+      flags.diverge = true;
+    } else if (item == "nis") {
+      flags.nis = true;
+    } else if (item == "select") {
+      flags.select = true;
+    } else if (item == "delay") {
+      flags.delay = true;
+    } else if (!item.empty()) {
+      throw std::invalid_argument("未知的 sp-compat 子项：" + item);
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    begin = end + 1;
+  }
+  return flags;
+}
 
 void require(bool condition, const std::string& message)
 {
@@ -793,6 +854,15 @@ int main(int argc, char** argv)
     // 回放默认只以 PnP 成功为门限，否则质量位没置起来时跟踪器一帧都不会起步，
     // 整车和预测叠加也就无从显示。要复现实机行为加 --require-quality=true。
     tracker_config.require_quality = cli.get<bool>("require-quality");
+    // sp_vision 复刻开关：把 L3 的观测噪声、半径投影、发散判据、NIS 算法，以及
+    // L4 的选板和延迟模型全部切回 sp 的实现（含其已知 bug）。差分定位用，实机
+    // 绝不要打开——它会把 R 放松 40 倍、去掉半径约束、并绕过瞄准档位阶梯。
+    const SpCompatFlags sp_flags = parseSpCompat(cli.get<std::string>("sp-compat"));
+    tracker_config.sp_compat.enable = sp_flags.any();
+    tracker_config.sp_compat.loose_observation_noise = sp_flags.noise;
+    tracker_config.sp_compat.unclamped_radius = sp_flags.radius;
+    tracker_config.sp_compat.instant_divergence = sp_flags.diverge;
+    tracker_config.sp_compat.posterior_nis = sp_flags.nis;
     L3Estimation::Tracker tracker(calibration, armor_config, tracker_config);
     require(tracker.ready(), "Tracker 拒绝了该标定");
     // 与 Tracker 内部同参数的求解器，只用来做重投影和代价曲线，不参与滤波。
@@ -802,7 +872,11 @@ int main(int argc, char** argv)
     const L4Planning::Predictor predictor;
     // 完整的 L4 -> L5 链路。回放里这条链路第一次真正跑起来：runtime 目前在
     // tracker 之后就 break 了，planner_smoke 也只喂合成数据。
-    L4Planning::Planner planner;
+    L4Planning::PlanConfig plan_config;
+    plan_config.sp_compat.enable = sp_flags.any();
+    plan_config.sp_compat.sp_choose_aim_point = sp_flags.select;
+    plan_config.sp_compat.sp_delay = sp_flags.delay;
+    L4Planning::Planner planner(plan_config);
     // 默认 FireConfig 全是 nullopt，parametersReady() 恒假，fire_feasible 会
     // 一直是 0——这正是实机未标定时该有的行为。想在回放里看清"火控窗口什么时候
     // 打开"，用 --fire-limits=true 填一组占位值。它们不是标定结果，绝不能搬到

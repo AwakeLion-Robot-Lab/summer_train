@@ -121,6 +121,34 @@ struct Plan {
   bool valid{false};
 };
 
+// sp_vision Aimer 行为复刻开关，仅用于差分定位，见 L3Estimation::SpCompatConfig。
+// 同样的原则：照抄，**包括 bug**，不许顺手改好。
+struct SpCompatPlanConfig {
+  bool enable{false};
+
+  // 选板换成 sp_vision Aimer::choose_aim_point 的实现：
+  //   - jumped 为 false 时无条件瞄 0 号板；
+  //   - 否则取 |delta_angle| <= 60 度的板，两块以上时锁定其中一块，
+  //     只有当锁定的那块不再是前两个候选之一才换；
+  //   - 没有档位阶梯，任何角速度下都瞄实体板。
+  // 复刻里保留 sp 的判据笔误：它写的是 ekf_x[8]（半径 r），本意应该是
+  // ekf_x[7]（角速度 v_yaw）。r 恒在 (0.05, 0.5)，所以 |r| <= 2 恒真，
+  // sp 里那段 coming/leaving 小陀螺选板逻辑从来没有执行过。
+  bool sp_choose_aim_point{true};
+
+  // 延迟换成 sp 的标量模型：0.005 + (v_yaw > decision_speed ? high : low)。
+  // 同样保留笔误：sp 判的是 v_yaw > decision_speed 而不是 |v_yaw|，所以
+  // 反向自转的目标永远拿不到高速档延迟。
+  bool sp_delay{true};
+
+  // sp configs/demo.yaml 的数值。
+  double decision_speed{8.0};          // rad/s
+  double high_speed_delay_time{0.030};  // s
+  double low_speed_delay_time{0.015};   // s
+  double aimer_overhead{0.005};         // s，sp 写死的 detector→aimer 耗时
+  double front_window{60.0 * std::numbers::pi / 180.0};
+};
+
 // 选板策略参数。角度一律用弧度存储，YAML 侧再做度数换算。
 struct SelectorConfig {
   // 选板前置窗口：法线夹角超过该值的板背对枪口，不作为瞄准候选。窗口内
@@ -231,6 +259,9 @@ struct PlanConfig {
   BallisticConfig ballistic;
   AimPhaseConfig aim_phase;
   SelectorConfig selector;
+
+  // sp_vision Aimer 行为复刻，默认关闭，实机不要打开。
+  SpCompatPlanConfig sp_compat;
 
   // 云台角加速度上限，单位 radian/second²。定点规划器不使用；五次多项式
   // 靠它决定过渡段时长（逐步增大直到峰值加速度落在限内），MPC 用作硬约

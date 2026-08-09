@@ -61,6 +61,7 @@ const std::string kCommandLineKeys =
   "{start-index s | 0 | 视频起始帧下标}"
   "{end-index e | 0 | 视频结束帧下标，0 表示到结尾}"
   "{require-quality | false | 观测是否必须通过全部 ArmorQuality 门限}"
+  "{sp-compat | false | 复刻 sp_vision（含其 bug）：false/true，或逗号子项 noise,radius,diverge,nis,select,delay}"
   "{scan-step | 1.0 | yaw 代价全周扫描步长（度）}"
   "{out o | /tmp/track_diag | CSV 输出目录}"
   "{@input-path | records/3m_run_mid | avi 和 txt 的路径（不含后缀）}";
@@ -69,6 +70,66 @@ struct PoseSample {
   double seconds{0.0};
   Eigen::Quaterniond q{Eigen::Quaterniond::Identity()};
 };
+
+// --sp-compat 的取值：false/none 关闭；true/all 全开；也可以给逗号分隔的子项，
+// 用于一项项关掉看是哪一项造成差异——这正是复刻的目的。
+//   noise    L3 观测噪声用 sp 的 4e-3 / 1.0
+//   radius   L3 不做半径投影
+//   diverge  L3 用瞬时越界判发散
+//   nis      L3 用后验 NIS + 0.711 门限
+//   select   L4 用 sp 的 choose_aim_point
+//   delay    L4 用 sp 的标量延迟模型
+struct SpCompatFlags {
+  bool noise{false};
+  bool radius{false};
+  bool diverge{false};
+  bool nis{false};
+  bool select{false};
+  bool delay{false};
+
+  [[nodiscard]] bool any() const noexcept
+  {
+    return noise || radius || diverge || nis || select || delay;
+  }
+};
+
+[[nodiscard]] SpCompatFlags parseSpCompat(const std::string& value)
+{
+  SpCompatFlags flags;
+  if (value.empty() || value == "false" || value == "none" || value == "0") {
+    return flags;
+  }
+  if (value == "true" || value == "all" || value == "1") {
+    return {true, true, true, true, true, true};
+  }
+
+  std::size_t begin = 0;
+  while (begin <= value.size()) {
+    const std::size_t end = value.find(',', begin);
+    const std::string item =
+      value.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (item == "noise") {
+      flags.noise = true;
+    } else if (item == "radius") {
+      flags.radius = true;
+    } else if (item == "diverge") {
+      flags.diverge = true;
+    } else if (item == "nis") {
+      flags.nis = true;
+    } else if (item == "select") {
+      flags.select = true;
+    } else if (item == "delay") {
+      flags.delay = true;
+    } else if (!item.empty()) {
+      throw std::invalid_argument("未知的 sp-compat 子项：" + item);
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    begin = end + 1;
+  }
+  return flags;
+}
 
 void require(bool condition, const std::string& message)
 {
@@ -341,12 +402,24 @@ int main(int argc, char* argv[])
     const L3Estimation::ArmorConfig armor_config;
     L3Estimation::TrackerConfig tracker_config;
     tracker_config.require_quality = cli.get<bool>("require-quality");
+    // sp_vision 复刻：L3 的 R、半径投影、发散判据、NIS 算法，以及 L4 的选板和
+    // 延迟模型，全部切回 sp 的实现。用于确认 newvision 能否复现 sp 的行为。
+    const SpCompatFlags sp_flags = parseSpCompat(cli.get<std::string>("sp-compat"));
+    tracker_config.sp_compat.enable = sp_flags.any();
+    tracker_config.sp_compat.loose_observation_noise = sp_flags.noise;
+    tracker_config.sp_compat.unclamped_radius = sp_flags.radius;
+    tracker_config.sp_compat.instant_divergence = sp_flags.diverge;
+    tracker_config.sp_compat.posterior_nis = sp_flags.nis;
     L3Estimation::Tracker tracker(calibration, armor_config, tracker_config);
     require(tracker.ready(), "Tracker 拒绝了该标定");
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
     const L4Planning::Predictor predictor;
-    L4Planning::Planner planner;
+    L4Planning::PlanConfig plan_config;
+    plan_config.sp_compat.enable = sp_flags.any();
+    plan_config.sp_compat.sp_choose_aim_point = sp_flags.select;
+    plan_config.sp_compat.sp_delay = sp_flags.delay;
+    L4Planning::Planner planner(plan_config);
     const double bullet_speed = cli.get<double>("bullet-speed");
 
     cv::VideoCapture video(video_path);

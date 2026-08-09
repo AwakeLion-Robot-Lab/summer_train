@@ -3,6 +3,7 @@
 #include <Eigen/Dense>
 
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <map>
@@ -51,6 +52,14 @@ public:
     std::function<Eigen::VectorXd(const Eigen::VectorXd &)> h,
     std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> z_subtract =
       [](const Eigen::VectorXd & a, const Eigen::VectorXd & b) { return a - b; });
+
+  // 一致性统计量的算法。Prior 是正确的那个；SpPosterior 是 sp_vision 的实现，
+  // 只为差分定位保留，见 SpCompatConfig::posterior_nis。
+  enum class ConsistencyMode : std::uint8_t {
+    Prior,        // 先验残差 + 先验 S，门限取自由度对应的卡方 95% 上分位
+    SpPosterior   // 后验残差 + 后验 S，门限固定 0.711
+  };
+  ConsistencyMode consistency_mode{ConsistencyMode::Prior};
 
   // 最近一次残差与一致性统计量，供 Tracker 健康检查和遥测读取。
   std::map<std::string, double> data;

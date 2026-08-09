@@ -161,6 +161,56 @@ int Planner::selectArmor(
   return best;
 }
 
+int Planner::selectArmorSpCompat(
+  const std::vector<Candidate>& candidates, bool jumped, bool& degraded)
+{
+  // sp_vision Aimer::choose_aim_point 的逐行复刻。行为差异全部保留：
+  //
+  //  1. 还没关联到过 0 号以外的板时无条件返回 0 号，不判它在不在窗口里。
+  //  2. sp 的分支判据写的是 ekf_x[8]，那是半径 r 不是角速度 v_yaw（ekf_x[7]）。
+  //     r 恒在 (0.05, 0.5)，|r| <= 2 恒真，所以 sp 里那段 coming/leaving 小陀螺
+  //     选板从来没跑过，永远走下面这条 60 度窗口 + 锁定的路径。这里照抄，
+  //     连那个恒真判断都不写——写了反而会让人以为它有条件成立。
+  //  3. 锁定只在"锁定的板不再是前两个候选之一"时才换，没有角度迟滞门限。
+  //     候选表按 armor_id 升序，不按夹角排序，和 sp 的 id_list 一致。
+  degraded = false;
+
+  if (!jumped) {
+    return candidates[0].valid ? 0 : -1;
+  }
+
+  std::vector<int> id_list;
+  id_list.reserve(candidates.size());
+  for (const auto& candidate : candidates) {
+    if (!candidate.valid) continue;
+    if (std::abs(candidate.delta_angle) > config_.sp_compat.front_window) continue;
+    id_list.push_back(candidate.armor_id);
+  }
+
+  // sp 在这里打一条 "Empty id list!" 然后返回 invalid，云台直接停止跟随。
+  if (id_list.empty()) {
+    degraded = true;
+    locked_id_ = -1;
+    return -1;
+  }
+
+  if (id_list.size() > 1) {
+    const int id0 = id_list[0];
+    const int id1 = id_list[1];
+    if (locked_id_ != id0 && locked_id_ != id1) {
+      locked_id_ =
+        std::abs(candidates[static_cast<std::size_t>(id0)].delta_angle) <
+            std::abs(candidates[static_cast<std::size_t>(id1)].delta_angle)
+          ? id0
+          : id1;
+    }
+    return locked_id_;
+  }
+
+  locked_id_ = -1;
+  return id_list[0];
+}
+
 Eigen::Vector3d Planner::projectCenterAim(
   const L3Estimation::TargetState& predicted, double radius, double armor_z)
 {
@@ -238,7 +288,21 @@ Plan Planner::plan(const PlanInput& input)
     0.0, std::chrono::duration<double>(plan_time - target->timestamp).count());
   delay.send_to_control = config_.send_to_control.value_or(0.0);
   delay.control_to_fire = config_.control_to_fire.value_or(0.0);
-  const double before_fire = delay.beforeFire();
+  double before_fire = delay.beforeFire();
+
+  // sp_vision 的标量延迟模型：0.005 + 高/低速档。判据是 v_yaw > decision_speed
+  // 而不是 |v_yaw|，所以反向自转永远拿低速档——笔误一并保留。
+  // 记进 plan_to_send 只是为了让这段时间在 Delay 里有个落点，sp 本身不做分段。
+  if (config_.sp_compat.enable && config_.sp_compat.sp_delay) {
+    const double sp_delay_time = target->v_yaw > config_.sp_compat.decision_speed
+      ? config_.sp_compat.high_speed_delay_time
+      : config_.sp_compat.low_speed_delay_time;
+    before_fire = config_.sp_compat.aimer_overhead + sp_delay_time;
+    delay.image_to_plan = config_.sp_compat.aimer_overhead;
+    delay.plan_to_send = sp_delay_time;
+    delay.send_to_control = 0.0;
+    delay.control_to_fire = 0.0;
+  }
 
   // 档位由整车角速度驱动，几何不可观测时强制留在 SingleArmor。
   phase_.update(std::abs(target->v_yaw), target->multi_armor_observed);
@@ -251,11 +315,15 @@ Plan Planner::plan(const PlanInput& input)
     candidates.push_back(refineArmor(*target, id, before_fire, bullet_speed));
   }
 
+  const bool sp_select =
+    config_.sp_compat.enable && config_.sp_compat.sp_choose_aim_point;
   bool degraded = false;
-  const int armor_id =
-    selectArmor(candidates, target->multi_armor_observed, degraded);
+  const int armor_id = sp_select
+    ? selectArmorSpCompat(candidates, target->multi_armor_observed, degraded)
+    : selectArmor(candidates, target->multi_armor_observed, degraded);
   if (armor_id < 0) {
     // 每块板都没能收敛出弹道解，说明目标在射程外或参数非法。
+    // sp 复刻路径下还有一种：窗口里一块板都没有，sp 此时直接不发命令。
     return rejected(PlanError::BallisticFailed, plan_time);
   }
 
@@ -263,7 +331,8 @@ Plan Planner::plan(const PlanInput& input)
   const auto predicted = predictor_.predict(*target, chosen.total_time);
 
   // WholeCarCenter 档瞄旋转圆上离枪口最近的点，不瞄某块具体的板。
-  const bool aim_on_armor = phase != AimPhase::WholeCarCenter;
+  // sp 没有档位阶梯，任何角速度下都瞄实体板，复刻时强制 aim_on_armor。
+  const bool aim_on_armor = sp_select || phase != AimPhase::WholeCarCenter;
   const bool use_alternate =
     target->armor_num == 4 && (armor_id == 1 || armor_id == 3);
   const double radius = use_alternate ? target->second_radius : target->radius;

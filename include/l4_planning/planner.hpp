@@ -78,6 +78,11 @@ private:
   [[nodiscard]] int selectArmor(
     const std::vector<Candidate>& candidates, bool geometry_observed, bool& degraded);
 
+  // sp_vision Aimer::choose_aim_point 的逐行复刻（含其判据笔误），只在
+  // SpCompatPlanConfig::sp_choose_aim_point 打开时使用。
+  [[nodiscard]] int selectArmorSpCompat(
+    const std::vector<Candidate>& candidates, bool jumped, bool& degraded);
+
   // WholeCarCenter 档的瞄准点：从枪口指向旋转中心的射线上，退回一个半径。
   [[nodiscard]] static Eigen::Vector3d projectCenterAim(
     const L3Estimation::TargetState& predicted, double radius, double armor_z);

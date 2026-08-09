@@ -49,8 +49,9 @@ namespace L3Estimation {
 TrackedTarget::TrackedTarget(const Armor &armor,
                              std::chrono::steady_clock::time_point t,
                              double radius, int armor_num,
-                             Eigen::VectorXd P0_dig)
-    : name(armor.name), armor_type(armor.type), armor_num_(armor_num), t_(t) {
+                             Eigen::VectorXd P0_dig, SpCompatConfig sp_compat)
+    : name(armor.name), armor_type(armor.type), armor_num_(armor_num),
+      sp_compat_(sp_compat), t_(t) {
   if (armor_num_ < 1) {
     throw std::invalid_argument("armor_num must be positive");
   }
@@ -77,9 +78,16 @@ TrackedTarget::TrackedTarget(const Armor &armor,
   // 投影回车辆物理范围。半径的 P0 是 1.0 m²（σ 达 1 米，而物理范围只有
   // 5~50 厘米），先验极松，单次观测就能把 r 拽成负数——迭代重线性化会
   // 把这个过冲放大。投影是最简单的约束卡尔曼形式，对迭代路径同样生效。
-  auto x_add = [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
+  // sp_vision 不做这个投影：它的 x_add 只归一化 yaw，半径任由单次观测拽出
+  // 物理范围，再由 diverged() 把整个目标丢掉。复刻模式下照抄。
+  const bool clamp_radius = !(sp_compat_.enable && sp_compat_.unclamped_radius);
+  auto x_add = [clamp_radius](const Eigen::VectorXd &a,
+                              const Eigen::VectorXd &b) {
     Eigen::VectorXd result = a + b;
     result[6] = L6Telemetry::limit_rad(result[6]);
+    if (!clamp_radius) {
+      return result;
+    }
     result[8] = std::clamp(result[8], kMinRadius, kMaxRadius);
     const double second_radius =
         std::clamp(result[8] + result[9], kMinRadius, kMaxRadius);
@@ -95,6 +103,9 @@ TrackedTarget::TrackedTarget(const Armor &armor,
   };
 
   ekf_ = ExtendedKalmanFilter(x0, P0, std::move(x_add), std::move(x_minus));
+  if (sp_compat_.enable && sp_compat_.posterior_nis) {
+    ekf_.consistency_mode = ExtendedKalmanFilter::ConsistencyMode::SpPosterior;
+  }
   isinit = true;
 }
 
@@ -274,9 +285,16 @@ void TrackedTarget::update_ypda(const Armor &armor, int id) {
   // 基准项取正视时的深度方差 (sigma 约 5cm)：原先的 1.0 m² 相当于把距离
   // 观测的标准差设成 1 米，滤波器会几乎完全忽略距离观测。
   constexpr double kDistanceVarianceFloor = 2.5e-3;
+  // sp_vision 的两个数：角度 4e-3，距离基底 1.0。板 yaw 那一项两边本来就一样。
+  constexpr double kSpAngleVariance = 4e-3;
+  constexpr double kSpDistanceVarianceFloor = 1.0;
+
+  const bool sp_noise = sp_compat_.enable && sp_compat_.loose_observation_noise;
+  const double angle_variance = sp_noise ? kSpAngleVariance : kAngleVariance;
   const double distance_variance =
-    kDistanceVarianceFloor + std::log1p(std::abs(delta_angle));
-  R_diagonal << kAngleVariance, kAngleVariance, distance_variance, armor_yaw_variance;
+    (sp_noise ? kSpDistanceVarianceFloor : kDistanceVarianceFloor) +
+    std::log1p(std::abs(delta_angle));
+  R_diagonal << angle_variance, angle_variance, distance_variance, armor_yaw_variance;
   const Eigen::MatrixXd R = R_diagonal.asDiagonal();
 
   // 将十一维整车状态映射到指定物理装甲板的四维观测空间。
@@ -372,6 +390,20 @@ TargetState TrackedTarget::toTargetState(TrackState track_state,
 bool TrackedTarget::diverged() const {
   if (ekf_.x.size() < 10)
     return true;
+
+  // sp_vision 的瞬时判据：r 或 r2 一旦越界就整目标作废。它不做半径投影，
+  // 所以这是它唯一的约束手段；newvision 投影之后偶发越界已经不是发散信号。
+  if (sp_compat_.enable && sp_compat_.instant_divergence) {
+    const double r1 = ekf_.x[8];
+    const double r2 = ekf_.x[8] + ekf_.x[9];
+    const bool r1_ok = r1 > kMinRadius && r1 < kMaxRadius;
+    const bool r2_ok = r2 > kMinRadius && r2 < kMaxRadius;
+    if (r1_ok && r2_ok) {
+      return false;
+    }
+    L6Telemetry::logDebug("TrackedTarget diverged (sp compat): r1, r2", r1, r2);
+    return true;
+  }
 
   // 半径已由 x_add 投影回物理范围，所以越界本身不再是发散信号。改判
   // "持续贴边"：偶发一两帧被夹住是观测噪声，连续贴边说明观测与整车模型
