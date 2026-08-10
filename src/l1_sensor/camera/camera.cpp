@@ -1,4 +1,5 @@
 #include "l1_sensor/camera/camera.hpp"
+#include "l1_sensor/camera/talos_camera.hpp"
 
 #include <stdexcept>
 
@@ -12,8 +13,6 @@ namespace L1Sensor {
 Camera::Camera(const std::string &config_path) {
   const auto config = tools::load(config_path);
   const auto camera_name = tools::read<std::string>(config, "camera_name");
-  const auto exposure_ms = tools::read<double>(config, "exposure_ms");
-  const auto vid_pid = tools::read<std::string>(config, "vid_pid");
 
   if (const auto calibration = config["calibration"]) {
     calibration_ =
@@ -24,6 +23,14 @@ Camera::Camera(const std::string &config_path) {
                          "distortion_coefficients",
                          calibration_->distortion_coefficients.total());
   }
+
+  if (camera_name == "talos") {
+    camera_ = std::make_unique<TalosCamera>(config_path);
+    return;
+  }
+
+  const auto exposure_ms = tools::read<double>(config, "exposure_ms");
+  const auto vid_pid = tools::read<std::string>(config, "vid_pid");
 
   if (camera_name == "hikrobot") {
     const auto gain = tools::read<double>(config, "gain");

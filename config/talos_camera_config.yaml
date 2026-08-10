@@ -1,0 +1,34 @@
+# Daedalus 仿真器 Talos 共享内存相机配置。
+# 内参为仿真器默认（camera.fov=45°，1440x1080）；若仿真器配置修改，
+# 请同步本文件，或删除 calibration 节点改由共享内存 camera_info 读取。
+camera_name: "talos"
+
+calibration:
+  image_width: 1440
+  image_height: 1080
+  camera_matrix:
+    - [1303.7, 0.0, 720.0]
+    - [0.0, 1303.7, 540.0]
+    - [0.0, 0.0, 1.0]
+  distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+  # 仿真器相机挂在云台上，默认相机→枪管为单位外参。
+  T_barrel_camera:
+    rotation:
+      - [1.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 0.0, 1.0]
+    translation: [0.0, 0.0, 0.0]
+
+talos:
+  shm_dir: "/tmp"
+  # 仿真器场景中敌方阵营；与 GT team 编码一致（0=红，1=蓝）。
+  enemy: "blue"
+  # 仿真器 config.toml 的 projectile.speed，当前仅作展示/后续弹道使用。
+  bullet_speed: 25.0
+  mode: "auto_aim"
+  # 允许开火（还需仿真器按 F5 开启自瞄订阅）。
+  shoot_enable: false
+  timeout_ms: 50
+  default_distance_m: 1.0
+  gt_match_gate_m: 0.6
+  report_interval_s: 1.0
