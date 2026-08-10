@@ -234,6 +234,27 @@ target("l3_video_replay")
     add_deps("newvision")
 end
 
+target("talos_auto_aim")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/talos_auto_aim.cpp")
+    add_deps("newvision")
+
+target("talos_shm_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tests/talos_shm_smoke.cpp")
+    add_deps("newvision")
+
+target("talos_gimbal_debug")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/talos_gimbal_debug.cpp")
+    add_deps("newvision")
+
 target("serial_protocol_smoke")
     set_kind("binary")
     set_default(false)
