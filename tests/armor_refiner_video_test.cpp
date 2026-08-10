@@ -25,7 +25,7 @@ namespace
 
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
-  "{model m | model/armor_model/armor.xml | OpenVINO 装甲板模型}"
+  "{model m | model/armor_model/yolov5.xml | OpenVINO 装甲板模型}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{wait w | 30 | 每帧 waitKey 毫秒，0 表示逐帧手动推进}"
   "{start-index s | 0 | 视频起始帧下标}"

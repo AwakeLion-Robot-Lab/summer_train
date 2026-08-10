@@ -50,17 +50,19 @@ namespace {
 
 constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 constexpr double kDegToRad = std::numbers::pi / 180.0;
+// 忽略浮点量化级小步进；相邻两个大于该值的反向步进才记为波形折返。
+constexpr double kDirectionStepThreshold = 0.05 * kDegToRad;
 
-// 曲线覆盖整周，与 optimize_yaw 的粗扫范围一致。
+// 诊断曲线仍覆盖整周，用来显示 SP 为什么只搜枪管 yaw 附近：
+// 整周里存在不可见的背面局部极小值。
 constexpr double kSearchRangeDegrees = 360.0;
-// 曲线采样步长比求解器 10 度的粗扫细得多，用来核对高斯牛顿细化后的落点
-// 是不是真的落在坑底，而不只是落在正确的坑里。
+// 画图采样比求解器的 1 度枚举更细，不参与求解。
 constexpr double kCostStepDegrees = 0.5;
 
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
-  "{model m | model/armor_model/armor.xml | OpenVINO 装甲板模型}"
+  "{model m | model/armor_model/yolov5.xml | OpenVINO 装甲板模型}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
   "{convention | imu | 录像四元数约定：imu / sp}"
@@ -72,9 +74,7 @@ const std::string kCommandLineKeys =
   "{view | sp | 叠加层：sp（只画当前 EKF 整车和瞄准板）/ full（全部调试层）}"
   "{overlay-offset | 0 | full 视图下整车叠加层上移的像素数；sp 视图恒为 0}"
   "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
-  "{require-quality | false | 观测是否必须通过全部 ArmorQuality 门限}"
-  "{sp-compat | false | 复刻 sp_vision（含其 bug）：false/true，或逗号子项 noise,radius,diverge,nis,select,delay}"
-  "{bullet-speed | 23.0 | 回放没有裁判系统数据，用这个弹速喂 L4（m/s）}"
+  "{bullet-speed | 27.0 | 回放没有裁判系统数据；默认与 SP auto_aim_test 一致（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
   "{fire-limits | false | 填一组占位火控参数，让 fire_feasible 时序可观测}"
   "{@input-path | records/3m_high | avi 和 txt 文件的路径（不含后缀）}";
@@ -97,66 +97,6 @@ struct YawCostCurve {
   // 算法会随初值落进不同的坑里。
   std::size_t local_minima{0};
 };
-
-// --sp-compat 的取值：false/none 关闭；true/all 全开；也可以给逗号分隔的子项，
-// 用于一项项关掉看是哪一项造成差异——这正是复刻的目的。
-//   noise    L3 观测噪声用 sp 的 4e-3 / 1.0
-//   radius   L3 不做半径投影
-//   diverge  L3 用瞬时越界判发散
-//   nis      L3 用后验 NIS + 0.711 门限
-//   select   L4 用 sp 的 choose_aim_point
-//   delay    L4 用 sp 的标量延迟模型
-struct SpCompatFlags {
-  bool noise{false};
-  bool radius{false};
-  bool diverge{false};
-  bool nis{false};
-  bool select{false};
-  bool delay{false};
-
-  [[nodiscard]] bool any() const noexcept
-  {
-    return noise || radius || diverge || nis || select || delay;
-  }
-};
-
-[[nodiscard]] SpCompatFlags parseSpCompat(const std::string& value)
-{
-  SpCompatFlags flags;
-  if (value.empty() || value == "false" || value == "none" || value == "0") {
-    return flags;
-  }
-  if (value == "true" || value == "all" || value == "1") {
-    return {true, true, true, true, true, true};
-  }
-
-  std::size_t begin = 0;
-  while (begin <= value.size()) {
-    const std::size_t end = value.find(',', begin);
-    const std::string item =
-      value.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
-    if (item == "noise") {
-      flags.noise = true;
-    } else if (item == "radius") {
-      flags.radius = true;
-    } else if (item == "diverge") {
-      flags.diverge = true;
-    } else if (item == "nis") {
-      flags.nis = true;
-    } else if (item == "select") {
-      flags.select = true;
-    } else if (item == "delay") {
-      flags.delay = true;
-    } else if (!item.empty()) {
-      throw std::invalid_argument("未知的 sp-compat 子项：" + item);
-    }
-    if (end == std::string::npos) {
-      break;
-    }
-    begin = end + 1;
-  }
-  return flags;
-}
 
 void require(bool condition, const std::string& message)
 {
@@ -252,7 +192,6 @@ void require(bool condition, const std::string& message)
     std::isfinite(sample.seconds) && sample.q.coeffs().allFinite() &&
       sample.q.squaredNorm() > 1e-12,
     "四元数文本包含非有限值");
-  sample.q.normalize();
   return true;
 }
 
@@ -272,6 +211,13 @@ void require(bool condition, const std::string& message)
   bool sp_convention,
   const Eigen::Matrix3d& R_imu_barrel)
 {
+  // newvision_record.yaml 的 SP 对照配置使用单位 R_gimbal2imubody，Solver
+  // 直接消费录像四元数。这里也直接返回原值，不能额外 normalize 或先转矩阵
+  // 再构造四元数，否则会在 1 度 yaw 网格的等价极小值附近改变胜负。
+  if (!sp_convention && R_imu_barrel.isIdentity(0.0)) {
+    return sample.q;
+  }
+
   Eigen::Matrix3d R_sp_flip = Eigen::Matrix3d::Identity();
   R_sp_flip(0, 0) = -1.0;
   R_sp_flip(1, 1) = -1.0;
@@ -279,7 +225,7 @@ void require(bool condition, const std::string& message)
   const Eigen::Matrix3d R_world_barrel = sp_convention
     ? Eigen::Matrix3d{R_sp_flip.transpose() * R_world_imu * R_sp_flip}
     : Eigen::Matrix3d{R_world_imu * R_imu_barrel};
-  return Eigen::Quaterniond(R_world_barrel).normalized();
+  return Eigen::Quaterniond(R_world_barrel);
 }
 
 [[nodiscard]] cv::Point toPixel(const cv::Point2f& point)
@@ -363,31 +309,24 @@ void drawVehicle(
   }
 }
 
-[[nodiscard]] bool isFilterInputArmor(
-  const L3Estimation::Armor& armor,
-  const L3Estimation::ArmorConfig& armor_config,
-  bool require_quality)
+[[nodiscard]] bool isFilterInputArmor(const L3Estimation::Armor& armor)
 {
   // 与 Tracker::observationUsable 保持一致，避免把被滤掉的坏解画出来。
   return armor.name != L3Estimation::ArmorName::Unknown &&
     armor.xyz_in_world.allFinite() &&
-    std::isfinite(armor.ypr_in_world[0]) &&
-    std::isfinite(armor.area) && armor.area >= armor_config.min_area &&
-    (!require_quality || armor.quality.valid());
+    std::isfinite(armor.ypr_in_world[0]);
 }
 
 // 将当前帧实际送入目标滤波器的单板 PnP 位姿重投影为红框。
 void drawFilterInputArmors(
   cv::Mat& image,
   const std::vector<L3Estimation::Armor>& observations,
-  const L3Estimation::ArmorConfig& armor_config,
-  bool require_quality,
   const L3Estimation::PnpSolver& solver,
   const L1Sensor::CameraCalibration& calibration,
   const Eigen::Quaterniond& q_world_barrel)
 {
   for (const auto& armor : observations) {
-    if (!isFilterInputArmor(armor, armor_config, require_quality)) {
+    if (!isFilterInputArmor(armor)) {
       continue;
     }
 
@@ -487,7 +426,7 @@ void drawFilterInputArmors(
   const L3Estimation::Armor& armor,
   double yaw)
 {
-  // 必须和 PnpSolver::yaw_squared_cost 用同一个定义（像素残差平方和），
+  // 必须和 sp_vision 的 yaw 搜索用同一个定义（四角点二维距离之和），
   // 否则画出来的最小点不是求解器真正在找的那个，对账就失去意义。
   const std::vector<cv::Point2f> projected =
     solver.reproject_armor(armor.xyz_in_world, yaw, armor.type, armor.name);
@@ -497,8 +436,8 @@ void drawFilterInputArmors(
   double cost = 0.0;
   for (std::size_t index = 0; index < armor.points.size(); ++index) {
     const cv::Point2f difference = armor.points[index] - projected[index];
-    cost += static_cast<double>(difference.x) * difference.x +
-      static_cast<double>(difference.y) * difference.y;
+    cost += std::hypot(
+      static_cast<double>(difference.x), static_cast<double>(difference.y));
   }
   return cost;
 }
@@ -547,17 +486,17 @@ void drawFilterInputArmors(
 // 选一块装甲板画代价曲线：优先跟踪器当前关联的那块，其次取图像中心附近的。
 [[nodiscard]] std::optional<std::size_t> selectArmor(
   const std::vector<L3Estimation::Armor>& observations,
-  const std::optional<L3Estimation::TargetState>& target,
+  const std::optional<L3Estimation::TrackedTarget>& target,
   const std::vector<Eigen::Vector4d>& target_armor_poses,
   const cv::Size& image_size)
 {
   std::optional<std::size_t> selected;
   double best_score = std::numeric_limits<double>::infinity();
 
-  if (target && target->armor_id >= 0 &&
-      static_cast<std::size_t>(target->armor_id) < target_armor_poses.size()) {
+  if (target && target->last_id >= 0 &&
+      static_cast<std::size_t>(target->last_id) < target_armor_poses.size()) {
     const Eigen::Vector3d tracked =
-      target_armor_poses[static_cast<std::size_t>(target->armor_id)].head<3>();
+      target_armor_poses[static_cast<std::size_t>(target->last_id)].head<3>();
     for (std::size_t index = 0; index < observations.size(); ++index) {
       if (observations[index].name != target->name) {
         continue;
@@ -850,19 +789,7 @@ int main(int argc, char** argv)
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig armor_config;
-    L3Estimation::TrackerConfig tracker_config;
-    // 回放默认只以 PnP 成功为门限，否则质量位没置起来时跟踪器一帧都不会起步，
-    // 整车和预测叠加也就无从显示。要复现实机行为加 --require-quality=true。
-    tracker_config.require_quality = cli.get<bool>("require-quality");
-    // sp_vision 复刻开关：把 L3 的观测噪声、半径投影、发散判据、NIS 算法，以及
-    // L4 的选板和延迟模型全部切回 sp 的实现（含其已知 bug）。差分定位用，实机
-    // 绝不要打开——它会把 R 放松 40 倍、去掉半径约束、并绕过瞄准档位阶梯。
-    const SpCompatFlags sp_flags = parseSpCompat(cli.get<std::string>("sp-compat"));
-    tracker_config.sp_compat.enable = sp_flags.any();
-    tracker_config.sp_compat.loose_observation_noise = sp_flags.noise;
-    tracker_config.sp_compat.unclamped_radius = sp_flags.radius;
-    tracker_config.sp_compat.instant_divergence = sp_flags.diverge;
-    tracker_config.sp_compat.posterior_nis = sp_flags.nis;
+    const L3Estimation::TrackerConfig tracker_config;
     L3Estimation::Tracker tracker(calibration, armor_config, tracker_config);
     require(tracker.ready(), "Tracker 拒绝了该标定");
     // 与 Tracker 内部同参数的求解器，只用来做重投影和代价曲线，不参与滤波。
@@ -872,10 +799,7 @@ int main(int argc, char** argv)
     const L4Planning::Predictor predictor;
     // 完整的 L4 -> L5 链路。回放里这条链路第一次真正跑起来：runtime 目前在
     // tracker 之后就 break 了，planner_smoke 也只喂合成数据。
-    L4Planning::PlanConfig plan_config;
-    plan_config.sp_compat.enable = sp_flags.any();
-    plan_config.sp_compat.sp_choose_aim_point = sp_flags.select;
-    plan_config.sp_compat.sp_delay = sp_flags.delay;
+    const L4Planning::PlanConfig plan_config;
     L4Planning::Planner planner(plan_config);
     // 默认 FireConfig 全是 nullopt，parametersReady() 恒假，fire_feasible 会
     // 一直是 0——这正是实机未标定时该有的行为。想在回放里看清"火控窗口什么时候
@@ -924,6 +848,8 @@ int main(int argc, char** argv)
     std::size_t fire_feasible_frames = 0;
     std::size_t plan_switch_frames = 0;
     std::size_t command_jump_frames = 0;
+    std::size_t same_armor_direction_reversal_frames = 0;
+    double largest_reversal_step = 0.0;
     // 拒绝原因直方图。fire_feasible 是 0 时，唯一有用的信息是"被哪一条拦住的"。
     std::map<L5Control::RejectReason, std::size_t> reject_histogram;
     // 回放里云台姿态来自录像，不是本规划器闭环出来的，所以 aim_error 基本必然
@@ -932,6 +858,7 @@ int main(int argc, char** argv)
     // 上一帧真正下发的命令，用来判 armor_switching 和 command_jump。
     int last_plan_armor_id = -1;
     std::optional<double> last_command_yaw;
+    std::optional<double> last_same_armor_step;
     bool paused = false;
 
     for (int frame_index = start_index;; ++frame_index) {
@@ -996,25 +923,25 @@ int main(int argc, char** argv)
         }
       }
       std::optional<double> ekf_armor_yaw;
-      if (target && target->armor_id >= 0 &&
-          static_cast<std::size_t>(target->armor_id) <
+      if (target && target->last_id >= 0 &&
+          static_cast<std::size_t>(target->last_id) <
             target_armor_poses.size()) {
         ekf_armor_yaw =
-          target_armor_poses[static_cast<std::size_t>(target->armor_id)].w();
+          target_armor_poses[static_cast<std::size_t>(target->last_id)].w();
       }
 
       /// 整车预测：把当前 EKF 状态外推 predict_time 秒后重新展开所有装甲板
-      std::optional<L3Estimation::TargetState> predicted;
+      std::optional<L3Estimation::TrackedTarget> predicted;
       std::vector<Eigen::Vector4d> predicted_armor_poses;
       std::optional<double> predicted_armor_yaw;
       if (target && predict_time > 0.0) {
         predicted = predictor.predict(*target, predict_time);
         predicted_armor_poses = predictor.armorPoses(*predicted);
-        if (target->armor_id >= 0 &&
-            static_cast<std::size_t>(target->armor_id) <
+        if (target->last_id >= 0 &&
+            static_cast<std::size_t>(target->last_id) <
               predicted_armor_poses.size()) {
           predicted_armor_yaw =
-            predicted_armor_poses[static_cast<std::size_t>(target->armor_id)]
+            predicted_armor_poses[static_cast<std::size_t>(target->last_id)]
               .w();
         }
       }
@@ -1038,13 +965,15 @@ int main(int argc, char** argv)
       robot_state.rpy.roll = gimbal_ypr[2];
       robot_state.timestamp = timestamp;
 
-      // plan_time 用本帧实测的检测 + 跟踪耗时，而不是曝光时刻本身：
-      // Planner 拿它算 image_to_plan，填曝光时刻等于白送一段延迟补偿。
-      const auto plan_time = timestamp + (track_end - detect_start);
-      const auto plan = planner.plan(target, robot_state, plan_time);
+      // SP 的离线 auto_aim_test 以 to_now=false 调 Aimer，固定使用
+      // 0.005 s 检测耗时，再叠加 Aimer 的高/低速延迟。
+      const auto plan_time = timestamp;
+      const auto plan = planner.plan(target, robot_state, plan_time, false);
 
       L5Control::FireInput fire_input;
       fire_input.target = target;
+      // 跟踪状态不再挂在目标上，火控要靠它区分 Tracking 和 TempLost。
+      fire_input.track_state = tracker.state();
       fire_input.plan = plan;
       fire_input.robot_state = robot_state;
       fire_input.now = plan_time;
@@ -1061,6 +990,24 @@ int main(int argc, char** argv)
       fire_input.command_jump = plan.valid && last_command_yaw &&
         std::abs(L6Telemetry::limit_rad(plan.yaw - *last_command_yaw)) >
           command_jump_rad;
+
+      // 三角/锯齿波验收：换板帧允许一次跳变，同一物理板内不允许
+      // 出现“下降 -> 回升 -> 继续下降”。这里不预设旋转方向，正反转录像都适用。
+      if (plan.valid && last_command_yaw &&
+          plan.armor_id == last_plan_armor_id) {
+        const double step =
+          L6Telemetry::limit_rad(plan.yaw - *last_command_yaw);
+        if (std::abs(step) >= kDirectionStepThreshold) {
+          if (last_same_armor_step && step * *last_same_armor_step < 0.0) {
+            ++same_armor_direction_reversal_frames;
+            largest_reversal_step =
+              std::max(largest_reversal_step, std::abs(step));
+          }
+          last_same_armor_step = step;
+        }
+      } else {
+        last_same_armor_step.reset();
+      }
 
       const auto fire_decision = fire_decider.decide(fire_input);
       const auto command = controller.makeCommand(plan, fire_decision);
@@ -1096,7 +1043,7 @@ int main(int argc, char** argv)
         ++observation_frames;
       }
       for (const auto& observation : observations) {
-        if (observation.quality.valid()) {
+        if (observation.name != L3Estimation::ArmorName::Unknown) {
           ++valid_pnp_observations;
         }
       }
@@ -1130,7 +1077,7 @@ int main(int argc, char** argv)
 
         // 当前帧真正送入滤波器的位姿：绿色重投影框和绿色朝向箭头。
         drawFilterInputArmors(
-          img, observations, armor_config, tracker_config.require_quality, solver,
+          img, observations, solver,
           calibration, q_world_barrel);
       }
 
@@ -1206,8 +1153,7 @@ int main(int argc, char** argv)
           L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
             kRadToDeg),
         {10, 62}, {255, 255, 255});
-      if (full_view && selected && isFilterInputArmor(
-            observations[*selected], armor_config, tracker_config.require_quality)) {
+      if (full_view && selected && isFilterInputArmor(observations[*selected])) {
         const auto& armor = observations[*selected];
         drawOutlinedText(
           img,
@@ -1215,27 +1161,26 @@ int main(int argc, char** argv)
                      armor.ypr_in_world[0] * kRadToDeg),
           {10, 92}, {0, 255, 0});
       }
+      // 十一维内部状态：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
       if (full_view && target) {
+        const Eigen::VectorXd tx = target->ekf_x();
         drawOutlinedText(
           img,
           cv::format(
             "EKF center=(%.2f,%.2f,%.2f)m v=(%.2f,%.2f,%.2f)m/s yaw=%.1fdeg "
             "v_yaw=%.2frad/s r=%.3fm id=%d",
-            target->position.x(), target->position.y(), target->position.z(),
-            target->velocity.x(), target->velocity.y(), target->velocity.z(),
-            target->yaw * kRadToDeg, target->v_yaw, target->radius,
-            target->armor_id),
+            tx[0], tx[2], tx[4], tx[1], tx[3], tx[5],
+            tx[6] * kRadToDeg, tx[7], tx[8], target->last_id),
           {10, 122}, {0, 255, 0}, 0.55);
       }
       if (full_view && predicted) {
+        const Eigen::VectorXd px = predicted->ekf_x();
         drawOutlinedText(
           img,
           cv::format(
             "pred +%.0fms center=(%.2f,%.2f,%.2f)m yaw=%.1fdeg (delta=%.1fdeg)",
-            predict_time * 1e3, predicted->position.x(),
-            predicted->position.y(), predicted->position.z(),
-            predicted->yaw * kRadToDeg,
-            L6Telemetry::limit_rad(predicted->yaw - target->yaw) * kRadToDeg),
+            predict_time * 1e3, px[0], px[2], px[4], px[6] * kRadToDeg,
+            L6Telemetry::limit_rad(px[6] - target->ekf_x()[6]) * kRadToDeg),
           {10, 152}, {0, 165, 255}, 0.55);
       }
       drawOutlinedText(
@@ -1276,7 +1221,8 @@ int main(int argc, char** argv)
         data["armor_yaw"] = armor.ypr_in_world[0] * kRadToDeg;
         data["armor_yaw_raw"] = armor.yaw_raw * kRadToDeg;
         data["armor_distance"] = armor.xyz_in_world.norm();
-        data["armor_quality_valid"] = armor.quality.valid();
+        data["armor_pnp_committed"] =
+          armor.name != L3Estimation::ArmorName::Unknown;
       }
 
       // PnP yaw 搜索代价
@@ -1297,17 +1243,18 @@ int main(int argc, char** argv)
 
       // 观测器内部数据
       if (target) {
-        data["x"] = target->position.x();
-        data["vx"] = target->velocity.x();
-        data["y"] = target->position.y();
-        data["vy"] = target->velocity.y();
-        data["z"] = target->position.z();
-        data["vz"] = target->velocity.z();
-        data["a"] = target->yaw * kRadToDeg;
-        data["w"] = target->v_yaw;
-        data["r"] = target->radius;
-        data["last_id"] = target->armor_id;
-        data["nis"] = target->nis;
+        const Eigen::VectorXd tx = target->ekf_x();
+        data["x"] = tx[0];
+        data["vx"] = tx[1];
+        data["y"] = tx[2];
+        data["vy"] = tx[3];
+        data["z"] = tx[4];
+        data["vz"] = tx[5];
+        data["a"] = tx[6] * kRadToDeg;
+        data["w"] = tx[7];
+        data["r"] = tx[8];
+        data["last_id"] = target->last_id;
+        data["nis"] = target->ekf().last_nis;
         if (ekf_armor_yaw) {
           data["ekf_armor_yaw"] = *ekf_armor_yaw * kRadToDeg;
         }
@@ -1350,11 +1297,12 @@ int main(int argc, char** argv)
 
       // 整车预测数据
       if (predicted) {
+        const Eigen::VectorXd px = predicted->ekf_x();
         data["predict_time"] = predict_time;
-        data["pred_x"] = predicted->position.x();
-        data["pred_y"] = predicted->position.y();
-        data["pred_z"] = predicted->position.z();
-        data["pred_a"] = predicted->yaw * kRadToDeg;
+        data["pred_x"] = px[0];
+        data["pred_y"] = px[2];
+        data["pred_z"] = px[4];
+        data["pred_a"] = px[6] * kRadToDeg;
         if (predicted_armor_yaw) {
           data["pred_armor_yaw"] = *predicted_armor_yaw * kRadToDeg;
         }
@@ -1395,10 +1343,11 @@ int main(int argc, char** argv)
               << "（shoot_enable=false，不会真的开火）\n"
               << "L4 选板切换的帧: " << plan_switch_frames << '\n'
               << "命令 yaw 跳变超门限的帧: " << command_jump_frames << '\n'
-              << "观测门限: "
-              << (tracker_config.require_quality ? "ArmorQuality 全部通过"
-                                                 : "仅 PnP 成功")
-              << '\n';
+              << "同一装甲板内方向折返的帧(>0.05deg): "
+              << same_armor_direction_reversal_frames << '\n'
+              << "最大折返单步: " << largest_reversal_step * kRadToDeg
+              << " deg\n"
+              << "观测门限: 仅 PnP 成功\n";
     if (!aim_yaw_errors.empty()) {
       std::sort(aim_yaw_errors.begin(), aim_yaw_errors.end());
       const double median = aim_yaw_errors[aim_yaw_errors.size() / 2];
@@ -1419,10 +1368,8 @@ int main(int argc, char** argv)
     }
 
     if (observation_frames > 0 && valid_pnp_observations == 0) {
-      std::cout << (tracker_config.require_quality
-                      ? "提示: 所有观测都被 ArmorQuality 门限拒绝，跟踪器不会起步。\n"
-                      : "提示: 质量位一个都没置起来，当前跟踪结果来自未经质量校验的"
-                        "PnP；实机 require_quality 为 true，不会是这个行为。\n");
+      std::cout << "提示: 没有任何一帧的 single_pnp 提交出位姿，跟踪器不会起步。"
+                   "先查标定和曝光时刻姿态。\n";
     }
     L6Telemetry::flushLogger();
     return frames > 0 ? 0 : 1;

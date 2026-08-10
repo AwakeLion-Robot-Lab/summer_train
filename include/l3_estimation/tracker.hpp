@@ -18,8 +18,9 @@ namespace L3Estimation {
   const L2Perception::Armor& detection,
   TimePoint timestamp);
 
-// 维护单辆车的状态机和整车 EKF。每帧先完成 L2 -> L3 观测构造，
-// 再进行目标初始化或更新，最后输出不可变的 TargetState 快照。
+// 维护单辆车的状态机和整车 EKF。每帧先完成 L2 -> L3 观测构造，再进行目标
+// 初始化或更新，最后把当前 TrackedTarget 的副本交给下游。下游在自己的副本上
+// 外推，不会影响滤波器状态。
 class Tracker {
 public:
   // 相机标定、装甲板配置或状态机配置无效时 ready() 返回 false。
@@ -33,7 +34,7 @@ public:
 
   // 处理一帧检测。枪管姿态必须对应 timestamp 所表示的图像曝光时刻。
   // Lost 或初始化失败时返回空；TempLost 时返回纯预测状态。
-  [[nodiscard]] std::optional<TargetState> track(
+  [[nodiscard]] std::optional<TrackedTarget> track(
     const std::vector<L2Perception::Armor>& detections,
     const std::optional<Eigen::Quaterniond>& q_world_barrel,
     TimePoint timestamp);
@@ -49,7 +50,7 @@ public:
   void reset() noexcept;
 
 private:
-  // 质量门限筛选及按图像中心距离生成候选观测列表。
+  // 筛掉 PnP 未成功提交的观测，并按图像中心距离生成候选列表。
   [[nodiscard]] bool observationUsable(const Armor& armor) const noexcept;
   [[nodiscard]] std::vector<const Armor*> usableObservations() const;
   // 分别处理 Lost 状态初始化和已有目标的预测、观测更新。

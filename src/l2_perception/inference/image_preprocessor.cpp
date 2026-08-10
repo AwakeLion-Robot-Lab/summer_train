@@ -26,14 +26,16 @@ void validateInputSpec(const InferenceInputSpec& input_spec)
 
 cv::Point2f ImageTransform::sourceToModel(const cv::Point2f& point) const noexcept
 {
-  return {point.x * source_to_model_scale + static_cast<float>(pad_left),
-          point.y * source_to_model_scale + static_cast<float>(pad_top)};
+  return {
+    static_cast<float>(static_cast<double>(point.x) * source_to_model_scale + pad_left),
+    static_cast<float>(static_cast<double>(point.y) * source_to_model_scale + pad_top)};
 }
 
 cv::Point2f ImageTransform::modelToSource(const cv::Point2f& point) const noexcept
 {
-  return {(point.x - static_cast<float>(pad_left)) / source_to_model_scale,
-          (point.y - static_cast<float>(pad_top)) / source_to_model_scale};
+  return {
+    static_cast<float>((static_cast<double>(point.x) - pad_left) / source_to_model_scale),
+    static_cast<float>((static_cast<double>(point.y) - pad_top) / source_to_model_scale)};
 }
 
 PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceInputSpec& input_spec,
@@ -93,7 +95,7 @@ PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceIn
   // Decoder 接到模型关键点后，必须用这份同帧变换还原原图坐标，不能重新猜 scale。
   output.transform = {.source_size = image.size(),
                       .model_size = {model_width, model_height},
-                      .source_to_model_scale = static_cast<float>(resize_scale),
+                      .source_to_model_scale = resize_scale,
                       .pad_left = pad_left,
                       .pad_top = pad_top,
                       .pad_right = pad_right,

@@ -39,7 +39,7 @@ namespace {
 
 L2Perception::ArmorDetector makeArmorDetector()
 {
-  const std::filesystem::path model_path{"model/armor_model/armor.xml"};
+  const std::filesystem::path model_path{"model/armor_model/yolov5.xml"};
 
   try {
     auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
@@ -137,7 +137,7 @@ void AutoAimRuntime::run() {
           });
 
           // L2 -> L3 转换、逐板 PnP、状态机和 EKF 更新均由 Tracker 完成。
-          [[maybe_unused]] std::optional<L3Estimation::TargetState> target;
+          [[maybe_unused]] std::optional<L3Estimation::TrackedTarget> target;
           if (tracker && tracker->ready()) {
             target = tracker->track(armors, q_world_barrel, timestamp);
           }

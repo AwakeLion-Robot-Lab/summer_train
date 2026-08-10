@@ -41,9 +41,10 @@ std::vector<Armor> ArmorDetector::detect(const cv::Mat& image) const
     const InferenceResult raw_result = backend_->infer(preprocessed.input);
     std::vector<Armor> armors = decoder_.decode(raw_result, preprocessed.transform);
     // 精修必须用原始图像而不是 letterbox 后的模型输入：Decoder 已经把角点还原到
-    // 原图坐标，在原图上做 ROI 才不会二次引入缩放误差。
-    // last_refine_stats_ = refiner_.refine(
-    //   image, armors, collect_refine_records_ ? &last_refine_records_ : nullptr);
+    // 原图坐标，在原图上做 ROI 才不会二次引入缩放误差。批量入口内部逐块调用与
+    // SP-Vision 一致的 detect(Armor&, image)，失败项会保留网络角点。
+    last_refine_stats_ = refiner_.refine(
+      image, armors, collect_refine_records_ ? &last_refine_records_ : nullptr);
     return armors;
   } catch (const std::exception& error) {
     // L2 运行循环不应因一帧坏图或一次推理失败退出；错误留给日志和上层重连策略处理。

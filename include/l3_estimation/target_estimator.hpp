@@ -8,31 +8,34 @@
 
 namespace L3Estimation {
 
-// L3 内部维护的整车 EKF。内部十一维状态为
+// 整车 EKF，实现对齐 sp_vision 的 auto_aim::Target。内部十一维状态为
 // [xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
-// 跨层输出使用 TargetState 快照，外部不能直接修改滤波器状态。
+//
+// 本类型**就是** L3 交给 L4 的对象：Tracker::track() 返回它的副本，L4 在自己
+// 的副本上调 predict(dt) 外推，再用 armor_xyza_list() 展开装甲板。这与 sp 的
+// Aimer::aim(std::list<Target>, ...) 按值收目标、就地 predict 的做法一致，
+// 因此不再有独立的跨层状态快照类型。
 class TrackedTarget
 {
 public:
   // 目标类别、板型以及最近一次装甲板关联结果。
   ArmorName name{ArmorName::Unknown};
   ArmorType armor_type{ArmorType::Small};
-  // jumped 表示本次观测关联到的不是编号 0 的装甲板。
+  // 是否关联到过编号 0 以外的装甲板。**粘滞**：一旦为真不再复位。
+  // 为 false 时整车 yaw、第二组半径和高度差几乎不可观测——只见过一块板的话，
+  // 其余板的位置完全由初值猜出来，所以 L4 据此只瞄当前观测到的那块板。
   bool jumped{false};
-  // multi_armor_observed 是 jumped 的粘滞版本：只要关联到过 0 号以外的板就
-  // 一直为 true。两者语义不同——jumped 回答"这一帧看的是哪块板"，
-  // multi_armor_observed 回答"整车几何到底可不可观测"。L4 需要的是后者。
-  bool multi_armor_observed{false};
-  int last_id{0};
+  int last_id{0};  // debug only
 
   TrackedTarget() = default;
   // 使用首个装甲板观测反推旋转中心并初始化十一维状态。
-  // sp_compat 逐项把行为切回 sp_vision 的实现，仅用于差分定位，见 SpCompatConfig。
   TrackedTarget(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
-    Eigen::VectorXd P0_dig, SpCompatConfig sp_compat = {});
-  // 构造指定旋转状态的目标，主要用于无观测的确定性初始化。
-  TrackedTarget(double x, double vyaw, double radius, double h);
+    Eigen::VectorXd P0_dig);
+  // 构造指定旋转状态的目标，用于无观测的确定性初始化（离线回放和单测）。
+  // 旋转中心落在 (x, 0, 0)，h 是 z2-z1。yaw 在 sp_vision 的同名入口里固定为
+  // 0，这里放开成可选参数，否则测不到"整车转到某个角度"的构型。
+  TrackedTarget(double x, double vyaw, double radius, double h, double yaw = 0.0);
 
   // 按绝对时间或显式时间间隔执行恒速度预测。
   void predict(std::chrono::steady_clock::time_point t);
@@ -45,9 +48,10 @@ public:
   const ExtendedKalmanFilter & ekf() const;
   std::vector<Eigen::Vector4d> armor_xyza_list() const;
 
-  // 生成交给 L4 的只含数据的快照。
-  [[nodiscard]] TargetState toTargetState(
-    TrackState track_state, bool updated = true) const;
+  // 车辆物理装甲板数量，以及滤波器最后一次推进到的时刻。L4 用后者算曝光到
+  // 规划的可测量延迟段。
+  [[nodiscard]] int armor_num() const noexcept { return armor_num_; }
+  [[nodiscard]] std::chrono::steady_clock::time_point t() const noexcept { return t_; }
 
   // 任一候选半径离开物理范围时认为滤波器发散。
   bool diverged() const;
@@ -64,16 +68,10 @@ private:
   int armor_num_{4};
   int switch_count_{0};
   int update_count_{0};
-  // 半径被投影顶在物理边界上的连续更新次数，超过门限视为发散。
-  int radius_pinned_count_{0};
-  // sp_vision 行为复刻开关，构造后不再变化。
-  SpCompatConfig sp_compat_{};
 
   bool is_switch_{false};
   bool is_converged_{false};
 
-  // 主干路使用单次线性化的普通 EKF。迭代实现见 ieskf.hpp，接回的方法写在
-  // docs/iterated_ekf.md，改动只涉及本成员的类型和 update_ypda 的传参。
   ExtendedKalmanFilter ekf_;
   std::chrono::steady_clock::time_point t_{};
 

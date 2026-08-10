@@ -87,7 +87,7 @@ int main(int argc, char** argv)
   try {
     const std::filesystem::path model_path = argc >= 2
       ? std::filesystem::path{argv[1]}
-      : std::filesystem::path{"model/armor_model/armor.xml"};
+      : std::filesystem::path{"model/armor_model/yolov5.xml"};
     // 第三个可选参数用于同口径比较 CPU/GPU；不传时保持稳定的 CPU 默认值。
     const std::string device = argc >= 4 ? std::string{argv[3]} : std::string{"CPU"};
     const bool show_window = argc >= 5 && std::string_view{argv[4]} == "--show";

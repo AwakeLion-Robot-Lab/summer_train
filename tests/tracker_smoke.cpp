@@ -41,7 +41,9 @@ void expect(bool condition, std::string_view message)
 }
 
 [[nodiscard]] L2Perception::Armor makeDetection(
-  const L1Sensor::CameraCalibration& calibration)
+  const L1Sensor::CameraCalibration& calibration,
+  L2Perception::ArmorClass armor_class = L2Perception::ArmorClass::Infantry3,
+  cv::Vec3d translation = cv::Vec3d{0.05, -0.03, 3.0})
 {
   const cv::Matx33d optical_alignment{
     0.0, -1.0, 0.0,
@@ -57,14 +59,13 @@ void expect(bool condition, std::string_view message)
   cv::projectPoints(
     armorPoints(),
     rvec,
-    cv::Vec3d{0.05, -0.03, 3.0},
+    translation,
     calibration.camera_matrix,
     calibration.distortion_coefficients,
     projected);
 
   L2Perception::Armor detection;
-  detection.class_id =
-    static_cast<int>(L2Perception::ArmorClass::Infantry3);
+  detection.class_id = static_cast<int>(armor_class);
   detection.color = L2Perception::ArmorColor::Blue;
   detection.confidence = 0.95F;
   for (std::size_t index = 0; index < detection.corners.size(); ++index) {
@@ -110,16 +111,12 @@ int main()
     const auto& observation = tracker.observations().front();
     std::cerr << "Tracker first-observation diagnostics: area="
               << observation.area << " rmse=" << observation.reprojection_error
-              << " pnp=" << observation.quality.pnp_ok
-              << " geometry=" << observation.quality.geometry_ok
-              << " reprojection=" << observation.quality.reprojection_ok
-              << " finite=" << observation.quality.finite << '\n';
+              << " committed="
+              << (observation.name != L3Estimation::ArmorName::Unknown) << '\n';
   }
   expect(first.has_value(), "first valid observation did not initialize target");
   expect(
-    tracker.state() == L3Estimation::TrackState::Detecting && first &&
-      first->track_state == L3Estimation::TrackState::Detecting &&
-      first->updated,
+    tracker.state() == L3Estimation::TrackState::Detecting && first,
     "first observation did not enter Detecting state");
   const auto first_armor_poses = tracker.targetArmorPoses();
   expect(
@@ -131,49 +128,40 @@ int main()
     "Tracker did not expose the current finite EKF armor model");
   expect(
     tracker.observations().size() == 1 &&
-      tracker.observations().front().quality.pnp_ok &&
-      tracker.observations().front().quality.geometry_ok &&
-      tracker.observations().front().quality.reprojection_ok &&
-      tracker.observations().front().quality.finite &&
-      tracker.observations().front().quality.valid(),
-    "Tracker did not retain a valid PnP observation");
+      tracker.observations().front().name != L3Estimation::ArmorName::Unknown,
+    "Tracker did not retain a committed PnP observation");
 
   const auto second = tracker.track(
     detections, world_barrel, t0 + std::chrono::milliseconds(10));
   expect(second.has_value(), "second observation lost initialized target");
   expect(
     tracker.state() == L3Estimation::TrackState::Tracking && second &&
-      second->track_state == L3Estimation::TrackState::Tracking &&
-      second->updated && second->vector().allFinite() && second->P.allFinite(),
+      second->ekf_x().allFinite() && second->ekf().P.allFinite(),
     "second observation did not enter a finite Tracking state");
 
   const auto missing_pose = tracker.track(
     detections, std::nullopt, t0 + std::chrono::milliseconds(20));
   expect(
     missing_pose.has_value() &&
-      tracker.state() == L3Estimation::TrackState::TempLost &&
-      missing_pose->track_state == L3Estimation::TrackState::TempLost &&
-      !missing_pose->updated,
+      tracker.state() == L3Estimation::TrackState::TempLost,
     "missing image-time barrel pose was not treated as a temporary loss");
   expect(
     tracker.observations().size() == 1 &&
-      !tracker.observations().front().quality.pnp_ok,
+      tracker.observations().front().name == L3Estimation::ArmorName::Unknown,
     "missing pose retained a previous PnP result");
 
   const auto recovered = tracker.track(
     detections, world_barrel, t0 + std::chrono::milliseconds(30));
   expect(
     recovered.has_value() &&
-      tracker.state() == L3Estimation::TrackState::Tracking &&
-      recovered->updated,
+      tracker.state() == L3Estimation::TrackState::Tracking,
     "Tracker did not recover from a temporary loss");
 
   const auto short_loss = tracker.track(
     {}, world_barrel, t0 + std::chrono::milliseconds(60));
   expect(
     short_loss.has_value() &&
-      tracker.state() == L3Estimation::TrackState::TempLost &&
-      !short_loss->updated,
+      tracker.state() == L3Estimation::TrackState::TempLost,
     "empty detection frame did not enter TempLost");
 
   const auto expired = tracker.track(
@@ -199,6 +187,58 @@ int main()
     reset_after_large_dt.has_value() &&
       tracker.state() == L3Estimation::TrackState::Detecting,
     "SP 100 ms frame-interval guard did not restart Detecting");
+
+  // SP 主相机单 Tracker 只负责中心排序和同车辆关联；优先级由外围 Decider
+  // 写入，不在这个入口硬编码。
+  const auto engineer = makeDetection(
+    calibration,
+    L2Perception::ArmorClass::Engineer,
+    cv::Vec3d{0.0, 0.0, 3.0});
+  const auto infantry3 = makeDetection(
+    calibration,
+    L2Perception::ArmorClass::Infantry3,
+    cv::Vec3d{0.0, -0.35, 3.0});
+  const std::vector<L2Perception::Armor> mixed_detections{engineer, infantry3};
+
+  // 已稳定跟踪工程后，同帧偶然出现 3 号步兵不得重新初始化 EKF；否则单帧误分类
+  // 会让新目标随后 TempLost，零速度初值便会造成 cmd_yaw 平台。按优先级
+  // 强制切目标只存在于 SP 的全向感知重载，本管线没有该输入。
+  L3Estimation::Tracker switch_tracker(calibration, {}, tracker_config);
+  const std::vector<L2Perception::Armor> engineer_only{engineer};
+  const auto engineer_first = switch_tracker.track(
+    engineer_only, world_barrel, t0);
+  const auto engineer_tracking = switch_tracker.track(
+    engineer_only, world_barrel, t0 + std::chrono::milliseconds(10));
+  expect(
+    engineer_first && engineer_tracking &&
+      engineer_tracking->name == L3Estimation::ArmorName::Engineer &&
+      switch_tracker.state() == L3Estimation::TrackState::Tracking,
+    "low-priority Engineer did not reach Tracking before switch test");
+
+  const auto ignored_higher_priority = switch_tracker.track(
+    mixed_detections, world_barrel, t0 + std::chrono::milliseconds(20));
+  expect(
+    ignored_higher_priority &&
+      ignored_higher_priority->name == L3Estimation::ArmorName::Engineer &&
+      switch_tracker.state() == L3Estimation::TrackState::Tracking,
+    "SP main-camera Tracker switched on a transient higher-priority class");
+
+  const std::vector<L2Perception::Armor> infantry3_only{infantry3};
+  const auto unmatched_higher_priority = switch_tracker.track(
+    infantry3_only, world_barrel, t0 + std::chrono::milliseconds(30));
+  expect(
+    unmatched_higher_priority &&
+      unmatched_higher_priority->name == L3Estimation::ArmorName::Engineer &&
+      switch_tracker.state() == L3Estimation::TrackState::TempLost,
+    "SP main-camera Tracker switched class instead of entering TempLost");
+
+  const auto engineer_recovered = switch_tracker.track(
+    engineer_only, world_barrel, t0 + std::chrono::milliseconds(40));
+  expect(
+    engineer_recovered &&
+      engineer_recovered->name == L3Estimation::ArmorName::Engineer &&
+      switch_tracker.state() == L3Estimation::TrackState::Tracking,
+    "SP main-camera Tracker did not recover after transient misclassification");
 
   L3Estimation::TrackerConfig invalid_tracker_config = tracker_config;
   invalid_tracker_config.min_detect_count = 0;

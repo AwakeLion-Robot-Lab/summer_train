@@ -27,7 +27,9 @@ struct ImageTransform
 {
   cv::Size source_size{};
   cv::Size model_size{};
-  float source_to_model_scale{1.0F};
+  // SP YOLOV5 将 resize scale 保持为 double，解码关键点时执行 float/double
+  // 除法后再窄化为 Point2f。这里必须保留同一数值路径。
+  double source_to_model_scale{1.0};
   int pad_left{0};
   int pad_top{0};
   int pad_right{0};

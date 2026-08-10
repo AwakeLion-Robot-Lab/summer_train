@@ -76,7 +76,7 @@ FireDecision FireDecider::decide(const FireInput& input) const
   if (!input.target.has_value()) {
     reject(RejectReason::NoTarget);
   } else {
-    switch (input.target->track_state) {
+    switch (input.track_state) {
       case L3Estimation::TrackState::Lost:
       case L3Estimation::TrackState::Detecting:
         reject(RejectReason::NotTracking);

@@ -39,8 +39,8 @@ struct InferenceModelConfig
   // 同步点空等，实测反而更慢，所以宁可显式限制线程数，也不要默认铺满所有核。
   std::size_t inference_num_threads{0};
 
-  // 大小核 CPU 上只用 P 核；非混合架构的 CPU 会忽略该提示，因此设置它是安全的。
-  bool prefer_performance_cores{true};
+  // 可选的大小核调度提示。SP 只设置 LATENCY，不额外限制 P 核，因此默认关闭。
+  bool prefer_performance_cores{false};
 };
 
 // 所有后端对宿主侧输入使用同一契约：uint8、NHWC、BGR，例如 {1, 640, 640, 3}。

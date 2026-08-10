@@ -3,9 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <list>
 #include <limits>
-#include <optional>
 #include <utility>
+#include <vector>
 
 #include <opencv2/imgproc.hpp>
 
@@ -19,40 +20,45 @@ namespace
   return static_cast<float>(cv::norm(left - right));
 }
 
-// 复刻 SP-Vision 的 Lightbar：按 y 排序 minAreaRect 的四角，上两点均值为顶端、
-// 下两点均值为底端，width 取顶部两角间距，angle_error 是主轴与竖直方向的夹角。
-// 各量定义必须与其一致，否则 standard3.yaml 里那套阈值搬过来就不成立了。
+// 字段与构造方式逐项对应 SP-Vision auto_aim::Lightbar。
 struct Lightbar
 {
   cv::Point2f center{};
   cv::Point2f top{};
   cv::Point2f bottom{};
-  float length{0.0F};
-  float width{0.0F};
-  float ratio{0.0F};
-  float angle_error{0.0F};
+  double length{0.0};
+  double width{0.0};
+  double ratio{0.0};
+  double angle_error{0.0};
 };
 
-[[nodiscard]] Lightbar makeLightbar(const cv::RotatedRect& rect)
+[[nodiscard]] Lightbar makeLightbar(const cv::RotatedRect& rotated_rect)
 {
   std::array<cv::Point2f, 4> corners{};
-  rect.points(corners.data());
+  rotated_rect.points(corners.data());
   std::sort(corners.begin(), corners.end(),
             [](const cv::Point2f& left, const cv::Point2f& right) { return left.y < right.y; });
 
-  Lightbar bar;
-  bar.center = rect.center;
-  bar.top = (corners[0] + corners[1]) * 0.5F;
-  bar.bottom = (corners[2] + corners[3]) * 0.5F;
+  Lightbar lightbar;
+  lightbar.center = rotated_rect.center;
+  lightbar.top = (corners[0] + corners[1]) * 0.5F;
+  lightbar.bottom = (corners[2] + corners[3]) * 0.5F;
 
-  const cv::Point2f top2bottom = bar.bottom - bar.top;
-  bar.width = distance(corners[0], corners[1]);
-  bar.length = static_cast<float>(cv::norm(top2bottom));
-  bar.ratio = bar.width > 0.0F ? bar.length / bar.width : 0.0F;
+  const cv::Point2f top_to_bottom = lightbar.bottom - lightbar.top;
+  lightbar.width = cv::norm(corners[0] - corners[1]);
+  lightbar.length = cv::norm(top_to_bottom);
+  lightbar.ratio = lightbar.width > 0.0 ? lightbar.length / lightbar.width : 0.0;
 
-  const float angle = std::atan2(top2bottom.y, top2bottom.x);
-  bar.angle_error = std::abs(angle - static_cast<float>(CV_PI) * 0.5F);
-  return bar;
+  const double angle = std::atan2(top_to_bottom.y, top_to_bottom.x);
+  lightbar.angle_error = std::abs(angle - CV_PI * 0.5);
+  return lightbar;
+}
+
+[[nodiscard]] bool finiteCorners(const std::array<cv::Point2f, 4>& corners) noexcept
+{
+  return std::all_of(corners.begin(), corners.end(), [](const cv::Point2f& point) {
+    return std::isfinite(point.x) && std::isfinite(point.y);
+  });
 }
 
 }  // namespace
@@ -61,221 +67,194 @@ ArmorRefiner::ArmorRefiner(ArmorRefinerConfig config) : config_(std::move(config
 {
 }
 
-RefineVerdict ArmorRefiner::refineOne(const cv::Mat& image, Armor& armor,
-                                     RefineRecord* record) const
+bool ArmorRefiner::detect(Armor& armor, const cv::Mat& bgr_img) const
 {
-  // 期望的左右灯条中轴直接取自网络角点：左 = TL->BL，右 = TR->BR。
-  // 有了这个先验就不需要 SP-Vision 那种全图两两配对，也就不存在共用灯条的歧义。
-  const cv::Point2f left_center = (armor.corners[0] + armor.corners[3]) * 0.5F;
-  const cv::Point2f right_center = (armor.corners[1] + armor.corners[2]) * 0.5F;
-  const float separation = distance(left_center, right_center);
-  const float lightbar_length =
-      0.5F * (distance(armor.corners[0], armor.corners[3]) +
-              distance(armor.corners[1], armor.corners[2]));
+  if (!config_.enable || bgr_img.empty() || bgr_img.type() != CV_8UC3) {
+    return false;
+  }
+  return detectOne(armor, bgr_img, nullptr);
+}
+
+bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord* record) const
+{
+  // SP-Vision 的点顺序为 TL、TR、BR、BL，newvision::Armor::corners 使用相同约定。
+  const std::array<cv::Point2f, 4> input_corners = armor.corners;
+  if (!finiteCorners(input_corners)) {
+    return false;
+  }
+
+  const cv::Point2f tl = input_corners[0];
+  const cv::Point2f tr = input_corners[1];
+  const cv::Point2f br = input_corners[2];
+  const cv::Point2f bl = input_corners[3];
 
   if (record != nullptr) {
-    record->lightbar_length = lightbar_length;
-    record->aspect_ratio = lightbar_length > 0.0F ? separation / lightbar_length : 0.0F;
+    const float left_length = distance(tl, bl);
+    const float right_length = distance(tr, br);
+    record->lightbar_length = 0.5F * (left_length + right_length);
+    const cv::Point2f left_center = (tl + bl) * 0.5F;
+    const cv::Point2f right_center = (tr + br) * 0.5F;
+    record->aspect_ratio = record->lightbar_length > 0.0F
+                               ? distance(left_center, right_center) / record->lightbar_length
+                               : 0.0F;
   }
 
-  // 尺寸门槛：太小时传统检测的结论只是阈值噪声，必须跳过而不是当作证据。
-  if (separation < 1.0F || lightbar_length < config_.min_lightbar_length_px) {
-    if (record != nullptr) {
-      record->size_skipped = true;
-    }
-    return RefineVerdict::NetworkKept;
-  }
+  // 以下 ROI 外扩公式原样对应 SP-Vision Detector::detect(Armor&, image)。
+  const cv::Point2f left_top_to_bottom = bl - tl;
+  const cv::Point2f right_top_to_bottom = br - tr;
+  const cv::Point2f tl1 = (tl + bl) * 0.5F - left_top_to_bottom;
+  const cv::Point2f bl1 = (tl + bl) * 0.5F + left_top_to_bottom;
+  const cv::Point2f br1 = (tr + br) * 0.5F + right_top_to_bottom;
+  const cv::Point2f tr1 = (tr + br) * 0.5F - right_top_to_bottom;
+  const cv::Point2f top_left_to_right = tr1 - tl1;
+  const cv::Point2f bottom_left_to_right = br1 - bl1;
+  const cv::Point2f tl2 = (tl1 + tr) * 0.5F - 0.75F * top_left_to_right;
+  const cv::Point2f tr2 = (tl1 + tr) * 0.5F + 0.75F * top_left_to_right;
+  const cv::Point2f bl2 = (bl1 + br) * 0.5F - 0.75F * bottom_left_to_right;
+  const cv::Point2f br2 = (bl1 + br) * 0.5F + 0.75F * bottom_left_to_right;
 
-  const std::vector<cv::Point2f> corner_points(armor.corners.begin(), armor.corners.end());
-  cv::Rect roi = cv::boundingRect(corner_points);
-  const int expand_x = static_cast<int>(static_cast<float>(roi.width) * config_.roi_expand_ratio);
-  const int expand_y = static_cast<int>(static_cast<float>(roi.height) * config_.roi_expand_ratio);
-  roi.x -= expand_x;
-  roi.y -= expand_y;
-  roi.width += 2 * expand_x;
-  roi.height += 2 * expand_y;
-  roi &= cv::Rect(0, 0, image.cols, image.rows);
+  // SP 先转为整数 Point 再求 minAreaRect；保留该取整步骤，避免 ROI 边界相差 1 px。
+  const std::vector<cv::Point> roi_points{tl2, tr2, br2, bl2};
+  const cv::Rect bounding_box = cv::minAreaRect(roi_points).boundingRect();
   if (record != nullptr) {
-    record->roi = roi;
-  }
-  if (roi.width < 3 || roi.height < 3) {
-    return RefineVerdict::NetworkKept;
+    record->roi = bounding_box;
   }
 
-  // image(roi) 是零拷贝视图，由此得到的坐标都是 ROI 局部的。偏移在生成
-  // RotatedRect 时一次性补回原图坐标，避免后续每处都要记得加。
-  const cv::Mat roi_image = image(roi);
+  // 与 SP 一样：ROI 只要越界就放弃传统矫正，不裁切，也不改动网络结果。
+  if (bounding_box.x < 0 || bounding_box.y < 0 ||
+      bounding_box.x + bounding_box.width > bgr_img.cols ||
+      bounding_box.y + bounding_box.height > bgr_img.rows || bounding_box.empty()) {
+    return false;
+  }
 
-  // 与 SP-Vision Detector::detect 完全一致：转灰度 → 固定阈值二值化 → 外轮廓。
-  cv::Mat gray;
-  cv::cvtColor(roi_image, gray, cv::COLOR_BGR2GRAY);
-  cv::Mat binary;
-  cv::threshold(gray, binary, config_.binary_threshold, 255.0, cv::THRESH_BINARY);
+  const cv::Mat armor_roi = bgr_img(bounding_box);
+  cv::Mat gray_img;
+  cv::cvtColor(armor_roi, gray_img, cv::COLOR_BGR2GRAY);
+  cv::Mat binary_img;
+  cv::threshold(gray_img, binary_img, config_.binary_threshold, 255.0, cv::THRESH_BINARY);
 
   std::vector<std::vector<cv::Point>> contours;
-  cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  cv::findContours(binary_img, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
 
-  const cv::Point2f roi_offset(static_cast<float>(roi.x), static_cast<float>(roi.y));
-  const float max_angle_error =
-      config_.max_angle_error_deg * static_cast<float>(CV_PI) / 180.0F;
-  std::optional<Lightbar> left_bar;
-  std::optional<Lightbar> right_bar;
-  float left_best = std::numeric_limits<float>::max();
-  float right_best = std::numeric_limits<float>::max();
-  bool merged_blob = false;
-
+  const double max_angle_error = static_cast<double>(config_.max_angle_error_deg) / 57.3;
+  std::list<Lightbar> lightbars;
   for (const auto& contour : contours) {
-    cv::RotatedRect rect = cv::minAreaRect(contour);
-    // ROI 是零拷贝视图，轮廓坐标是局部的。在这里一次性补回原图坐标，
-    // 后续所有几何量就都在原图系里，不必每处再记得加偏移。
-    rect.center += roi_offset;
-    const Lightbar bar = makeLightbar(rect);
-
-    // 复刻 SP-Vision Detector::check_geometry(const Lightbar&)。
-    if (bar.angle_error >= max_angle_error) {
-      continue;
-    }
-    if (bar.ratio <= config_.min_lightbar_ratio || bar.ratio >= config_.max_lightbar_ratio) {
-      continue;
-    }
-    if (bar.length <= config_.min_lightbar_length_px) {
-      continue;
-    }
-
-    const float to_left = distance(bar.center, left_center);
-    const float to_right = distance(bar.center, right_center);
-
-    // 连通域落在两条中轴正中间，说明过曝把两根灯条粘成了一块。这是检查失效，
-    // 不是遮挡证据，必须和"真的只有一根"区分开。
-    if (std::abs(to_left - to_right) < separation * config_.merged_blob_ratio) {
-      merged_blob = true;
-      continue;
-    }
-
-    if (to_left < to_right) {
-      if (to_left < separation * config_.max_assign_ratio && to_left < left_best) {
-        left_best = to_left;
-        left_bar = bar;
-      }
-    } else {
-      if (to_right < separation * config_.max_assign_ratio && to_right < right_best) {
-        right_best = to_right;
-        right_bar = bar;
-      }
+    const Lightbar lightbar = makeLightbar(cv::minAreaRect(contour));
+    const bool angle_ok = lightbar.angle_error < max_angle_error;
+    const bool ratio_ok =
+        lightbar.ratio > config_.min_lightbar_ratio && lightbar.ratio < config_.max_lightbar_ratio;
+    const bool length_ok = lightbar.length > config_.min_lightbar_length_px;
+    if (angle_ok && ratio_ok && length_ok) {
+      lightbars.emplace_back(lightbar);
     }
   }
 
-  const bool has_left = left_bar.has_value();
-  const bool has_right = right_bar.has_value();
+  if (lightbars.size() < 2) {
+    if (record != nullptr) {
+      record->size_skipped = record->lightbar_length < config_.min_lightbar_length_px;
+    }
+    return false;
+  }
+
+  lightbars.sort([](const Lightbar& left, const Lightbar& right) {
+    return left.center.x < right.center.x;
+  });
+
+  const cv::Point2f roi_offset(static_cast<float>(bounding_box.x),
+                               static_cast<float>(bounding_box.y));
+  const Lightbar* closest_left_lightbar = nullptr;
+  const Lightbar* closest_right_lightbar = nullptr;
+  float min_distance_tl_bl = std::numeric_limits<float>::max();
+  float min_distance_br_tr = std::numeric_limits<float>::max();
+  for (const Lightbar& lightbar : lightbars) {
+    const float distance_tl_bl = static_cast<float>(
+      cv::norm(tl - (lightbar.top + roi_offset)) +
+      cv::norm(bl - (lightbar.bottom + roi_offset)));
+    if (distance_tl_bl < min_distance_tl_bl) {
+      min_distance_tl_bl = distance_tl_bl;
+      closest_left_lightbar = &lightbar;
+    }
+
+    const float distance_br_tr = static_cast<float>(
+      cv::norm(br - (lightbar.bottom + roi_offset)) +
+      cv::norm(tr - (lightbar.top + roi_offset)));
+    if (distance_br_tr < min_distance_br_tr) {
+      min_distance_br_tr = distance_br_tr;
+      closest_right_lightbar = &lightbar;
+    }
+  }
+
   if (record != nullptr) {
-    record->left_found = has_left;
-    record->right_found = has_right;
-    record->merged_blob = merged_blob;
+    record->left_found = closest_left_lightbar != nullptr;
+    record->right_found = closest_right_lightbar != nullptr;
   }
 
-  if (!has_left && !has_right) {
-    // 一根都没找到：阈值或 ROI 没起作用，属于检查失效。
-    return RefineVerdict::NetworkKept;
-  }
-
-  if (has_left != has_right) {
-    // 只匹配到一侧。粘连情形已经说明检查不可靠，不能据此拒绝。
-    if (merged_blob) {
-      return RefineVerdict::NetworkKept;
-    }
-    // 侧对门槛：正对时只找到一根灯条通常是曝光或阈值问题，不是遮挡。
-    // 只有明显侧对时，单灯条才是真实的物理遮挡。
-    const float aspect_ratio = separation / lightbar_length;
-    if (aspect_ratio >= config_.edge_on_aspect_ratio) {
-      return RefineVerdict::NetworkKept;
-    }
-    return RefineVerdict::Rejected;
-  }
-
-  // 顺序必须是左上、右上、右下、左下，与 Armor::corners 的约定一致。
-  const std::array<cv::Point2f, 4> refined{left_bar->top, right_bar->top, right_bar->bottom,
-                                           left_bar->bottom};
-
-  const float diagonal = distance(armor.corners[0], armor.corners[2]);
-  float max_shift = 0.0F;
-  for (std::size_t index = 0; index < refined.size(); ++index) {
-    if (!std::isfinite(refined[index].x) || !std::isfinite(refined[index].y)) {
-      return RefineVerdict::NetworkKept;
-    }
-    max_shift = std::max(max_shift, distance(refined[index], armor.corners[index]));
-  }
-
-  // 位移过大说明两条通路互相矛盾，此时哪一个都不可信，保留网络角点。
-  if (diagonal > 0.0F && max_shift > diagonal * config_.max_corner_shift_ratio) {
+  const float endpoint_distance = min_distance_tl_bl + min_distance_br_tr;
+  if (closest_left_lightbar == nullptr || closest_right_lightbar == nullptr ||
+      endpoint_distance >= config_.max_endpoint_distance_px) {
     if (record != nullptr) {
       record->shift_rejected = true;
-      record->corner_shift = max_shift;
+      record->corner_shift = endpoint_distance;
     }
-    return RefineVerdict::NetworkKept;
+    return false;
   }
 
-  armor.corners = refined;
-  armor.corner_shift = max_shift;
-  armor.corner_source = CornerSource::Refined;
-  armor.center = {};
-  for (const cv::Point2f& corner : armor.corners) {
-    armor.center += corner;
+  const std::array<cv::Point2f, 4> refined_corners{
+      closest_left_lightbar->top + roi_offset, closest_right_lightbar->top + roi_offset,
+      closest_right_lightbar->bottom + roi_offset, closest_left_lightbar->bottom + roi_offset};
+
+  const std::array<cv::Point2f, 4> network_corners =
+      armor.corner_source == CornerSource::Refined ? armor.network_corners : input_corners;
+  float max_shift = 0.0F;
+  for (std::size_t index = 0; index < refined_corners.size(); ++index) {
+    max_shift = std::max(max_shift, distance(refined_corners[index], network_corners[index]));
   }
-  armor.center = armor.center * 0.25F;
-  return RefineVerdict::Refined;
+
+  // 只在全部条件满足后一次性写回，保证 false 时 Armor 完整保持原样。
+  armor.network_corners = network_corners;
+  armor.corners = refined_corners;
+  armor.corner_source = CornerSource::Refined;
+  armor.corner_shift = max_shift;
+  // SP 只覆盖 armor.points，不重算构造时由网络角点得到的 center。中心仍按
+  // 网络结果保留，Tracker 的中心距离排序才能与 SP 完全同口径。
+
+  if (record != nullptr) {
+    record->corner_shift = max_shift;
+  }
+  return true;
 }
 
 RefineStats ArmorRefiner::refine(const cv::Mat& image, std::vector<Armor>& armors,
-                                std::vector<RefineRecord>* records) const
+                                 std::vector<RefineRecord>* records) const
 {
   RefineStats stats;
   if (records != nullptr) {
     records->clear();
+    records->reserve(armors.size());
   }
   if (!config_.enable || image.empty() || image.type() != CV_8UC3) {
     return stats;
   }
 
-  std::vector<Armor> kept;
-  kept.reserve(armors.size());
   for (Armor& armor : armors) {
-    // 精修前先留档原始角点，供离线评估和回放叠加对比。
-    armor.network_corners = armor.corners;
-
     RefineRecord record;
+    record.network_corners = armor.corners;
     RefineRecord* record_ptr = records != nullptr ? &record : nullptr;
-    if (record_ptr != nullptr) {
-      record.network_corners = armor.corners;
+
+    if (detectOne(armor, image, record_ptr)) {
+      ++stats.refined;
+      record.verdict = RefineVerdict::Refined;
+    } else {
+      ++stats.network_kept;
+      record.verdict = RefineVerdict::NetworkKept;
     }
 
-    const RefineVerdict verdict = refineOne(image, armor, record_ptr);
-
-    if (record_ptr != nullptr) {
-      record.verdict = verdict;
-      // 被拒的检出马上就要从 armors 中消失，这里保存的角点是画面上唯一还能
-      // 标出它位置的依据。
+    if (records != nullptr) {
       record.corners = armor.corners;
-      record.corner_shift = armor.corner_shift > 0.0F ? armor.corner_shift : record.corner_shift;
       records->push_back(record);
-    }
-
-    switch (verdict) {
-      case RefineVerdict::Refined:
-        ++stats.refined;
-        kept.push_back(armor);
-        break;
-      case RefineVerdict::NetworkKept:
-        ++stats.network_kept;
-        kept.push_back(armor);
-        break;
-      case RefineVerdict::Rejected:
-        // 单灯条：网络给出的另一侧角点是凭空生成的，丢弃整块检出。
-        ++stats.rejected;
-        break;
     }
   }
 
-  armors = std::move(kept);
   return stats;
 }
 

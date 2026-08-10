@@ -1,7 +1,7 @@
 #pragma once
 
 #include "l1_sensor/serial/robot_state.hpp"
-#include "l3_estimation/types.hpp"
+#include "l3_estimation/target_estimator.hpp"
 #include "l4_planning/planner.hpp"
 #include "l5_control/reject_reason.hpp"
 
@@ -66,7 +66,11 @@ struct FireConfig {
 };
 
 struct FireInput {
-  std::optional<L3Estimation::Target> target;
+  std::optional<L3Estimation::TrackedTarget> target;
+  // 跟踪状态由 Tracker 持有而不是挂在目标上（TrackedTarget 只是滤波器状态的
+  // 副本），所以这里单独传入 Tracker::state()。TempLost 时目标仍然有值，全靠
+  // 外推，位置误差随丢失时长增长，因此火控必须能区分它和 Tracking。
+  L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
   L4Planning::Plan plan;
   L1Sensor::RobotState robot_state;
 

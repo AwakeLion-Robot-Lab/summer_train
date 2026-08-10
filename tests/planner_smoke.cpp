@@ -1,5 +1,5 @@
-// L4 规划链路的行为冒烟测试：整车外推、弹道模型与反解、瞄准档位迟滞、
-// 逐板不动点迭代、选板与火控分离。不依赖相机、串口和推理后端。
+// L4 规划链路的行为冒烟测试：基础预测/弹道组件，以及 Planner 对 SP Aimer
+// 的延迟、锁板和共同命中时刻迭代复刻。不依赖相机、串口和推理后端。
 
 #include "l4_planning/aim_phase.hpp"
 #include "l4_planning/ballistic_model.hpp"
@@ -10,6 +10,7 @@
 
 #include <Eigen/Dense>
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -25,22 +26,13 @@ void require(bool condition, const char * message)
   }
 }
 
-L3Estimation::TargetState makeTarget(double v_yaw)
+// 旋转中心固定在 (4, 0, 0)，半径 0.2，四板车。jumped 默认置真，否则所有测试
+// 都会被可观测性门禁挡在 0 号板。
+L3Estimation::TrackedTarget makeTarget(double v_yaw, double yaw = 0.0)
 {
-  L3Estimation::TargetState target;
+  L3Estimation::TrackedTarget target(4.0, v_yaw, 0.2, 0.0, yaw);
   target.name = L3Estimation::ArmorName::Infantry3;
-  target.track_state = L3Estimation::TrackState::Tracking;
-  target.position = {4.0, 0.0, 0.0};
-  target.velocity = Eigen::Vector3d::Zero();
-  target.yaw = 0.0;
-  target.v_yaw = v_yaw;
-  target.radius = 0.2;
-  target.armor_num = 4;
-  target.second_radius = 0.2;
-  target.height_diff = 0.0;
-  // 默认已经观测到过第二块板，否则所有测试都会被可观测性门禁挡在 0 号板。
-  target.multi_armor_observed = true;
-  target.timestamp = std::chrono::steady_clock::time_point{};
+  target.jumped = true;
   return target;
 }
 
@@ -51,7 +43,8 @@ void testPredictorAdvancesYaw()
   const auto target = makeTarget(10.0);
 
   const auto later = predictor.predict(target, 0.1);
-  require(std::abs(later.yaw - 1.0) < 1e-9, "yaw must advance by v_yaw * dt");
+  require(
+    std::abs(later.ekf_x()[6] - 1.0) < 1e-9, "yaw must advance by v_yaw * dt");
 
   const auto before = predictor.armorPoses(target);
   const auto after = predictor.armorPosesAt(target, 0.1);
@@ -62,17 +55,45 @@ void testPredictorAdvancesYaw()
   std::cout << "  [ok] predictor advances yaw, armor moved " << moved << " m\n";
 }
 
-// 平动目标：中心按速度走，装甲板整体跟着平移。
+// 平动目标：中心按速度走，装甲板整体跟着平移。平动速度只能由 EKF 从观测里估
+// 出来——确定性构造入口给不出 vx，所以这里先喂一段匀速直线运动的观测。
 void testPredictorTranslates()
 {
   const L4Planning::Predictor predictor;
-  auto target = makeTarget(0.0);
-  target.velocity = {1.0, 0.0, 0.0};
+  const std::chrono::steady_clock::time_point t0{};
 
+  L3Estimation::Armor observation;
+  observation.name = L3Estimation::ArmorName::Infantry3;
+  observation.type = L3Estimation::ArmorType::Small;
+  observation.xyz_in_world = {3.8, 0.0, 0.0};
+  observation.ypr_in_world = {0.0, 0.0, 0.0};
+  observation.ypd_in_world = L6Telemetry::xyz2ypd(observation.xyz_in_world);
+
+  Eigen::VectorXd P0(11);
+  P0 << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0, 0.4, 100.0, 1.0, 1.0, 1.0;
+  L3Estimation::TrackedTarget target(observation, t0, 0.2, 4, P0);
+
+  // 十帧，每帧 20 ms 沿 +x 前进 2 cm，即 1 m/s。
+  for (int step = 1; step <= 10; ++step) {
+    observation.xyz_in_world.x() = 3.8 + 0.02 * step;
+    observation.ypd_in_world = L6Telemetry::xyz2ypd(observation.xyz_in_world);
+    target.predict(t0 + std::chrono::milliseconds(20 * step));
+    target.update(observation);
+  }
+  require(target.ekf_x()[1] > 0.1, "EKF must pick up a positive x velocity");
+
+  const Eigen::VectorXd before = target.ekf_x();
   const auto later = predictor.predict(target, 0.5);
-  require(std::abs(later.position.x() - 4.5) < 1e-9, "center must translate");
-  require(std::abs(later.yaw) < 1e-12, "yaw must stay put with zero v_yaw");
-  std::cout << "  [ok] predictor translates a non-spinning target\n";
+  const Eigen::VectorXd after = later.ekf_x();
+  require(
+    std::abs(after[0] - (before[0] + before[1] * 0.5)) < 1e-9,
+    "center must translate by velocity * dt");
+  require(
+    std::abs(
+      after[6] - L6Telemetry::limit_rad(before[6] + before[7] * 0.5)) < 1e-9,
+    "yaw must advance by exactly v_yaw * dt");
+  std::cout << "  [ok] predictor translates a target at "
+            << before[1] << " m/s\n";
 }
 
 // 真空模型：解出的 pitch 代回抛体方程必须还原目标高度。
@@ -305,7 +326,7 @@ void testPlannerConverges()
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 23.0;
 
-  const auto plan = planner.plan(target, robot_state, target.timestamp);
+  const auto plan = planner.plan(target, robot_state, target.t());
   require(plan.valid, "static target must be plannable");
   require(plan.error == L4Planning::PlanError::None, "no rejection expected");
   require(plan.fire_admissible, "a static facing target must be shootable");
@@ -319,13 +340,13 @@ void testPlannerConverges()
 
   // 目标在 x 轴正方向，选中的板朝向枪口，yaw 应当接近 0。
   require(std::abs(plan.yaw) < 0.1, "yaw should point at the target");
-  require(plan.pitch > 0.0, "muzzle must be raised to hit a level target");
+  require(plan.pitch < 0.0, "SP command pitch must negate the ballistic pitch");
   std::cout << "  [ok] planner converges, fly_time=" << plan.fly_time
             << " pitch=" << plan.pitch << '\n';
 }
 
-// 弹速无效时仍要给出瞄准角，但必须把 BadBulletSpeed 报给 L5。
-void testPlannerFlagsBadBulletSpeed()
+// SP 只在弹速 <14 m/s 时回退到 23；14 及以上不设上限。
+void testPlannerMatchesSpBulletFallback()
 {
   L4Planning::Planner planner;
   L1Sensor::RobotState robot_state;
@@ -338,25 +359,22 @@ void testPlannerFlagsBadBulletSpeed()
     plan.error == L4Planning::PlanError::BadBulletSpeed,
     "bad bullet speed must be reported");
 
-  // 15 m/s 落在旧的两道门限（PlanConfig 10、求解器 21）之间，正是会被报成
-  // BallisticFailed 的那段。门限收归一处后必须报 BadBulletSpeed。
-  robot_state.bullet_speed = 15.0;
-  const auto between = planner.plan(makeTarget(0.0), robot_state, {});
-  require(between.valid, "a low bullet speed must still yield aim angles");
+  robot_state.bullet_speed = 13.99;
+  const auto below = planner.plan(makeTarget(0.0), robot_state, {});
+  require(below.valid, "SP fallback must still yield aim angles");
   require(
-    between.error == L4Planning::PlanError::BadBulletSpeed,
-    "the 10-21 m/s band must report BadBulletSpeed, not BallisticFailed");
+    below.error == L4Planning::PlanError::BadBulletSpeed,
+    "speed below 14 m/s must use the SP fallback");
 
-  // 上限同样要判。只判下限的话，裁判系统回传一个明显偏高的弹速会被直接采信，
-  // 解出来的弹道偏平，而且没有任何人报错。
-  robot_state.bullet_speed = 45.0;
-  const auto too_fast = planner.plan(makeTarget(0.0), robot_state, {});
-  require(too_fast.valid, "an absurdly high bullet speed must still yield aim angles");
-  require(!too_fast.fire_admissible, "an absurdly high bullet speed must block firing");
-  require(
-    too_fast.error == L4Planning::PlanError::BadBulletSpeed,
-    "bullet speed above the upper bound must report BadBulletSpeed");
-  std::cout << "  [ok] planner flags bad bullet speed on both bounds but still aims\n";
+  for (const double speed : {14.0, 15.0, 45.0}) {
+    robot_state.bullet_speed = speed;
+    const auto accepted = planner.plan(makeTarget(0.0), robot_state, {});
+    require(accepted.valid, "SP must accept every speed at or above 14 m/s");
+    require(
+      accepted.error == L4Planning::PlanError::None,
+      "SP must not impose an upper bullet-speed gate");
+  }
+  std::cout << "  [ok] planner uses SP's one-sided 14 m/s fallback\n";
 }
 
 void testPlannerRejectsNoTarget()
@@ -365,16 +383,20 @@ void testPlannerRejectsNoTarget()
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 23.0;
 
+  // 目标丢失由 Tracker 表达成"不返回目标"，所以规划器这一侧只剩空值这一种
+  // 情况——不再有携带 Lost 状态的目标快照。
   const auto empty = planner.plan(std::nullopt, robot_state, {});
   require(!empty.valid, "missing target must not produce a plan");
   require(empty.error == L4Planning::PlanError::NoTarget, "NoTarget expected");
 
-  auto lost = makeTarget(0.0);
-  lost.track_state = L3Estimation::TrackState::Lost;
-  const auto lost_plan = planner.plan(lost, robot_state, {});
-  require(!lost_plan.valid, "lost target must not produce a plan");
-  require(lost_plan.error == L4Planning::PlanError::NotTracking, "NotTracking expected");
-  std::cout << "  [ok] planner rejects missing and lost targets\n";
+  // 默认构造的目标滤波器是空的，必须被 NoArmor 拦住而不是解引用空状态。
+  const L3Estimation::TrackedTarget uninitialized;
+  const auto uninitialized_plan = planner.plan(uninitialized, robot_state, {});
+  require(!uninitialized_plan.valid, "an empty filter must not produce a plan");
+  require(
+    uninitialized_plan.error == L4Planning::PlanError::NoArmor,
+    "NoArmor expected for an uninitialized target");
+  std::cout << "  [ok] planner rejects missing and uninitialized targets\n";
 }
 
 // 只见过一块板时整车 yaw、第二组半径、高度差都还没被观测约束过，瞄别的板
@@ -385,139 +407,133 @@ void testUnobservedGeometryLocksArmorZero()
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 23.0;
 
-  auto target = makeTarget(0.0);
-  target.multi_armor_observed = false;
   // 把整车转到 1 号板正对枪口的姿态：几何可观测时会选 1 号。
-  target.yaw = -std::numbers::pi / 2.0;
+  auto target = makeTarget(0.0, -std::numbers::pi / 2.0);
+  target.jumped = false;
 
   const auto blind = planner.plan(target, robot_state, {});
   require(blind.valid, "an unobserved target must still be trackable");
   require(blind.armor_id == 0, "unobserved geometry must stay on armor 0");
 
   planner.reset();
-  target.multi_armor_observed = true;
+  target.jumped = true;
   const auto seen = planner.plan(target, robot_state, {});
   require(seen.valid, "observed target must be plannable");
   require(seen.armor_id == 1, "observed geometry must be free to pick armor 1");
   std::cout << "  [ok] unobserved geometry pins the aim to armor 0\n";
 }
 
-// 选板迟滞：两块板对称时不应逐帧互换。
-void testSelectorHysteresis()
+// 复刻 SP 的锁板边界：两块板同时留在 ±60° 窗口内时，即使另一块
+// 已经更正对枪口也不能提前换；只有旧板离开窗口才切到新板。
+void testSpSelectorHoldsUntilArmorLeavesWindow()
 {
   L4Planning::Planner planner;
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 23.0;
 
-  // yaw 让 0 号和 3 号板相对枪口近似对称，正是容易横跳的构型。
-  auto target = makeTarget(0.0);
-  target.yaw = std::numbers::pi / 4.0;
+  const auto degrees = [](double value) {
+    return value * std::numbers::pi / 180.0;
+  };
 
-  const auto first = planner.plan(target, robot_state, {});
-  require(first.valid, "symmetric configuration must still be plannable");
-  const int locked = planner.lockedArmorId();
-  require(locked >= 0, "an armor must be locked");
+  const auto first = planner.plan(
+    makeTarget(0.0, degrees(44.0)), robot_state, {});
+  require(first.valid && first.armor_id == 0, "SP did not initially lock armor 0");
 
-  // 轻微扰动 yaw，锁定的板不应改变。
-  int switches = 0;
-  for (int step = 0; step < 20; ++step) {
-    target.yaw = std::numbers::pi / 4.0 + (step % 2 == 0 ? 1e-3 : -1e-3);
-    const auto plan = planner.plan(target, robot_state, {});
-    require(plan.valid, "perturbed plan must stay valid");
-    if (plan.armor_id != locked) ++switches;
+  // SP Aimer 没有 reset：无目标和显式 reset 都不能改变 lock_id。
+  const auto no_target = planner.plan(std::nullopt, robot_state, {});
+  require(!no_target.valid, "missing target must remain invalid");
+  planner.reset();
+
+  for (const double yaw_degrees : {50.0, 59.0}) {
+    const auto plan = planner.plan(
+      makeTarget(0.0, degrees(yaw_degrees)), robot_state, {});
+    require(plan.valid, "overlap-window plan must stay valid");
+    require(plan.armor_id == 0, "SP lock changed across no-target/reset or overlap");
   }
-  require(switches == 0, "hysteresis must suppress armor flapping");
-  std::cout << "  [ok] selector hysteresis holds across 20 perturbed frames\n";
+
+  const auto after_leaving = planner.plan(
+    makeTarget(0.0, degrees(61.0)), robot_state, {});
+  require(after_leaving.valid, "plan after leaving the window must stay valid");
+  require(after_leaving.armor_id == 3, "SP lock did not switch after armor 0 left");
+
+  const auto overlap_again = planner.plan(
+    makeTarget(0.0, degrees(59.0)), robot_state, {});
+  require(overlap_again.valid, "returning overlap-window plan must stay valid");
+  require(overlap_again.armor_id == 3, "new SP lock was not retained in overlap");
+  std::cout << "  [ok] SP selector holds a plate until it leaves the 60 deg window\n";
 }
 
-// 反陀螺现在是**火控**判据而不是选板判据：整圈扫下来云台必须帧帧有角度，
-// 而可开火的只占其中一段。旧实现在窗口外直接不给瞄准角，云台会停摆。
-void testFireWindowGatesWithoutDroppingAim()
+// SP 没有 AimPhase/WholeCarCenter；即使角速度很高，普通四板车仍瞄实体板。
+void testSpAimerAlwaysAimsAtPhysicalArmor()
 {
   L4Planning::Planner planner;
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 23.0;
 
-  auto target = makeTarget(8.0);
-  int valid_count = 0;
-  int fire_count = 0;
   for (int step = 0; step < 60; ++step) {
-    target.yaw = L6Telemetry::limit_rad(step * 2.0 * std::numbers::pi / 60.0);
+    const auto target = makeTarget(
+      20.0, L6Telemetry::limit_rad(step * 2.0 * std::numbers::pi / 60.0));
     const auto plan = planner.plan(target, robot_state, {});
-    if (plan.valid) ++valid_count;
-    if (plan.fire_admissible) {
-      ++fire_count;
-      require(
-        plan.fire_armor_id >= 0 && plan.fire_armor_id < 4,
-        "fire armor id must be in range");
-      require(
-        plan.error == L4Planning::PlanError::None,
-        "an admissible frame must not carry a degradation reason");
-    }
+    require(plan.valid, "SP normal-car branch must keep producing an aim point");
+    require(plan.aim_on_armor, "SP must never replace an armor with a center proxy");
+    require(
+      plan.aim_phase == L4Planning::AimPhase::SingleArmor,
+      "inactive AimPhase metadata must remain SingleArmor");
+    require(
+      plan.armor_id >= 0 && plan.armor_id < 4,
+      "SP selected armor id must be physical");
   }
-  require(valid_count == 60, "the gimbal must keep tracking on every frame");
-  require(fire_count > 0, "the fire window must open somewhere in a full turn");
-  require(fire_count < 60, "the fire window must also close");
-  std::cout << "  [ok] aim valid 60/60, fire admissible " << fire_count << "/60\n";
+  std::cout << "  [ok] SP high-speed path always aims at a physical armor\n";
 }
 
-// 高速档瞄旋转圆上离枪口最近的点，火控仍按实体板判定。
-void testCenterPhaseProjectsInsideTheCircle()
+void testSpDelaySelection()
 {
-  L4Planning::PlanConfig config;
-  config.aim_phase.transfer_count = 2;
-  L4Planning::Planner planner(config);
+  L4Planning::Planner planner;
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 23.0;
 
-  auto target = makeTarget(20.0);  // 高于 whole_to_center_up
-  L4Planning::Plan plan;
-  for (int step = 0; step < 40; ++step) {
-    target.yaw = L6Telemetry::limit_rad(step * 0.3);
-    plan = planner.plan(target, robot_state, {});
-  }
+  const auto low = planner.plan(makeTarget(8.0), robot_state, {}, false);
+  const auto high = planner.plan(makeTarget(8.01), robot_state, {}, false);
+  const auto negative = planner.plan(makeTarget(-20.0), robot_state, {}, false);
+  require(low.valid && high.valid && negative.valid, "delay test plans must be valid");
+  require(
+    std::abs(low.delay.beforeFire() - 0.020) < 1e-12,
+    "w == decision_speed must use SP low delay");
+  require(
+    std::abs(high.delay.beforeFire() - 0.035) < 1e-12,
+    "positive w above decision_speed must use SP high delay");
+  require(
+    std::abs(negative.delay.beforeFire() - 0.020) < 1e-12,
+    "negative high speed must still use SP low delay");
 
+  const auto target = makeTarget(0.0);
+  const auto to_now = planner.plan(
+    target, robot_state, target.t() + std::chrono::milliseconds(12), true);
+  require(to_now.valid, "to_now delay test plan must be valid");
   require(
-    planner.aimPhase() == L4Planning::AimPhase::WholeCarCenter,
-    "sustained high spin must reach the center phase");
-  require(plan.valid, "center phase must still produce angles");
-  require(!plan.aim_on_armor, "center phase does not aim at a physical plate");
-
-  // 代理点应当落在旋转中心与枪口之间，且离中心恰好一个半径。
-  const auto predicted = L4Planning::Predictor().predict(
-    target, plan.delay.beforeFire() + plan.fly_time);
-  const double to_center =
-    (plan.aim_point.head<2>() - predicted.position.head<2>()).norm();
-  require(
-    std::abs(to_center - target.radius) < 1e-6,
-    "center proxy must sit one radius from the rotation center");
-  require(
-    plan.aim_point.head<2>().norm() < predicted.position.head<2>().norm(),
-    "center proxy must sit on the muzzle side of the center");
-  require(plan.fire_armor_id >= 0, "fire gate must still name a physical plate");
-  std::cout << "  [ok] center phase proxies " << target.radius
-            << " m in front of the rotation center\n";
+    std::abs(to_now.delay.beforeFire() - 0.027) < 1e-12,
+    "to_now must add measured elapsed time to SP low delay");
+  std::cout << "  [ok] SP signed speed delay and offline 5 ms path match\n";
 }
 
-// 逐板求解的意义：选板放进迭代里时，飞行时间会在两块板之间来回跳而不收敛。
-// 这里扫过整圈的所有构型，要求每一帧都能收敛出解。
-void testPerArmorFixedPointAlwaysConverges()
+// SP 在每轮共同命中时刻重新选板；扫描普通四板车确认这条路径保持有限输出。
+void testSpSharedIterationProducesFiniteCommands()
 {
   L4Planning::Planner planner;
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 23.0;
 
   for (const double v_yaw : {0.5, 2.0, 6.0, 12.0}) {
-    auto target = makeTarget(v_yaw);
     for (int step = 0; step < 120; ++step) {
-      target.yaw = L6Telemetry::limit_rad(step * 2.0 * std::numbers::pi / 120.0);
+      const auto target = makeTarget(
+        v_yaw, L6Telemetry::limit_rad(step * 2.0 * std::numbers::pi / 120.0));
       const auto plan = planner.plan(target, robot_state, {});
-      require(plan.valid, "every configuration must yield a converged plan");
+      require(plan.valid, "SP shared iteration must yield a command here");
       require(std::isfinite(plan.yaw) && std::isfinite(plan.pitch), "angles must be finite");
     }
     planner.reset();
   }
-  std::cout << "  [ok] per-armor fixed point converges on 480 configurations\n";
+  std::cout << "  [ok] SP shared predict/choose iteration is finite on 480 configurations\n";
 }
 
 }  // namespace
@@ -534,13 +550,13 @@ int main()
   testBallisticRejectsBadInput();
   testAimPhaseHysteresis();
   testPlannerConverges();
-  testPlannerFlagsBadBulletSpeed();
+  testPlannerMatchesSpBulletFallback();
   testPlannerRejectsNoTarget();
   testUnobservedGeometryLocksArmorZero();
-  testSelectorHysteresis();
-  testFireWindowGatesWithoutDroppingAim();
-  testCenterPhaseProjectsInsideTheCircle();
-  testPerArmorFixedPointAlwaysConverges();
+  testSpSelectorHoldsUntilArmorLeavesWindow();
+  testSpAimerAlwaysAimsAtPhysicalArmor();
+  testSpDelaySelection();
+  testSpSharedIterationProducesFiniteCommands();
   std::cout << "planner smoke test passed\n";
   return 0;
 }

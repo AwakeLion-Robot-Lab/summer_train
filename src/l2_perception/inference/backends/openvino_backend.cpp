@@ -1,6 +1,7 @@
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <stdexcept>
@@ -148,26 +149,27 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
   // 宿主输入固定为 U8 NHWC BGR。颜色、归一化、布局与 FP16/FP32 转换都编入模型图，
   // 避免 CPU 每帧创建约 4.7 MiB 的 float NCHW 缓冲区。
   ov::preprocess::PrePostProcessor prepost(model);
-  prepost.input().tensor()
+  auto& input = prepost.input();
+  const ov::PartialShape host_input_shape{
+    1,
+    static_cast<std::int64_t>(original_input_shape[2]),
+    static_cast<std::int64_t>(original_input_shape[3]),
+    3};
+  input.tensor()
     .set_element_type(ov::element::u8)
+    .set_shape(host_input_shape)
     .set_layout("NHWC")
     .set_color_format(ov::preprocess::ColorFormat::BGR);
+  input.model().set_layout("NCHW");
 
-  auto& preprocessing = prepost.input().preprocess();
+  auto& preprocessing = input.preprocess();
   preprocessing.convert_element_type(ov::element::f32);
   if (config.model_color_order == ModelColorOrder::Rgb) {
     preprocessing.convert_color(ov::preprocess::ColorFormat::RGB);
   }
   if (config.normalization_divisor != 1.0F) {
-    preprocessing.scale({
-      config.normalization_divisor,
-      config.normalization_divisor,
-      config.normalization_divisor});
+    preprocessing.scale(config.normalization_divisor);
   }
-  if (original_input_type != ov::element::f32) {
-    preprocessing.convert_element_type(original_input_type);
-  }
-  prepost.input().model().set_layout("NCHW");
 
   // Decoder 的公共输出固定为 float32，即使其他模型原始输出是 FP16 也不会被误读。
   for (std::size_t index = 0; index < model->outputs().size(); ++index) {

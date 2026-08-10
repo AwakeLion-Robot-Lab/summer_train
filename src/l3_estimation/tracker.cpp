@@ -78,7 +78,7 @@ TrackState Tracker::state() const noexcept
   return state_;
 }
 
-std::optional<TargetState> Tracker::track(
+std::optional<TrackedTarget> Tracker::track(
   const std::vector<L2Perception::Armor>& detections,
   const std::optional<Eigen::Quaterniond>& q_world_barrel,
   TimePoint timestamp)
@@ -111,7 +111,10 @@ std::optional<TargetState> Tracker::track(
   }
   last_timestamp_ = timestamp;
 
-  // Lost 状态用最优观测初始化，其余状态先预测再尝试关联更新。
+  // 逐行对应 sp_vision 的主相机 Tracker::track：Lost 时从已排序观测
+  // 中初始化，其余状态只关联当前车辆类别。sp 只在带全向感知队列的
+  // 另一个重载中才会在 Tracking 期间按优先级强制切目标；本管线没有
+  // 那路输入，不能把单帧分类抖动当成切车信号。
   auto armors = usableObservations();
   bool found = false;
   if (state_ == TrackState::Lost) {
@@ -143,7 +146,7 @@ std::optional<TargetState> Tracker::track(
     return std::nullopt;
   }
 
-  return target_->toTargetState(state_, found);
+  return *target_;
 }
 
 const std::vector<Armor>& Tracker::observations() const noexcept
@@ -168,16 +171,13 @@ void Tracker::reset() noexcept
 
 bool Tracker::observationUsable(const Armor& armor) const noexcept
 {
-  // 类别有效、像素面积达标、位姿有限是共同前提。name 只在 single_pnp 成功
-  // 提交结果的那一步才被赋值，任何失败路径上都保持 Unknown，所以这一条同时
-  // 就是"PnP 是否成功"。
-  if (armor.name == ArmorName::Unknown || !armor.xyz_in_world.allFinite() ||
-      !std::isfinite(armor.area) || armor.area < armor_config_.min_area) {
-    return false;
-  }
-
-  // 实机还要求通过全部 ArmorQuality 门限；回放调试可以只以 PnP 成功为准。
-  return !tracker_config_.require_quality || armor.quality.valid();
+  // 唯一的门限是"single_pnp 是否成功提交了位姿"：name 只在提交的那一步才被
+  // 赋值，任何失败路径上都保持 Unknown。
+  //
+  // sp_vision 连这一条都没有——它的 Solver::solve() 无条件写位姿，没有失败
+  // 路径可言。这里保留它不是额外的质量门，而是因为 single_pnp 在标定缺失、
+  // 曝光时刻姿态缺失、角点非有限时会提前返回，不筛掉就会把零位姿喂进 EKF。
+  return armor.name != ArmorName::Unknown && armor.xyz_in_world.allFinite();
 }
 
 std::vector<const Armor*> Tracker::usableObservations() const
@@ -190,7 +190,9 @@ std::vector<const Armor*> Tracker::usableObservations() const
     }
   }
 
-  // 优先处理靠近图像中心的观测；稳定排序保留等距目标的检测顺序。
+  // SP 主相机 Tracker 先按图像中心距离排序。其第二次 priority 排序依赖外围
+  // Decider 预先写入字段；单 Tracker/离线入口没有 Decider，不能在 L3 内硬塞
+  // 一张外围优先级表。完整哨兵多目标路径应由独立 Decider 显式提供该字段。
   std::stable_sort(
     usable.begin(),
     usable.end(),
@@ -232,12 +234,7 @@ bool Tracker::initializeTarget(
   }
 
   target_.emplace(
-    armor,
-    timestamp,
-    radius,
-    armor_count,
-    std::move(covariance_diagonal),
-    tracker_config_.sp_compat);
+    armor, timestamp, radius, armor_count, std::move(covariance_diagonal));
   return true;
 }
 

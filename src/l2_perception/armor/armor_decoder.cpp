@@ -22,15 +22,13 @@ struct DecodedCandidate
   float nms_score{0.0F};
 };
 
-[[nodiscard]] float sigmoid(float value) noexcept
+[[nodiscard]] double sigmoid(double value) noexcept
 {
-  if (value >= 0.0F) {
-    const float exp_value = std::exp(-value);
-    return 1.0F / (1.0F + exp_value);
+  if (value > 0.0) {
+    return 1.0 / (1.0 + std::exp(-value));
   }
-
-  const float exp_value = std::exp(value);
-  return exp_value / (1.0F + exp_value);
+  const double exp_value = std::exp(value);
+  return exp_value / (1.0 + exp_value);
 }
 
 [[nodiscard]] cv::Rect boundsOf(const std::array<cv::Point2f, 4>& corners)
@@ -133,13 +131,14 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
   candidates.reserve(candidate_count);
   for (std::size_t candidate = 0; candidate < candidate_count; ++candidate) {
     // 先筛低置信度候选，减少后续角点转换和 NMS 的工作量。
-    float confidence = valueAt(candidate, config_.confidence_index);
+    double score = valueAt(candidate, config_.confidence_index);
     if (config_.confidence_is_logit) {
-      confidence = sigmoid(confidence);
+      score = sigmoid(score);
     }
-    if (!std::isfinite(confidence) || confidence < config_.confidence_threshold) {
+    if (!std::isfinite(score) || score < config_.confidence_threshold) {
       continue;
     }
+    const float confidence = static_cast<float>(score);
 
     std::array<cv::Point2f, 4> raw_model_corners{};
     for (std::size_t corner = 0; corner < raw_model_corners.size(); ++corner) {

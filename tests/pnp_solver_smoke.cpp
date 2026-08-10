@@ -31,15 +31,15 @@ void expect(bool condition, std::string_view message)
   }
 }
 
-[[nodiscard]] std::vector<cv::Point3d> armorPoints(double width)
+[[nodiscard]] std::vector<cv::Point3f> armorPoints(double width)
 {
-  const double half_width = width / 2.0;
-  const double half_height = kArmorHeight / 2.0;
+  const float half_width = static_cast<float>(width / 2.0);
+  const float half_height = static_cast<float>(kArmorHeight / 2.0);
   return {
-    {0.0, half_width, half_height},
-    {0.0, -half_width, half_height},
-    {0.0, -half_width, -half_height},
-    {0.0, half_width, -half_height}};
+    {0.0F, half_width, half_height},
+    {0.0F, -half_width, half_height},
+    {0.0F, -half_width, -half_height},
+    {0.0F, half_width, -half_height}};
 }
 
 // 复刻 PnpSolver 内部的 armor -> world 旋转：安装倾角固定 15 度，只有 yaw 自由。
@@ -70,7 +70,7 @@ void expect(bool condition, std::string_view message)
   const cv::Matx33d& rotation,
   const cv::Vec3d& translation)
 {
-  std::vector<cv::Point2d> projected;
+  std::vector<cv::Point2f> projected;
   cv::projectPoints(
     armorPoints(width),
     rotationVector(rotation),
@@ -100,7 +100,7 @@ void expect(bool condition, std::string_view message)
     armor.xyz_in_camera.y(),
     armor.xyz_in_camera.z()};
 
-  std::vector<cv::Point2d> projected;
+  std::vector<cv::Point2f> projected;
   cv::projectPoints(
     armorPoints(width),
     rotationVector(rotation),
@@ -130,11 +130,11 @@ void expect(bool condition, std::string_view message)
          std::isinf(armor.reprojection_error);
 }
 
-[[nodiscard]] bool allQualityFlagsClear(const L3Estimation::Armor& armor)
+// PnP 是否成功提交了位姿。name 只在提交的那一步才被赋值，任何失败路径上都
+// 保持 Unknown——这是 Tracker 唯一的观测门限，ArmorQuality 已经不存在了。
+[[nodiscard]] bool poseCommitted(const L3Estimation::Armor& armor)
 {
-  return !armor.quality.pnp_ok && !armor.quality.reprojection_ok &&
-         !armor.quality.geometry_ok && !armor.quality.finite &&
-         !armor.quality.valid();
+  return armor.name != L3Estimation::ArmorName::Unknown;
 }
 
 [[nodiscard]] L1Sensor::CameraCalibration cloneCalibration(
@@ -217,15 +217,7 @@ int main()
     (armor.ypr_in_world.tail<2>() - expected_world_ypr.tail<2>()).norm();
   const Eigen::Vector3d expected_ypd = L6Telemetry::xyz2ypd(expected_world);
 
-  expect(armor.quality.pnp_ok, "valid synthetic armor did not solve PnP");
-  expect(armor.quality.geometry_ok, "valid synthetic armor failed geometry checks");
-  expect(armor.quality.finite, "valid synthetic armor produced non-finite output");
-  expect(
-    armor.quality.reprojection_ok,
-    "near-zero synthetic reprojection failed its gate");
-  expect(
-    armor.quality.valid(),
-    "valid PnP observation did not pass the combined quality check");
+  expect(poseCommitted(armor), "valid synthetic armor did not solve PnP");
   expect(
     armor.type == L3Estimation::ArmorType::Small,
     "infantry armor did not use the small model");
@@ -245,13 +237,47 @@ int main()
   expect(
     armor.reprojection_error < 1e-3,
     "noise-free synthetic armor does not have near-zero pixel RMSE");
-  // yaw_sigma 来自高斯牛顿收敛点的曲率。上界取得很宽松：这里只确认它确实
-  // 被算了出来且量级合理，真正的标定留给实机数据。为零说明曲率被当成了
-  // 无穷大，那种情况下 EKF 会无条件相信这个 yaw，比不给还危险。
+  // sp_vision 的 1 度离散搜索不估计 yaw 标准差；兼容字段保持无穷。
   expect(
-    std::isfinite(armor.yaw_sigma) && armor.yaw_sigma > 0.0 &&
-      armor.yaw_sigma < 1.0,
-    "yaw sigma from Gauss-Newton curvature is missing or implausible");
+    std::isinf(armor.yaw_sigma),
+    "SP-compatible discrete yaw search unexpectedly estimated yaw sigma");
+
+  // 回归用例：人为生成一个在枪管背后 180° 的零误差平面解。整周搜索
+  // 会把这个背面极小值选中；SP 的行为是无论整周哪里代价更小，输出都必须
+  // 留在枪管 yaw 的 [-70°, +69°] 枚举窗口内。
+  {
+    const double barrel_yaw =
+      L6Telemetry::eulers(R_world_barrel, 2, 1, 0)[0];
+    const double back_yaw =
+      L6Telemetry::limit_rad(barrel_yaw + std::numbers::pi);
+    const Eigen::Matrix3d R_armor_world =
+      armorRotationInWorldReference(back_yaw);
+    const Eigen::Matrix3d R_camera_barrel =
+      calibration.T_barrel_camera->linear();
+    const Eigen::Vector3d t_camera_barrel =
+      calibration.T_barrel_camera->translation();
+    const Eigen::Matrix3d R_armor_camera = R_camera_barrel.transpose() *
+      R_world_barrel.transpose() * R_armor_world;
+    const Eigen::Vector3d t_armor_camera = R_camera_barrel.transpose() *
+      (R_world_barrel.transpose() * expected_world - t_camera_barrel);
+
+    L3Estimation::Armor back_minimum;
+    back_minimum.class_id =
+      static_cast<int>(L2Perception::ArmorClass::Infantry3);
+    back_minimum.points = projectArmor(
+      calibration, kSmallWidth, L6Telemetry::toCv(R_armor_camera),
+      cv::Vec3d{
+        t_armor_camera.x(), t_armor_camera.y(), t_armor_camera.z()});
+    solver.single_pnp(back_minimum);
+
+    const double optimized_offset = L6Telemetry::limit_rad(
+      back_minimum.ypr_in_world[0] - barrel_yaw);
+    expect(poseCommitted(back_minimum), "back-minimum PnP pose was not committed");
+    expect(
+      optimized_offset >= -70.0 * std::numbers::pi / 180.0 - 1e-12 &&
+        optimized_offset <= 69.0 * std::numbers::pi / 180.0 + 1e-12,
+      "yaw optimizer escaped SP's barrel-centered search window");
+  }
 
   // Hero 独占大装甲尺寸；包括 BaseLarge 在内的其余合法 class_id 都用小装甲。
   for (int class_id = static_cast<int>(L2Perception::ArmorClass::Guard);
@@ -267,8 +293,7 @@ int main()
     solver.single_pnp(sized_armor);
 
     expect(
-      sized_armor.quality.pnp_ok && sized_armor.quality.geometry_ok &&
-        sized_armor.quality.finite,
+      poseCommitted(sized_armor),
       "a legal armor class did not produce a usable PnP result");
     expect(
       (sized_armor.xyz_in_camera - expected_camera).norm() < 1e-3,
@@ -297,9 +322,7 @@ int main()
 
   const double manual_rmse = manualReprojectionRmse(calibration, noisy_armor);
   expect(
-    noisy_armor.quality.pnp_ok && noisy_armor.quality.geometry_ok &&
-      noisy_armor.quality.finite,
-    "noisy armor did not retain a valid PnP pose");
+    poseCommitted(noisy_armor), "noisy armor did not retain a valid PnP pose");
   expect(
     noisy_armor.reprojection_error > 1e-3,
     "corner noise unexpectedly produced zero reprojection error");
@@ -307,26 +330,16 @@ int main()
     std::abs(noisy_armor.reprojection_error - manual_rmse) < 1e-8,
     "reported reprojection error is not four-corner pixel RMSE");
 
-  L3Estimation::ArmorConfig strict_config;
-  strict_config.max_reprojection_error = 0.05;
-  L3Estimation::PnpSolver strict_solver(calibration, strict_config);
-  strict_solver.set_R_world_barrel(
-    std::optional<Eigen::Quaterniond>{q_world_barrel});
-  L3Estimation::Armor rejected_by_reprojection = noisy_armor;
-  strict_solver.single_pnp(rejected_by_reprojection);
+  // 重投影误差只是诊断量，不再是门限：与 sp_vision 一致，无论 RMSE 多大，
+  // 位姿照样提交，Tracker 照样把它喂进 EKF。
+  L3Estimation::Armor large_error_armor = noisy_armor;
+  for (auto& point : large_error_armor.points) {
+    point.x += 6.0F;
+  }
+  solver.single_pnp(large_error_armor);
   expect(
-    rejected_by_reprojection.quality.pnp_ok &&
-      rejected_by_reprojection.quality.geometry_ok &&
-      rejected_by_reprojection.quality.finite,
-    "reprojection gate incorrectly discarded the PnP pose itself");
-  expect(
-    rejected_by_reprojection.reprojection_error >
-      strict_config.max_reprojection_error &&
-      !rejected_by_reprojection.quality.reprojection_ok,
-    "above-threshold corner perturbation passed reprojection gating");
-  expect(
-    !rejected_by_reprojection.quality.valid(),
-    "rejected reprojection was marked valid for EKF use");
+    poseCommitted(large_error_armor),
+    "a large reprojection error must no longer reject the observation");
 
   // 当前与 SP-Vision 一致，solvePnP + IPPE 使用单解。
   L3Estimation::Armor frontal_armor;
@@ -336,15 +349,12 @@ int main()
     calibration, kSmallWidth, optical_alignment, tvec);
   solver.single_pnp(frontal_armor);
   expect(
-    frontal_armor.quality.pnp_ok && frontal_armor.quality.geometry_ok &&
-      frontal_armor.quality.reprojection_ok,
-    "near-frontal planar observation failed PnP");
+    poseCommitted(frontal_armor), "near-frontal planar observation failed PnP");
   // 失败路径都复用一个已有结果，验证不会泄漏上一帧状态。
   L3Estimation::Armor nan_armor = frontal_armor;
   nan_armor.points[1].x = std::numeric_limits<float>::quiet_NaN();
   solver.single_pnp(nan_armor);
   expect(outputsCleared(nan_armor), "NaN input retained previous PnP output");
-  expect(allQualityFlagsClear(nan_armor), "NaN input retained quality flags");
 
   solver.set_R_world_barrel(std::nullopt);
   L3Estimation::Armor missing_pose_armor = frontal_armor;
@@ -352,9 +362,6 @@ int main()
   expect(
     outputsCleared(missing_pose_armor),
     "missing image-time barrel pose retained previous PnP output");
-  expect(
-    allQualityFlagsClear(missing_pose_armor),
-    "missing image-time barrel pose retained quality flags");
   solver.set_R_world_barrel(
     std::optional<Eigen::Quaterniond>{q_world_barrel});
 
@@ -368,12 +375,7 @@ int main()
     calibration, kSmallWidth, back_facing_rotation, tvec);
   solver.single_pnp(wrong_geometry_armor);
   expect(
-    wrong_geometry_armor.quality.pnp_ok,
-    "back-facing test geometry did not reach pose validation");
-  expect(
-    wrong_geometry_armor.quality.geometry_ok &&
-      wrong_geometry_armor.quality.finite &&
-      wrong_geometry_armor.quality.reprojection_ok,
+    poseCommitted(wrong_geometry_armor),
     "SP-compatible solvePnP rejected a finite back-facing pose");
 
   auto invalid_calibration = cloneCalibration(calibration);
@@ -390,22 +392,16 @@ int main()
   expect(
     outputsCleared(invalid_calibration_armor),
     "invalid calibration retained previous PnP output");
-  expect(
-    allQualityFlagsClear(invalid_calibration_armor),
-    "invalid calibration retained quality flags");
 
   L3Estimation::Armor invalid_class_armor = frontal_armor;
   invalid_class_armor.class_id = -1;
   solver.single_pnp(invalid_class_armor);
   expect(
-    outputsCleared(invalid_class_armor) &&
-      allQualityFlagsClear(invalid_class_armor),
+    outputsCleared(invalid_class_armor),
     "invalid class_id retained previous PnP state");
 
-  // reproject_armor 内部为了 yaw 搜索的速度自己实现了 Brown-Conrady 畸变，
-  // 而不是每次都调 cv::projectPoints。这一段是那份复刻的唯一防线：只要两者
-  // 出现分歧，yaw 搜索最小化的就不是真正的重投影误差，而这种错误在整车
-  // 结果上表现为缓慢的偏差，不会有任何显式报错。
+  // reproject_armor 必须和 SP 一样走 Point3f/Point2f 的 cv::projectPoints；
+  // 逐个 yaw 与独立参考调用核对，防止以后又换回另一条手写投影路径。
   {
     double worst_pixel_error = 0.0;
     for (int yaw_degrees = -180; yaw_degrees < 180; yaw_degrees += 7) {
@@ -429,7 +425,7 @@ int main()
       const Eigen::Vector3d t_armor_camera = R_camera_barrel.transpose() *
         (R_world_barrel.transpose() * expected_world - t_camera_barrel);
 
-      std::vector<cv::Point2d> reference;
+      std::vector<cv::Point2f> reference;
       cv::projectPoints(
         armorPoints(kSmallWidth),
         rotationVector(L6Telemetry::toCv(R_armor_camera)),
@@ -440,16 +436,11 @@ int main()
         reference.size() == fast.size(),
         "fast reprojection returned a different number of corners");
       for (std::size_t index = 0; index < reference.size(); ++index) {
-        // reproject_armor 对外返回 Point2f，700 像素量级上 float 本身就有约
-        // 6e-5 的量化台阶。把参考值同样降到 float 再比，剩下的差异才是两套
-        // 投影数学的差异；否则测的是浮点格式而不是公式。
         worst_pixel_error = std::max(
           worst_pixel_error,
           std::hypot(
-            static_cast<double>(static_cast<float>(reference[index].x)) -
-              static_cast<double>(fast[index].x),
-            static_cast<double>(static_cast<float>(reference[index].y)) -
-              static_cast<double>(fast[index].y)));
+            static_cast<double>(reference[index].x - fast[index].x),
+            static_cast<double>(reference[index].y - fast[index].y)));
       }
     }
     expect(

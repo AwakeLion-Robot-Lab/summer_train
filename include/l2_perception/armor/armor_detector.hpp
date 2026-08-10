@@ -13,7 +13,7 @@
 namespace L2Perception
 {
 
-// L2 装甲检测编排层：图像预处理 → 原始推理 → 装甲模型解码 → 灯条精修与筛选。
+// L2 装甲检测编排层：图像预处理 → 原始推理 → 装甲模型解码 → 传统灯条精修。
 // 它不拥有 PnP、跟踪或开火策略；这些工作在 L3/L4/L5。
 class ArmorDetector
 {
@@ -30,12 +30,11 @@ public:
   // 一帧同步检测。Backend/Decoder 抛出的异常会被转换为日志和空结果，避免中断主循环。
   [[nodiscard]] std::vector<Armor> detect(const cv::Mat& image) const;
 
-  // 最近一次 detect() 的精修/筛选统计。精修筛选会静默删除检出，
-  // 不把计数暴露出来就无法判断它是否在误杀有效目标。
+  // 最近一次 detect() 的传统精修统计。
   [[nodiscard]] const RefineStats& lastRefineStats() const noexcept { return last_refine_stats_; }
 
-  // 逐块判定明细，含已被删除的 Rejected 检出。仅在 collectRefineRecords(true)
-  // 之后才填充，实机路径保持关闭以免每帧多一次分配。
+  // 逐块判定明细。仅在 collectRefineRecords(true) 之后才填充，实机路径保持关闭
+  // 以免每帧多一次分配。
   [[nodiscard]] const std::vector<RefineRecord>& lastRefineRecords() const noexcept
   {
     return last_refine_records_;

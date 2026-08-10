@@ -51,10 +51,12 @@ void require(bool condition, const std::string& message)
 {
   L5Control::FireInput input;
 
-  L3Estimation::Target target;
+  // 火控只读目标的 name（用来查板型换算角度容差），滤波器状态本身用不到，
+  // 所以这里用默认构造的目标就够。跟踪状态由 Tracker 单独提供。
+  L3Estimation::TrackedTarget target;
   target.name = L3Estimation::ArmorName::Infantry3;
-  target.track_state = L3Estimation::TrackState::Tracking;
   input.target = target;
+  input.track_state = L3Estimation::TrackState::Tracking;
 
   L4Planning::Plan plan;
   plan.valid = true;
@@ -219,7 +221,7 @@ void testReasonsAreNotShortCircuited()
   const L5Control::FireDecider decider(config);
 
   auto input = makeInput();
-  input.target->track_state = L3Estimation::TrackState::TempLost;
+  input.track_state = L3Estimation::TrackState::TempLost;
   input.serial_fresh = false;
   input.gimbal_pose_fresh = false;
   input.command_jump = true;

@@ -65,22 +65,30 @@ target("newvision")
         add_links("opencv_core", "opencv_imgproc", "opencv_imgcodecs", "opencv_videoio", "opencv_calib3d", "opencv_dnn", "opencv_highgui", "yaml-cpp", {public = true})
     end
     if has_config("use_openvino") then
-        -- 只使用已经安装并由 pkg-config 暴露的 OpenVINO，避免 xrepo 再下载一套 SDK。
+        -- SP-Vision 固定使用 /opt/intel/openvino_2024.6.0。模型推理的最后几个
+        -- ulp 会随 Runtime 版本变化，而 SP 的 1 度离散 yaw 搜索会放大这种差异，
+        -- 所以本机存在同一 SDK 时优先与 SP 链接同一版本；其他机器再回退 pkg-config。
         on_load(function (target)
-            import("lib.detect.find_package")
-            local openvino = find_package("pkgconfig::openvino", {version = true})
-            assert(openvino,
-                "OpenVINO was not found through pkg-config; source setupvars.sh first")
-
-            target:add("includedirs", openvino.includedirs)
-            if openvino.defines then
-                target:add("defines", openvino.defines)
+            local sp_openvino_runtime = "/opt/intel/openvino_2024.6.0/runtime"
+            local sp_openvino_include = path.join(sp_openvino_runtime, "include")
+            local sp_openvino_lib = path.join(sp_openvino_runtime, "lib", "intel64")
+            if os.isdir(sp_openvino_include) and os.isfile(path.join(sp_openvino_lib, "libopenvino.so")) then
+                target:add("includedirs", sp_openvino_include)
+                target:add("linkdirs", sp_openvino_lib, {public = true})
+                target:add("rpathdirs", sp_openvino_lib, {public = true})
+            else
+                import("lib.detect.find_package")
+                local openvino = find_package("pkgconfig::openvino", {version = true})
+                assert(openvino,
+                    "OpenVINO was not found; install 2024.6 like SP or expose it through pkg-config")
+                target:add("includedirs", openvino.includedirs)
+                if openvino.defines then
+                    target:add("defines", openvino.defines)
+                end
+                target:add("linkdirs", openvino.linkdirs, {public = true})
+                target:add("rpathdirs", openvino.linkdirs, {public = true})
             end
             target:add("defines", "NEWVISION_HAS_OPENVINO=1")
-
-            -- newvision 是静态库，最终可执行文件仍需要继承 Runtime 链接和 RUNPATH。
-            target:add("linkdirs", openvino.linkdirs, {public = true})
-            target:add("rpathdirs", openvino.linkdirs, {public = true})
             target:add("links", "openvino", {public = true})
         end)
     end
@@ -167,16 +175,6 @@ target("fire_decision_smoke")
     set_rundir("$(projectdir)")
     add_files("tests/fire_decision_smoke.cpp")
     add_deps("newvision")
-
-target("ieskf_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/ieskf_smoke.cpp")
-    add_files("src/l3_estimation/ieskf.cpp")
-    add_files("src/l3_estimation/ekf_.cpp")
-    add_includedirs("include")
-    add_includedirs("/usr/include/eigen3")
 
 target("tracker_smoke")
     set_kind("binary")

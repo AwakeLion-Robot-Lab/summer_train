@@ -121,43 +121,11 @@ struct Plan {
   bool valid{false};
 };
 
-// sp_vision Aimer 行为复刻开关，仅用于差分定位，见 L3Estimation::SpCompatConfig。
-// 同样的原则：照抄，**包括 bug**，不许顺手改好。
-struct SpCompatPlanConfig {
-  bool enable{false};
-
-  // 选板换成 sp_vision Aimer::choose_aim_point 的实现：
-  //   - jumped 为 false 时无条件瞄 0 号板；
-  //   - 否则取 |delta_angle| <= 60 度的板，两块以上时锁定其中一块，
-  //     只有当锁定的那块不再是前两个候选之一才换；
-  //   - 没有档位阶梯，任何角速度下都瞄实体板。
-  // 复刻里保留 sp 的判据笔误：它写的是 ekf_x[8]（半径 r），本意应该是
-  // ekf_x[7]（角速度 v_yaw）。r 恒在 (0.05, 0.5)，所以 |r| <= 2 恒真，
-  // sp 里那段 coming/leaving 小陀螺选板逻辑从来没有执行过。
-  bool sp_choose_aim_point{true};
-
-  // 延迟换成 sp 的标量模型：0.005 + (v_yaw > decision_speed ? high : low)。
-  // 同样保留笔误：sp 判的是 v_yaw > decision_speed 而不是 |v_yaw|，所以
-  // 反向自转的目标永远拿不到高速档延迟。
-  bool sp_delay{true};
-
-  // sp configs/demo.yaml 的数值。
-  double decision_speed{8.0};          // rad/s
-  double high_speed_delay_time{0.030};  // s
-  double low_speed_delay_time{0.015};   // s
-  double aimer_overhead{0.005};         // s，sp 写死的 detector→aimer 耗时
-  double front_window{60.0 * std::numbers::pi / 180.0};
-};
-
 // 选板策略参数。角度一律用弧度存储，YAML 侧再做度数换算。
 struct SelectorConfig {
-  // 选板前置窗口：法线夹角超过该值的板背对枪口，不作为瞄准候选。窗口内
-  // 一块板都没有时不放弃跟随，退化成取夹角最小的那块并标记降级。
-  double front_window{60.0 * std::numbers::pi / 180.0};
-
-  // 锁定迟滞：已锁定的板需要比竞争者差过这个角度才允许换板。两块板都接近
-  // 窗口边缘时会逐帧互换，命令抖动到云台根本跟不上。
-  double switch_hysteresis{5.0 * std::numbers::pi / 180.0};
+  // sp_vision 普通车选板窗口。窗口为空时直接返回无效，不做 fallback。
+  // SP 源码用 57.3 做 degree -> radian，这里保留同一数值口径。
+  double front_window{60.0 / 57.3};
 
   // 击发窗口。sp_vision 和 Climber_Vision 拿它当选板判据，这里只拿它当**火控**
   // 判据：coming/leaving 回答的是"子弹飞到时这块板还正对枪口吗"，那是开火
@@ -165,8 +133,8 @@ struct SelectorConfig {
   //
   // coming 是窗口半宽，leaving 是转出侧的截止线——板越过这条线后，等子弹
   // 飞到已经背对枪口了。
-  double coming_angle{40.0 * std::numbers::pi / 180.0};
-  double leaving_angle{15.0 * std::numbers::pi / 180.0};
+  double coming_angle{60.0 / 57.3};
+  double leaving_angle{20.0 / 57.3};
 
   // 前哨站转速固定且只有 3 块板，窗口比普通车辆宽。
   double outpost_coming_angle{70.0 * std::numbers::pi / 180.0};
@@ -233,35 +201,30 @@ struct BallisticConfig {
 
 struct PlanConfig {
   int max_iterations{10};
-  std::chrono::microseconds fly_time_tolerance{25};
-  double switch_dead_zone{5.0};  // degree
+  // SP Aimer 的迭代收敛门限固定为 1 ms。
+  std::chrono::microseconds fly_time_tolerance{1000};
 
-  // 弹速缺失或明显异常时使用的兜底初速，单位 m/s。裁判系统上电初期会
-  // 回传 0，此时用兜底值仍可解算，但 L5 会因 BadBulletSpeed 拒绝开火。
-  //
-  // 弹速门限只此一处。BallisticSolver 不再自带业务门限，它只判"这个数学
-  // 问题有没有解"——两处各设一道且数值不一致的话，落在夹缝里的弹速会既
-  // 不触发兜底、又被求解器拒绝，最后报成 BallisticFailed 而不是
-  // BadBulletSpeed，把真正的原因藏掉。
-  // 上下限都要判。只判下限的话，裁判系统回传一个明显错误的高值（比如 40）
-  // 会被直接采信，解出来的弹道偏平，而且不会有任何人报错 —— jlu_vision_26 的
-  // min/max/default 三件套就是为这个设的。
+  // 逐项对应 SP configs/newvision_record.yaml 的 Aimer 参数。Aimer 使用有符号
+  // v_yaw 与 decision_speed 比较，并把选中的延迟加在曝光到击发之前。
+  double high_speed_delay_time{0.030};
+  double low_speed_delay_time{0.015};
+  double decision_speed{8.0};
+  double yaw_offset{0.0};
+  double pitch_offset{0.0};
+
+  // SP Aimer 只在弹速小于 14 m/s 时回退到 23 m/s，没有上限门槛。
   double fallback_bullet_speed{23.0};
-  double min_valid_bullet_speed{21.0};
-  double max_valid_bullet_speed{30.0};
+  double min_valid_bullet_speed{14.0};
 
   [[nodiscard]] bool bulletSpeedValid(double speed) const noexcept
   {
-    return std::isfinite(speed) && speed >= min_valid_bullet_speed &&
-           speed <= max_valid_bullet_speed;
+    // SP 只在 bullet_speed < 14 时换成 23 m/s；没有上限门槛。
+    return std::isfinite(speed) && speed >= min_valid_bullet_speed;
   }
 
   BallisticConfig ballistic;
   AimPhaseConfig aim_phase;
   SelectorConfig selector;
-
-  // sp_vision Aimer 行为复刻，默认关闭，实机不要打开。
-  SpCompatPlanConfig sp_compat;
 
   // 云台角加速度上限，单位 radian/second²。定点规划器不使用；五次多项式
   // 靠它决定过渡段时长（逐步增大直到峰值加速度落在限内），MPC 用作硬约

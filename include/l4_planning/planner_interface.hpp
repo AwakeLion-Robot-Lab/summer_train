@@ -1,7 +1,7 @@
 #pragma once
 
 #include "l1_sensor/serial/robot_state.hpp"
-#include "l3_estimation/types.hpp"
+#include "l3_estimation/target_estimator.hpp"
 #include "l4_planning/types.hpp"
 
 #include <optional>
@@ -11,13 +11,18 @@ namespace L4Planning {
 // 规划器输入。用结构体而不是参数列表，是为了后续加字段时不必改动已有
 // 实现的签名——MPC 和五次多项式需要的边界条件比定点规划器多。
 struct PlanInput {
-  // L3 在曝光时刻的整车快照，空表示当前无目标。
-  std::optional<L3Estimation::TargetState> target;
+  // L3 在曝光时刻的整车目标副本，空表示当前无目标。规划器可以在它上面自由
+  // 外推——那是自己的副本，不会影响 Tracker 持有的滤波器。
+  std::optional<L3Estimation::TrackedTarget> target;
   L1Sensor::RobotState robot_state;
 
   // 本次规划发生的时刻。必须由调用方传入而不是内部取 now()：离线回放要
   // 求 plan() 是纯函数，同一段数据跑两次必须得到同一结果。
   TimePoint plan_time{};
+
+  // 对应 SP Aimer::aim 的 to_now。实机为 true，使用曝光到 plan_time 的实测
+  // 延迟；离线回放为 false，使用 SP 测试固定的 5 ms 检测耗时。
+  bool to_now{true};
 
   // 云台当前角速度，作为轨迹起点的边界条件。定点规划器忽略这两个字段；
   // 五次多项式和 MPC 需要它们才能保证轨迹在起点速度连续。下位机尚未回传
