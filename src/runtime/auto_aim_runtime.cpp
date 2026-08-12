@@ -4,7 +4,7 @@
 #include "l1_sensor/serial/serial_worker.hpp"
 #include "l2_perception/armor.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
-#include "l2_perception/inference/backends/openvino_backend.hpp"
+#include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/tracker.hpp"
 #include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
@@ -13,7 +13,6 @@
 #include <opencv2/opencv.hpp>
 
 #include <exception>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -37,25 +36,30 @@ namespace {
   return false;
 }
 
-L2Perception::ArmorDetector makeArmorDetector()
+L2Perception::ArmorDetector makeArmorDetector(
+  const runtime::AutoAimConfig& config)
 {
-  const std::filesystem::path model_path{"model/armor_model/yolov5.xml"};
-
   try {
-    auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
+    auto backend = L2Perception::makeInferenceBackend(config.inference_backend);
     L2Perception::InferenceModelConfig model_config;
-    model_config.model_path = model_path;
-    model_config.device = "CPU";
-    // SP-Vision 的宿主图像是 BGR，但模型输入在 OpenVINO 预处理图中转换为 RGB。
+    model_config.model_path = config.model_path;
+    model_config.device = config.inference_device;
+    // 宿主输入统一为 BGR；颜色、归一化和布局转换由具体后端完成。
     model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
     model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
 
-    L6Telemetry::logInfo("armor model loaded", model_path.string(), model_config.device);
+    L6Telemetry::logInfo(
+      "armor model loaded",
+      std::string{L2Perception::inferenceBackendName(config.inference_backend)},
+      config.model_path.string(), model_config.device);
     return L2Perception::ArmorDetector(std::move(backend));
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
-    L6Telemetry::logError("armor model unavailable", model_path.string(), error.what());
+    L6Telemetry::logError(
+      "armor model unavailable",
+      std::string{L2Perception::inferenceBackendName(config.inference_backend)},
+      config.model_path.string(), error.what());
     return {};
   }
 }
@@ -69,6 +73,8 @@ AutoAimRuntime::AutoAimRuntime(const std::string &config_path)
 
 void AutoAimRuntime::run() {
   running_ = true;
+  const AutoAimConfig auto_aim_config =
+    loadAutoAimConfig("config/auto_aim.yaml");
   auto camera = std::make_shared<L1Sensor::Camera>(config_path_);
   {
     std::lock_guard<std::mutex> lock(camera_mutex_);
@@ -76,7 +82,8 @@ void AutoAimRuntime::run() {
   }
   L6Telemetry::FpsCounter fps_counter;
   // 启动时只加载一次模型；每帧仅执行预处理、推理和 Decoder。
-  L2Perception::ArmorDetector armor_detector = makeArmorDetector();
+  L2Perception::ArmorDetector armor_detector =
+    makeArmorDetector(auto_aim_config);
 
   //配置并启动串口
   auto serial_config = L1Sensor::loadSerialConfig("config/serial_config.yaml");
@@ -87,7 +94,6 @@ void AutoAimRuntime::run() {
   }
   // L3 Tracker 持有 PnP 和 EKF。标定缺失时 runtime 继续运行检测和显示，
   // 但后续不得生成有效瞄准/开火命令。
-  AutoAimConfig auto_aim_config;
   std::optional<L3Estimation::Tracker> tracker;
   const auto& camera_calibration = camera->calibration();
   if (!camera_calibration) {

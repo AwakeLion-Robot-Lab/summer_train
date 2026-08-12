@@ -1,0 +1,6 @@
+# 当前节点仅选择推理后端，不包含 GTSAM/因子图配置。
+# 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
+inference:
+  backend: "tensorrt"
+  model_path: "model/armor_model/0526.onnx"
+  device: "CUDA:0"

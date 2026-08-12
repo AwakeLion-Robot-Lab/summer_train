@@ -5,8 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace L2Perception
@@ -18,8 +21,15 @@ enum class ModelColorOrder
   Rgb
 };
 
+enum class InferenceBackendKind
+{
+  OpenVino,
+  TensorRt
+};
+
 // 仅包含所有后端都能理解的模型信息。
-// OpenVINO 的 device 可为 "CPU"、"GPU"；TensorRT 后续会按自己的规则解释该字段。
+// OpenVINO 的 device 可为 "CPU"、"GPU"；TensorRT 接受 "CUDA"、"CUDA:<index>"、
+// "GPU" 或 "GPU:<index>"，并将其解释为 CUDA device 选择。
 // 后端专属参数不要塞进这个公共结构体。
 struct InferenceModelConfig
 {
@@ -44,7 +54,8 @@ struct InferenceModelConfig
 };
 
 // 所有后端对宿主侧输入使用同一契约：uint8、NHWC、BGR，例如 {1, 640, 640, 3}。
-// OpenVINO 在预处理图内转换；TensorRT 后续应在 CUDA 中完成相同转换。
+// OpenVINO 在预处理图内转换；TensorRT 在后端把相同的颜色、归一化和布局转换
+// 写入 CUDA 输入 buffer。
 struct InferenceInputSpec
 {
   std::string name;
@@ -83,5 +94,11 @@ public:
   // 返回结果可以拥有数据，也可以用带生命周期租约的只读零拷贝视图。
   [[nodiscard]] virtual InferenceResult infer(const InferenceInput& input) = 0;
 };
+
+[[nodiscard]] std::string_view inferenceBackendName(InferenceBackendKind backend) noexcept;
+[[nodiscard]] std::optional<InferenceBackendKind> inferenceBackendFromString(
+  std::string_view name);
+[[nodiscard]] std::unique_ptr<IInferenceBackend> makeInferenceBackend(
+  InferenceBackendKind backend);
 
 }  // namespace L2Perception
