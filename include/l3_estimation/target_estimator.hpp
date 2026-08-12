@@ -1,0 +1,85 @@
+#pragma once
+
+#include "l3_estimation/ekf_.hpp"
+#include "l3_estimation/types.hpp"
+
+#include <chrono>
+#include <vector>
+
+namespace L3Estimation {
+
+// 整车 EKF，实现对齐 sp_vision 的 auto_aim::Target。内部十一维状态为
+// [xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
+//
+// 本类型**就是** L3 交给 L4 的对象：Tracker::track() 返回它的副本，L4 在自己
+// 的副本上调 predict(dt) 外推，再用 armor_xyza_list() 展开装甲板。这与 sp 的
+// Aimer::aim(std::list<Target>, ...) 按值收目标、就地 predict 的做法一致，
+// 因此不再有独立的跨层状态快照类型。
+class TrackedTarget
+{
+public:
+  // 目标类别、板型以及最近一次装甲板关联结果。
+  ArmorName name{ArmorName::Unknown};
+  ArmorType armor_type{ArmorType::Small};
+  // 是否关联到过编号 0 以外的装甲板。**粘滞**：一旦为真不再复位。
+  // 为 false 时整车 yaw、第二组半径和高度差几乎不可观测——只见过一块板的话，
+  // 其余板的位置完全由初值猜出来，所以 L4 据此只瞄当前观测到的那块板。
+  bool jumped{false};
+  int last_id{0};  // debug only
+
+  TrackedTarget() = default;
+  // 使用首个装甲板观测反推旋转中心并初始化十一维状态。
+  TrackedTarget(
+    const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
+    Eigen::VectorXd P0_dig);
+  // 构造指定旋转状态的目标，用于无观测的确定性初始化（离线回放和单测）。
+  // 旋转中心落在 (x, 0, 0)，h 是 z2-z1。yaw 在 sp_vision 的同名入口里固定为
+  // 0，这里放开成可选参数，否则测不到"整车转到某个角度"的构型。
+  TrackedTarget(double x, double vyaw, double radius, double h, double yaw = 0.0);
+
+  // 按绝对时间或显式时间间隔执行恒速度预测。
+  void predict(std::chrono::steady_clock::time_point t);
+  void predict(double dt);
+  // 关联观测对应的物理装甲板，并执行一次 EKF 更新。
+  void update(const Armor & armor);
+
+  // 提供只读滤波结果和由整车模型展开的 [x, y, z, yaw] 装甲板列表。
+  Eigen::VectorXd ekf_x() const;
+  const ExtendedKalmanFilter & ekf() const;
+  std::vector<Eigen::Vector4d> armor_xyza_list() const;
+
+  // 车辆物理装甲板数量，以及滤波器最后一次推进到的时刻。L4 用后者算曝光到
+  // 规划的可测量延迟段。
+  [[nodiscard]] int armor_num() const noexcept { return armor_num_; }
+  [[nodiscard]] std::chrono::steady_clock::time_point t() const noexcept { return t_; }
+
+  // 任一候选半径离开物理范围时认为滤波器发散。
+  bool diverged() const;
+
+  // 有效更新达到门限且状态未发散后，目标保持收敛标志。
+  bool converged();
+
+  bool isinit{false};
+
+  [[nodiscard]] bool checkinit() const noexcept;
+
+private:
+  // 车辆物理装甲板数量以及关联、收敛统计。
+  int armor_num_{4};
+  int switch_count_{0};
+  int update_count_{0};
+
+  bool is_switch_{false};
+  bool is_converged_{false};
+
+  ExtendedKalmanFilter ekf_;
+  std::chrono::steady_clock::time_point t_{};
+
+  // 使用 [方位角, 俯仰角, 距离, 装甲板 yaw] 观测更新指定物理装甲板。
+  void update_ypda(const Armor & armor, int id);
+
+  // 从整车状态计算指定装甲板的位置及其观测 Jacobian。
+  Eigen::Vector3d h_armor_xyz(const Eigen::VectorXd & x, int id) const;
+  Eigen::MatrixXd h_jacobian(const Eigen::VectorXd & x, int id) const;
+};
+}  // namespace L3Estimation

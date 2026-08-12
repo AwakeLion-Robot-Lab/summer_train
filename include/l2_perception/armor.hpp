@@ -14,7 +14,7 @@ enum class ArmorColor {
   Unknown
 };
 
-// yolov5.xml 的 9 个车辆类别，数值与模型第 13~21 字段 argmax 的下标一致。
+// SP yolov5.xml 的 9 个车辆类别，数值与模型第 13~21 字段 argmax 的下标一致。
 // class_id 仍保留在 Armor 中，方便记录原始模型编号；
 // 需要语义时调用此函数。
 enum class ArmorClass : int {
@@ -56,7 +56,7 @@ struct Armor {
   float corner_shift{0.0F};
   // 四个角点在原图像素坐标系中的几何中心。
   cv::Point2f center{};
-  // 模型类别下标：0~8 分别为 G、1、2、3、4、5、O、Bs、Bb。
+  // SP 模型约定：0~8 分别为 G、1、2、3、4、5、O、Bs、Bb。
   int class_id{-1};
   ArmorColor color{ArmorColor::Unknown};
   float confidence{0.0F};

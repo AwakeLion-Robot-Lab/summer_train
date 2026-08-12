@@ -174,7 +174,8 @@ void testTiltedArmorNarrowsYawTolerance()
             << b.yaw * 57.3 << " deg\n";
 }
 
-// pitch 也要判：只判 yaw 的话，俯仰没跟上照样开火。
+// pitch 也要判。sp_vision 和 Climber_Vision 的 Shooter 只判 yaw，俯仰没跟上
+// 照样开火。
 void testPitchErrorAlsoBlocks()
 {
   const L5Control::FireDecider decider(makeConfig());

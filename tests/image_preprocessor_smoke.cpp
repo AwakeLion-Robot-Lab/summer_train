@@ -34,17 +34,17 @@ void require(bool condition, const std::string& message)
 int main()
 {
   try {
-    // 4x3 -> 8x6，内容贴在左上角，底部两行补黑。
+    // 4x3 -> 8x6，SP 规则把内容贴在左上角，底部两行补黑。
     const cv::Mat source(3, 4, CV_8UC3, cv::Scalar{10, 20, 30});
     const L2Perception::InferenceInputSpec input_spec{.name = "images", .shape = {1, 8, 8, 3}};
     const auto output = L2Perception::ImagePreprocessor::run(source, input_spec);
 
     require(output.input.isConsistent(), "preprocessed tensor is inconsistent");
-    require(output.transform.source_to_model_scale == 2.0F, "resize scale is wrong");
+    require(output.transform.source_to_model_scale == 2.0F, "SP resize scale is wrong");
     require(output.transform.pad_left == 0 && output.transform.pad_top == 0,
-            "letterbox must be anchored at the top-left corner");
+            "SP letterbox must be anchored at the top-left corner");
     require(output.transform.pad_right == 0 && output.transform.pad_bottom == 2,
-            "letterbox padding dimensions are wrong");
+            "SP letterbox padding dimensions are wrong");
 
     const auto values = output.input.values();
     const std::size_t content_pixel = pixelOffset(7, 5, 8);
@@ -54,7 +54,7 @@ int main()
     const std::size_t padding_pixel = pixelOffset(0, 6, 8);
     require(values[padding_pixel] == 0 && values[padding_pixel + 1] == 0 &&
                 values[padding_pixel + 2] == 0,
-            "letterbox padding must be black");
+            "SP letterbox padding must be black");
 
     const cv::Point2f source_point{1.5F, 1.0F};
     const cv::Point2f model_point = output.transform.sourceToModel(source_point);
@@ -64,12 +64,12 @@ int main()
     require(near(restored_point.x, source_point.x) && near(restored_point.y, source_point.y),
             "letterbox inverse transform is wrong");
 
-    // 验证缩放使用截断而不是四舍五入：7x5 -> 10x7，底部剩余 3 行。
+    // 验证 SP 使用截断而不是四舍五入：7x5 -> 10x7，底部剩余 3 行。
     const cv::Mat uneven_source(5, 7, CV_8UC3, cv::Scalar{1, 2, 3});
     const L2Perception::InferenceInputSpec uneven_spec{.name = "images", .shape = {1, 10, 10, 3}};
     const auto uneven = L2Perception::ImagePreprocessor::run(uneven_source, uneven_spec);
     require(uneven.transform.pad_right == 0 && uneven.transform.pad_bottom == 3,
-            "resize dimensions must use integer truncation");
+            "SP resize dimensions must use integer truncation");
 
     // 非默认 Centered 模式仍保存精确偏移，确保通用接口没有退化。
     L2Perception::ImagePreprocessConfig centered_config;
@@ -82,10 +82,10 @@ int main()
     require(centered.input.values()[centered_padding] == 114,
             "explicit centered padding color is wrong");
 
-    std::cout << "image preprocessor smoke passed\n";
+    std::cout << "SP-Vision image preprocessor smoke passed\n";
     return 0;
   } catch (const std::exception& error) {
-    std::cerr << "image preprocessor smoke failed: " << error.what() << '\n';
+    std::cerr << "SP-Vision image preprocessor smoke failed: " << error.what() << '\n';
     return 1;
   }
 }

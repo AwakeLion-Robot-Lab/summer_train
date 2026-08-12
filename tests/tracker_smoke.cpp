@@ -1,6 +1,4 @@
 #include "l1_sensor/camera/camera_calibration.hpp"
-#include "l3_estimation/filter_est/tracker.hpp"
-#include "l3_estimation/gtsam_est/tracker.hpp"
 #include "l3_estimation/tracker.hpp"
 #include "l6_telemetry/math.hpp"
 
@@ -93,7 +91,7 @@ int main()
   tracker_config.min_detect_count = 2;
   tracker_config.max_temp_lost_count = 1;
   tracker_config.outpost_max_temp_lost_count = 2;
-  L3Estimation::FilterEst::Tracker tracker(calibration, {}, tracker_config);
+  L3Estimation::Tracker tracker(calibration, {}, tracker_config);
   expect(tracker.ready(), "Tracker rejected valid calibration and config");
 
   const auto t0 = std::chrono::steady_clock::now();
@@ -138,7 +136,7 @@ int main()
   expect(second.has_value(), "second observation lost initialized target");
   expect(
     tracker.state() == L3Estimation::TrackState::Tracking && second &&
-      second->state().allFinite() && second->covariance().allFinite(),
+      second->ekf_x().allFinite() && second->ekf().P.allFinite(),
     "second observation did not enter a finite Tracking state");
 
   const auto missing_pose = tracker.track(
@@ -175,7 +173,7 @@ int main()
     tracker.targetArmorPoses().empty(),
     "Lost Tracker retained a stale EKF armor model");
 
-  // 100 ms 的大 dt 保护只在已有跟踪目标时生效。Lost 状态可以在长间隔后
+  // SP 只在已有跟踪目标时应用 100 ms 大 dt 保护。Lost 状态可以在长间隔后
   // 正常初始化；随后 Detecting 状态遇到大 dt 必须重置而不能累计检测次数。
   const auto initialized_after_gap = tracker.track(
     detections, world_barrel, t0 + std::chrono::milliseconds(200));
@@ -188,9 +186,9 @@ int main()
   expect(
     reset_after_large_dt.has_value() &&
       tracker.state() == L3Estimation::TrackState::Detecting,
-    "the 100 ms frame-interval guard did not restart Detecting");
+    "SP 100 ms frame-interval guard did not restart Detecting");
 
-  // Tracker 只负责中心排序和同车辆关联；多目标优先级由更上层的决策
+  // SP 主相机单 Tracker 只负责中心排序和同车辆关联；优先级由外围 Decider
   // 写入，不在这个入口硬编码。
   const auto engineer = makeDetection(
     calibration,
@@ -204,8 +202,8 @@ int main()
 
   // 已稳定跟踪工程后，同帧偶然出现 3 号步兵不得重新初始化 EKF；否则单帧误分类
   // 会让新目标随后 TempLost，零速度初值便会造成 cmd_yaw 平台。按优先级
-  // 本管线没有全向感知输入，因此不存在强制切目标。
-  L3Estimation::FilterEst::Tracker switch_tracker(calibration, {}, tracker_config);
+  // 强制切目标只存在于 SP 的全向感知重载，本管线没有该输入。
+  L3Estimation::Tracker switch_tracker(calibration, {}, tracker_config);
   const std::vector<L2Perception::Armor> engineer_only{engineer};
   const auto engineer_first = switch_tracker.track(
     engineer_only, world_barrel, t0);
@@ -223,7 +221,7 @@ int main()
     ignored_higher_priority &&
       ignored_higher_priority->name == L3Estimation::ArmorName::Engineer &&
       switch_tracker.state() == L3Estimation::TrackState::Tracking,
-    "Tracker switched on a transient higher-priority class");
+    "SP main-camera Tracker switched on a transient higher-priority class");
 
   const std::vector<L2Perception::Armor> infantry3_only{infantry3};
   const auto unmatched_higher_priority = switch_tracker.track(
@@ -232,7 +230,7 @@ int main()
     unmatched_higher_priority &&
       unmatched_higher_priority->name == L3Estimation::ArmorName::Engineer &&
       switch_tracker.state() == L3Estimation::TrackState::TempLost,
-    "Tracker switched class instead of entering TempLost");
+    "SP main-camera Tracker switched class instead of entering TempLost");
 
   const auto engineer_recovered = switch_tracker.track(
     engineer_only, world_barrel, t0 + std::chrono::milliseconds(40));
@@ -240,34 +238,13 @@ int main()
     engineer_recovered &&
       engineer_recovered->name == L3Estimation::ArmorName::Engineer &&
       switch_tracker.state() == L3Estimation::TrackState::Tracking,
-    "Tracker did not recover after transient misclassification");
+    "SP main-camera Tracker did not recover after transient misclassification");
 
   L3Estimation::TrackerConfig invalid_tracker_config = tracker_config;
   invalid_tracker_config.min_detect_count = 0;
-  L3Estimation::FilterEst::Tracker invalid_tracker(
+  L3Estimation::Tracker invalid_tracker(
     calibration, {}, invalid_tracker_config);
   expect(!invalid_tracker.ready(), "Tracker accepted invalid state-machine config");
-
-#ifdef NEWVISION_USE_GTSAM
-  // 同一组像素检测走完整的 GTSAM Tracker 接缝。因子图冷启动按三帧联合优化，
-  // 这里验证 PnP -> ISAM2 Target -> 公共快照和四态状态机能闭环。
-  L3Estimation::GtsamEst::Config graph_config;
-  graph_config.first_update_batch_size = 3;
-  L3Estimation::GtsamEst::Tracker graph_tracker(
-    calibration, {}, {}, graph_config);
-  expect(graph_tracker.ready(), "GTSAM Tracker rejected valid calibration and config");
-  std::optional<L3Estimation::TrackedTarget> graph_target;
-  for (int frame = 0; frame < 5; ++frame) {
-    graph_target = graph_tracker.track(
-      detections, world_barrel,
-      t0 + std::chrono::milliseconds(400 + frame * 10));
-  }
-  expect(
-    graph_target.has_value() && graph_target->valid() &&
-      graph_tracker.state() == L3Estimation::TrackState::Tracking &&
-      graph_tracker.targetArmorPoses().size() == 4,
-    "GTSAM Tracker did not produce a finite Tracking snapshot");
-#endif
 
   if (failure_count != 0) {
     std::cerr << failure_count << " Tracker smoke assertion(s) failed\n";

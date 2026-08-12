@@ -248,7 +248,7 @@ void SerialWorker::txLoop() {
 // 本项目 world 直接取 imu_abs（IMU 轴向），barrel 则是独立定义的右手系，
 // 因此两者之间就是一次普通的链式复合，而不是相似变换：
 //   R_world_barrel = R_world_imu * R_imu_barrel
-// 只有当 world 自身也跟着 barrel 一起重标记时才会退化成
+// 只有当 world 自身也跟着 barrel 一起重标记时（例如 sp_vision）才会退化成
 // R_imu_barrel^T * R_world_imu * R_imu_barrel，本项目不采用那套约定。
 //
 // 这一步必须留在 L1：L3 收到的姿态必须已经是 barrel -> world，否则每个用到

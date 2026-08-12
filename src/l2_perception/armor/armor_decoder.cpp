@@ -18,7 +18,7 @@ struct DecodedCandidate
 {
   Armor detection;
   cv::Rect bounds;
-  // 默认保存 objectness；兼容其他模型时也可保存类别最大分数。
+  // SP 默认保存 objectness；显式兼容其他模型时也可保存类别最大分数。
   float nms_score{0.0F};
 };
 
@@ -43,7 +43,7 @@ struct DecodedCandidate
     max_x = std::max(max_x, corner.x);
     max_y = std::max(max_y, corner.y);
   }
-  // 浮点关键点直接构造成 cv::Rect，坐标和尺寸在此截断为整数。
+  // SP-Vision 将浮点关键点直接构造成 cv::Rect，坐标和尺寸在此截断为整数。
   return {static_cast<int>(min_x), static_cast<int>(min_y), static_cast<int>(max_x - min_x),
           static_cast<int>(max_y - min_y)};
 }
@@ -155,7 +155,7 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
     }
 
     Armor detection;
-    // 按 corner_order 重排模型点。这里不再按几何位置重新排序，
+    // SP-Vision 明确按 0、3、2、1 重排模型点。这里不再按几何位置重新排序，
     // 避免强透视或异常点让角点身份发生跳变。
     for (std::size_t corner = 0; corner < detection.corners.size(); ++corner) {
       detection.corners[corner] =
@@ -194,7 +194,7 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
       best_class_score = valueAt(candidate, config_.class_offset + best_class);
     }
 
-    // 默认以 sigmoid(objectness) 作为 NMS 分数。仍保留 ClassScore
+    // SP-Vision 默认以 sigmoid(objectness) 作为 NMS 分数。仍保留 ClassScore
     // 配置项，便于显式兼容其他同形状模型，但它不再是默认行为。
     const float nms_score =
         config_.nms_score_source == ArmorNmsScoreSource::ClassScore ? best_class_score : confidence;
@@ -211,7 +211,7 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
 
   std::vector<const DecodedCandidate*> kept_candidates;
   if (!config_.class_aware_nms) {
-    // 默认路径直接调用 OpenCV 的 NMSBoxes。
+    // 默认路径直接调用与 SP-Vision 相同的 OpenCV NMSBoxes。
     std::vector<cv::Rect> boxes;
     std::vector<float> scores;
     boxes.reserve(candidates.size());
@@ -253,7 +253,7 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
     }
   }
 
-  // 先完整执行 NMS，再应用 min_confidence (> 0.8)。这个顺序与
+  // 先完整执行 NMS，再应用 SP demo 的 min_confidence (> 0.8)。这个顺序与
   // YOLOV5::parse() -> check_name() 一致。
   std::vector<Armor> detections;
   detections.reserve(kept_candidates.size());

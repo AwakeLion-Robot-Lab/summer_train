@@ -1,4 +1,5 @@
-#pragma once
+#ifndef TOOLS__MATH_HPP
+#define TOOLS__MATH_HPP
 
 #include <Eigen/Geometry>
 
@@ -10,15 +11,10 @@
 
 namespace L6Telemetry {
 
-// 计算时间差 a - b，单位：s
+// 计算时间差a - b，单位：s
 double delta_time(
   const std::chrono::steady_clock::time_point & a, const std::chrono::steady_clock::time_point & b);
 
-// 秒 -> steady_clock 时长，取微秒截断：延迟和飞行时间都在毫秒量级，
-// 亚微秒的尾数没有物理意义，截断掉可以让回放逐帧可复现。
-[[nodiscard]] std::chrono::steady_clock::duration toDuration(double seconds);
-
-// 把角度归一化到 (-pi, pi]。
 double limit_rad(double angle);
 
 [[nodiscard]] Eigen::Matrix3d toEigen(
@@ -60,11 +56,7 @@ Eigen::Matrix3d rpyToRotation(const Eigen::Vector3d& rpy);
 
 Eigen::Vector3d rotationToRpy(const Eigen::Matrix3d& rotation);
 
-// 笛卡尔 [x, y, z] -> 球坐标 [方位角, 俯仰角, 距离]，以及它的 Jacobian。
-// Jacobian 在原点和 z 轴上不可导，退化时返回零矩阵，让上层的观测不产生修正。
 Eigen::Vector3d xyz2ypd(const Eigen::Vector3d& xyz);
-
-Eigen::Matrix3d xyz2ypdJacobian(const Eigen::Vector3d& xyz);
 
 Eigen::Quaterniond rpyToQuaternion(double roll, double pitch, double yaw);
 
@@ -72,3 +64,5 @@ Eigen::Quaterniond slerpQuaternion(
   const Eigen::Quaterniond& a, const Eigen::Quaterniond& b, double k);
 
 }  // namespace L6Telemetry
+
+#endif  // TOOLS__MATH_HPP

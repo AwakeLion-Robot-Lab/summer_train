@@ -63,7 +63,7 @@ int main()
     setCandidate(values, 0,
                  {{{100.0F, 100.0F}, {100.0F, 200.0F}, {300.0F, 200.0F}, {300.0F, 100.0F}}}, 0.95F,
                  0, 3, -4.0F);
-    // 与候选 0 高度重叠；虽然类别分数更高，但按 objectness 排序时应被抑制。
+    // 与候选 0 高度重叠；虽然类别分数更高，但 SP 规则应按 objectness 抑制它。
     setCandidate(values, 1,
                  {{{105.0F, 105.0F}, {105.0F, 205.0F}, {305.0F, 205.0F}, {305.0F, 105.0F}}}, 0.90F,
                  1, 4, 10.0F);
@@ -71,7 +71,7 @@ int main()
     setCandidate(values, 2,
                  {{{400.0F, 300.0F}, {400.0F, 350.0F}, {500.0F, 350.0F}, {500.0F, 300.0F}}}, 0.88F,
                  1, 1, 3.0F);
-    // 通过 0.7 初筛但没有严格超过 0.8 的最终门限。
+    // 通过 0.7 初筛但没有严格超过 SP demo 的 0.8 最终门限。
     setCandidate(values, 3, {{{20.0F, 20.0F}, {20.0F, 40.0F}, {60.0F, 40.0F}, {60.0F, 20.0F}}},
                  0.75F, 0, 0, 4.0F);
 
@@ -92,10 +92,10 @@ int main()
 
     const L2Perception::ArmorDecoder decoder;
     const auto detections = decoder.decode(result, transform);
-    require(detections.size() == 2, "thresholds/NMS did not retain exactly two candidates");
+    require(detections.size() == 2, "SP thresholds/NMS did not retain exactly two candidates");
 
     const auto& blue = detections[0];
-    require(blue.color == L2Perception::ArmorColor::Blue, "color index 0 must map to blue");
+    require(blue.color == L2Perception::ArmorColor::Blue, "SP color index 0 must map to blue");
     require(blue.class_id == 3, "class argmax was not preserved");
     require(near(blue.confidence, 0.95F), "objectness sigmoid was not preserved");
     require(near(blue.corners[0].x, 180.0F) && near(blue.corners[0].y, 160.0F),
@@ -110,7 +110,7 @@ int main()
             "Armor center was not derived from source-image corners");
 
     const auto& red = detections[1];
-    require(red.color == L2Perception::ArmorColor::Red, "color index 1 must map to red");
+    require(red.color == L2Perception::ArmorColor::Red, "SP color index 1 must map to red");
     require(red.class_id == 1, "second class argmax is wrong");
 
     bool rejected_invalid_order = false;
@@ -124,10 +124,10 @@ int main()
     }
     require(rejected_invalid_order, "invalid corner-order configuration was accepted");
 
-    std::cout << "armor decoder smoke passed\n";
+    std::cout << "SP-Vision armor decoder smoke passed\n";
     return 0;
   } catch (const std::exception& error) {
-    std::cerr << "armor decoder smoke failed: " << error.what() << '\n';
+    std::cerr << "SP-Vision armor decoder smoke failed: " << error.what() << '\n';
     return 1;
   }
 }

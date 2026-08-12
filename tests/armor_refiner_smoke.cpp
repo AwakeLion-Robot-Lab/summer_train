@@ -1,4 +1,5 @@
-// 验证 ArmorRefiner 的单目标接口：矫正成功就替换角点，失败则原样保留网络结果。
+// 验证 ArmorRefiner 与 SP-Vision Detector::detect(Armor&, image)
+// 相同的单目标接口。
 #include "l2_perception/armor/armor_refiner.hpp"
 
 #include <cmath>
@@ -86,7 +87,7 @@ void testFailureKeepsNetworkResult()
               armor.network_corners == before.network_corners &&
               armor.corner_source == before.corner_source &&
               armor.corner_shift == before.corner_shift,
-          "a failed refinement must keep the network result unchanged");
+          "a failed SP-style refinement must keep the network result unchanged");
 }
 
 void testBatchCompatibilityInterface()
@@ -103,7 +104,7 @@ void testBatchCompatibilityInterface()
   const L2Perception::ArmorRefiner refiner;
   const L2Perception::RefineStats stats = refiner.refine(image, armors, &records);
 
-  require(armors.size() == 2, "refinement must never erase network detections");
+  require(armors.size() == 2, "SP-style refinement must never erase network detections");
   require(stats.refined == 1 && stats.network_kept == 1 && stats.rejected == 0,
           "batch statistics must distinguish refined and preserved network "
           "results");
