@@ -20,7 +20,7 @@ namespace
   return static_cast<float>(cv::norm(left - right));
 }
 
-// 字段与构造方式逐项对应 SP-Vision auto_aim::Lightbar。
+// 单根灯条：由 minAreaRect 的两个短边中点定义上下端点。
 struct Lightbar
 {
   cv::Point2f center{};
@@ -77,7 +77,7 @@ bool ArmorRefiner::detect(Armor& armor, const cv::Mat& bgr_img) const
 
 bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord* record) const
 {
-  // SP-Vision 的点顺序为 TL、TR、BR、BL，newvision::Armor::corners 使用相同约定。
+  // 角点顺序固定为 TL、TR、BR、BL，与 Armor::corners 一致。
   const std::array<cv::Point2f, 4> input_corners = armor.corners;
   if (!finiteCorners(input_corners)) {
     return false;
@@ -99,7 +99,7 @@ bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord*
                                : 0.0F;
   }
 
-  // 以下 ROI 外扩公式原样对应 SP-Vision Detector::detect(Armor&, image)。
+  // ROI 外扩：网络角点可能压在灯条边缘上，不外扩就切掉了灯条端点。
   const cv::Point2f left_top_to_bottom = bl - tl;
   const cv::Point2f right_top_to_bottom = br - tr;
   const cv::Point2f tl1 = (tl + bl) * 0.5F - left_top_to_bottom;
@@ -113,14 +113,14 @@ bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord*
   const cv::Point2f bl2 = (bl1 + br) * 0.5F - 0.75F * bottom_left_to_right;
   const cv::Point2f br2 = (bl1 + br) * 0.5F + 0.75F * bottom_left_to_right;
 
-  // SP 先转为整数 Point 再求 minAreaRect；保留该取整步骤，避免 ROI 边界相差 1 px。
+  // 先转成整数 Point 再求 minAreaRect：ROI 边界差 1 px 就会切掉灯条端点。
   const std::vector<cv::Point> roi_points{tl2, tr2, br2, bl2};
   const cv::Rect bounding_box = cv::minAreaRect(roi_points).boundingRect();
   if (record != nullptr) {
     record->roi = bounding_box;
   }
 
-  // 与 SP 一样：ROI 只要越界就放弃传统矫正，不裁切，也不改动网络结果。
+  // ROI 只要越界就放弃传统矫正，不裁切，也不改动网络结果。
   if (bounding_box.x < 0 || bounding_box.y < 0 ||
       bounding_box.x + bounding_box.width > bgr_img.cols ||
       bounding_box.y + bounding_box.height > bgr_img.rows || bounding_box.empty()) {
@@ -215,8 +215,8 @@ bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord*
   armor.corners = refined_corners;
   armor.corner_source = CornerSource::Refined;
   armor.corner_shift = max_shift;
-  // SP 只覆盖 armor.points，不重算构造时由网络角点得到的 center。中心仍按
-  // 网络结果保留，Tracker 的中心距离排序才能与 SP 完全同口径。
+  // 只覆盖角点，不重算 center：中心用于 Tracker 的候选排序，让它保持网络结果
+  // 可以避免精修的抖动传到目标选择上。
 
   if (record != nullptr) {
     record->corner_shift = max_shift;

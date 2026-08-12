@@ -131,7 +131,7 @@ void expect(bool condition, std::string_view message)
 }
 
 // PnP 是否成功提交了位姿。name 只在提交的那一步才被赋值，任何失败路径上都
-// 保持 Unknown——这是 Tracker 唯一的观测门限，ArmorQuality 已经不存在了。
+// 保持 Unknown——这是 Tracker 唯一的观测门限。
 [[nodiscard]] bool poseCommitted(const L3Estimation::Armor& armor)
 {
   return armor.name != L3Estimation::ArmorName::Unknown;
@@ -237,14 +237,10 @@ int main()
   expect(
     armor.reprojection_error < 1e-3,
     "noise-free synthetic armor does not have near-zero pixel RMSE");
-  // sp_vision 的 1 度离散搜索不估计 yaw 标准差；兼容字段保持无穷。
-  expect(
-    std::isinf(armor.yaw_sigma),
-    "SP-compatible discrete yaw search unexpectedly estimated yaw sigma");
 
   // 回归用例：人为生成一个在枪管背后 180° 的零误差平面解。整周搜索
-  // 会把这个背面极小值选中；SP 的行为是无论整周哪里代价更小，输出都必须
-  // 留在枪管 yaw 的 [-70°, +69°] 枚举窗口内。
+  // 会把这个背面极小值选中；无论整周哪里代价更小，输出都必须留在枪管 yaw
+  // 两侧的枚举窗口内。
   {
     const double barrel_yaw =
       L6Telemetry::eulers(R_world_barrel, 2, 1, 0)[0];
@@ -275,8 +271,8 @@ int main()
     expect(poseCommitted(back_minimum), "back-minimum PnP pose was not committed");
     expect(
       optimized_offset >= -70.0 * std::numbers::pi / 180.0 - 1e-12 &&
-        optimized_offset <= 69.0 * std::numbers::pi / 180.0 + 1e-12,
-      "yaw optimizer escaped SP's barrel-centered search window");
+        optimized_offset <= 70.0 * std::numbers::pi / 180.0 + 1e-12,
+      "yaw optimizer escaped the barrel-centered search window");
   }
 
   // Hero 独占大装甲尺寸；包括 BaseLarge 在内的其余合法 class_id 都用小装甲。
@@ -330,7 +326,7 @@ int main()
     std::abs(noisy_armor.reprojection_error - manual_rmse) < 1e-8,
     "reported reprojection error is not four-corner pixel RMSE");
 
-  // 重投影误差只是诊断量，不再是门限：与 sp_vision 一致，无论 RMSE 多大，
+  // 重投影误差只是诊断量，不是门限：无论 RMSE 多大，
   // 位姿照样提交，Tracker 照样把它喂进 EKF。
   L3Estimation::Armor large_error_armor = noisy_armor;
   for (auto& point : large_error_armor.points) {
@@ -341,7 +337,7 @@ int main()
     poseCommitted(large_error_armor),
     "a large reprojection error must no longer reject the observation");
 
-  // 当前与 SP-Vision 一致，solvePnP + IPPE 使用单解。
+  // solvePnP + IPPE 只取单解。
   L3Estimation::Armor frontal_armor;
   frontal_armor.class_id =
     static_cast<int>(L2Perception::ArmorClass::Infantry5);
@@ -365,7 +361,7 @@ int main()
   solver.set_R_world_barrel(
     std::optional<Eigen::Quaterniond>{q_world_barrel});
 
-  // 与 SP-Vision 一致，不使用正面方向作为拒绝门限。
+  // 不把"板朝向枪口"当成拒绝门限：朝向由后续的 yaw 搜索决定。
   const cv::Matx33d back_facing_rotation{
     0.0, 1.0, 0.0,
     0.0, 0.0, -1.0,
@@ -376,7 +372,7 @@ int main()
   solver.single_pnp(wrong_geometry_armor);
   expect(
     poseCommitted(wrong_geometry_armor),
-    "SP-compatible solvePnP rejected a finite back-facing pose");
+    "solvePnP rejected a finite back-facing pose");
 
   auto invalid_calibration = cloneCalibration(calibration);
   invalid_calibration.camera_matrix.at<double>(0, 0) =
@@ -400,8 +396,8 @@ int main()
     outputsCleared(invalid_class_armor),
     "invalid class_id retained previous PnP state");
 
-  // reproject_armor 必须和 SP 一样走 Point3f/Point2f 的 cv::projectPoints；
-  // 逐个 yaw 与独立参考调用核对，防止以后又换回另一条手写投影路径。
+  // reproject_armor 必须走 cv::projectPoints（含畸变），逐个 yaw 与独立参考
+  // 调用核对，防止以后换成一条手写的针孔投影。
   {
     double worst_pixel_error = 0.0;
     for (int yaw_degrees = -180; yaw_degrees < 180; yaw_degrees += 7) {

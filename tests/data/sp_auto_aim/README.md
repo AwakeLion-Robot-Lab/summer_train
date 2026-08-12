@@ -21,7 +21,7 @@ defaults to `records/3m_high`.
 newvision's calibration schema. It is calibrated under SP's convention, so
 replays that use it must run with `--convention=sp`, which applies SP's
 two-sided IMU-body axis flip before the exposure-time pose reaches
-`L3Estimation::Tracker`. The default is `--convention=imu`, this project's
+`L3Estimation::ITracker`. The default is `--convention=imu`, this project's
 single-sided form, which suits `config/camera_config.yaml`.
 
 Run this dataset from the `newvision` directory:

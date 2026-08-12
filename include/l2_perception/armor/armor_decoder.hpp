@@ -12,7 +12,7 @@
 namespace L2Perception
 {
 
-// 默认按 SP-Vision 的 YOLOV5 协议解码 armor.xml/yolov5.xml：
+// 默认按当前 YOLOV5 模型的输出协议解码 armor.xml/yolov5.xml：
 // 输出名 output、形状 [1, 25200, 22]。
 // 每个候选字段为：8 个角点、1 个置信度 logit、4 个颜色分数、9 个车辆类别分数。
 // 这些字段规则属于 ArmorDecoder，绝不能写进推理 Backend。
@@ -22,7 +22,7 @@ enum class ArmorTensorLayout
   FieldsByCandidates   // [1, field_count, candidate_count]
 };
 
-// NMS 排序使用哪个分数。SP-Vision YOLOV5 使用 sigmoid 后的 objectness。
+// NMS 排序使用哪个分数。当前模型用 sigmoid 后的 objectness。
 enum class ArmorNmsScoreSource
 {
   Objectness,
@@ -35,7 +35,7 @@ struct ArmorDecoderConfig
   ArmorTensorLayout tensor_layout{ArmorTensorLayout::CandidatesByFields};
 
   // 以下 offset 的单位都是“float 字段下标”，不是字节下标。
-  // SP YOLOV5 布局为：0~7 四角点，8 confidence，9~12 颜色，13~21 类别。
+  // 当前模型布局：0~7 四角点，8 confidence，9~12 颜色，13~21 类别。
   std::size_t corner_offset{0};
   std::size_t confidence_index{8};
   std::size_t color_offset{9};
@@ -47,12 +47,12 @@ struct ArmorDecoderConfig
   // 左上、右上、右下、左下。数组值是每个 Armor 目标点对应的模型点下标。
   std::array<std::size_t, 4> corner_order{0, 3, 2, 1};
 
-  // SP-Vision YOLOV5 的颜色通道约定是 0=Blue、1=Red、2=Gray、3=Purple。
+  // 颜色通道约定：0=Blue、1=Red、2=Gray、3=Purple。
   int red_color_index{1};
   int blue_color_index{0};
   int class_id_offset{0};
-  float confidence_threshold{0.7F};  // SP score_threshold_：进入 NMS 的门限。
-  float minimum_confidence{0.8F};    // SP demo min_confidence：NMS 后必须严格大于。
+  float confidence_threshold{0.7F};  // 进入 NMS 的门限。
+  float minimum_confidence{0.8F};    // NMS 之后必须严格大于该值。
   float nms_iou_threshold{0.3F};
   ArmorNmsScoreSource nms_score_source{ArmorNmsScoreSource::Objectness};
   float nms_score_threshold{0.7F};

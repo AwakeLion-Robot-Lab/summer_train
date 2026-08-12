@@ -26,9 +26,8 @@ AimTolerance FireDecider::tolerance(
                          ? config_.armor_width_big
                          : config_.armor_width_small;
 
-  // 板面斜对枪口时，投影到视线方向的宽度按 cos 收缩——这一项是 jlu 和
-  // rm.cv.fans 都有而 talos / FYT 都没有的。缺了它，转到 60° 的板会被当成
-  // 正对的板给出同样宽的容差，等于在最容易脱靶的姿态下最宽容。
+  // 板面斜对枪口时，投影到视线方向的宽度按 cos 收缩。缺了这一项，转到 60° 的板
+  // 会拿到和正对时同样宽的容差，等于在最容易脱靶的姿态下最宽容。
   const double facing = std::abs(std::cos(plan.fire_delta_angle));
   const double half_width = 0.5 * width * config_.hit_margin_ratio * facing;
   const double half_height = 0.5 * config_.armor_height * config_.hit_margin_ratio;
@@ -139,7 +138,7 @@ FireDecision FireDecider::decide(const FireInput& input) const
     std::abs(L6Telemetry::limit_rad(plan.pitch - input.actual_pitch));
 
   if (!decision.tolerance.valid) {
-    // 没有实体装甲板可判——中心档下这意味着这一帧本来就不该开火。
+    // 没有实体装甲板可判，这一帧本来就不该开火。
     reject(RejectReason::AimError);
   } else if (
     decision.yaw_error > decision.tolerance.yaw ||
@@ -157,11 +156,6 @@ FireDecision FireDecider::decide(const FireInput& input) const
   decision.fire_feasible = only_disabled;
   decision.shoot = decision.fire_feasible && config_.shoot_enable;
   return decision;
-}
-
-bool shouldFire(const L4Planning::AimPlan& plan)
-{
-  return plan.valid && plan.fire_admissible;
 }
 
 }  // namespace L5Control

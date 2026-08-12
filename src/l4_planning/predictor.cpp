@@ -1,6 +1,7 @@
 #include "l4_planning/predictor.hpp"
 
-#include <chrono>
+#include "l6_telemetry/math.hpp"
+
 #include <cmath>
 
 namespace L4Planning {
@@ -14,16 +15,14 @@ L3Estimation::TrackedTarget Predictor::predict(
   }
 
   // 走绝对时间入口，滤波器时刻随之推进，返回的副本自带正确的 t()。
-  predicted.predict(
-    target.t() + std::chrono::duration_cast<L3Estimation::TimePoint::duration>(
-                   std::chrono::duration<double>(dt)));
+  predicted.predict(target.timestamp() + L6Telemetry::toDuration(dt));
   return predicted;
 }
 
 std::vector<Eigen::Vector4d> Predictor::armorPoses(
   const L3Estimation::TrackedTarget& target) const
 {
-  return target.armor_xyza_list();
+  return target.armorPoses();
 }
 
 std::vector<Eigen::Vector4d> Predictor::armorPosesAt(

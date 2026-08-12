@@ -1,5 +1,4 @@
-// 离线回放测试，结构对照 sp_vision_25 的 tests/auto_aim_test.cpp：
-// 读取 records/ 下的 avi + txt（每行 "t w x y z"），逐帧跑
+// 离线回放测试：读取 records/ 下的 avi + txt（每行 "t w x y z"），逐帧跑
 // 识别 -> PnP -> 整车跟踪，并把当前观测的 PnP yaw 搜索代价曲线画出来。
 //
 // 代价曲线是这个测试存在的主要理由：PnpSolver::optimize_yaw 搜索使四角点
@@ -11,6 +10,8 @@
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/pnp_solver.hpp"
+#include "l3_estimation/filter_est/tracker.hpp"
+#include "l3_estimation/gtsam_est/tracker.hpp"
 #include "l3_estimation/tracker.hpp"
 #include "l4_planning/planner.hpp"
 #include "l4_planning/predictor.hpp"
@@ -19,6 +20,7 @@
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 #include "l6_telemetry/udp_json_sender.hpp"
+#include "runtime/auto_aim_config.hpp"
 
 #include <Eigen/Geometry>
 
@@ -40,6 +42,8 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include <numeric>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -53,7 +57,7 @@ constexpr double kDegToRad = std::numbers::pi / 180.0;
 // 忽略浮点量化级小步进；相邻两个大于该值的反向步进才记为波形折返。
 constexpr double kDirectionStepThreshold = 0.05 * kDegToRad;
 
-// 诊断曲线仍覆盖整周，用来显示 SP 为什么只搜枪管 yaw 附近：
+// 诊断曲线覆盖整周，用来显示求解器为什么只搜枪管 yaw 附近：
 // 整周里存在不可见的背面局部极小值。
 constexpr double kSearchRangeDegrees = 360.0;
 // 画图采样比求解器的 1 度枚举更细，不参与求解。
@@ -63,8 +67,10 @@ const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
   "{model m | model/armor_model/yolov5.xml | OpenVINO 装甲板模型}"
+  "{auto-aim-config | config/auto_aim.yaml | 自瞄配置 yaml}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
+  "{estimator | filter | 估计器后端：filter（整车 EKF）/ gtsam（因子图）}"
   "{convention | imu | 录像四元数约定：imu / sp}"
   "{serial-config | config/serial_config.yaml | convention=imu 时读 R_imu_barrel}"
   "{predict-time p | 0.1 | 整车预测外推时长（秒），<=0 表示不画预测}"
@@ -74,7 +80,7 @@ const std::string kCommandLineKeys =
   "{view | sp | 叠加层：sp（只画当前 EKF 整车和瞄准板）/ full（全部调试层）}"
   "{overlay-offset | 0 | full 视图下整车叠加层上移的像素数；sp 视图恒为 0}"
   "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
-  "{bullet-speed | 27.0 | 回放没有裁判系统数据；默认与 SP auto_aim_test 一致（m/s）}"
+  "{bullet-speed | 27.0 | 回放没有裁判系统数据，用这个弹速代替（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
   "{fire-limits | false | 填一组占位火控参数，让 fire_feasible 时序可观测}"
   "{@input-path | records/3m_high | avi 和 txt 文件的路径（不含后缀）}";
@@ -120,32 +126,14 @@ void require(bool condition, const std::string& message)
   return "unknown";
 }
 
-[[nodiscard]] const char* phaseName(L4Planning::AimPhase phase) noexcept
-{
-  switch (phase) {
-  case L4Planning::AimPhase::SingleArmor:
-    return "single";
-  case L4Planning::AimPhase::WholeCarArmor:
-    return "car-armor";
-  case L4Planning::AimPhase::WholeCarCenter:
-    return "car-center";
-  }
-  return "unknown";
-}
-
 [[nodiscard]] const char* planErrorName(L4Planning::PlanError error) noexcept
 {
   switch (error) {
   case L4Planning::PlanError::None:            return "none";
   case L4Planning::PlanError::NoTarget:        return "no-target";
-  case L4Planning::PlanError::NotTracking:     return "not-tracking";
   case L4Planning::PlanError::NoArmor:         return "no-armor";
-  case L4Planning::PlanError::NoCalibration:   return "no-calib";
   case L4Planning::PlanError::BadBulletSpeed:  return "bad-speed";
   case L4Planning::PlanError::BallisticFailed: return "ballistic";
-  case L4Planning::PlanError::NotConverged:    return "not-converged";
-  case L4Planning::PlanError::OutOfRange:      return "out-of-range";
-  case L4Planning::PlanError::Switching:       return "switching";
   case L4Planning::PlanError::OutOfWindow:     return "out-of-window";
   }
   return "unknown";
@@ -197,23 +185,22 @@ void require(bool condition, const std::string& message)
 
 // 录像里的四元数是 MCU 给出的 imu_abs 姿态。两种约定的差别只在于 barrel
 // 轴向怎么定义：
-//   sp  —— 录像和它配套的 T_barrel_camera 都按 sp_vision 标定，barrel 的
-//          x、y 轴与 IMU 相反，且 sp 把 world 跟着 barrel 一起重标记了，
-//          所以是双边相似变换 R^T * R_world_imu * R。
+//   sp  —— tests/data/sp_auto_aim 那批录像和它配套的 T_barrel_camera 所用的
+//          约定：barrel 的 x、y 轴与 IMU 相反，且 world 跟着 barrel 一起被
+//          重标记，所以是双边相似变换 R^T * R_world_imu * R。
 //   imu —— 本项目实机约定，world 固定为 imu_abs，只做单边复合
 //          R_world_imu * R_imu_barrel（见 SerialWorker::gimbalPoseAt）。
 //          R_imu_barrel 从 serial_config.yaml 读，与实机同一份数值，
 //          不在这里另写一份。
 // 两者自洽。用哪个取决于录像配套的 T_barrel_camera 是按哪套约定标定的：
-// sp 的 barrel 与 IMU 差 180 度绕 z，本项目的 barrel 由 R_imu_barrel 描述。
+// 前者的 barrel 与 IMU 差 180 度绕 z，本项目的 barrel 由 R_imu_barrel 描述。
 [[nodiscard]] Eigen::Quaterniond toWorldBarrelPose(
   const PoseSample& sample,
   bool sp_convention,
   const Eigen::Matrix3d& R_imu_barrel)
 {
-  // newvision_record.yaml 的 SP 对照配置使用单位 R_gimbal2imubody，Solver
-  // 直接消费录像四元数。这里也直接返回原值，不能额外 normalize 或先转矩阵
-  // 再构造四元数，否则会在 1 度 yaw 网格的等价极小值附近改变胜负。
+  // R_imu_barrel 是单位阵时直接返回原始四元数：不能额外 normalize 或先转成
+  // 矩阵再构造四元数，否则会在 1 度 yaw 网格的等价极小值附近改变胜负。
   if (!sp_convention && R_imu_barrel.isIdentity(0.0)) {
     return sample.q;
   }
@@ -419,27 +406,14 @@ void drawFilterInputArmors(
   return "?";
 }
 
-// 与 PnpSolver::armor_reprojection_error 定义一致：把装甲板按给定世界系
-// yaw 重投影，取四个对应角点的像素距离之和。
+// 直接调求解器公开的代价函数。必须和 optimize_yaw 用同一个定义，否则画出来的
+// 最小点不是求解器真正在找的那个，对账就失去意义。
 [[nodiscard]] double yawCost(
   const L3Estimation::PnpSolver& solver,
   const L3Estimation::Armor& armor,
   double yaw)
 {
-  // 必须和 sp_vision 的 yaw 搜索用同一个定义（四角点二维距离之和），
-  // 否则画出来的最小点不是求解器真正在找的那个，对账就失去意义。
-  const std::vector<cv::Point2f> projected =
-    solver.reproject_armor(armor.xyz_in_world, yaw, armor.type, armor.name);
-  if (projected.size() != armor.points.size()) {
-    return std::numeric_limits<double>::infinity();
-  }
-  double cost = 0.0;
-  for (std::size_t index = 0; index < armor.points.size(); ++index) {
-    const cv::Point2f difference = armor.points[index] - projected[index];
-    cost += std::hypot(
-      static_cast<double>(difference.x), static_cast<double>(difference.y));
-  }
-  return cost;
+  return solver.armor_reprojection_error(armor, yaw);
 }
 
 [[nodiscard]] YawCostCurve sampleYawCost(
@@ -716,6 +690,11 @@ int main(int argc, char** argv)
     const std::string video_path = input_path.string() + ".avi";
     const std::string text_path = input_path.string() + ".txt";
     const auto enemy_color = parseEnemyColor(cli.get<std::string>("enemy"));
+    const std::string estimator_name = cli.get<std::string>("estimator");
+    const auto estimator_backend_option =
+      L3Estimation::estimatorBackendFromString(estimator_name);
+    require(estimator_backend_option.has_value(), "estimator 必须是 filter 或 gtsam");
+    const L3Estimation::EstimatorBackend estimator_backend = *estimator_backend_option;
     const std::string convention = cli.get<std::string>("convention");
     require(
       convention == "sp" || convention == "imu",
@@ -737,8 +716,8 @@ int main(int argc, char** argv)
     const int end_index = cli.get<int>("end-index");
     const int wait_ms = cli.get<int>("wait");
 
-    // 叠加层口径。sp 视图刻意只保留 sp_vision auto_aim_test 画的那两样东西：
-    // 当前 EKF 展开的全部装甲板（绿），和命中时刻瞄准的那块板（红）。这样
+    // 叠加层口径。sp 视图刻意只画两样东西：当前 EKF 展开的全部装甲板（绿），
+    // 和命中时刻瞄准的那块板（红）。这样
     // "框贴不贴板"才是可以直接目视判断的——多画一层前瞻框或者整体偏移，
     // 看到的就不再是姿态估计的对错，而是显示口径的差异。
     const std::string view = cli.get<std::string>("view");
@@ -788,10 +767,21 @@ int main(int argc, char** argv)
     L2Perception::ArmorDetector detector(std::move(backend));
     require(detector.ready(), "ArmorDetector 未就绪");
 
-    const L3Estimation::ArmorConfig armor_config;
-    const L3Estimation::TrackerConfig tracker_config;
-    L3Estimation::Tracker tracker(calibration, armor_config, tracker_config);
-    require(tracker.ready(), "Tracker 拒绝了该标定");
+    const runtime::AutoAimConfig auto_aim_config = runtime::loadAutoAimConfig(
+      cli.get<std::string>("auto-aim-config"));
+    const L3Estimation::ArmorConfig& armor_config = auto_aim_config.armor;
+    const L3Estimation::TrackerConfig& tracker_config = auto_aim_config.tracker;
+    // 一次回放只跑一个后端；对比两个估计器就跑两次 --estimator 再比曲线。
+    std::unique_ptr<L3Estimation::ITracker> tracker;
+    if (estimator_backend == L3Estimation::EstimatorBackend::Gtsam) {
+      tracker = std::make_unique<L3Estimation::GtsamEst::Tracker>(
+        calibration, armor_config, auto_aim_config.target, auto_aim_config.gtsam);
+    } else {
+      tracker = std::make_unique<L3Estimation::FilterEst::Tracker>(
+        calibration, armor_config, tracker_config, auto_aim_config.target,
+        auto_aim_config.filter);
+    }
+    require(tracker->ready(), "Tracker 拒绝了该标定");
     // 与 Tracker 内部同参数的求解器，只用来做重投影和代价曲线，不参与滤波。
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
@@ -799,7 +789,7 @@ int main(int argc, char** argv)
     const L4Planning::Predictor predictor;
     // 完整的 L4 -> L5 链路。回放里这条链路第一次真正跑起来：runtime 目前在
     // tracker 之后就 break 了，planner_smoke 也只喂合成数据。
-    const L4Planning::PlanConfig plan_config;
+    const L4Planning::PlanConfig& plan_config = auto_aim_config.plan;
     L4Planning::Planner planner(plan_config);
     // 默认 FireConfig 全是 nullopt，parametersReady() 恒假，fire_feasible 会
     // 一直是 0——这正是实机未标定时该有的行为。想在回放里看清"火控窗口什么时候
@@ -827,6 +817,7 @@ int main(int argc, char** argv)
     require(text.is_open(), "无法打开四元数文本：" + text_path);
 
     L6Telemetry::UdpJsonSender plotter;
+    std::vector<double> nis_samples;
 
     // 跳过 start-index 之前的帧，视频和文本必须同步前进。
     video.set(cv::CAP_PROP_POS_FRAMES, start_index);
@@ -906,13 +897,13 @@ int main(int argc, char** argv)
 
       const auto track_start = std::chrono::steady_clock::now();
       solver.set_R_world_barrel(q_world_barrel);
-      const auto target = tracker.track(armors, q_world_barrel, timestamp);
-      const auto target_armor_poses = tracker.targetArmorPoses();
+      const auto target = tracker->track(armors, q_world_barrel, timestamp);
+      const auto target_armor_poses = tracker->targetArmorPoses();
       const auto track_end = std::chrono::steady_clock::now();
 
       /// PnP 代价曲线
 
-      const auto& observations = tracker.observations();
+      const auto& observations = tracker->observations();
       const auto selected = selectArmor(
         observations, target, target_armor_poses, calibration.image_size);
       std::optional<YawCostCurve> curve;
@@ -965,15 +956,15 @@ int main(int argc, char** argv)
       robot_state.rpy.roll = gimbal_ypr[2];
       robot_state.timestamp = timestamp;
 
-      // SP 的离线 auto_aim_test 以 to_now=false 调 Aimer，固定使用
-      // 0.005 s 检测耗时，再叠加 Aimer 的高/低速延迟。
+      // 离线回放用 to_now=false：固定 5 ms 的检测耗时加上高/低速档延迟，
+      // 结果与机器快慢无关，同一段录像跑两次必须一致。
       const auto plan_time = timestamp;
       const auto plan = planner.plan(target, robot_state, plan_time, false);
 
       L5Control::FireInput fire_input;
       fire_input.target = target;
       // 跟踪状态不再挂在目标上，火控要靠它区分 Tracking 和 TempLost。
-      fire_input.track_state = tracker.state();
+      fire_input.track_state = tracker->state();
       fire_input.plan = plan;
       fire_input.robot_state = robot_state;
       fire_input.now = plan_time;
@@ -1047,7 +1038,7 @@ int main(int argc, char** argv)
           ++valid_pnp_observations;
         }
       }
-      if (tracker.state() == L3Estimation::TrackState::Tracking) {
+      if (tracker->state() == L3Estimation::TrackState::Tracking) {
         ++tracking_frames;
       }
 
@@ -1081,8 +1072,8 @@ int main(int argc, char** argv)
           calibration, q_world_barrel);
       }
 
-      // 绿色是当前 EKF 展开的全部物理装甲板，和 sp_vision 画的是同一个量：
-      // 直接压在图像上，不偏移、不前瞻，所以"贴不贴板"可以目视判断。
+      // 绿色是当前 EKF 展开的全部物理装甲板：直接压在图像上，不偏移、不前瞻，
+      // 所以"贴不贴板"可以目视判断。
       // full 视图额外画橙色的 predict_time 外推框，那是延迟补偿的目标位置，
       // 本来就该领先绿框（100 ms 实测约 40 px），不要当成估计误差。
       if (target) {
@@ -1099,7 +1090,7 @@ int main(int argc, char** argv)
           img, target_armor_poses, armor_type, target->name, solver,
           {0, 255, 0}, 2, overlay_shift);
 
-        // 红色是命中时刻真正瞄的那块板，对应 sp_vision 的 debug_aim_point。
+        // 红色是命中时刻真正瞄的那块板。
         // 用规划自己的时域（延迟 + 飞行时间）重新展开整车再取 armor_id，
         // 而不是复用上面那个按 --predict-time 外推的快照——两者时域不同，
         // 混用会画出一块规划从没瞄过的板。
@@ -1143,7 +1134,7 @@ int main(int argc, char** argv)
         img,
         cv::format(
           "frame=%d state=%s det=%zu obs=%zu", frame_index,
-          std::string(stateName(tracker.state())).c_str(), armors.size(),
+          std::string(stateName(tracker->state())).c_str(), armors.size(),
           observations.size()),
         {10, 32}, {255, 255, 255});
       drawOutlinedText(
@@ -1163,24 +1154,25 @@ int main(int argc, char** argv)
       }
       // 十一维内部状态：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
       if (full_view && target) {
-        const Eigen::VectorXd tx = target->ekf_x();
+        const L3Estimation::TargetStateVector& tx = target->state();
         drawOutlinedText(
           img,
           cv::format(
-            "EKF center=(%.2f,%.2f,%.2f)m v=(%.2f,%.2f,%.2f)m/s yaw=%.1fdeg "
+            "target center=(%.2f,%.2f,%.2f)m v=(%.2f,%.2f,%.2f)m/s yaw=%.1fdeg "
             "v_yaw=%.2frad/s r=%.3fm id=%d",
             tx[0], tx[2], tx[4], tx[1], tx[3], tx[5],
             tx[6] * kRadToDeg, tx[7], tx[8], target->last_id),
           {10, 122}, {0, 255, 0}, 0.55);
       }
       if (full_view && predicted) {
-        const Eigen::VectorXd px = predicted->ekf_x();
+        const L3Estimation::TargetStateVector& px = predicted->state();
         drawOutlinedText(
           img,
           cv::format(
             "pred +%.0fms center=(%.2f,%.2f,%.2f)m yaw=%.1fdeg (delta=%.1fdeg)",
             predict_time * 1e3, px[0], px[2], px[4], px[6] * kRadToDeg,
-            L6Telemetry::limit_rad(px[6] - target->ekf_x()[6]) * kRadToDeg),
+            L6Telemetry::limit_rad(px[6] - target->state()[L3Estimation::Yaw]) *
+              kRadToDeg),
           {10, 152}, {0, 165, 255}, 0.55);
       }
       drawOutlinedText(
@@ -1188,11 +1180,11 @@ int main(int argc, char** argv)
         plan.valid
           ? cv::format(
               "CMD yaw=%.2f pitch=%.2f deg | err yaw=%.2f pitch=%.2f | "
-              "phase=%s armor=%d fire_armor=%d",
+              "armor=%d fire_armor=%d",
               plan.yaw * kRadToDeg, plan.pitch * kRadToDeg,
               L6Telemetry::limit_rad(plan.yaw - gimbal_ypr[0]) * kRadToDeg,
               L6Telemetry::limit_rad(plan.pitch - gimbal_ypr[1]) * kRadToDeg,
-              phaseName(plan.aim_phase), plan.armor_id, plan.fire_armor_id)
+              plan.armor_id, plan.fire_armor_id)
           : cv::format("CMD not sent (plan %s)", planErrorName(plan.error)),
         {10, full_view ? 182 : 92},
         plan.valid ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
@@ -1243,7 +1235,7 @@ int main(int argc, char** argv)
 
       // 观测器内部数据
       if (target) {
-        const Eigen::VectorXd tx = target->ekf_x();
+        const L3Estimation::TargetStateVector& tx = target->state();
         data["x"] = tx[0];
         data["vx"] = tx[1];
         data["y"] = tx[2];
@@ -1254,7 +1246,10 @@ int main(int argc, char** argv)
         data["w"] = tx[7];
         data["r"] = tx[8];
         data["last_id"] = target->last_id;
-        data["nis"] = target->ekf().last_nis;
+        data["nis"] = target->normalized_innovation_squared;
+        if (std::isfinite(target->normalized_innovation_squared)) {
+          nis_samples.push_back(target->normalized_innovation_squared);
+        }
         if (ekf_armor_yaw) {
           data["ekf_armor_yaw"] = *ekf_armor_yaw * kRadToDeg;
         }
@@ -1265,8 +1260,6 @@ int main(int argc, char** argv)
       data["plan_valid"] = plan.valid ? 1 : 0;
       data["plan_error"] = static_cast<int>(plan.error);
       data["plan_armor_id"] = plan.armor_id;
-      data["plan_aim_phase"] = static_cast<int>(plan.aim_phase);
-      data["plan_aim_on_armor"] = plan.aim_on_armor ? 1 : 0;
       data["fire_armor_id"] = plan.fire_armor_id;
       data["fire_admissible"] = plan.fire_admissible ? 1 : 0;
       if (plan.valid) {
@@ -1297,7 +1290,7 @@ int main(int argc, char** argv)
 
       // 整车预测数据
       if (predicted) {
-        const Eigen::VectorXd px = predicted->ekf_x();
+        const L3Estimation::TargetStateVector& px = predicted->state();
         data["predict_time"] = predict_time;
         data["pred_x"] = px[0];
         data["pred_y"] = px[2];
@@ -1329,10 +1322,46 @@ int main(int argc, char** argv)
     }
 
     cv::destroyAllWindows();
+
+    // R 是否合理的判据：NIS。四维观测下 NIS 服从自由度 4 的卡方分布，
+    // 均值应当是 4，95% 分位是 9.488。
+    //   均值 >> 4  => R 给小了，滤波器过度相信观测（或者残差里还有偏置）
+    //   均值 << 4  => R 给大了，观测基本被忽略，滤波器在靠预测滑
+    // 这个判据**不需要真值**，所以真车上也能用来反标 R 的尺度。
+    if (nis_samples.size() >= 30) {
+      std::sort(nis_samples.begin(), nis_samples.end());
+      const double mean =
+        std::accumulate(nis_samples.begin(), nis_samples.end(), 0.0) /
+        static_cast<double>(nis_samples.size());
+      const auto quantile = [&](double q) {
+        return nis_samples[std::min(
+          nis_samples.size() - 1,
+          static_cast<std::size_t>(q * static_cast<double>(nis_samples.size())))];
+      };
+      const std::size_t over = static_cast<std::size_t>(
+        nis_samples.end() -
+        std::upper_bound(nis_samples.begin(), nis_samples.end(), 9.488));
+      std::cout << "\nNIS 一致性（自由度 4，理想均值 4.0，95% 分位 9.488）\n"
+                << "  样本 " << nis_samples.size() << "   均值 " << mean
+                << "   中位 " << quantile(0.5) << "   95% 分位 " << quantile(0.95)
+                << '\n'
+                << "  超过 9.488 的比例 "
+                << static_cast<double>(over) /
+          static_cast<double>(nis_samples.size()) * 100.0
+                << "%（理想 5%）\n";
+      if (mean > 8.0) {
+        std::cout << "  => R 偏小或残差里仍有偏置：滤波器过度相信观测\n";
+      } else if (mean < 2.0) {
+        std::cout << "  => R 偏大：观测基本没被采纳，滤波器在靠预测滑\n";
+      } else {
+        std::cout << "  => R 的量级基本合理\n";
+      }
+    }
+
     std::cout << "\n回放结束\n"
               << "帧数: " << frames << '\n'
               << "有 PnP 观测的帧: " << observation_frames << '\n'
-              << "通过 ArmorQuality 全部门限的观测: " << valid_pnp_observations
+              << "PnP 成功提交位姿的观测: " << valid_pnp_observations
               << '\n'
               << "Tracking 帧: " << tracking_frames << '\n'
               << "代价曲线出现多个局部极小值的帧: " << multi_minimum_frames

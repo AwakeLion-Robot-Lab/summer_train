@@ -9,11 +9,14 @@
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/pnp_solver.hpp"
+#include "l3_estimation/filter_est/tracker.hpp"
+#include "l3_estimation/gtsam_est/tracker.hpp"
 #include "l3_estimation/tracker.hpp"
 #include "l4_planning/planner.hpp"
 #include "l4_planning/predictor.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
+#include "runtime/auto_aim_config.hpp"
 
 #include <Eigen/Geometry>
 
@@ -53,12 +56,14 @@ const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
   "{model m | model/armor_model/yolov5.xml | OpenVINO 装甲板模型}"
+  "{auto-aim-config | config/auto_aim.yaml | 自瞄配置 yaml}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
+  "{estimator | filter | 估计器后端：filter（整车 EKF）/ gtsam（因子图）}"
   "{convention | imu | 录像四元数约定：imu / sp}"
   "{serial-config | config/serial_config.yaml | convention=imu 时读 R_imu_barrel}"
   "{predict-time p | 0.1 | 开环预测时长（秒）}"
-  "{bullet-speed | 27.0 | 喂给 L4 的弹速；默认与 SP auto_aim_test 一致（m/s）}"
+  "{bullet-speed | 27.0 | 喂给 L4 的弹速（m/s）}"
   "{start-index s | 0 | 视频起始帧下标}"
   "{end-index e | 0 | 视频结束帧下标，0 表示到结尾}"
   "{scan-step | 1.0 | yaw 代价全周扫描步长（度）}"
@@ -189,21 +194,12 @@ void require(bool condition, const std::string& message)
   return cv::Point2d{sum.x / 4.0, sum.y / 4.0};
 }
 
-// PnpSolver::armor_reprojection_error 是私有的，这里用它公开的 reproject_armor
-// 复算同一个代价：四角点像素距离之和，定义必须与求解器内部完全一致。
+// 直接用求解器公开的代价函数，不要在这里复刻一份：曲线画的必须就是
+// optimize_yaw 在极小化的那个函数，两份定义一旦分叉，对账就失去意义。
 [[nodiscard]] double yawCost(
   const L3Estimation::PnpSolver& solver, const L3Estimation::Armor& armor, double yaw)
 {
-  const std::vector<cv::Point2f> projected =
-    solver.reproject_armor(armor.xyz_in_world, yaw, armor.type, armor.name);
-  if (projected.size() != armor.points.size()) {
-    return std::numeric_limits<double>::infinity();
-  }
-  double cost = 0.0;
-  for (std::size_t index = 0; index < armor.points.size(); ++index) {
-    cost += cv::norm(armor.points[index] - projected[index]);
-  }
-  return cost;
+  return solver.armor_reprojection_error(armor, yaw);
 }
 
 // 全周扫描 yaw 重投影代价。求解器只在 [-90, 90] 内搜，扫全周才能看出真正的
@@ -364,6 +360,9 @@ int main(int argc, char* argv[])
     const int start_index = cli.get<int>("start-index");
     const int end_index = cli.get<int>("end-index");
     const auto enemy_color = parseEnemyColor(cli.get<std::string>("enemy"));
+    const auto estimator_backend = L3Estimation::estimatorBackendFromString(
+      cli.get<std::string>("estimator"));
+    require(estimator_backend.has_value(), "estimator 必须是 filter 或 gtsam");
     const std::string convention = cli.get<std::string>("convention");
     require(convention == "imu" || convention == "sp", "convention 必须是 imu 或 sp");
     const bool sp_convention = convention == "sp";
@@ -395,14 +394,24 @@ int main(int argc, char* argv[])
     L2Perception::ArmorDetector detector(std::move(backend));
     require(detector.ready(), "ArmorDetector 未就绪");
 
-    const L3Estimation::ArmorConfig armor_config;
-    const L3Estimation::TrackerConfig tracker_config;
-    L3Estimation::Tracker tracker(calibration, armor_config, tracker_config);
-    require(tracker.ready(), "Tracker 拒绝了该标定");
+    const runtime::AutoAimConfig auto_aim_config = runtime::loadAutoAimConfig(
+      cli.get<std::string>("auto-aim-config"));
+    const L3Estimation::ArmorConfig& armor_config = auto_aim_config.armor;
+    const L3Estimation::TrackerConfig& tracker_config = auto_aim_config.tracker;
+    std::unique_ptr<L3Estimation::ITracker> tracker;
+    if (*estimator_backend == L3Estimation::EstimatorBackend::Gtsam) {
+      tracker = std::make_unique<L3Estimation::GtsamEst::Tracker>(
+        calibration, armor_config, auto_aim_config.target, auto_aim_config.gtsam);
+    } else {
+      tracker = std::make_unique<L3Estimation::FilterEst::Tracker>(
+        calibration, armor_config, tracker_config, auto_aim_config.target,
+        auto_aim_config.filter);
+    }
+    require(tracker->ready(), "Tracker 拒绝了该标定");
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
     const L4Planning::Predictor predictor;
-    const L4Planning::PlanConfig plan_config;
+    const L4Planning::PlanConfig& plan_config = auto_aim_config.plan;
     L4Planning::Planner planner(plan_config);
     const double bullet_speed = cli.get<double>("bullet-speed");
 
@@ -431,12 +440,12 @@ int main(int argc, char* argv[])
     frame_csv << std::fixed;
 
     std::ofstream aim_csv(out_dir / "aim.csv");
-    aim_csv << "frame,t,plan_valid,plan_armor_id,aim_phase,aim_x,aim_y,aim_z,"
+    aim_csv << "frame,t,plan_valid,plan_armor_id,aim_x,aim_y,aim_z,"
                "cmd_yaw_deg,cmd_pitch_deg,fly_time,before_fire,fire_admissible,"
                "fire_delta_deg,aim_jump\n";
     aim_csv << std::fixed;
 
-    // 叠加层像素位置。目的是和 sp_vision 逐帧比"框画在哪儿"，所以这里只出
+    // 叠加层像素位置。目的是逐帧比"框画在哪儿"，所以这里只出
     // 像素，不出世界坐标：世界坐标的差会被距离和视角放大或缩小，看不出屏幕上
     // 到底差了多少。det*_u/v 是当帧 L2 检出的板心，作为"框该落在哪"的参照。
     std::ofstream overlay_csv(out_dir / "overlay.csv");
@@ -518,8 +527,8 @@ int main(int argc, char* argv[])
       if (!armors.empty()) ++frames_with_det;
 
       solver.set_R_world_barrel(q_world_barrel);
-      const auto target = tracker.track(armors, q_world_barrel, timestamp);
-      const auto& observations = tracker.observations();
+      const auto target = tracker->track(armors, q_world_barrel, timestamp);
+      const auto& observations = tracker->observations();
 
       // 观测明细。usable 的判据必须和 Tracker::observationUsable 一致，
       // 否则表里"能用"的行和滤波器实际吃进去的对不上。
@@ -587,7 +596,7 @@ int main(int argc, char* argv[])
       usable_total += usable_here;
       if (match_here > 1) ++double_update_frames;
 
-      const auto state = tracker.state();
+      const auto state = tracker->state();
       if (state == L3Estimation::TrackState::Tracking) ++frames_tracking;
       const bool reset = previous_state != L3Estimation::TrackState::Lost &&
         state == L3Estimation::TrackState::Lost;
@@ -643,8 +652,8 @@ int main(int argc, char* argv[])
                 << match_here << ',' << stateName(state) << ',';
       if (target) {
         // 十一维内部状态：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
-        const Eigen::VectorXd tx = target->ekf_x();
-        const double nis = target->ekf().last_nis;
+        const L3Estimation::TargetStateVector& tx = target->state();
+        const double nis = target->normalized_innovation_squared;
         frame_csv << tx[0] << ',' << tx[1] << ','
                   << tx[2] << ',' << tx[3] << ','
                   << tx[4] << ',' << tx[5] << ','
@@ -673,7 +682,9 @@ int main(int argc, char* argv[])
         const auto center_px = target
           ? projectWorldPoint(
               Eigen::Vector3d{
-                target->ekf_x()[0], target->ekf_x()[2], target->ekf_x()[4]},
+                target->state()[L3Estimation::CenterX],
+                target->state()[L3Estimation::CenterY],
+                target->state()[L3Estimation::CenterZ]},
               calibration, q_world_barrel)
           : std::nullopt;
         if (center_px) {
@@ -682,7 +693,7 @@ int main(int argc, char* argv[])
           overlay_csv << ",,0,";
         }
 
-        const auto armor_poses = tracker.targetArmorPoses();
+        const auto armor_poses = tracker->targetArmorPoses();
         const auto armor_type = target
           ? L3Estimation::armorTypeOf(target->name).value_or(
               L3Estimation::ArmorType::Small)
@@ -710,7 +721,7 @@ int main(int argc, char* argv[])
           }
         }
 
-        // 每个检出的板心，到最近的那块 EKF 板框心的像素距离。这一列就是
+        // 每个检出的板心，到最近的那块估计板框心的像素距离。这一列就是
         // "框贴不贴板"，取整帧最大值——统计均值会把偶发的大偏差抹平。
         double worst = -1.0;
         int worst_id = -1;
@@ -766,7 +777,7 @@ int main(int argc, char* argv[])
       }
 
       aim_csv << frame_index << ',' << pose.seconds << ',' << (plan.valid ? 1 : 0) << ','
-              << plan.armor_id << ',' << static_cast<int>(plan.aim_phase) << ','
+              << plan.armor_id << ','
               << plan.aim_point.x() << ',' << plan.aim_point.y() << ','
               << plan.aim_point.z() << ',' << plan.yaw * kRadToDeg << ','
               << plan.pitch * kRadToDeg << ',' << plan.fly_time << ','
@@ -779,7 +790,7 @@ int main(int argc, char* argv[])
         entry.valid_at = timestamp +
           std::chrono::microseconds(static_cast<long long>(predict_time * 1e6));
         const auto predicted = predictor.predict(*target, predict_time);
-        const Eigen::VectorXd px = predicted.ekf_x();
+        const L3Estimation::TargetStateVector& px = predicted.state();
         entry.center = {px[0], px[2], px[4]};
         entry.yaw = px[6];
         entry.armors = predictor.armorPoses(predicted);
@@ -790,7 +801,7 @@ int main(int argc, char* argv[])
         pending.pop_front();
         if (!target) continue;
 
-        const Eigen::VectorXd tx = target->ekf_x();
+        const L3Estimation::TargetStateVector& tx = target->state();
         const double center_err =
           (entry.center - Eigen::Vector3d{tx[0], tx[2], tx[4]}).norm();
         pred_center_err.push_back(center_err);

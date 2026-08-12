@@ -1,0 +1,61 @@
+# Daedalus/Talos simulation runtime. Start the Bevy simulator first, then run
+# `xmake run daedalus_auto_aim`; press F5 in the simulator to enable commands.
+
+ipc:
+  meta_path: "/tmp/talos_ipc_meta"
+  image_pool_path: "/tmp/talos_ipc_image_pool"
+  # 单板真值旁路通道，只有 daedalus_noise_calib 会读。自瞄主链路不碰它，
+  # 通道不存在也不影响 daedalus_auto_aim。
+  truth_path: "/tmp/talos_ipc_plate_truth"
+  producer_timeout_ms: 1000
+  connect_timeout_ms: 10000
+  poll_sleep_ms: 1
+
+inference:
+  # Set to "tensorrt" together with an ONNX/engine path and CUDA device when enabled.
+  backend: "openvino"
+  model_path: "model/armor_model/yolov5.xml"
+  device: "CPU"
+  # 0 lets OpenVINO choose. Set a positive value only after measuring latency.
+  num_threads: 0
+
+robot:
+  # Must match the projectile speed configured by the simulator.
+  bullet_speed: 23.0
+  heat: 0.0
+  # The controlled simulator robot is red, so its opponents are blue.
+  enemy_color: "blue"
+
+tracking:
+  min_detect_count: 5
+  max_frame_interval_ms: 100
+  max_temp_lost_count: 15
+  outpost_max_temp_lost_count: 75
+
+planning:
+  high_speed_delay_ms: 30.0
+  low_speed_delay_ms: 15.0
+  decision_speed: 8.0
+  yaw_offset_deg: 0.0
+  pitch_offset_deg: 0.0
+  fallback_bullet_speed: 23.0
+  min_valid_bullet_speed: 14.0
+
+fire:
+  # Safety gate: keep false until tracking and command directions are verified.
+  shoot_enable: false
+  bullet_diameter: 0.017
+  min_bullet_speed: 10.0
+  max_bullet_speed: 32.0
+  heat_limit: 1000000000.0
+  min_yaw_deg: -180.0
+  max_yaw_deg: 180.0
+  min_pitch_deg: -45.0
+  max_pitch_deg: 45.0
+  max_robot_state_age_ms: 250
+  max_gimbal_pose_age_ms: 250
+
+runtime:
+  preview: true
+  log_every_n_frames: 60
+  command_jump_deg: 10.0
