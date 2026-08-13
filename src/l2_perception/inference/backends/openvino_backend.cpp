@@ -201,17 +201,31 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
       ov::hint::performance_mode.name(), ov::hint::PerformanceMode::LATENCY);
   }
 
-  // 线程数和大小核调度只有 CPU 插件认识。GPU 插件收到这两项会直接抛异常而不是忽略，
-  // 所以必须按设备过滤；device 为 GPU 时它们无意义，静默跳过即可。
+  // 线程数、大小核调度和超线程只有 CPU 插件认识。GPU 插件收到这些会直接抛异常
+  // 而不是忽略，所以必须按设备过滤；device 为 GPU 时它们无意义，静默跳过即可。
   const bool cpu_device = config.device == "CPU" || config.device.starts_with("CPU.");
   if (cpu_device) {
     if (config.inference_num_threads > 0) {
       compile_properties.emplace(
         ov::inference_num_threads.name(), static_cast<int>(config.inference_num_threads));
     }
-    if (config.prefer_performance_cores) {
+    // Any 表示不下发这一项，保持插件默认；显式写 ANY_CORE 在只有大核的 CPU 上
+    // 同样合法，但没必要多发一个属性。
+    switch (config.scheduling_core_type) {
+      case SchedulingCoreType::PCoreOnly:
+        compile_properties.emplace(
+          ov::hint::scheduling_core_type.name(), ov::hint::SchedulingCoreType::PCORE_ONLY);
+        break;
+      case SchedulingCoreType::ECoreOnly:
+        compile_properties.emplace(
+          ov::hint::scheduling_core_type.name(), ov::hint::SchedulingCoreType::ECORE_ONLY);
+        break;
+      case SchedulingCoreType::Any:
+        break;
+    }
+    if (config.enable_hyper_threading) {
       compile_properties.emplace(
-        ov::hint::scheduling_core_type.name(), ov::hint::SchedulingCoreType::PCORE_ONLY);
+        ov::hint::enable_hyper_threading.name(), *config.enable_hyper_threading);
     }
   }
 

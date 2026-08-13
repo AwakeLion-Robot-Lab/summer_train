@@ -27,6 +27,16 @@ enum class InferenceBackendKind
   TensorRt
 };
 
+// 大小核调度类型，取值与 OpenVINO 的 ov::hint::SchedulingCoreType 一一对应。
+// 这里另立一份是为了不让公开头文件依赖 OpenVINO SDK——同一个理由，后端类
+// 用的是 PIMPL。
+enum class SchedulingCoreType
+{
+  Any,        // 交给插件决定，会同时使用 P 核和 E 核
+  PCoreOnly,  // 只用性能核
+  ECoreOnly   // 只用能效核
+};
+
 // 仅包含所有后端都能理解的模型信息。
 // OpenVINO 的 device 可为 "CPU"、"GPU"；TensorRT 接受 "CUDA"、"CUDA:<index>"、
 // "GPU" 或 "GPU:<index>"，并将其解释为 CUDA device 选择。
@@ -49,8 +59,18 @@ struct InferenceModelConfig
   // 同步点空等，实测反而更慢，所以宁可显式限制线程数，也不要默认铺满所有核。
   std::size_t inference_num_threads{0};
 
-  // 可选的大小核调度提示。SP 只设置 LATENCY，不额外限制 P 核，因此默认关闭。
-  bool prefer_performance_cores{false};
+  // 大小核调度。Any 保持 OpenVINO 默认（会同时用 P 核和 E 核）。
+  //
+  // 自瞄是单帧同步链路：一次推理内部按算子并行，每层结束都有一个同步点。
+  // P 核和 E 核混用时，整层的耗时由最慢的那份切分决定，也就是被 E 核拖住，
+  // 而 P 核在同步点上白等。所以延迟敏感的场景通常 PCoreOnly 更快，哪怕
+  // 总算力更小。ECoreOnly 留给"把 P 核让给别的进程"这种取舍。
+  SchedulingCoreType scheduling_core_type{SchedulingCoreType::Any};
+
+  // 超线程。nullopt 保持 OpenVINO 默认。同一个物理 P 核上的两个逻辑线程共享
+  // 执行单元和 L1/L2，算子级并行下互相抢资源，单次延迟往往不降反升；关掉它
+  // 通常和 PCoreOnly 一起用。吞吐场景则相反，所以这里不给硬编码默认值。
+  std::optional<bool> enable_hyper_threading{};
 };
 
 // 所有后端对宿主侧输入使用同一契约：uint8、NHWC、BGR，例如 {1, 640, 640, 3}。

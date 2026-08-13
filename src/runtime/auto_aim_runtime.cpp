@@ -6,12 +6,14 @@
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/tracker.hpp"
-#include "l6_telemetry/fps_counter.hpp"
+#include "l4_planning/planner.hpp"
+#include "l5_control/controller.hpp"
 #include "l6_telemetry/logger.hpp"
-#include "l6_telemetry/math.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include <opencv2/opencv.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -22,8 +24,8 @@ namespace {
 
 // L1 的 enemy_color 是下位机给出的目标阵营；L2 的 ArmorColor 是图像识别结果。
 // 任何一侧未知时都不允许作为自瞄目标，避免误击友军。
-[[maybe_unused]] bool isEnemyArmor(L2Perception::ArmorColor observed,
-                                   L1Sensor::EnemyColor expected) noexcept {
+bool isEnemyArmor(L2Perception::ArmorColor observed,
+                  L1Sensor::EnemyColor expected) noexcept {
   switch (expected) {
   case L1Sensor::EnemyColor::Red:
     return observed == L2Perception::ArmorColor::Red;
@@ -41,12 +43,10 @@ L2Perception::ArmorDetector makeArmorDetector(
 {
   try {
     auto backend = L2Perception::makeInferenceBackend(config.inference_backend);
-    L2Perception::InferenceModelConfig model_config;
-    model_config.model_path = config.model_path;
-    model_config.device = config.inference_device;
-    // 宿主输入统一为 BGR；颜色、归一化和布局转换由具体后端完成。
-    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
-    model_config.normalization_divisor = 255.0F;
+    // 模型路径、设备、颜色顺序、归一化以及后端调度参数全部来自 auto_aim.yaml
+    // 的 inference 节点，loadAutoAimConfig 已经把 model_path/device 回填进去。
+    // 宿主输入恒为 uint8 NHWC BGR；颜色和归一化转换由具体后端完成。
+    const L2Perception::InferenceModelConfig& model_config = config.inference;
     backend->load(model_config);
 
     L6Telemetry::logInfo(
@@ -80,7 +80,6 @@ void AutoAimRuntime::run() {
     std::lock_guard<std::mutex> lock(camera_mutex_);
     active_camera_ = camera;
   }
-  L6Telemetry::FpsCounter fps_counter;
   // 启动时只加载一次模型；每帧仅执行预处理、推理和 Decoder。
   L2Perception::ArmorDetector armor_detector =
     makeArmorDetector(auto_aim_config);
@@ -111,6 +110,29 @@ void AutoAimRuntime::run() {
     }
   }
 
+  L4Planning::Planner planner(auto_aim_config.plan);
+  L5Control::Controller controller(
+    auto_aim_config.fire,
+    auto_aim_config.runtime.command_jump_threshold);
+
+  // 规划失败时不能只是“不更新命令”：上一条 shoot=true 在
+  // command_timeout 内仍可能被重复发送。这里保留最后角度并立即关火。
+  const auto sendSafeHold = [&]() {
+    if (serial_started) {
+      if (const auto command = controller.safeHold()) {
+        serial.updateCommand(*command);
+      }
+    }
+  };
+
+  const auto stopAimSession = [&]() {
+    if (tracker) {
+      tracker->reset();
+    }
+    planner.reset();
+    sendSafeHold();
+  };
+
   cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
 
   cv::Mat frame;
@@ -120,67 +142,73 @@ void AutoAimRuntime::run() {
     //获取相机帧和时间辍
     if (!camera->read(frame, timestamp)) {
       if (!running_) {
+        sendSafeHold();
         break;
       }
+      // 读帧超时期间没有新观测，不继续续期上一帧的开火位。
+      sendSafeHold();
       continue;
     }
-
-    if (serial_started) {
-      const auto robot_state = serial.latestState();
-      if (robot_state) {
-        const auto &state = *robot_state;
-        // 图像曝光时刻的枪管系 -> 世界系旋转；
-        // 当前模型忽略两坐标系原点平移。
-        const auto q_world_barrel = serial.gimbalPoseAt(timestamp);
-        switch (state.mode) {
+    const auto state = serial.latestState();
+    if (!serial_started || !state) {
+      stopAimSession();
+    } else {
+      switch (state->mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
-          // 装甲板检测 → PnP → Tracker → Planner → FireDecision
+          const auto image_pose = serial.gimbalPoseAt(timestamp);
+
+          // L2: 检测并保留敌方装甲板。
           auto armors = armor_detector.detect(frame);
-          // 保留敌方装甲板
-          std::erase_if(armors, [&state](const auto &armor) {
-            return !isEnemyArmor(armor.color, state.enemy_color);
+          std::erase_if(armors, [&state](const auto& armor) {
+            return !isEnemyArmor(armor.color, state->enemy_color);
           });
 
-          // L2 -> L3 转换、逐板 PnP、状态机和 EKF 更新均由 Tracker 完成。
-          [[maybe_unused]] std::optional<L3Estimation::TrackedTarget> target;
+          // L3: PnP、状态机与整车 EKF。
+          std::optional<L3Estimation::TrackedTarget> target;
           if (tracker && tracker->ready()) {
-            target = tracker->track(armors, q_world_barrel, timestamp);
+            target = tracker->track(armors, image_pose, timestamp);
+          }
+          const auto track_state = tracker
+            ? tracker->state()
+            : L3Estimation::TrackState::Lost;
+
+          // 规划与开火判定使用推理结束时刻。
+          const auto plan_time = std::chrono::steady_clock::now();
+          const auto actual_pose = serial.gimbalPoseAt(plan_time);
+
+          // L4: 预测命中时刻、选板并解算弹道。
+          const auto plan = planner.plan(target, *state, plan_time, true);
+
+          // L5: 开火判定、命令跳变检查和安全保持。
+          const auto command = controller.update(
+            target,
+            track_state,
+            plan,
+            actual_pose);
+
+          // L1: 下发 L5 生成的控制命令。
+          if (command) {
+            serial.updateCommand(*command);
           }
           break;
         }
 
         case L1Sensor::WorkMode::SmallBuff:
-          // 小符专用检测 → PnP → Tracker → Planner → FireDecision
+          // 小能量机后续从这个独立入口接入，不复用装甲板 Tracker。
+          stopAimSession();
           break;
 
         case L1Sensor::WorkMode::BigBuff:
-          // 大符专用模型与预测参数
+          // 大能量机保留独立模型、跟踪和预测参数入口。
+          stopAimSession();
           break;
 
         case L1Sensor::WorkMode::Idle:
-          //待机
-          break;
-
         default:
-          // 待机
+          stopAimSession();
           break;
-        }
       }
-    }
-
-    // DEBUG_MODE
-    if (false) {
-      //帧率
-      const double previous_fps = fps_counter.fps();
-      const double fps = fps_counter.update();
-      if (fps > 0.0 && fps != previous_fps) {
-        L6Telemetry::logDebug("auto_aim fps", fps);
-      }
-      //单帧时间差
-      auto end_time = std::chrono::steady_clock::now();
-      double elapsed = L6Telemetry::delta_time(end_time, timestamp);
-      L6Telemetry::logDebug("delta_time", elapsed);
     }
 
     cv::imshow("auto_aim", frame);
@@ -190,6 +218,7 @@ void AutoAimRuntime::run() {
     }
   }
 
+  stopAimSession();
   serial.stop();
   camera->stop();
   {

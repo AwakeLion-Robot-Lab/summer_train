@@ -1,6 +1,99 @@
-# 当前节点仅选择推理后端，不包含 GTSAM/因子图配置。
 # 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
 inference:
   backend: "tensorrt"
   model_path: "model/armor_model/0526.onnx"
   device: "CUDA:0"
+
+  # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
+  # 训练/导出时模型期望的颜色顺序。宿主侧输入恒为 uint8 NHWC BGR，
+  # 转换在后端内部完成。取值 rgb / bgr。
+  model_color_order: "rgb"
+  # 像素归一化的除数（不是乘数）。255 表示除到 [0, 1]。
+  normalization_divisor: 255.0
+
+  # ---- 后端调度：只影响算子怎么排，不改变数值结果 ----
+  # 改这几项不需要重新验证识别精度，但必须重新测帧耗时。
+  # 下面三项只有 OpenVINO 的 CPU 插件认识；device 是 GPU 或用 TensorRT 时
+  # 后端会静默跳过。
+  #
+  # 单帧同步链路要的是单次延迟而不是吞吐，正常保持 true。
+  # 改成 false 会按吞吐编译，批量场景更快，自瞄更慢。
+  latency_hint: true
+  #
+  # 推理线程数，0 表示交给 OpenVINO 自决。
+  #
+  # 大小核 CPU 上不要留 0。一次推理内部按算子并行，每层结束都有一个同步点，
+  # 整层耗时由最慢的那份切分决定——P 核和 E 核混用时就是被 E 核拖住，P 核在
+  # 同步点上白等。所以延迟敏感场景通常是"少而快"胜过"多而杂"。
+  # 起点：设成物理 P 核数（i9-13980HX 是 8），配合 scheduling_core_type: pcore。
+  num_threads: 0
+  #
+  # 大小核调度：any（插件默认，P/E 混用）/ pcore（只用性能核）/ ecore（只用能效核）。
+  # ecore 是给"把 P 核让给别的进程"这种取舍用的，不是为了快。
+  scheduling_core_type: "any"
+  #
+  # 超线程。不写这一项表示保持 OpenVINO 默认。
+  # 同一物理核上的两个逻辑线程共享执行单元和 L1/L2，算子级并行下互相抢资源，
+  # 单次延迟往往不降反升，所以关掉它通常和 pcore 一起用。吞吐场景相反，
+  # 因此这里不给默认值。
+  # enable_hyper_threading: false
+
+# L3 PnP 使用的装甲板几何尺寸。
+armor:
+  small_width_m: 0.135
+  big_width_m: 0.230
+  height_m: 0.056
+  # 预留的角点噪声参数，当前 PnP 搜索尚未使用。
+  corner_noise_px: 1.0
+
+# L3 跟踪状态机参数。
+tracker:
+  # 连续命中多少帧后，从 Detecting 切换到 Tracking。
+  min_detect_count: 3
+  # 相邻帧间隔超过该值时，放弃旧目标并重新初始化。
+  max_frame_interval_ms: 100
+  # Tracking 连续丢失多少帧后切换到 Lost。
+  max_temp_lost_count: 15
+  outpost_max_temp_lost_count: 75
+
+# L4 定点规划。根据整车 yaw 角速度选择高、低速发射延迟。
+planning:
+  # 飞行时间与目标命中位置相互影响时，允许进行的最大迭代次数。
+  max_iterations: 10
+  # 相邻两轮飞行时间差小于该值即认为收敛，单位 us；1000 us = 1 ms。
+  fly_time_tolerance_us: 1000
+  # v_yaw > decision_speed_rad_s 时采用的发射延迟，单位 ms。
+  high_speed_delay_ms: 30
+  # v_yaw 不超过阈值（包括负向旋转）时采用的发射延迟，单位 ms。
+  low_speed_delay_ms: 15
+  # 高、低速延迟的有符号 yaw 角速度分界，单位 rad/s。
+  decision_speed_rad_s: 8.0
+  #########静止靶须调########
+  # 最终 yaw 命令的固定零偏，单位 degree。
+  yaw_offset_deg: 0.0
+  # 弹道 pitch 的固定零偏，单位 degree；加入弹道仰角后再按世界系约定取反。
+  pitch_offset_deg: 0.0
+  ##########################
+  # 实测弹速无效时用于继续生成跟随角的回退弹速，单位 m/s。
+  fallback_bullet_speed_mps: 23.0
+  # 实测弹速低于该值时使用回退弹速，并把 Plan 降级为 TrackOnly，禁止开火。
+  min_valid_bullet_speed_mps: 14.0
+  # 旋转目标的候选板进入角：板面相对视线误差需小于该值，单位 degree。
+  coming_angle_deg: 60.0
+  # 结合旋转方向排除即将离开可击打区域的装甲板，单位 degree。
+  leaving_angle_deg: 20.0
+
+# L5 开火闸门。shoot_enable=false 时仍会跟随，但不会发出开火位。
+fire:
+  # 最终发射总开关；关闭时仍计算 fire_feasible，便于无弹调试。
+  shoot_enable: false
+  # 只把装甲板中心区域视为可命中；0.6 表示使用板面宽、高的中央 60%。
+  hit_margin_ratio: 0.6
+  # 根据板宽和距离算出的 yaw 容差下限，单位 degree。
+  min_yaw_tolerance_deg: 0.5
+  # 根据板高和距离算出的 pitch 容差下限，单位 degree。
+  min_pitch_tolerance_deg: 0.5
+
+# runtime 只管相邻命令跳变，不会修改 L4 预测结果。
+runtime:
+  command_jump_deg: 10.0
