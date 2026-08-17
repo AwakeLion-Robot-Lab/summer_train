@@ -50,6 +50,33 @@ enum class ArmorType : std::uint8_t {
   return std::nullopt;
 }
 
+// 识别类别 → 车辆物理装甲板数量。前哨与基地是三板，其余按四板整车模型。
+//
+// 这一份同时被 Tracker::initializeTarget 的整车初始化和 PnpSolver 的双板配对
+// 读取：双板联合 yaw 要求两块相邻板的朝向差恰好 2π/n，n 写错会把整车 yaw 直接
+// 拉偏 30 度（前哨按 90 度配对就是这个错）。未知类别返回 nullopt，不猜板数。
+[[nodiscard]] constexpr std::optional<int> armorCountOf(ArmorName name) noexcept
+{
+  switch (name) {
+    case ArmorName::Outpost:
+    case ArmorName::BaseSmall:
+    case ArmorName::BaseLarge:
+      return 3;
+
+    case ArmorName::Guard:
+    case ArmorName::Engineer:
+    case ArmorName::Hero:
+    case ArmorName::Infantry3:
+    case ArmorName::Infantry4:
+    case ArmorName::Infantry5:
+      return 4;
+
+    case ArmorName::Unknown:
+      break;
+  }
+  return std::nullopt;
+}
+
 // Tracker 的四态生命周期。
 enum class TrackState : std::uint8_t {
   Lost,       // 当前没有可用目标

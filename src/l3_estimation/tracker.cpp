@@ -95,8 +95,11 @@ std::optional<TrackedTarget> Tracker::track(
   for (const auto& detection : detections) {
     observations_.push_back(toArmorObservation(detection, timestamp));
     pnp_solver_.single_pnp(observations_.back());
-
   }
+
+  // 单板结果全部就位后再做一遍双板联合 yaw。必须放在这里而不是循环内：配对
+  // 需要同帧另一块板的世界系位置，而位置本身来自各自的单板 PnP。
+  pnp_solver_.refine_double_armor(observations_);
 
 
   // 时间戳倒退或跟踪期间帧间隔过大时，旧运动状态不再可信。
@@ -213,19 +216,18 @@ bool Tracker::initializeTarget(
 
   const Armor& armor = *armors.front();
   double radius = 0.2;
-  int armor_count = 4;
+  // 板数取 types.hpp 的共用映射，与 PnpSolver 的双板配对同源；类别未知时按四板。
+  int armor_count = armorCountOf(armor.name).value_or(4);
   Eigen::VectorXd covariance_diagonal(11);
 
-  // 不同车辆结构使用对应的装甲板数量、初始半径和协方差。
+  // 不同车辆结构使用对应的初始半径和协方差。
   // 平衡步兵已退出赛场，普通车辆一律按四板整车模型初始化。
   if (armor.name == ArmorName::Outpost) {
     radius = 0.2765;
-    armor_count = 3;
     covariance_diagonal << 1.0, 64.0, 1.0, 64.0, 1.0, 81.0,
       0.4, 100.0, 1e-4, 0.0, 0.0;
   } else if (isBase(armor.name)) {
     radius = 0.3205;
-    armor_count = 3;
     covariance_diagonal << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0,
       0.4, 100.0, 1e-4, 0.0, 0.0;
   } else {
