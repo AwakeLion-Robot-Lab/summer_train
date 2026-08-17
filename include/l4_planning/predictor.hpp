@@ -8,9 +8,8 @@
 
 namespace L4Planning {
 
-// 整车模型外推。做法与 sp_vision 的 Aimer 一致：在目标的**副本**上调用 L3
-// 自己的 predict()，外推用的就是 EKF 的状态转移模型，不会出现两份需要手工
-// 同步的实现。dt 允许为负，用于把状态回退到过去时刻做对照。
+// 整车模型外推。在目标副本上复用 L3 的状态转移，调用方原始状态不会被修改。
+// dt 单位为秒，允许为负，用于回退到过去时刻做对照。
 //
 // 关键点：装甲板的位置由 (旋转中心, 整车 yaw, 半径) 共同决定，因此外推
 // **必须同时推进中心和 yaw**。只推中心不推 yaw 时，小陀螺目标会被算成
@@ -18,8 +17,7 @@ namespace L4Planning {
 // 这正是延迟补偿要解决的主要误差来源。
 class Predictor {
 public:
-  // 恒速度 + 恒角速度外推，同时推进滤波器时刻，与 sp 的 target.predict(future)
-  // 等价。协方差也会按 Q 传播，因为复用的就是 L3 的 predict。
+  // 恒速度 + 恒角速度外推，同时推进滤波器时刻和协方差。
   [[nodiscard]] L3Estimation::TrackedTarget predict(
     const L3Estimation::TrackedTarget& target, double dt) const;
 

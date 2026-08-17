@@ -136,7 +136,6 @@ int main(int argc, char* argv[])
                   << " yaw=" << state->rpy.yaw
                   << " pitch=" << state->rpy.pitch
                   << " bullet_speed=" << state->bullet_speed
-                  << " heat=" << state->heat
                   << " enemy_color=" << L1Sensor::toString(state->enemy_color);
       } else {
         std::cout << " | [RX] state=none";

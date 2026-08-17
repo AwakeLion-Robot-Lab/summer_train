@@ -28,7 +28,6 @@ public:
     float yaw = 0.0F;
     float pitch = 0.0F;
     float bullet_speed = 0.0F;
-    float heat = 0.0F;
     std::uint8_t enemy_color = 2;
     std::uint8_t mode = 0;
   };

@@ -1,8 +1,8 @@
 # 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
 inference:
-  backend: "tensorrt"
-  model_path: "model/armor_model/0526.onnx"
-  device: "CUDA:0"
+  backend: "openvino"
+  model_path: "model/armor_model/yolov5.xml"
+  device: "CPU"
 
   # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
   # 训练/导出时模型期望的颜色顺序。宿主侧输入恒为 uint8 NHWC BGR，
@@ -22,15 +22,14 @@ inference:
   #
   # 推理线程数，0 表示交给 OpenVINO 自决。
   #
-  # 大小核 CPU 上不要留 0。一次推理内部按算子并行，每层结束都有一个同步点，
-  # 整层耗时由最慢的那份切分决定——P 核和 E 核混用时就是被 E 核拖住，P 核在
-  # 同步点上白等。所以延迟敏感场景通常是"少而快"胜过"多而杂"。
-  # 起点：设成物理 P 核数（i9-13980HX 是 8），配合 scheduling_core_type: pcore。
-  num_threads: 0
+  # 的噪声里（默认 10.49 / 8线程+P核 10.34 / 8线程+E核 10.61 / 4线程 13.86）。
+  # 只有线程数少到 4 才明显变慢。所以除非换了模型或换了机器，保持默认即可，
+  # 不必在这里花时间。
+  num_threads: 8
   #
   # 大小核调度：any（插件默认，P/E 混用）/ pcore（只用性能核）/ ecore（只用能效核）。
   # ecore 是给"把 P 核让给别的进程"这种取舍用的，不是为了快。
-  scheduling_core_type: "any"
+  scheduling_core_type: "pcore"
   #
   # 超线程。不写这一项表示保持 OpenVINO 默认。
   # 同一物理核上的两个逻辑线程共享执行单元和 L1/L2，算子级并行下互相抢资源，
@@ -49,7 +48,7 @@ armor:
 # L3 跟踪状态机参数。
 tracker:
   # 连续命中多少帧后，从 Detecting 切换到 Tracking。
-  min_detect_count: 3
+  min_detect_count: 5
   # 相邻帧间隔超过该值时，放弃旧目标并重新初始化。
   max_frame_interval_ms: 100
   # Tracking 连续丢失多少帧后切换到 Lost。

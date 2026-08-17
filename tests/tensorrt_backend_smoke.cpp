@@ -1,6 +1,7 @@
 #include "l2_perception/inference/backends/tensorrt_backend.hpp"
 #include "runtime/auto_aim_config.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
@@ -32,6 +33,18 @@ int main(int argc, char** argv)
       runtime_config.model_path == "model/armor_model/0526.onnx" &&
         runtime_config.inference_device == "CUDA:0",
       "runtime TensorRT model/device config is wrong");
+    require(
+      std::abs(runtime_config.armor.small_width - 0.135) < 1e-12 &&
+        std::abs(runtime_config.armor.big_width - 0.230) < 1e-12 &&
+        std::abs(runtime_config.armor.height - 0.056) < 1e-12 &&
+        std::abs(runtime_config.armor.corner_noise_px - 1.0) < 1e-12,
+      "runtime L3 armor config is wrong");
+    require(
+      runtime_config.tracker.min_detect_count == 5 &&
+        runtime_config.tracker.max_frame_interval.count() == 100 &&
+        runtime_config.tracker.max_temp_lost_count == 15 &&
+        runtime_config.tracker.outpost_max_temp_lost_count == 75,
+      "runtime L3 tracker config is wrong");
 
     const auto backend_kind = L2Perception::inferenceBackendFromString("Tensor-RT");
     require(

@@ -1,4 +1,4 @@
-#include "l4_planning/ballistic_solver.hpp"
+#include "l4_planning/ballistic.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -29,9 +29,8 @@ Ballistic BallisticSolver::solveByHeightCompensation(
 {
   Ballistic result;
 
-  // 高度补偿迭代：抬高"名义目标高度"直到实际落点回到真实高度。内层映射用真空
-  // 闭式解，而不是 talos / FYT 的视线角 atan2 —— 视线角完全不含重力，整个下坠
-  // 量都要靠迭代累加出来，收敛慢一截。
+  // 高度补偿迭代：抬高名义目标高度，直到所选模型的实际落点回到真实高度。
+  // 真空闭式解只负责给出每一轮的发射角初值。
   const VacuumModel seed(config_.gravity);
   double aim_height = h;
 
@@ -72,8 +71,7 @@ Ballistic BallisticSolver::solve(double d, double h, double bullet_speed) const
     return result;
   }
 
-  // 模型给得出闭式反解就直接用。两个内置模型都走这条路：一次算完，精确到机器
-  // 精度，没有容差残留，也没有"迭代次数不够就报无解"这个失效模式。
+  // 模型能直接反解时优先使用闭式结果；仅在模型不提供反解时才做高度补偿迭代。
   if (const auto launch = model_->launch(d, h, bullet_speed); launch.has_value()) {
     if (std::abs(launch->pitch) > config_.max_pitch ||
         !std::isfinite(launch->pitch) || !std::isfinite(launch->fly_time) ||
@@ -88,12 +86,6 @@ Ballistic BallisticSolver::solve(double d, double h, double bullet_speed) const
   }
 
   return solveByHeightCompensation(d, h, bullet_speed);
-}
-
-double BallisticSolver::solvePitch(double distance, double height, double bullet_speed) const
-{
-  const Ballistic result = solve(distance, height, bullet_speed);
-  return result.valid ? result.pitch : 0.0;
 }
 
 }  // namespace L4Planning

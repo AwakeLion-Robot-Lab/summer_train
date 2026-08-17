@@ -119,7 +119,7 @@ SHtech 的价值在工程框架：
 - LMTD 的反陀螺模型可作为后期参考：状态包含车中心位置/速度、主装甲板 yaw/yaw_rate、半径；可直接瞄当前正对装甲板，也可在高速旋转时等待下一块装甲板进入可击打角度。
 - 自主弹道校正思路先进：记录每次 aim id、图像时间和瞄准参数，通过电控回传发射 id，反推发射时刻的控制命令，并用图像中检测到的弹丸轨迹估计误差。这一部分实现复杂，适合作为后期 telemetry/校准工具。
 
-不建议照搬的部分：`CoordConverter` 过于集中，承担了坐标、延迟、弹道、火控和比较逻辑。`newvision` 应把这些拆到 `LatencyCompensator`、`BallisticSolver`、`FireDecision`、`TargetSelector` 中，保留它的时间和坐标语义。
+不建议照搬的部分：`CoordConverter` 过于集中，承担了坐标、延迟、弹道、火控和比较逻辑。`newvision` 将这些职责拆到 `Delay/Planner`、`BallisticSolver` 和 `FireDecision` 中，保留它的时间和坐标语义。
 
 ### HUST_HeroAim_2024
 
@@ -259,13 +259,10 @@ newvision/
       target_estimator.hpp
       target_state.hpp
     l4_planning/
-      planner_interface.hpp
-      aim_plan.hpp
-      setpoint_planner.hpp
+      types.hpp
+      planner.hpp
       predictor.hpp
-      latency_compensator.hpp
-      target_selector.hpp
-      ballistic_solver.hpp
+      ballistic.hpp
     l5_control/
       controller.hpp
       fire_decision.hpp
@@ -304,12 +301,12 @@ include/l3_estimation/armor_pose.hpp
 include/l3_estimation/armor_observation.hpp
 include/l3_estimation/target_state.hpp
 
-include/l4_planning/aim_plan.hpp
-include/l4_planning/planner_interface.hpp
-include/l4_planning/setpoint_planner.hpp
-include/l4_planning/target_selector.hpp
-src/l4_planning/setpoint_planner.cpp
-src/l4_planning/target_selector.cpp
+include/l4_planning/types.hpp
+include/l4_planning/planner.hpp
+include/l4_planning/ballistic.hpp
+src/l4_planning/planner.cpp
+src/l4_planning/ballistic_model.cpp
+src/l4_planning/ballistic_solver.cpp
 
 include/l6_telemetry/replay_reader.hpp
 src/l6_telemetry/replay_reader.cpp
@@ -338,9 +335,10 @@ include/l3_estimation/pnp_solver.hpp
 include/l3_estimation/reprojection_error.hpp
 include/l3_estimation/ekf_tracker.hpp
 include/l3_estimation/target_estimator.hpp
+include/l4_planning/types.hpp
+include/l4_planning/planner.hpp
 include/l4_planning/predictor.hpp
-include/l4_planning/latency_compensator.hpp
-include/l4_planning/ballistic_solver.hpp
+include/l4_planning/ballistic.hpp
 include/l5_control/controller.hpp
 include/l5_control/fire_decision.hpp
 include/l5_control/serial_command.hpp
@@ -731,7 +729,7 @@ pitch_thresh = atan(shooting_height / 2 / distance)
 
 - `l3_estimation/pnp_solver.*`
 - `l3_estimation/target_estimator.*`
-- `l4_planning/ballistic_solver.*`
+- `l4_planning/ballistic.*`
 - `l4_planning/planner.*`
 - `runtime/auto_aim_runtime.*`
 
@@ -877,7 +875,7 @@ L3 Estimation
   PnPSolver / ReprojectionYawOptimizer / EkfTracker / TargetEstimator
 
 L4 Planning
-  LatencyCompensator / ArmorSelector / BallisticSolver / Predictor / MPCPlanner
+  Planner / BallisticSolver / Predictor / MPCPlanner
 
 L5 Control
   FireDecision / Controller / SerialCommand
@@ -1086,7 +1084,7 @@ L6 Telemetry
   PnP 距离方差随距离增长的推导。`newvision` 的 EKF 观测噪声可参考它按距离放大。
 
 - `rm.cv.fans-main/docs/auto_aim/latency.md`  
-  延迟拆分文档：`img/predict/send/control/fire/hit`。这是 `newvision::LatencyCompensator` 最值得参考的语义定义。
+  延迟拆分文档：`img/predict/send/control/fire/hit`。这是 `newvision::Delay` 最值得参考的语义定义。
 
 - `rm.cv.fans-main/docs/auto_aim/latency.md:7`  
   延迟时间点定义表。`img` 是曝光中点，`predict` 是神经网络和预测器预处理完成后开始运动解算的时间点，`send` 是准备发信号的时间点，`control/fire/hit` 分别对应电控执行、弹丸发射和击中。
@@ -1245,5 +1243,5 @@ L6 Telemetry
 5. sp_vision Planner：弹道、延迟、TinyMPC 参考轨迹。
 6. Talos/Climber 火控：物理窗口阈值、命令突变抑制。
 7. JLU 选板：锁定装甲板、切板死区、反复换板抑制。
-8. rm.cv.fans 延迟和枪口坐标弹道：先吸收语义，再拆成 `LatencyCompensator` 和 `BallisticSolver`。
+8. rm.cv.fans 延迟和枪口坐标弹道：先吸收语义，再落实到 `Delay/Planner` 和 `BallisticSolver`。
 9. SHtech Pipeline：在单线程闭环稳定后，再拆成纯 C++ 多线程流水线。

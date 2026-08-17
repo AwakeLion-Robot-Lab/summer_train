@@ -239,7 +239,6 @@ RobotState SerialProtocol::toRobotState(const RxPacket &packet) {
   state.rpy.yaw = packet.data.yaw;
   state.rpy.pitch = packet.data.pitch;
   state.bullet_speed = packet.data.bullet_speed;
-  state.heat = packet.data.heat;
   state.timestamp = std::chrono::steady_clock::now();
 
   switch (packet.data.enemy_color) {

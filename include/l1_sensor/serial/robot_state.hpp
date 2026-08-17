@@ -31,7 +31,6 @@ struct RobotState {
 
   Orientation rpy;
   double bullet_speed = 0.0;
-  double heat = 0.0;
   EnemyColor enemy_color = EnemyColor::Unknown;
   WorkMode mode = WorkMode::Idle;
   //这个时间辍是收到消息打上的，所以忽略了通信延迟(未知)，下位的运行延迟(2～3ms)

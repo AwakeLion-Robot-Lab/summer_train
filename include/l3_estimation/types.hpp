@@ -126,14 +126,14 @@ struct ArmorConfig {
   double small_width{0.135};
   double big_width{0.230};
   double height{0.056};
-  // 旧配置兼容字段；sp_vision 的离散 yaw 搜索不使用它。
+  // 预留的角点噪声字段；当前离散 yaw 搜索尚未使用。
   double corner_noise_px{1.0};
 };
 
 struct TrackerConfig {
   // 从 Detecting 转入 Tracking 所需的连续有效观测帧数。
   int min_detect_count{5};
-  // 非 Lost 状态允许的最大相邻帧间隔，对应 sp_vision 写死的 dt > 0.1s。
+  // 非 Lost 状态允许的最大相邻帧间隔；超时后重置当前跟踪。
   std::chrono::milliseconds max_frame_interval{100};
   // 临时丢失按连续帧数计数；前哨站允许更长的无观测预测窗口。
   int max_temp_lost_count{15};

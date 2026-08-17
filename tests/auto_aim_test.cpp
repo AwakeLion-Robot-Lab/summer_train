@@ -76,7 +76,6 @@ const std::string kCommandLineKeys =
   "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
   "{bullet-speed | 27.0 | 回放没有裁判系统数据；默认与 SP auto_aim_test 一致（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
-  "{fire-limits | false | 填一组占位火控参数，让 fire_feasible 时序可观测}"
   "{@input-path | records/3m_high | avi 和 txt 文件的路径（不含后缀）}";
 
 struct PoseSample {
@@ -120,32 +119,14 @@ void require(bool condition, const std::string& message)
   return "unknown";
 }
 
-[[nodiscard]] const char* phaseName(L4Planning::AimPhase phase) noexcept
-{
-  switch (phase) {
-  case L4Planning::AimPhase::SingleArmor:
-    return "single";
-  case L4Planning::AimPhase::WholeCarArmor:
-    return "car-armor";
-  case L4Planning::AimPhase::WholeCarCenter:
-    return "car-center";
-  }
-  return "unknown";
-}
-
 [[nodiscard]] const char* planErrorName(L4Planning::PlanError error) noexcept
 {
   switch (error) {
   case L4Planning::PlanError::None:            return "none";
   case L4Planning::PlanError::NoTarget:        return "no-target";
-  case L4Planning::PlanError::NotTracking:     return "not-tracking";
   case L4Planning::PlanError::NoArmor:         return "no-armor";
-  case L4Planning::PlanError::NoCalibration:   return "no-calib";
   case L4Planning::PlanError::BadBulletSpeed:  return "bad-speed";
   case L4Planning::PlanError::BallisticFailed: return "ballistic";
-  case L4Planning::PlanError::NotConverged:    return "not-converged";
-  case L4Planning::PlanError::OutOfRange:      return "out-of-range";
-  case L4Planning::PlanError::Switching:       return "switching";
   case L4Planning::PlanError::OutOfWindow:     return "out-of-window";
   }
   return "unknown";
@@ -797,27 +778,12 @@ int main(int argc, char** argv)
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
     // L4 的整车外推：恒速度 + 恒角速度，中心和整车 yaw 一起推进。
     const L4Planning::Predictor predictor;
-    // 完整的 L4 -> L5 链路。回放里这条链路第一次真正跑起来：runtime 目前在
-    // tracker 之后就 break 了，planner_smoke 也只喂合成数据。
+    // 完整的 L4 -> L5 链路。回放与 runtime 现在共用同一组
+    // Planner / FireDecider / Controller 语义，这里另外负责离线诊断。
     const L4Planning::PlanConfig plan_config;
     L4Planning::Planner planner(plan_config);
-    // 默认 FireConfig 全是 nullopt，parametersReady() 恒假，fire_feasible 会
-    // 一直是 0——这正是实机未标定时该有的行为。想在回放里看清"火控窗口什么时候
-    // 打开"，用 --fire-limits=true 填一组占位值。它们不是标定结果，绝不能搬到
-    // 实机配置里；shoot_enable 无论如何保持 false。
+    // 回放固定关闭实际开火，但仍记录 fire_feasible 的时序。
     L5Control::FireConfig fire_config;
-    if (cli.get<bool>("fire-limits")) {
-      fire_config.bullet_diameter = 0.017;
-      fire_config.min_bullet_speed = 10.0;
-      fire_config.max_bullet_speed = 32.0;
-      fire_config.heat_limit = 1e9;
-      fire_config.min_yaw = -std::numbers::pi;
-      fire_config.max_yaw = std::numbers::pi;
-      fire_config.min_pitch = -std::numbers::pi / 4.0;
-      fire_config.max_pitch = std::numbers::pi / 4.0;
-      std::cout << "已启用占位火控参数：fire_feasible 可观测，shoot 仍被 "
-                   "shoot_enable=false 拦住\n";
-    }
     const L5Control::FireDecider fire_decider{fire_config};
     const L5Control::Controller controller;
 
@@ -855,7 +821,7 @@ int main(int argc, char** argv)
     // 回放里云台姿态来自录像，不是本规划器闭环出来的，所以 aim_error 基本必然
     // 触发。把误差量级和容差一起打出来，才能判断是"云台没跟"还是"规划跑偏"。
     std::vector<double> aim_yaw_errors;
-    // 上一帧真正下发的命令，用来判 armor_switching 和 command_jump。
+    // 上一帧规划命令用于命令跳变检查和 L4 选板连续性诊断。
     int last_plan_armor_id = -1;
     std::optional<double> last_command_yaw;
     std::optional<double> last_same_armor_step;
@@ -969,34 +935,31 @@ int main(int argc, char** argv)
       // 0.005 s 检测耗时，再叠加 Aimer 的高/低速延迟。
       const auto plan_time = timestamp;
       const auto plan = planner.plan(target, robot_state, plan_time, false);
+      const int plan_armor_id =
+        plan.fire.has_value() ? plan.fire->armor_id : -1;
 
       L5Control::FireInput fire_input;
       fire_input.target = target;
       // 跟踪状态不再挂在目标上，火控要靠它区分 Tracking 和 TempLost。
       fire_input.track_state = tracker.state();
       fire_input.plan = plan;
-      fire_input.robot_state = robot_state;
-      fire_input.now = plan_time;
       // 命中判据必须拿云台**实际**指向来比，这里就是录像里那份四元数。
       fire_input.actual_yaw = gimbal_ypr[0];
       fire_input.actual_pitch = gimbal_ypr[1];
-      fire_input.calibration_ready = true;
-      // 回放里 txt 与视频逐帧对齐，不存在陈旧数据；实机这两位由 SerialWorker
-      // 的时间戳年龄决定，不能照抄这里的 true。
-      fire_input.serial_fresh = true;
-      fire_input.gimbal_pose_fresh = true;
-      fire_input.armor_switching =
-        plan.valid && last_plan_armor_id >= 0 && plan.armor_id != last_plan_armor_id;
-      fire_input.command_jump = plan.valid && last_command_yaw &&
-        std::abs(L6Telemetry::limit_rad(plan.yaw - *last_command_yaw)) >
+      // 只作为 L4 选板连续性诊断，不再参与 L5 开火判定。
+      const bool plan_armor_changed =
+        plan.valid() && plan_armor_id >= 0 && last_plan_armor_id >= 0 &&
+        plan_armor_id != last_plan_armor_id;
+      fire_input.command_jump = plan.valid() && last_command_yaw &&
+        std::abs(L6Telemetry::limit_rad(plan.aim.yaw - *last_command_yaw)) >
           command_jump_rad;
 
       // 三角/锯齿波验收：换板帧允许一次跳变，同一物理板内不允许
       // 出现“下降 -> 回升 -> 继续下降”。这里不预设旋转方向，正反转录像都适用。
-      if (plan.valid && last_command_yaw &&
-          plan.armor_id == last_plan_armor_id) {
+      if (plan.valid() && last_command_yaw &&
+          plan_armor_id == last_plan_armor_id) {
         const double step =
-          L6Telemetry::limit_rad(plan.yaw - *last_command_yaw);
+          L6Telemetry::limit_rad(plan.aim.yaw - *last_command_yaw);
         if (std::abs(step) >= kDirectionStepThreshold) {
           if (last_same_armor_step && step * *last_same_armor_step < 0.0) {
             ++same_armor_direction_reversal_frames;
@@ -1012,10 +975,10 @@ int main(int argc, char** argv)
       const auto fire_decision = fire_decider.decide(fire_input);
       const auto command = controller.makeCommand(plan, fire_decision);
 
-      if (plan.valid) {
+      if (plan.valid()) {
         ++plan_valid_frames;
-        last_plan_armor_id = plan.armor_id;
-        last_command_yaw = plan.yaw;
+        last_plan_armor_id = plan_armor_id;
+        last_command_yaw = plan.aim.yaw;
       } else {
         last_plan_armor_id = -1;
         last_command_yaw.reset();
@@ -1026,7 +989,7 @@ int main(int argc, char** argv)
       if (fire_decision.fire_feasible) {
         ++fire_feasible_frames;
       }
-      if (fire_input.armor_switching) {
+      if (plan_armor_changed) {
         ++plan_switch_frames;
       }
       if (fire_input.command_jump) {
@@ -1035,7 +998,7 @@ int main(int argc, char** argv)
       for (const auto reason : fire_decision.reasons) {
         ++reject_histogram[reason];
       }
-      if (plan.valid && fire_decision.tolerance.valid) {
+      if (plan.valid() && fire_decision.tolerance.valid) {
         aim_yaw_errors.push_back(fire_decision.yaw_error * kRadToDeg);
       }
 
@@ -1099,26 +1062,20 @@ int main(int argc, char** argv)
           img, target_armor_poses, armor_type, target->name, solver,
           {0, 255, 0}, 2, overlay_shift);
 
-        // 红色是命中时刻真正瞄的那块板，对应 sp_vision 的 debug_aim_point。
-        // 用规划自己的时域（延迟 + 飞行时间）重新展开整车再取 armor_id，
-        // 而不是复用上面那个按 --predict-time 外推的快照——两者时域不同，
-        // 混用会画出一块规划从没瞄过的板。
-        if (plan.valid && plan.armor_id >= 0) {
-          const double aim_time = plan.delay.beforeFire() + plan.fly_time;
-          const auto aim_poses = predictor.armorPosesAt(*target, aim_time);
-          if (static_cast<std::size_t>(plan.armor_id) < aim_poses.size()) {
-            drawVehicle(
-              img, {aim_poses[static_cast<std::size_t>(plan.armor_id)]},
-              armor_type, target->name, solver, {0, 0, 255}, 2, overlay_shift);
-          }
+        // 红色是 Plan 直接保存的命中时刻实体板，对应 sp_vision 的
+        // debug_aim_point；不再靠 armor_id 和延迟在回放层重复重建。
+        if (plan.valid() && plan.fire.has_value()) {
+          drawVehicle(
+            img, {plan.fire->armor_pose}, armor_type, target->name, solver,
+            {0, 0, 255}, 2, overlay_shift);
         }
       }
 
       // 瞄准点和火控判据用的那块实体板。两者在 WholeCarCenter 档会明显分开
       // ——瞄的是旋转圆上的代理点，判的是板。sp 没有这一层。
-      if (full_view && plan.valid) {
+      if (full_view && plan.valid()) {
         const auto aim_pixel =
-          projectWorldPoint(plan.aim_point, calibration, q_world_barrel);
+          projectWorldPoint(plan.aim.point, calibration, q_world_barrel);
         if (aim_pixel) {
           const cv::Point center = toPixel(*aim_pixel);
           const cv::Scalar color = fire_decision.fire_feasible
@@ -1130,9 +1087,9 @@ int main(int argc, char** argv)
                    cv::LINE_AA);
           cv::circle(img, center, 18, color, 2, cv::LINE_AA);
         }
-        if (plan.fire_armor_id >= 0) {
+        if (plan.fire.has_value()) {
           const auto fire_pixel =
-            projectWorldPoint(plan.fire_armor_point, calibration, q_world_barrel);
+            projectWorldPoint(plan.fire->point(), calibration, q_world_barrel);
           if (fire_pixel) {
             cv::circle(img, toPixel(*fire_pixel), 9, {255, 0, 255}, 2, cv::LINE_AA);
           }
@@ -1185,17 +1142,17 @@ int main(int argc, char** argv)
       }
       drawOutlinedText(
         img,
-        plan.valid
+        plan.valid()
           ? cv::format(
               "CMD yaw=%.2f pitch=%.2f deg | err yaw=%.2f pitch=%.2f | "
-              "phase=%s armor=%d fire_armor=%d",
-              plan.yaw * kRadToDeg, plan.pitch * kRadToDeg,
-              L6Telemetry::limit_rad(plan.yaw - gimbal_ypr[0]) * kRadToDeg,
-              L6Telemetry::limit_rad(plan.pitch - gimbal_ypr[1]) * kRadToDeg,
-              phaseName(plan.aim_phase), plan.armor_id, plan.fire_armor_id)
-          : cv::format("CMD not sent (plan %s)", planErrorName(plan.error)),
+              "armor=%d fire_armor=%d",
+              plan.aim.yaw * kRadToDeg, plan.aim.pitch * kRadToDeg,
+              L6Telemetry::limit_rad(plan.aim.yaw - gimbal_ypr[0]) * kRadToDeg,
+              L6Telemetry::limit_rad(plan.aim.pitch - gimbal_ypr[1]) * kRadToDeg,
+              plan_armor_id, plan_armor_id)
+          : cv::format("CMD not sent (plan %s)", planErrorName(plan.reason)),
         {10, full_view ? 182 : 92},
-        plan.valid ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
+        plan.valid() ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
       if (full_view) {
         drawOutlinedText(
           img,
@@ -1262,25 +1219,29 @@ int main(int argc, char** argv)
 
       // L4 -> L5：这才是真正决定下位机动作的一组量。
       // cmd_yaw 是 world 系绝对方位角，和 gimbal_yaw 同一个基准，可以直接相减。
-      data["plan_valid"] = plan.valid ? 1 : 0;
-      data["plan_error"] = static_cast<int>(plan.error);
-      data["plan_armor_id"] = plan.armor_id;
-      data["plan_aim_phase"] = static_cast<int>(plan.aim_phase);
-      data["plan_aim_on_armor"] = plan.aim_on_armor ? 1 : 0;
-      data["fire_armor_id"] = plan.fire_armor_id;
-      data["fire_admissible"] = plan.fire_admissible ? 1 : 0;
-      if (plan.valid) {
-        data["cmd_yaw"] = plan.yaw * kRadToDeg;
-        data["cmd_pitch"] = plan.pitch * kRadToDeg;
+      data["plan_valid"] = plan.valid() ? 1 : 0;
+      data["plan_error"] = static_cast<int>(plan.reason);
+      data["plan_armor_id"] = plan_armor_id;
+      data["plan_aim_on_armor"] = plan.fire.has_value() &&
+          (plan.aim.point - plan.fire->point()).norm() < 1e-9
+        ? 1
+        : 0;
+      data["fire_armor_id"] = plan_armor_id;
+      data["fire_admissible"] = plan.fireAdmissible() ? 1 : 0;
+      if (plan.valid()) {
+        data["cmd_yaw"] = plan.aim.yaw * kRadToDeg;
+        data["cmd_pitch"] = plan.aim.pitch * kRadToDeg;
         // 云台要闭合的跟随误差。单看 cmd_yaw 是条平滑斜坡，抖动只在差值里看得见。
         data["cmd_yaw_error"] =
-          L6Telemetry::limit_rad(plan.yaw - gimbal_ypr[0]) * kRadToDeg;
+          L6Telemetry::limit_rad(plan.aim.yaw - gimbal_ypr[0]) * kRadToDeg;
         data["cmd_pitch_error"] =
-          L6Telemetry::limit_rad(plan.pitch - gimbal_ypr[1]) * kRadToDeg;
-        data["fire_delta_angle"] = plan.fire_delta_angle * kRadToDeg;
-        data["fly_time"] = plan.fly_time;
-        data["before_fire"] = plan.delay.beforeFire();
-        data["image_to_plan"] = plan.delay.image_to_plan;
+          L6Telemetry::limit_rad(plan.aim.pitch - gimbal_ypr[1]) * kRadToDeg;
+        data["fire_delta_angle"] = plan.fire.has_value()
+          ? plan.fire->facingAngle() * kRadToDeg
+          : 0.0;
+        data["fly_time"] = plan.timing.fly_time;
+        data["before_fire"] = plan.timing.delay.beforeFire();
+        data["image_to_plan"] = plan.timing.delay.image_to_plan;
       }
       data["cmd_sent"] = command ? 1 : 0;
       data["cmd_shoot"] = command && command->shoot ? 1 : 0;
@@ -1291,7 +1252,7 @@ int main(int argc, char** argv)
         data["tol_yaw"] = fire_decision.tolerance.yaw * kRadToDeg;
         data["tol_pitch"] = fire_decision.tolerance.pitch * kRadToDeg;
       }
-      data["armor_switching"] = fire_input.armor_switching ? 1 : 0;
+      data["plan_armor_changed"] = plan_armor_changed ? 1 : 0;
       data["command_jump"] = fire_input.command_jump ? 1 : 0;
       data["gimbal_pitch"] = gimbal_ypr[1] * kRadToDeg;
 

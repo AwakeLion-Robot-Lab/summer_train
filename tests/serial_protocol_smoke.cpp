@@ -51,7 +51,6 @@ std::vector<std::uint8_t> makeStatePacket(
   packet.data.pitch = pitch;
   packet.data.roll = 0.1F;
   packet.data.bullet_speed = 23.0F;
-  packet.data.heat = 42.0F;
   packet.data.enemy_color = 1;
   packet.data.mode = 1;
 
@@ -85,6 +84,8 @@ std::uint8_t txSequence(std::span<const std::uint8_t> bytes)
 
 int main()
 {
+  static_assert(sizeof(Protocol::RxPayload) == 18);
+
   const auto first = makeStatePacket(10, 1.0F, 2.0F);
   const auto second = makeStatePacket(11, 3.0F, 4.0F);
 
@@ -95,7 +96,7 @@ int main()
   const auto states = protocol.feed(merged);
   if (states.size() != 2 || states[0].rpy.yaw != 1.0 ||
       states[1].rpy.yaw != 3.0 || states[1].rpy.pitch != 4.0 ||
-      states[1].heat != 42.0) {
+      states[1].bullet_speed != 23.0) {
     std::cerr << "SerialProtocol did not drain concatenated packets\n";
     return 1;
   }

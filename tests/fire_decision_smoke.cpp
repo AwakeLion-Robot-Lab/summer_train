@@ -1,8 +1,7 @@
 // L5 火控判定的冒烟测试。
 //
-// 这一层的设计取自工作空间里所有认真做火控的项目的共识：把装甲板的物理尺寸
-// 换算成该距离上的角度容差，拿**实际**云台角去比，yaw 和 pitch 都比。用例
-// 逐条盯住这些取舍，避免以后被"简化"回单一固定角度。
+// 把装甲板的物理尺寸换算成该距离上的角度容差，再与实际云台 yaw/pitch 比较。
+// 用例逐条固定这些关键判据，避免退化成单一固定角度。
 
 #include "l5_control/fire_decision.hpp"
 
@@ -36,14 +35,6 @@ void require(bool condition, const std::string& message)
 {
   L5Control::FireConfig config;
   config.shoot_enable = true;
-  config.bullet_diameter = 0.017;
-  config.min_bullet_speed = 21.0;
-  config.max_bullet_speed = 30.0;
-  config.heat_limit = 200.0;
-  config.min_yaw = -std::numbers::pi;
-  config.max_yaw = std::numbers::pi;
-  config.min_pitch = -0.6;
-  config.max_pitch = 0.6;
   return config;
 }
 
@@ -59,23 +50,14 @@ void require(bool condition, const std::string& message)
   input.track_state = L3Estimation::TrackState::Tracking;
 
   L4Planning::Plan plan;
-  plan.valid = true;
-  plan.ballistic_valid = true;
-  plan.fire_admissible = true;
-  plan.error = L4Planning::PlanError::None;
-  plan.yaw = 0.0;
-  plan.pitch = 0.05;
-  plan.fire_armor_id = 0;
-  plan.fire_delta_angle = 0.0;
-  plan.fire_armor_point = {4.0, 0.0, 0.1};
+  plan.status = L4Planning::PlanStatus::FireReady;
+  plan.reason = L4Planning::PlanError::None;
+  plan.aim = {{4.0, 0.0, 0.1}, 0.0, 0.05};
+  plan.fire = L4Planning::FireReference{0, {4.0, 0.0, 0.1, 0.0}};
   input.plan = plan;
 
-  input.robot_state.heat = 0.0;
   input.actual_yaw = 0.0;
   input.actual_pitch = 0.05;
-  input.calibration_ready = true;
-  input.serial_fresh = true;
-  input.gimbal_pose_fresh = true;
   return input;
 }
 
@@ -114,9 +96,9 @@ void testToleranceShrinksWithDistance()
   const L5Control::FireDecider decider(makeConfig());
 
   auto near_input = makeInput();
-  near_input.plan.fire_armor_point = {1.5, 0.0, 0.0};
+  near_input.plan.fire->armor_pose.head<3>() = Eigen::Vector3d{1.5, 0.0, 0.0};
   auto far_input = makeInput();
-  far_input.plan.fire_armor_point = {8.0, 0.0, 0.0};
+  far_input.plan.fire->armor_pose.head<3>() = Eigen::Vector3d{8.0, 0.0, 0.0};
 
   const auto near = decider.decide(near_input).tolerance;
   const auto far = decider.decide(far_input).tolerance;
@@ -126,7 +108,7 @@ void testToleranceShrinksWithDistance()
 
   // 极远处物理张角趋近 0，没有下限就永远开不了火。
   auto very_far = makeInput();
-  very_far.plan.fire_armor_point = {80.0, 0.0, 0.0};
+  very_far.plan.fire->armor_pose.head<3>() = Eigen::Vector3d{80.0, 0.0, 0.0};
   const auto floored = decider.decide(very_far).tolerance;
   require(
     std::abs(floored.yaw - decider.config().min_yaw_tolerance) < 1e-12 &&
@@ -165,7 +147,7 @@ void testTiltedArmorNarrowsYawTolerance()
 
   auto facing = makeInput();
   auto tilted = makeInput();
-  tilted.plan.fire_delta_angle = 60.0 * std::numbers::pi / 180.0;
+  tilted.plan.fire->armor_pose.w() = 60.0 * std::numbers::pi / 180.0;
 
   const auto a = decider.decide(facing).tolerance;
   const auto b = decider.decide(tilted).tolerance;
@@ -174,8 +156,29 @@ void testTiltedArmorNarrowsYawTolerance()
             << b.yaw * 57.3 << " deg\n";
 }
 
-// pitch 也要判。sp_vision 和 Climber_Vision 的 Shooter 只判 yaw，俯仰没跟上
-// 照样开火。
+// 板面误差必须是 wrap(line_of_sight - armor_normal)，不能只保存 armor yaw，
+// 也不能拿车体中心方向代替这块板自己的视线方向。
+void testFacingAngleUsesLineOfSight()
+{
+  constexpr double degree = std::numbers::pi / 180.0;
+
+  L4Planning::FireReference ordinary{
+    0, {4.0 * std::cos(40.0 * degree), 4.0 * std::sin(40.0 * degree), 0.0,
+        25.0 * degree}};
+  require(
+    std::abs(ordinary.facingAngle() - 15.0 * degree) < 1e-12,
+    "facing angle must subtract the armor normal from its own line of sight");
+
+  L4Planning::FireReference wrapped{
+    0, {4.0 * std::cos(-179.0 * degree), 4.0 * std::sin(-179.0 * degree), 0.0,
+        179.0 * degree}};
+  require(
+    std::abs(wrapped.facingAngle() - 2.0 * degree) < 1e-12,
+    "facing angle must wrap across the +/-pi boundary");
+  std::cout << "  [ok] facing angle uses wrapped LOS - armor normal\n";
+}
+
+// pitch 与 yaw 都必须进入容差，任意一轴未到位都不能开火。
 void testPitchErrorAlsoBlocks()
 {
   const L5Control::FireDecider decider(makeConfig());
@@ -196,13 +199,31 @@ void testPitchErrorAlsoBlocks()
   std::cout << "  [ok] both axes gate the shot\n";
 }
 
+// 云台机械范围不在视觉火控层重复限制。
+void testGimbalRangeIsNotFireGate()
+{
+  const L5Control::FireDecider decider(makeConfig());
+  auto input = makeInput();
+  input.plan.aim.yaw = 4.0;
+  input.plan.aim.pitch = 1.0;
+  input.actual_yaw = input.plan.aim.yaw;
+  input.actual_pitch = input.plan.aim.pitch;
+
+  const auto decision = decider.decide(input);
+  require(
+    decision.fire_feasible && decision.shoot,
+    "gimbal software ranges must not gate firing in L5");
+  std::cout << "  [ok] gimbal ranges are not L5 fire gates\n";
+}
+
 // 瞄准误差和"窗口里没有板"是两回事，必须分别归因。
 void testWindowAndAimAreSeparateReasons()
 {
   const L5Control::FireDecider decider(makeConfig());
 
   auto out_of_window = makeInput();
-  out_of_window.plan.fire_admissible = false;
+  out_of_window.plan.status = L4Planning::PlanStatus::TrackOnly;
+  out_of_window.plan.reason = L4Planning::PlanError::OutOfWindow;
   const auto decision = decider.decide(out_of_window);
   require(
     hasReason(decision, L5Control::RejectReason::OutsideHitWindow),
@@ -222,24 +243,16 @@ void testReasonsAreNotShortCircuited()
 
   auto input = makeInput();
   input.track_state = L3Estimation::TrackState::TempLost;
-  input.serial_fresh = false;
-  input.gimbal_pose_fresh = false;
   input.command_jump = true;
-  input.armor_switching = true;
-  input.calibration_ready = false;
-  input.robot_state.heat = 500.0;
-  input.plan.fire_admissible = false;
+  input.plan.status = L4Planning::PlanStatus::TrackOnly;
+  input.plan.reason = L4Planning::PlanError::OutOfWindow;
   input.actual_yaw = 1.0;
 
   const auto decision = decider.decide(input);
   for (const auto reason :
        {L5Control::RejectReason::ShootDisabled, L5Control::RejectReason::TempLost,
-        L5Control::RejectReason::RobotStateStale,
-        L5Control::RejectReason::GimbalPoseStale, L5Control::RejectReason::CommandJump,
-        L5Control::RejectReason::ArmorSwitching,
-        L5Control::RejectReason::MissingCalibration,
-        L5Control::RejectReason::HeatLimit, L5Control::RejectReason::OutsideHitWindow,
-        L5Control::RejectReason::AimError}) {
+        L5Control::RejectReason::CommandJump,
+        L5Control::RejectReason::OutsideHitWindow, L5Control::RejectReason::AimError}) {
     require(hasReason(decision, reason), "reason " + toString(reason) + " must be listed");
   }
   require(!decision.fire_feasible && !decision.shoot, "a broken frame must not fire");
@@ -253,7 +266,7 @@ void testMissingFireArmorBlocks()
   const L5Control::FireDecider decider(makeConfig());
 
   auto input = makeInput();
-  input.plan.fire_armor_id = -1;
+  input.plan.fire.reset();
   const auto decision = decider.decide(input);
   require(!decision.tolerance.valid, "no physical armor means no tolerance");
   require(
@@ -262,19 +275,30 @@ void testMissingFireArmorBlocks()
   std::cout << "  [ok] center-proxy frames without a physical plate are refused\n";
 }
 
-// 未标定的火控参数必须拦住开火，不能拿默认值凑合。
-void testMissingParametersBlock()
+// 降级原因必须精确：弹速异常不是击发窗口异常；整个 Plan 无效也不等于弹道失败。
+void testPlanReasonsStayPrecise()
 {
-  L5Control::FireConfig config;
-  config.shoot_enable = true;  // 参数没齐时，即使打开开关也不许开火
-  const L5Control::FireDecider decider(config);
+  const L5Control::FireDecider decider(makeConfig());
 
-  const auto decision = decider.decide(makeInput());
+  auto bad_speed = makeInput();
+  bad_speed.plan.status = L4Planning::PlanStatus::TrackOnly;
+  bad_speed.plan.reason = L4Planning::PlanError::BadBulletSpeed;
+  const auto speed_decision = decider.decide(bad_speed);
   require(
-    hasReason(decision, L5Control::RejectReason::MissingCalibration),
-    "unfilled fire parameters must be reported");
-  require(!decision.shoot, "unfilled fire parameters must block the shot");
-  std::cout << "  [ok] missing fire parameters block the shot\n";
+    hasReason(speed_decision, L5Control::RejectReason::BadBulletSpeed) &&
+      !hasReason(speed_decision, L5Control::RejectReason::OutsideHitWindow),
+    "bad bullet speed must not masquerade as an armor-window failure");
+
+  auto no_armor = makeInput();
+  no_armor.plan.status = L4Planning::PlanStatus::Rejected;
+  no_armor.plan.reason = L4Planning::PlanError::NoArmor;
+  const auto rejected_decision = decider.decide(no_armor);
+  require(
+    hasReason(rejected_decision, L5Control::RejectReason::PlanInvalid) &&
+      !hasReason(rejected_decision, L5Control::RejectReason::BallisticInvalid) &&
+      !hasReason(rejected_decision, L5Control::RejectReason::OutsideHitWindow),
+    "a rejected plan must retain its actual cause");
+  std::cout << "  [ok] plan reject reasons stay precise\n";
 }
 
 }  // namespace
@@ -286,11 +310,13 @@ int main()
   testToleranceShrinksWithDistance();
   testBigArmorGetsWiderYawTolerance();
   testTiltedArmorNarrowsYawTolerance();
+  testFacingAngleUsesLineOfSight();
   testPitchErrorAlsoBlocks();
+  testGimbalRangeIsNotFireGate();
   testWindowAndAimAreSeparateReasons();
   testReasonsAreNotShortCircuited();
   testMissingFireArmorBlocks();
-  testMissingParametersBlock();
+  testPlanReasonsStayPrecise();
 
   std::cout << "fire decision smoke test passed\n";
   return 0;

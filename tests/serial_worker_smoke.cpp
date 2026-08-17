@@ -154,7 +154,6 @@ std::vector<std::uint8_t> makeStatePacket(
   packet.data.pitch = pitch;
   packet.data.yaw = yaw;
   packet.data.bullet_speed = 23.0F;
-  packet.data.heat = 42.0F;
   packet.data.enemy_color = 1;
   packet.data.mode = 1;
 

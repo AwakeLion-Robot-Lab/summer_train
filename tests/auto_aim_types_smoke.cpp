@@ -14,7 +14,6 @@ int main()
 {
   static_assert(std::is_same_v<
     L3Estimation::Armor, L3Estimation::ArmorObservation>);
-  static_assert(std::is_same_v<L4Planning::Plan, L4Planning::AimPlan>);
 
   L4Planning::Delay delay;
   delay.image_to_plan = 0.001;
@@ -29,8 +28,7 @@ int main()
   }
 
   runtime::AutoAimConfig config;
-  L3Estimation::AimCalibration calibration;
-  if (config.fire.shoot_enable || config.fireReady(calibration)) {
+  if (config.fire.shoot_enable) {
     std::cerr << "Auto aim configuration is not safe by default\n";
     return 2;
   }
@@ -81,9 +79,10 @@ int main()
   L6Telemetry::AimTrace trace;
   trace.target = tracked_target;
   trace.track_state = L3Estimation::TrackState::Tracking;
-  trace.plan.target_id = 3;
+  trace.plan.status = L4Planning::PlanStatus::TrackOnly;
+  trace.plan.reason = L4Planning::PlanError::BadBulletSpeed;
   trace.fire.reasons.push_back(L5Control::RejectReason::ShootDisabled);
-  if (!trace.target || trace.plan.target_id != 3 ||
+  if (!trace.target || !trace.plan.valid() || trace.plan.fireAdmissible() ||
       trace.track_state != L3Estimation::TrackState::Tracking ||
       L5Control::toString(trace.fire.reasons.front()) != "shoot_disabled") {
     std::cerr << "AimTrace data contract is incorrect\n";

@@ -431,7 +431,7 @@ int main(int argc, char* argv[])
     frame_csv << std::fixed;
 
     std::ofstream aim_csv(out_dir / "aim.csv");
-    aim_csv << "frame,t,plan_valid,plan_armor_id,aim_phase,aim_x,aim_y,aim_z,"
+    aim_csv << "frame,t,plan_valid,plan_armor_id,aim_x,aim_y,aim_z,"
                "cmd_yaw_deg,cmd_pitch_deg,fly_time,before_fire,fire_admissible,"
                "fire_delta_deg,aim_jump\n";
     aim_csv << std::fixed;
@@ -746,32 +746,36 @@ int main(int argc, char* argv[])
       robot_state.rpy.yaw = gimbal_yaw;
       robot_state.timestamp = timestamp;
       const auto plan = planner.plan(target, robot_state, timestamp, false);
+      const int armor_id = plan.fire ? plan.fire->armor_id : -1;
+      const double fire_facing = plan.fire
+        ? plan.fire->facingAngle()
+        : std::numeric_limits<double>::quiet_NaN();
 
       double aim_jump = std::numeric_limits<double>::quiet_NaN();
-      if (plan.valid && last_aim_point) {
-        aim_jump = (plan.aim_point - *last_aim_point).norm();
+      if (plan.valid() && last_aim_point) {
+        aim_jump = (plan.aim.point - *last_aim_point).norm();
         aim_jumps.push_back(aim_jump);
-        if (plan.armor_id != last_aim_armor_id) {
+        if (armor_id != last_aim_armor_id) {
           switch_jumps.push_back(aim_jump);
         } else {
           steady_jumps.push_back(aim_jump);
         }
       }
-      if (plan.valid) {
-        last_aim_point = plan.aim_point;
-        last_aim_armor_id = plan.armor_id;
+      if (plan.valid()) {
+        last_aim_point = plan.aim.point;
+        last_aim_armor_id = armor_id;
       } else {
         last_aim_point.reset();
         last_aim_armor_id = -1;
       }
 
-      aim_csv << frame_index << ',' << pose.seconds << ',' << (plan.valid ? 1 : 0) << ','
-              << plan.armor_id << ',' << static_cast<int>(plan.aim_phase) << ','
-              << plan.aim_point.x() << ',' << plan.aim_point.y() << ','
-              << plan.aim_point.z() << ',' << plan.yaw * kRadToDeg << ','
-              << plan.pitch * kRadToDeg << ',' << plan.fly_time << ','
-              << plan.delay.beforeFire() << ',' << (plan.fire_admissible ? 1 : 0) << ','
-              << plan.fire_delta_angle * kRadToDeg << ',' << aim_jump << '\n';
+      aim_csv << frame_index << ',' << pose.seconds << ',' << (plan.valid() ? 1 : 0) << ','
+              << armor_id << ',' << plan.aim.point.x() << ',' << plan.aim.point.y() << ','
+              << plan.aim.point.z() << ',' << plan.aim.yaw * kRadToDeg << ','
+              << plan.aim.pitch * kRadToDeg << ',' << plan.timing.fly_time << ','
+              << plan.timing.delay.beforeFire() << ','
+              << (plan.fireAdmissible() ? 1 : 0) << ','
+              << fire_facing * kRadToDeg << ',' << aim_jump << '\n';
 
       // 开环预测：缓存 t 时刻外推 predict_time 后的整车，等真到那一刻再对账。
       if (target && predict_time > 0.0) {
