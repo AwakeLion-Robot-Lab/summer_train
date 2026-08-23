@@ -81,9 +81,7 @@ FireDecision FireEvaluator::evaluate(const FireInput& input)
     decision.reasons.push_back(RejectReason::NotTracking);
   }
 
-  if (!input.plan.ballistic_valid) {
-    decision.reasons.push_back(RejectReason::BallisticInvalid);
-  }
+  
 
   if (!input.plan.fire_permitted) {
     decision.reasons.push_back(RejectReason::OutsideHitWindow);
