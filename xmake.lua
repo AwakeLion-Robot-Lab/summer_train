@@ -196,185 +196,110 @@ target("newvision")
         end
     end)
 
-target("auto_aim")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/main.cpp")
-    add_deps("newvision")
 
-target("logger_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/logger_smoke.cpp")
-    add_files("src/l6_telemetry/logger.cpp")
-    add_includedirs("include")
-    add_includedirs("tools/logger/include")
-    add_includedirs("tools/logger/include/3rdparty")
+-- ---------------------------------------------------------------------------
+-- 测试目标按 tests/*.cpp 递归生成，文件名即目标名。新增一个 smoke 只需把文件
+-- 放进 tests/，不必再手写一遍 target() 块。
+--
+-- 默认行为是 add_deps("newvision")。只有两类需要在下面登记：
+--   standalone —— 不牵扯相机/串口 SDK，自己列出所需源文件，这样在没有硬件库
+--                 的机器上也能单独构建；
+--   gated      —— 依赖某个配置开关或平台才存在。
+-- ---------------------------------------------------------------------------
 
-target("latest_buffer_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/latest_buffer_smoke.cpp")
-    add_includedirs("tools/LatesBuffer/include")
+local standalone_tests = {
+    logger_smoke = {
+        files    = {"src/l6_telemetry/logger.cpp"},
+        includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
+    },
+    latest_buffer_smoke = {
+        includes = {"tools/LatesBuffer/include"},
+    },
+    fps_counter_smoke = {
+        files    = {"src/l6_telemetry/fps_counter.cpp"},
+        includes = {"include"},
+    },
+    udp_json_sender_smoke = {
+        files    = {"src/l6_telemetry/udp_json_sender.cpp"},
+        includes = {"include", "tools/logger/include/3rdparty"},
+        syslinks = {"pthread"},
+    },
+    serial_protocol_smoke = {
+        files    = {"src/l1_sensor/serial/serial_protocol.cpp", "src/l6_telemetry/logger.cpp"},
+        includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
+    },
+    -- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK。
+    armor_refiner_smoke = {
+        files    = {"src/l2_perception/armor/armor_refiner.cpp"},
+        includes = {"include", "/usr/include/eigen3"},
+        opencv   = {"opencv_core", "opencv_imgproc"},
+    },
+}
 
-target("camera_calibration_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/camera_calibration_smoke.cpp")
-    add_deps("newvision")
+-- 需要开关或平台才存在的目标。openvino 这几个都要模型；
+-- armor_refiner_video_test 和 auto_aim_test 还要显示器。
+local gated_tests = {
+    openvino_armor_smoke     = "use_openvino",
+    auto_aim_test            = "use_openvino",
+    track_diag               = "use_openvino",
+    armor_refiner_video_test = "use_openvino",
+    serial_worker_smoke      = "linux",
+}
 
-target("pnp_solver_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/pnp_solver_smoke.cpp")
-    add_deps("newvision")
+-- serial_worker_smoke 用 pty 造串口，需要额外链 util。
+local extra_syslinks = {
+    serial_worker_smoke = {"util"},
+}
 
-target("armor_decoder_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/armor_decoder_smoke.cpp")
-    add_deps("newvision")
+-- tests/main.cpp 是完整运行时的入口，目标名不叫 main。
+local renamed_tests = {
+    main = "auto_aim",
+}
 
-target("image_preprocessor_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/image_preprocessor_smoke.cpp")
-    add_deps("newvision")
+for _, source in ipairs(os.files("tests/*.cpp")) do
+    local name = renamed_tests[path.basename(source)] or path.basename(source)
 
-target("tensorrt_backend_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/tensorrt_backend_smoke.cpp")
-    add_deps("newvision")
-
--- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK，因此直接列出所需文件而不是
--- add_deps("newvision")，保证在没有硬件库的机器上也能单独构建。
-target("armor_refiner_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/armor_refiner_smoke.cpp")
-    add_files("src/l2_perception/armor/armor_refiner.cpp")
-    add_includedirs("include")
-    add_includedirs("/usr/include/eigen3")
-    if has_config("use_xrepo_deps") then
-        add_packages("opencv")
-    elseif has_config("use_system_deps") then
-        add_includedirs("/usr/include/opencv4")
-        add_links("opencv_core", "opencv_imgproc")
+    local gate = gated_tests[name]
+    local enabled = true
+    if gate == "linux" then
+        enabled = is_plat("linux")
+    elseif gate then
+        enabled = has_config(gate)
     end
 
-target("planner_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/planner_smoke.cpp")
-    add_deps("newvision")
+    if enabled then
+        target(name)
+            set_kind("binary")
+            set_default(false)
+            set_rundir("$(projectdir)")
+            add_files(source)
 
-target("fire_decision_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/fire_decision_smoke.cpp")
-    add_deps("newvision")
+            local spec = standalone_tests[name]
+            if spec then
+                for _, file in ipairs(spec.files or {}) do
+                    add_files(file)
+                end
+                for _, dir in ipairs(spec.includes or {}) do
+                    add_includedirs(dir)
+                end
+                for _, link in ipairs(spec.syslinks or {}) do
+                    add_syslinks(link)
+                end
+                if spec.opencv then
+                    if has_config("use_xrepo_deps") then
+                        add_packages("opencv")
+                    elseif has_config("use_system_deps") then
+                        add_includedirs("/usr/include/opencv4")
+                        add_links(table.unpack(spec.opencv))
+                    end
+                end
+            else
+                add_deps("newvision")
+            end
 
-target("tracker_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/tracker_smoke.cpp")
-    add_deps("newvision")
-
-target("auto_aim_types_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/auto_aim_types_smoke.cpp")
-    add_deps("newvision")
-
-target("fps_counter_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/fps_counter_smoke.cpp")
-    add_files("src/l6_telemetry/fps_counter.cpp")
-    add_includedirs("include")
-
-target("udp_json_sender_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/udp_json_sender_smoke.cpp")
-    add_files("src/l6_telemetry/udp_json_sender.cpp")
-    add_includedirs("include")
-    add_includedirs("tools/logger/include/3rdparty")
-    add_syslinks("pthread")
-
-if has_config("use_openvino") then
-target("openvino_armor_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/openvino_armor_smoke.cpp")
-    add_deps("newvision")
-
-target("auto_aim_test")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/auto_aim_test.cpp")
-    add_deps("newvision")
-
--- 整车跟踪链路的离线诊断，输出 CSV，不需要显示器。
-target("track_diag")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/track_diag.cpp")
-    add_deps("newvision")
-
--- 灯条精修/筛选的离线回放，需要模型和显示器，因此和 auto_aim_test 一样只在
--- use_openvino=y 时存在。无显示器的机器请改跑 armor_refiner_smoke。
-target("armor_refiner_video_test")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/armor_refiner_video_test.cpp")
-    add_deps("newvision")
+            for _, link in ipairs(extra_syslinks[name] or {}) do
+                add_syslinks(link)
+            end
+        target_end()
+    end
 end
-
-target("serial_protocol_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/serial_protocol_smoke.cpp")
-    add_files("src/l1_sensor/serial/serial_protocol.cpp")
-    add_files("src/l6_telemetry/logger.cpp")
-    add_includedirs("include")
-    add_includedirs("tools/logger/include")
-    add_includedirs("tools/logger/include/3rdparty")
-
-if is_plat("linux") then
-target("serial_worker_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/serial_worker_smoke.cpp")
-    add_deps("newvision")
-    add_syslinks("util")
-end
-
-target("serial_hardware_smoke")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("tests/serial_hardware_smoke.cpp")
-    add_deps("newvision")
