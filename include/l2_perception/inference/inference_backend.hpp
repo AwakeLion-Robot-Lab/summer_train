@@ -115,6 +115,12 @@ public:
   [[nodiscard]] virtual InferenceResult infer(const InferenceInput& input) = 0;
 };
 
+// 用一帧全零输入跑一次推理，取回各输出节点的名字和形状。
+// 这是启动阶段用来发现模型契约的，每帧路径绝不要调用。放在推理层是因为
+// "怎么问出输出形状"是后端的事；"这个形状对应哪种装甲板字段布局"则是
+// L2 装甲模块的事，两者不要混在一起。
+[[nodiscard]] std::vector<InferenceOutputSpec> probeOutputSpecs(IInferenceBackend& backend);
+
 [[nodiscard]] std::string_view inferenceBackendName(InferenceBackendKind backend) noexcept;
 [[nodiscard]] std::optional<InferenceBackendKind> inferenceBackendFromString(
   std::string_view name);

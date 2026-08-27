@@ -200,8 +200,11 @@ int main(int argc, char** argv)
     model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
     model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
+    // 模型来自 --model，没有 auto_aim.yaml 的 layout 可依，按输出形状探契约。
+    const auto decoder_config =
+      L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
     detector = std::make_unique<L2Perception::ArmorDetector>(
-      std::move(backend), L2Perception::ArmorDecoderConfig{},
+      std::move(backend), decoder_config,
       L2Perception::ImagePreprocessConfig{}, refiner_config);
   } catch (const std::exception& error) {
     std::printf("failed to load model %s: %s\n", model.c_str(), error.what());

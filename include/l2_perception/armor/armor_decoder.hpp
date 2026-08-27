@@ -6,7 +6,9 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace L2Perception
@@ -22,22 +24,24 @@ enum class ArmorTensorLayout
   FieldsByCandidates   // [1, field_count, candidate_count]
 };
 
-// NMS 排序使用哪个分数。SP-Vision YOLOV5 使用 sigmoid 后的 objectness。
-enum class ArmorNmsScoreSource
-{
-  Objectness,
-  ClassScore
-};
-
-struct ArmorDecoderConfig
+// 一种模型的输出字段布局。整组由模型导出时定死，换模型必须整组换，
+// 所以它是一个整体而不是十几个可以各调各的独立开关。offset 的单位是
+// “float 字段下标”，不是字节下标。
+//
+// SP YOLOV5 的布局为：0~7 四角点，8 objectness，9~12 颜色，13~21 类别。
+struct ArmorTensorContract
 {
   std::string output_name{"output"};
   ArmorTensorLayout tensor_layout{ArmorTensorLayout::CandidatesByFields};
 
-  // 以下 offset 的单位都是“float 字段下标”，不是字节下标。
-  // SP YOLOV5 布局为：0~7 四角点，8 confidence，9~12 颜色，13~21 类别。
   std::size_t corner_offset{0};
-  std::size_t confidence_index{8};
+  // 有值表示模型带独立的 objectness 字段；无值表示没有（YOLOV8 就是这样），
+  // 置信度改取类别分支的最大值。用 optional 而不是“枚举 + 下标”，是为了让
+  // “没有 objectness 却仍配了下标”这种自相矛盾的状态根本无法被写出来。
+  std::optional<std::size_t> objectness_index{8};
+  // 置信度字段是否为 logit，需要先过 sigmoid。YOLOV8 的分类头已经过了。
+  bool confidence_is_logit{true};
+
   std::size_t color_offset{9};
   std::size_t color_count{4};  // Blue、Red、Gray、Purple
   std::size_t class_offset{13};
@@ -51,15 +55,53 @@ struct ArmorDecoderConfig
   int red_color_index{1};
   int blue_color_index{0};
   int class_id_offset{0};
+  bool coordinates_are_normalized{false};  // true 时角点 0~1，需先乘模型宽高。
+
+  // 契约是否匹配靠整体比较，不靠逐字段核对。
+  [[nodiscard]] friend bool operator==(
+    const ArmorTensorContract&, const ArmorTensorContract&) = default;
+
+  // 该契约要求模型至少提供多少个字段。
+  [[nodiscard]] std::size_t requiredFieldCount() const noexcept;
+};
+
+// 与契约无关的筛选策略。这些是可以按场地和距离自由调的数，改它们不会
+// 让解码错位，只会改变留下多少候选——所以只有这一组暴露给 YAML。
+struct ArmorDecoderConfig
+{
+  ArmorTensorContract contract{};
+
   float confidence_threshold{0.7F};  // SP score_threshold_：进入 NMS 的门限。
   float minimum_confidence{0.8F};    // SP demo min_confidence：NMS 后必须严格大于。
   float nms_iou_threshold{0.3F};
-  ArmorNmsScoreSource nms_score_source{ArmorNmsScoreSource::Objectness};
   float nms_score_threshold{0.7F};
-  bool confidence_is_logit{true};          // output[8] 是 objectness logit。
-  bool coordinates_are_normalized{false};  // true 时角点 0~1，需先乘模型宽高。
-  bool class_aware_nms{false};             // true 时不同颜色/类别候选不互相抑制。
+  bool class_aware_nms{false};  // true 时不同颜色/类别候选不互相抑制。
 };
+
+// 已知的输出契约。换模型时选契约、调阈值，不要逐个字段手配 offset：
+// 这些下标是模型导出时定死的，配错不会报错，只会静默解出垃圾角点。
+//
+// yolov5_22：SP-Vision assets/yolov5.xml，以及深大 RobotPilots 公开的
+//   Infantry-v5n（szu-v5n.xml）。两者输出契约逐字段相同，可直接互换。
+//   [1, 25200, 22]，输出名 output。
+// yolov8_21：深大 RobotPilots 的 Infantry-v8n（szu-v8n-fp16）。
+//   [1, 21, 6300]，channels-first，输出名 output0，没有 objectness 通道。
+//   注意其 .xml/.bin 需要较新的 OpenVINO 运行时；旧运行时改用同名 .onnx。
+//
+// 三个入口对应三种"我知道多少"：知道名字（YAML）、只知道模型输出（离线工具）、
+// 什么都不知道（默认构造即 yolov5_22）。它们共用同一张表。
+[[nodiscard]] ArmorDecoderConfig yolov5_22DecoderConfig() noexcept;
+[[nodiscard]] ArmorDecoderConfig yolov8_21DecoderConfig() noexcept;
+
+// 按名字取预设，名字无效时返回 nullopt 由调用方报错。
+[[nodiscard]] std::optional<ArmorDecoderConfig> armorDecoderPreset(std::string_view name);
+
+// 按探测到的模型输出名取预设。给"模型在运行时才由命令行决定"的离线工具用；
+// 实机 runtime 不猜，契约由 auto_aim.yaml 的 inference.decoder.layout 指定。
+// 认不出就抛，绝不退回默认值——猜错契约只会静默解出垃圾角点。字段数对不对
+// 由 ArmorDecoder::decode() 负责，这里不重复检查。
+[[nodiscard]] ArmorDecoderConfig armorDecoderConfigFor(
+  const std::vector<InferenceOutputSpec>& outputs);
 
 class ArmorDecoder
 {

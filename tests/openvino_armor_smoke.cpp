@@ -1,6 +1,7 @@
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l2_perception/inference/image_preprocessor.hpp"
+#include "runtime/auto_aim_config.hpp"
 
 #include <algorithm>
 #include <array>
@@ -85,9 +86,14 @@ void drawDetections(
 int main(int argc, char** argv)
 {
   try {
-    const std::filesystem::path model_path = argc >= 2
-      ? std::filesystem::path{argv[1]}
-      : std::filesystem::path{"model/armor_model/yolov5.xml"};
+    // 不给模型参数时跑 auto_aim.yaml 里真正配置的那一个，并在下面顺带校验
+    // inference.decoder.layout 是否和该模型的输出形状一致——改完 YAML 之后
+    // 这是最直接的一道检查。给了参数则只测那个模型，不再和 YAML 对照。
+    const bool use_configured_model = argc < 2;
+    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
+    const std::filesystem::path model_path = use_configured_model
+      ? runtime_config.model_path
+      : std::filesystem::path{argv[1]};
     // 第三个可选参数用于同口径比较 CPU/GPU；不传时保持稳定的 CPU 默认值。
     const std::string device = argc >= 4 ? std::string{argv[3]} : std::string{"CPU"};
     const bool show_window = argc >= 5 && std::string_view{argv[4]} == "--show";
@@ -126,21 +132,33 @@ int main(int argc, char** argv)
       "OpenVINO host input is not U8 NHWC");
 
     std::vector<std::size_t> output_shape;
+    L2Perception::ArmorDecoderConfig decoder_config;
 
-    // 移交后端所有权前先检查一次原始张量契约，便于把模型/后端错误与 Decoder 错误分开定位。
+    // 移交后端所有权前先探一次原始张量，便于把模型/后端错误与 Decoder 错误分开定位。
+    // 这里按输出名挑契约，只是为了让同一个 smoke 能验两种模型；runtime 不这么做，
+    // 那边的契约由 auto_aim.yaml 的 inference.decoder.layout 显式指定。
     {
       const auto preprocessed = L2Perception::ImagePreprocessor::run(image, input_spec);
       const auto raw_result = backend->infer(preprocessed.input);
       require(raw_result.outputs.size() == 1, "armor model must produce exactly one output");
-      require(raw_result.outputs.front().name == "output", "unexpected armor output name");
       require(raw_result.outputs.front().isConsistent(), "armor output shape/data mismatch");
       output_shape = raw_result.outputs.front().shape;
-      require(output_shape == std::vector<std::size_t>({1, 25200, 22}),
-              "unexpected armor output shape");
+
+      decoder_config = L2Perception::armorDecoderConfigFor(
+        {{raw_result.outputs.front().name, output_shape}});
+
+      if (use_configured_model) {
+        // 探到的契约和 YAML 写的必须一致。配错 layout 不会让解码失败，只会解出
+        // 垃圾角点，所以这条检查放在这里，而不是等实机发现瞄不准。
+        require(runtime_config.decoder.contract == decoder_config.contract,
+                "config/auto_aim.yaml inference.decoder.layout does not match the model output");
+        // YAML 可能覆盖过阈值，所以后续解码用配置里的那份而不是裸预设。
+        decoder_config = runtime_config.decoder;
+      }
     }
 
     // 正式帧全部通过任务级 Detector，覆盖 Backend + Preprocessor + Decoder 的实际编排。
-    L2Perception::ArmorDetector armor_detector(std::move(backend));
+    L2Perception::ArmorDetector armor_detector(std::move(backend), decoder_config);
     require(armor_detector.ready(), "ArmorDetector did not accept the loaded backend");
     const auto detect_frame = [&](const cv::Mat& frame) {
       return armor_detector.detect(frame);

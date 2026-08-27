@@ -87,6 +87,26 @@ bool InferenceTensor::isConsistent() const noexcept
   return elementCount() == values().size();
 }
 
+std::vector<InferenceOutputSpec> probeOutputSpecs(IInferenceBackend& backend)
+{
+  // 探测帧的像素内容无关紧要，这里要的是输出形状而不是检测结果，
+  // 所以直接按宿主输入契约喂一块零缓冲，不牵扯图像和预处理。
+  const InferenceInputSpec& input_spec = backend.inputSpec();
+  InferenceInput input;
+  input.name = input_spec.name;
+  input.shape = input_spec.shape;
+  input.setOwnedData(std::vector<std::uint8_t>(input.elementCount(), 0));
+
+  // 必须先绑成具名变量：C++20 里 range-for 不会延长 infer() 返回值的生命周期。
+  const InferenceResult result = backend.infer(input);
+  std::vector<InferenceOutputSpec> specs;
+  specs.reserve(result.outputs.size());
+  for (const auto& output : result.outputs) {
+    specs.push_back({output.name, output.shape});
+  }
+  return specs;
+}
+
 const InferenceTensor* InferenceResult::findOutput(std::string_view name) const noexcept
 {
   // 返回内部指针只用于当前 result 的只读访问；result 销毁后该指针不能保存。

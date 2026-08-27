@@ -392,7 +392,10 @@ int main(int argc, char* argv[])
     model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
     require(backend->ready(), "OpenVINO 后端未就绪");
-    L2Perception::ArmorDetector detector(std::move(backend));
+    // 模型来自 --model，没有 auto_aim.yaml 的 layout 可依，按输出形状探契约。
+    const auto decoder_config =
+      L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
+    L2Perception::ArmorDetector detector(std::move(backend), decoder_config);
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig armor_config;

@@ -48,6 +48,15 @@ private:
   std::shared_ptr<const void> external_owner_;
 };
 
+// 模型输出节点的名字和形状，不含数据。用于在不做完整推理解码的前提下
+// 描述一个输出——例如启动阶段探测模型契约。与 InferenceInputSpec 对称，
+// 但放在这里而不是 backend 头里：解码侧要用它，却不该知道后端的存在。
+struct InferenceOutputSpec
+{
+  std::string name;
+  std::vector<std::size_t> shape;
+};
+
 // 一次推理可拥有多个输出张量，例如检测头、分割头或姿态头。
 struct InferenceResult
 {

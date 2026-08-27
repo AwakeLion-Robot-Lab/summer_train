@@ -1,5 +1,6 @@
 #pragma once
 
+#include "l2_perception/armor/armor_decoder.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/types.hpp"
 #include "l4_planning/types.hpp"
@@ -28,6 +29,10 @@ struct AutoAimConfig {
   // model_path / device / backend 单列在上面是因为 runtime 自己也要用它们
   // 打日志和选后端；其余的只在构造 Backend 时透传，所以整个结构体直接放这。
   L2Perception::InferenceModelConfig inference;
+
+  // 模型输出契约。和 model_path 是一对：换模型必须同时换契约，否则解码出的
+  // 是垃圾角点而不是报错。默认是 SP YOLOV5 的 [1, 25200, 22]。
+  L2Perception::ArmorDecoderConfig decoder;
 
   L3Estimation::ArmorConfig armor;
   L3Estimation::TrackerConfig tracker;

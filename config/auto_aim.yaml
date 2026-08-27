@@ -1,12 +1,23 @@
 # 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
 inference:
   backend: "openvino"
-  model_path: "model/armor_model/yolov5.xml"
+  # model_path 和下面的 decoder.layout 必须成对修改。已验证的组合：
+  #   model/armor_model/yolov5.xml       -> yolov5_22   （SP-Vision 自带）
+  #   model/armor_model/szu-v5n.xml      -> yolov5_22   （深大 Infantry-v5n）
+  #   model/armor_model/szu-v8n-fp16.onnx-> yolov8_21   （深大 Infantry-v8n）
+  # szu-v8n 的 .xml/.bin 需要较新的 OpenVINO 运行时（2023.1 读不了它的
+  # MaxPool），旧运行时必须走同名 .onnx。
+  model_path: "model/armor_model/szu-v5n.xml"
   device: "CPU"
 
   # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
   # 训练/导出时模型期望的颜色顺序。宿主侧输入恒为 uint8 NHWC BGR，
   # 转换在后端内部完成。取值 rgb / bgr。
+  #
+  # 必须是 rgb。sp_vision 自己的 tasks/auto_aim/yolos/yolov5.cpp 就是
+  # set_color_format(BGR) + convert_color(RGB)，深大那两个模型同理。
+  # 写成 bgr 会让颜色分支判成相反的颜色（红蓝对调），敌我过滤随之反向，
+  # 同时置信度普遍下降约 0.1。
   model_color_order: "rgb"
   # 像素归一化的除数（不是乘数）。255 表示除到 [0, 1]。
   normalization_divisor: 255.0
@@ -36,6 +47,23 @@ inference:
   # 单次延迟往往不降反升，所以关掉它通常和 pcore 一起用。吞吐场景相反，
   # 因此这里不给默认值。
   # enable_hyper_threading: false
+
+  # ---- 输出契约：和 model_path 成对，配错不会报错，只会解出垃圾角点 ----
+  decoder:
+    # yolov5_22：[1, 25200, 22]，输出名 output，字段为
+    #   0~7 四角点 / 8 objectness logit / 9~12 颜色 / 13~21 九类。
+    # yolov8_21：[1, 21, 6300]，输出名 output0，channels-first，字段为
+    #   0~3 颜色 / 4~12 九类 / 13~20 四角点，没有 objectness 通道，
+    #   置信度取类别分支最大值且已过 sigmoid。
+    layout: "yolov5_22"
+    # 下面四项在 layout 预设之上覆盖，缺省则用预设值。
+    # yolov5_22 预设：0.7 / 0.8 / 0.3 / 0.7（对齐 SP demo）
+    # yolov8_21 预设：0.5 / 0.5 / 0.2 / 0.5（对齐上游部署库）
+    # 两种模型的置信度分布不同（objectness vs 类别分数），阈值不要互相照抄。
+    # confidence_threshold: 0.7
+    # minimum_confidence: 0.8
+    # nms_iou_threshold: 0.3
+    # nms_score_threshold: 0.7
 
 # L3 PnP 使用的装甲板几何尺寸。
 armor:

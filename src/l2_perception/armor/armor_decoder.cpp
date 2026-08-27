@@ -64,32 +64,102 @@ struct DecodedCandidate
 
 }  // namespace
 
+std::size_t ArmorTensorContract::requiredFieldCount() const noexcept
+{
+  // objectness 缺失时它不占字段，也不参与这个下界。
+  const std::size_t objectness_fields = objectness_index ? *objectness_index + 1 : 0;
+  return std::max({corner_offset + 8, objectness_fields, color_offset + color_count,
+                   class_offset + class_count});
+}
+
+ArmorDecoderConfig yolov5_22DecoderConfig() noexcept
+{
+  // 默认构造就是这套契约，这里显式写出来是为了和 yolov8_21 并排可读。
+  return ArmorDecoderConfig{};
+}
+
+ArmorDecoderConfig yolov8_21DecoderConfig() noexcept
+{
+  ArmorDecoderConfig config;
+  auto& contract = config.contract;
+  contract.output_name = "output0";
+  // [1, 21, 6300]：每一行是一个字段，每一列是一个候选。
+  contract.tensor_layout = ArmorTensorLayout::FieldsByCandidates;
+  // 行 0~3 颜色、4~12 九类、13~20 四角点；4 + 9 + 8 = 21，没有 objectness。
+  contract.color_offset = 0;
+  contract.color_count = 4;
+  contract.class_offset = 4;
+  contract.class_count = 9;
+  contract.corner_offset = 13;
+  contract.objectness_index.reset();
+  // YOLOV8 的分类头已经过 sigmoid，输出就在 0~1，不能再套一次。
+  contract.confidence_is_logit = false;
+
+  // 阈值取上游部署库的同名默认值（score_threshold 0.5、NMS IoU 0.2）。
+  // v5 的 objectness 和 v8 的类别分数分布不同，不能沿用 0.7/0.8。
+  config.confidence_threshold = 0.5F;
+  config.nms_score_threshold = 0.5F;
+  // 上游没有 NMS 后的第二道门限，取和初筛相同的值使其成为空操作。
+  config.minimum_confidence = 0.5F;
+  config.nms_iou_threshold = 0.2F;
+  return config;
+}
+
+std::optional<ArmorDecoderConfig> armorDecoderPreset(std::string_view name)
+{
+  if (name == "yolov5_22") {
+    return yolov5_22DecoderConfig();
+  }
+  if (name == "yolov8_21") {
+    return yolov8_21DecoderConfig();
+  }
+  return std::nullopt;
+}
+
+ArmorDecoderConfig armorDecoderConfigFor(const std::vector<InferenceOutputSpec>& outputs)
+{
+  // 按输出名认契约。名字对上就保证 decode() 能找到这个张量，字段数不符会在
+  // 那里报错，所以这里不再验一遍形状。
+  if (outputs.size() == 1) {
+    for (const auto& preset : {yolov5_22DecoderConfig(), yolov8_21DecoderConfig()}) {
+      if (outputs.front().name == preset.contract.output_name) {
+        return preset;
+      }
+    }
+  }
+  throw std::runtime_error(
+    "unknown armor model output; expected a single 'output' (yolov5_22) or "
+    "'output0' (yolov8_21)");
+}
+
 ArmorDecoder::ArmorDecoder(ArmorDecoderConfig config) : config_(std::move(config))
 {
   std::array<bool, 4> used{};
-  for (const std::size_t corner_index : config_.corner_order) {
-    if (corner_index >= used.size() || used[corner_index]) {
+  for (const std::size_t index : config_.contract.corner_order) {
+    if (index >= used.size() || used[index]) {
       throw std::invalid_argument("ArmorDecoder corner_order must be a permutation of 0, 1, 2, 3");
     }
-    used[corner_index] = true;
+    used[index] = true;
   }
 }
 
 std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
                                         const ImageTransform& transform) const
 {
+  const ArmorTensorContract& contract = config_.contract;
+
   const InferenceTensor* output = nullptr;
-  if (config_.output_name.empty()) {
+  if (contract.output_name.empty()) {
     if (result.outputs.size() != 1) {
       throw std::invalid_argument("ArmorDecoder requires output_name when a "
                                   "model has multiple outputs");
     }
     output = &result.outputs.front();
   } else {
-    output = result.findOutput(config_.output_name);
+    output = result.findOutput(contract.output_name);
     if (output == nullptr) {
       throw std::invalid_argument("ArmorDecoder could not find configured model output: " +
-                                  config_.output_name);
+                                  contract.output_name);
     }
   }
 
@@ -104,35 +174,51 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
     throw std::invalid_argument("ArmorDecoder only supports batch size one");
   }
 
+  const bool candidates_first = contract.tensor_layout == ArmorTensorLayout::CandidatesByFields;
   const std::size_t shape_offset = output->shape.size() == 3 ? 1 : 0;
-  const std::size_t candidate_count = config_.tensor_layout == ArmorTensorLayout::CandidatesByFields
-                                          ? output->shape[shape_offset]
-                                          : output->shape[shape_offset + 1];
-  const std::size_t field_count = config_.tensor_layout == ArmorTensorLayout::CandidatesByFields
-                                      ? output->shape[shape_offset + 1]
-                                      : output->shape[shape_offset];
-  const std::size_t required_fields = std::max(
-      {config_.corner_offset + 8, config_.confidence_index + 1,
-       config_.color_offset + config_.color_count, config_.class_offset + config_.class_count});
-  if (field_count < required_fields) {
-    throw std::invalid_argument("ArmorDecoder configuration exceeds the model output field count");
+  const std::size_t candidate_count =
+    candidates_first ? output->shape[shape_offset] : output->shape[shape_offset + 1];
+  const std::size_t field_count =
+    candidates_first ? output->shape[shape_offset + 1] : output->shape[shape_offset];
+  if (field_count < contract.requiredFieldCount()) {
+    throw std::invalid_argument("ArmorDecoder contract exceeds the model output field count");
   }
 
   const std::span<const float> output_values = output->values();
   // 将 [candidate, field] 统一映射到连续数据下标，屏蔽两种常见导出布局差异。
   const auto valueAt = [&](std::size_t candidate, std::size_t field) {
-    if (config_.tensor_layout == ArmorTensorLayout::CandidatesByFields) {
-      return output_values[candidate * field_count + field];
+    return candidates_first ? output_values[candidate * field_count + field]
+                            : output_values[field * candidate_count + candidate];
+  };
+
+  const auto argmaxClass = [&](std::size_t candidate) {
+    std::size_t best = 0;
+    for (std::size_t index = 1; index < contract.class_count; ++index) {
+      if (valueAt(candidate, contract.class_offset + index) >
+          valueAt(candidate, contract.class_offset + best)) {
+        best = index;
+      }
     }
-    return output_values[field * candidate_count + candidate];
+    return best;
   };
 
   std::vector<DecodedCandidate> candidates;
   candidates.reserve(candidate_count);
   for (std::size_t candidate = 0; candidate < candidate_count; ++candidate) {
-    // 先筛低置信度候选，减少后续角点转换和 NMS 的工作量。
-    double score = valueAt(candidate, config_.confidence_index);
-    if (config_.confidence_is_logit) {
+    // 先筛低置信度候选，减少后续角点转换和 NMS 的工作量。没有 objectness 的
+    // 模型必须先求类别 argmax 才拿得到置信度；有 objectness 的则把 argmax 推迟
+    // 到初筛之后——2.5 万个候选各多做 9 次比较不是可以忽略的开销。
+    std::size_t best_class = 0;
+    bool class_resolved = false;
+    double score = 0.0;
+    if (contract.objectness_index) {
+      score = valueAt(candidate, *contract.objectness_index);
+    } else {
+      best_class = argmaxClass(candidate);
+      class_resolved = true;
+      score = valueAt(candidate, contract.class_offset + best_class);
+    }
+    if (contract.confidence_is_logit) {
       score = sigmoid(score);
     }
     if (!std::isfinite(score) || score < config_.confidence_threshold) {
@@ -142,9 +228,9 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
 
     std::array<cv::Point2f, 4> raw_model_corners{};
     for (std::size_t corner = 0; corner < raw_model_corners.size(); ++corner) {
-      float x = valueAt(candidate, config_.corner_offset + corner * 2);
-      float y = valueAt(candidate, config_.corner_offset + corner * 2 + 1);
-      if (config_.coordinates_are_normalized) {
+      float x = valueAt(candidate, contract.corner_offset + corner * 2);
+      float y = valueAt(candidate, contract.corner_offset + corner * 2 + 1);
+      if (contract.coordinates_are_normalized) {
         x *= static_cast<float>(transform.model_size.width);
         y *= static_cast<float>(transform.model_size.height);
       }
@@ -159,48 +245,40 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
     // 避免强透视或异常点让角点身份发生跳变。
     for (std::size_t corner = 0; corner < detection.corners.size(); ++corner) {
       detection.corners[corner] =
-          transform.modelToSource(raw_model_corners[config_.corner_order[corner]]);
+          transform.modelToSource(raw_model_corners[contract.corner_order[corner]]);
       detection.center += detection.corners[corner];
     }
     detection.center = detection.center * 0.25F;
     detection.confidence = confidence;
 
     // 颜色/类别一般是 logits；比较大小求 argmax 无需先做 softmax。
-    if (config_.color_count > 0) {
+    if (contract.color_count > 0) {
       std::size_t best_color = 0;
-      for (std::size_t color = 1; color < config_.color_count; ++color) {
-        if (valueAt(candidate, config_.color_offset + color) >
-            valueAt(candidate, config_.color_offset + best_color)) {
+      for (std::size_t color = 1; color < contract.color_count; ++color) {
+        if (valueAt(candidate, contract.color_offset + color) >
+            valueAt(candidate, contract.color_offset + best_color)) {
           best_color = color;
         }
       }
-      if (static_cast<int>(best_color) == config_.red_color_index) {
+      if (static_cast<int>(best_color) == contract.red_color_index) {
         detection.color = ArmorColor::Red;
-      } else if (static_cast<int>(best_color) == config_.blue_color_index) {
+      } else if (static_cast<int>(best_color) == contract.blue_color_index) {
         detection.color = ArmorColor::Blue;
       }
     }
 
-    float best_class_score = confidence;
-    if (config_.class_count > 0) {
-      std::size_t best_class = 0;
-      for (std::size_t class_index = 1; class_index < config_.class_count; ++class_index) {
-        if (valueAt(candidate, config_.class_offset + class_index) >
-            valueAt(candidate, config_.class_offset + best_class)) {
-          best_class = class_index;
-        }
-      }
-      detection.class_id = static_cast<int>(best_class) + config_.class_id_offset;
-      best_class_score = valueAt(candidate, config_.class_offset + best_class);
+    // 无 objectness 的模型这里不会重复求 argmax，初筛时已经算过。
+    if (!class_resolved) {
+      best_class = argmaxClass(candidate);
     }
+    detection.class_id = static_cast<int>(best_class) + contract.class_id_offset;
 
-    // SP-Vision 默认以 sigmoid(objectness) 作为 NMS 分数。仍保留 ClassScore
-    // 配置项，便于显式兼容其他同形状模型，但它不再是默认行为。
-    const float nms_score =
-        config_.nms_score_source == ArmorNmsScoreSource::ClassScore ? best_class_score : confidence;
-    if (!std::isfinite(nms_score) || nms_score < config_.nms_score_threshold) {
+    // NMS 分数就是候选置信度本身。SP 用 sigmoid(objectness)，YOLOV8 用类别
+    // 最大分，两者都已经由上面的 confidence 表示，不需要再开一个来源开关。
+    if (confidence < config_.nms_score_threshold) {
       continue;
     }
+    const float nms_score = confidence;
 
     const cv::Rect bounds = boundsOf(detection.corners);
     if (bounds.width <= 0.0F || bounds.height <= 0.0F) {

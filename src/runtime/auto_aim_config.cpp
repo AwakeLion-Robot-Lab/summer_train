@@ -244,6 +244,27 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     if (!(config.inference.normalization_divisor > 0.0F)) {
       throw std::runtime_error("inference.normalization_divisor must be positive");
     }
+
+    // 输出契约。layout 选定字段布局（下标由模型导出时定死，不在 YAML 里逐个
+    // 手配），随后的阈值才是可调项。配错 layout 不会报错，只会解出垃圾角点。
+    const YAML::Node decoder = inference["decoder"];
+    if (decoder) {
+      if (decoder["layout"]) {
+        const std::string layout = decoder["layout"].as<std::string>();
+        const auto preset = L2Perception::armorDecoderPreset(layout);
+        if (!preset) {
+          throw std::runtime_error(
+            "inference.decoder.layout must be 'yolov5_22' or 'yolov8_21'; got " + layout);
+        }
+        config.decoder = *preset;
+      }
+      // 阈值在预设之后覆盖，顺序不能反。只有筛选策略可以从 YAML 调；
+      // 字段布局属于 ArmorTensorContract，只能整组由 layout 选。
+      readValue(decoder, "confidence_threshold", config.decoder.confidence_threshold);
+      readValue(decoder, "minimum_confidence", config.decoder.minimum_confidence);
+      readValue(decoder, "nms_iou_threshold", config.decoder.nms_iou_threshold);
+      readValue(decoder, "nms_score_threshold", config.decoder.nms_score_threshold);
+    }
   }
 
   // 三个单列字段是同一份配置的一部分，回填进去，构造 Backend 时只传一个结构体。
