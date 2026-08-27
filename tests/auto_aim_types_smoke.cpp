@@ -67,8 +67,7 @@ int main()
 
   tracked_target.predict(0.01);
   tracked_target.update(observation);
-  if (!tracked_target.checkinit() ||
-      tracked_target.armor_xyza_list().size() != 4 ||
+  if (tracked_target.armor_xyza_list().size() != 4 ||
       tracked_target.name != observation.name ||
       !tracked_target.ekf_x().allFinite() ||
       !tracked_target.ekf().P.allFinite()) {

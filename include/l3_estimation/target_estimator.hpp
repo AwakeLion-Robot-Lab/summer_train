@@ -27,7 +27,10 @@ public:
   bool jumped{false};
   int last_id{0};  // debug only
 
-  TrackedTarget() = default;
+  // 没有默认构造：TrackedTarget 一经存在，状态就是完整的十一维。
+  // 这样下游不必到处验维度，也不会出现"半个目标"。
+  // 需要可空语义时用 std::optional<TrackedTarget>。
+  //
   // 使用首个装甲板观测反推旋转中心并初始化十一维状态。
   TrackedTarget(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
@@ -58,10 +61,6 @@ public:
 
   // 有效更新达到门限且状态未发散后，目标保持收敛标志。
   bool converged();
-
-  bool isinit{false};
-
-  [[nodiscard]] bool checkinit() const noexcept;
 
 private:
   // 车辆物理装甲板数量以及关联、收敛统计。

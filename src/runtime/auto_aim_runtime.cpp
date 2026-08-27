@@ -53,7 +53,8 @@ L2Perception::ArmorDetector makeArmorDetector(
       "armor model loaded",
       std::string{L2Perception::inferenceBackendName(config.inference_backend)},
       config.model_path.string(), model_config.device);
-    return L2Perception::ArmorDetector(std::move(backend));
+    // Decoder 的字段布局跟着 model_path 走，同样来自 inference 节点。
+    return L2Perception::ArmorDetector(std::move(backend), config.decoder);
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
     L6Telemetry::logError(
@@ -138,6 +139,17 @@ void AutoAimRuntime::run() {
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
 
+  // 主循环是**单线程同步**的，这是设计选择而不是待办事项：自瞄的代价函数是
+  // 开火那一刻的位置误差，不是帧率。异步/流水线推理换来的是吞吐，代价是结果
+  // 相对曝光时刻多滞后一帧——这一整帧都会计入 L4Planning::Delay 的
+  // image_to_plan，再被 v_yaw 放大成瞄准偏差，得不偿失。
+  // 真正降低单帧延迟的并行在推理内部（auto_aim.yaml 的 num_threads /
+  // scheduling_core_type），那一层已经开着。
+  //
+  // 只有 SerialWorker 自带 rx/tx 线程，因为串口是独立的 IO 时序。
+  // tools/LatesBuffer 的 LatestBuffer（单槽、新帧覆盖旧帧、统计丢帧）是为
+  // 将来可能拆出的取图线程预留的，当前管线不使用它——拆取图线程只在
+  // detect 稳定快于帧周期时才有收益，否则只会让处理的帧越来越旧。
   while (running_) {
     //获取相机帧和时间辍
     if (!camera->read(frame, timestamp)) {

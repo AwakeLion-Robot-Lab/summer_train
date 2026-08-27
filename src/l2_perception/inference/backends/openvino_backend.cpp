@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
-#include <mutex>
+#include <atomic>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -21,72 +21,53 @@ struct OpenVinoBackend::Impl
 #if defined(NEWVISION_HAS_OPENVINO)
   // SDK 类型被放在 PIMPL 内，公开头文件无需包含 OpenVINO，减少依赖传播。
   ov::Core core;
-  struct RequestPool
+  // 整条自瞄链路是单帧同步的，所以只创建一个 InferRequest，没有请求池。
+  // 输出走零拷贝：InferenceTensor 直接指向这个请求的输出缓冲区，因此在上一帧
+  // 结果被释放之前不能开始下一帧推理，否则会就地改写别人正在读的检测结果。
+  // busy 就是这道闸——占用中再次推理直接抛，而不是悄悄覆盖。
+  struct Request
   {
-    explicit RequestPool(ov::CompiledModel compiled_model)
-      : compiled_model(std::move(compiled_model))
+    explicit Request(ov::CompiledModel model)
+      : compiled_model(std::move(model))
+      , infer_request(compiled_model.create_infer_request())
     {
-      // 正常同步链路只需要一个请求；提前创建可避免第一帧临时分配。
-      idle_requests.reserve(max_cached_requests);
-      idle_requests.push_back(this->compiled_model.create_infer_request());
     }
 
-    ov::InferRequest acquire()
-    {
-      {
-        std::lock_guard lock(mutex);
-        if (!idle_requests.empty()) {
-          //像栈一样
-          ov::InferRequest request = std::move(idle_requests.back());
-          idle_requests.pop_back();
-          return request;
-        }
-      }
-
-      throw std::runtime_error(
-        "OpenVINO infer request is busy; queued inference is disabled");
-    }
-
-    void release(ov::InferRequest&& request) noexcept
-    {
-      try {
-        std::lock_guard lock(mutex);
-        if (idle_requests.size() < max_cached_requests) {
-          idle_requests.push_back(std::move(request));
-        }
-      } catch (...) {
-        // 释放结果不能抛异常；缓存失败时直接让 request 正常析构即可。
-      }
-    }
-
-    static constexpr std::size_t max_cached_requests = 1;
-    ov::CompiledModel compiled_model;
-    std::mutex mutex;
-    std::vector<ov::InferRequest> idle_requests;
+    ov::CompiledModel compiled_model;  // 必须活得比 infer_request 长。
+    ov::InferRequest infer_request;
+    std::atomic_bool busy{false};
   };
 
-  std::shared_ptr<RequestPool> request_pool;
+  std::shared_ptr<Request> request;
   std::vector<std::string> output_names;
 
-  // 每个 ResultLease 独占一个 InferRequest。只要结果仍被 Decoder 持有，该请求及其输出
-  // 缓冲区就不会被下一帧复用；下一帧使用另一个请求，因此也不会发生跨帧自锁。
+  // 结果租约。它被塞进 InferenceTensor 的零拷贝视图里，所以只要还有人拿着
+  // 结果，请求就活着——Backend 先析构也安全。
+  //
+  // 反过来说：**不要跨帧保存 InferenceResult**。租约没释放，下一帧 infer()
+  // 会抛异常。需要留数据就自己拷一份出来。
   struct ResultLease
   {
-    explicit ResultLease(std::shared_ptr<RequestPool> pool)
-      : pool(std::move(pool))
-      , infer_request(this->pool->acquire())
+    explicit ResultLease(std::shared_ptr<Request> request)
+      : request(std::move(request))
+      , infer_request(this->request->infer_request)
     {
+      if (this->request->busy.exchange(true)) {
+        throw std::runtime_error(
+          "OpenVINO infer request is still held by a previous InferenceResult; "
+          "copy what you need instead of keeping the result across frames");
+      }
     }
 
     ~ResultLease()
     {
-      // 先释放额外的 Tensor 句柄，再把拥有同一输出缓冲区的请求交还池中。
+      // 先放掉额外的 Tensor 句柄，再解除占用。
       output_tensors.clear();
-      pool->release(std::move(infer_request));
+      request->busy.store(false);
     }
 
-    std::shared_ptr<RequestPool> pool;
-    ov::InferRequest infer_request;
+    std::shared_ptr<Request> request;
+    ov::InferRequest& infer_request;  // 就是 request->infer_request，省一层解引用。
     std::vector<ov::Tensor> output_tensors;
   };
 #endif
@@ -192,7 +173,7 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
   input_spec_.name = input_port.get_any_name();
   input_spec_.shape.assign(input_shape.begin(), input_shape.end());
 
-  // compile_model 才会选择 CPU/GPU 并生成可执行模型；请求池负责复用 InferRequest。
+  // compile_model 才会选择 CPU/GPU 并生成可执行模型。
   // 编译属性只影响调度，不改变数值结果。
   ov::AnyMap compile_properties;
   if (config.latency_hint) {
@@ -236,11 +217,11 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
   for (std::size_t index = 0; index < compiled_model.outputs().size(); ++index) {
     output_names.push_back(compiled_model.output(index).get_any_name());
   }
-  auto request_pool = std::make_shared<Impl::RequestPool>(std::move(compiled_model));
+  auto request = std::make_shared<Impl::Request>(std::move(compiled_model));
 
   // 所有可能抛错的准备完成后再发布新模型，避免留下半初始化的运行状态。
   impl_->output_names = std::move(output_names);
-  impl_->request_pool = std::move(request_pool);
+  impl_->request = std::move(request);
 
   ready_ = true;
 #else
@@ -253,7 +234,7 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
 bool OpenVinoBackend::ready() const noexcept
 {
 #if defined(NEWVISION_HAS_OPENVINO)
-  return ready_ && impl_ != nullptr && impl_->request_pool != nullptr;
+  return ready_ && impl_ != nullptr && impl_->request != nullptr;
 #else
   return false;
 #endif
@@ -279,7 +260,7 @@ InferenceResult OpenVinoBackend::infer(const InferenceInput& input)
 
 #if defined(NEWVISION_HAS_OPENVINO)
   // lease 在 Result 的零拷贝 view 中继续存活，独占本帧请求及其输出缓冲区。
-  auto lease = std::make_shared<Impl::ResultLease>(impl_->request_pool);
+  auto lease = std::make_shared<Impl::ResultLease>(impl_->request);
   const std::span<const std::uint8_t> input_values = input.values();
   // OpenVINO Tensor 仅临时借用 input.values()；infer() 是同步调用，返回前 input 仍然有效。
   const ov::Shape input_shape(input.shape.begin(), input.shape.end());

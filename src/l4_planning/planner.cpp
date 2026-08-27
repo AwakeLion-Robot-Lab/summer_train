@@ -95,7 +95,7 @@ Planner::AimPoint Planner::chooseAimPoint(
 {
   const Eigen::VectorXd ekf_x = target.ekf_x();
   const std::vector<Eigen::Vector4d> armors = target.armor_xyza_list();
-  if (armors.empty() || ekf_x.size() < 11) {
+  if (armors.empty()) {
     return {};
   }
 
@@ -186,9 +186,6 @@ Plan Planner::plan(const PlanInput& input)
 {
   if (!input.target.has_value()) {
     return rejected(PlanError::NoTarget);
-  }
-  if (input.target->armor_num() < 1 || input.target->ekf_x().size() < 11) {
-    return rejected(PlanError::NoArmor);
   }
 
   L3Estimation::TrackedTarget target = *input.target;

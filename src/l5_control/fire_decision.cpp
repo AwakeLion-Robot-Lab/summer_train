@@ -101,8 +101,8 @@ FireDecision FireDecider::decide(const FireInput& input) const
     reject(RejectReason::PlanInvalid);
   }
 
-  if (!std::isfinite(input.actual_yaw) || !std::isfinite(input.actual_pitch) ||
-      !std::isfinite(plan.aim.yaw) || !std::isfinite(plan.aim.pitch)) {
+  // 只验 MCU 回传的实际角：plan.aim 的有限性由 Planner 保证。
+  if (!std::isfinite(input.actual_yaw) || !std::isfinite(input.actual_pitch)) {
     // 无法计算实际瞄准误差时，本帧必须关火；前面已经收集的原因仍然保留。
     reject(RejectReason::NonFinite);
     decision.shoot = false;

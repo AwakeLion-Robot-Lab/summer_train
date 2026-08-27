@@ -43,8 +43,8 @@ void require(bool condition, const std::string& message)
   L5Control::FireInput input;
 
   // 火控只读目标的 name（用来查板型换算角度容差），滤波器状态本身用不到，
-  // 所以这里用默认构造的目标就够。跟踪状态由 Tracker 单独提供。
-  L3Estimation::TrackedTarget target;
+  // 所以用确定性构造入口给一个最简目标即可。跟踪状态由 Tracker 单独提供。
+  L3Estimation::TrackedTarget target(4.0, 0.0, 0.2, 0.0);
   target.name = L3Estimation::ArmorName::Infantry3;
   input.target = target;
   input.track_state = L3Estimation::TrackState::Tracking;
@@ -289,10 +289,10 @@ void testPlanReasonsStayPrecise()
       !hasReason(speed_decision, L5Control::RejectReason::OutsideHitWindow),
     "bad bullet speed must not masquerade as an armor-window failure");
 
-  auto no_armor = makeInput();
-  no_armor.plan.status = L4Planning::PlanStatus::Rejected;
-  no_armor.plan.reason = L4Planning::PlanError::NoArmor;
-  const auto rejected_decision = decider.decide(no_armor);
+  auto no_target = makeInput();
+  no_target.plan.status = L4Planning::PlanStatus::Rejected;
+  no_target.plan.reason = L4Planning::PlanError::NoTarget;
+  const auto rejected_decision = decider.decide(no_target);
   require(
     hasReason(rejected_decision, L5Control::RejectReason::PlanInvalid) &&
       !hasReason(rejected_decision, L5Control::RejectReason::BallisticInvalid) &&

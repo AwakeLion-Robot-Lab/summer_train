@@ -343,14 +343,9 @@ void testPlannerRejectsNoTarget()
   require(!empty.valid(), "missing target must not produce a plan");
   require(empty.reason == L4Planning::PlanError::NoTarget, "NoTarget expected");
 
-  // 默认构造的目标滤波器是空的，必须被 NoArmor 拦住而不是解引用空状态。
-  const L3Estimation::TrackedTarget uninitialized;
-  const auto uninitialized_plan = planner.plan(uninitialized, robot_state, {});
-  require(!uninitialized_plan.valid(), "an empty filter must not produce a plan");
-  require(
-    uninitialized_plan.reason == L4Planning::PlanError::NoArmor,
-    "NoArmor expected for an uninitialized target");
-  std::cout << "  [ok] planner rejects missing and uninitialized targets\n";
+  // "滤波器为空的目标"不再是一种可表示的状态：TrackedTarget 没有默认构造，
+  // 一经存在状态就是完整的十一维，所以这里只剩空值这一条拒绝路径。
+  std::cout << "  [ok] planner rejects a missing target\n";
 }
 
 // 只见过一块板时整车 yaw、第二组半径、高度差都还没被观测约束过，瞄别的板

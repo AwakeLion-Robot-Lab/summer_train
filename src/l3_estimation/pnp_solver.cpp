@@ -290,12 +290,10 @@ void PnpSolver::single_pnp(Armor &armor) const {
   //注意这个是方位角
   const Eigen::Vector3d ypd_in_world = L6Telemetry::xyz2ypd(xyz_in_world);
 
-  const bool finite = xyz_in_camera.allFinite() && xyz_in_barrel.allFinite() &&
-                      xyz_in_world.allFinite() && R_armor2camera.allFinite() &&
-                      R_armor2world.allFinite() && ypr_in_camera.allFinite() &&
-                      ypr_in_world.allFinite() && ypd_in_world.allFinite() &&
-                      std::isfinite(reprojection_error);
-  if (!finite) {
+  // 上面 rvec/tvec 已验过有限，外参在 setCalibration / set_R_world_barrel 里也
+  // 验过，其余量都是它们的乘积与 atan2，不会凭空变成非有限。这里只守住真正
+  // 交给 EKF 的那两个——它们是本函数唯一的对外产物。
+  if (!xyz_in_world.allFinite() || !ypr_in_world.allFinite()) {
     return;
   }
 

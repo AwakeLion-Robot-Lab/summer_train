@@ -83,7 +83,6 @@ TrackedTarget::TrackedTarget(const Armor &armor,
   };
 
   ekf_ = ExtendedKalmanFilter(x0, P0, std::move(x_add));
-  isinit = true;
 }
 
 TrackedTarget::TrackedTarget(double x, double vyaw, double radius,
@@ -102,7 +101,6 @@ TrackedTarget::TrackedTarget(double x, double vyaw, double radius,
   };
 
   ekf_ = ExtendedKalmanFilter(x0, P0, std::move(x_add));
-  isinit = true;
 }
 
 void TrackedTarget::predict(std::chrono::steady_clock::time_point t) {
@@ -279,9 +277,6 @@ const ExtendedKalmanFilter &TrackedTarget::ekf() const { return ekf_; }
 
 std::vector<Eigen::Vector4d> TrackedTarget::armor_xyza_list() const {
   std::vector<Eigen::Vector4d> armors;
-  if (ekf_.x.size() < 11)
-    return armors;
-
   // 物理装甲板绕中心等角分布；四板车奇数板使用第二组半径和高度。
   armors.reserve(armor_num_);
   for (int id = 0; id < armor_num_; ++id) {
@@ -294,9 +289,6 @@ std::vector<Eigen::Vector4d> TrackedTarget::armor_xyza_list() const {
 }
 
 bool TrackedTarget::diverged() const {
-  if (ekf_.x.size() < 10)
-    return true;
-
   // 瞬时判据：r 或 r2 一旦离开物理范围就把整个目标作废。状态不做投影，所以
   // 这是唯一的约束手段——半径越界即表示观测与整车模型无法调和。
   const double r1 = ekf_.x[8];
@@ -367,8 +359,6 @@ Eigen::MatrixXd TrackedTarget::h_jacobian(const Eigen::VectorXd &x,
   H_armor_ypda(3, 3) = 1.0;
   return H_armor_ypda * H_armor_xyza;
 }
-
-bool TrackedTarget::checkinit() const noexcept { return isinit; }
 
 } // namespace L3Estimation
 

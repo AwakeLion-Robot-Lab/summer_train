@@ -15,7 +15,6 @@ using TimePoint = std::chrono::steady_clock::time_point;
 enum class PlanError : std::uint8_t {
   None,
   NoTarget,
-  NoArmor,
   BadBulletSpeed,
   BallisticFailed,
   OutOfWindow

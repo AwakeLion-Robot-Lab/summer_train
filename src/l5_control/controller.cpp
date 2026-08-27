@@ -88,9 +88,9 @@ std::optional<SerialCommand> Controller::safeHold() const
 std::optional<SerialCommand> Controller::makeCommand(
   const L4Planning::Plan& plan, const FireDecision& decision) const
 {
-  // 规划失败或角度非有限时不下发，交给下位机保持上一状态。
-  if (!plan.valid() || !std::isfinite(plan.aim.yaw) ||
-      !std::isfinite(plan.aim.pitch)) {
+  // 规划失败时不下发，交给下位机保持上一状态。
+  // 角度的有限性由 Planner 在提交 Plan 前保证，这里不再验一遍。
+  if (!plan.valid()) {
     return std::nullopt;
   }
 
