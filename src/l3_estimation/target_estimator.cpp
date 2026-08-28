@@ -17,6 +17,9 @@ namespace {
 constexpr double kMinRadius = 0.05;
 constexpr double kMaxRadius = 0.5;
 
+// 板间高度差的物理上限，取 RPS 前哨站模型的同一数值。
+constexpr double kMaxHeightOffset = 0.25;
+
 // 计算笛卡尔坐标 [x, y, z] 到 [方位角, 俯仰角, 距离] 的 Jacobian。
 Eigen::Matrix3d xyzToYpdJacobian(const Eigen::Vector3d &xyz) {
   const double x = xyz.x();
@@ -54,9 +57,9 @@ TrackedTarget::TrackedTarget(const Armor &armor,
   if (armor_num_ < 1) {
     throw std::invalid_argument("armor_num must be positive");
   }
-  if (P0_dig.size() != 11) {
+  if (P0_dig.size() != kStateSize) {
     throw std::invalid_argument(
-        "TrackedTarget requires an 11-element P0 diagonal");
+        "TrackedTarget requires a 13-element P0 diagonal");
   }
 
   const Eigen::Vector3d &xyz = armor.xyz_in_world;
@@ -67,10 +70,11 @@ TrackedTarget::TrackedTarget(const Armor &armor,
   const double center_y = xyz.y() + radius * std::sin(armor_yaw);
   const double center_z = xyz.z();
 
-  // 内部状态：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
-  Eigen::VectorXd x0(11);
+  // 内部状态：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1, dz1, dz2]。
+  // 末两位是三板车 1、2 号板相对 0 号板的高度差，四板车恒为 0。
+  Eigen::VectorXd x0(kStateSize);
   x0 << center_x, 0.0, center_y, 0.0, center_z, 0.0, armor_yaw, 0.0, radius,
-      0.0, 0.0;
+      0.0, 0.0, 0.0, 0.0;
   const Eigen::MatrixXd P0 = P0_dig.asDiagonal();
 
   // yaw 是周期量，每次注入滤波修正后都归一化到统一范围。半径**不做**投影：
@@ -86,14 +90,16 @@ TrackedTarget::TrackedTarget(const Armor &armor,
   ekf_ = ExtendedKalmanFilter(x0, P0, std::move(x_add));
 }
 
-TrackedTarget::TrackedTarget(double x, double vyaw, double radius,
-                             double height, double yaw, TargetConfig config)
-    : config_(config) {
+TrackedTarget::TrackedTarget(ArmorName armor_name, double x, double vyaw,
+                             double radius, double yaw, HeightOffsets heights,
+                             TargetConfig config)
+    : name(armor_name), config_(config),
+      armor_num_(armorCountOf(armor_name).value_or(4)) {
   // 该构造入口直接给定部分运动状态，其余分量和初始协方差置零。
-  Eigen::VectorXd x0(11);
+  Eigen::VectorXd x0(kStateSize);
   x0 << x, 0.0, 0.0, 0.0, 0.0, 0.0, L6Telemetry::limit_rad(yaw), vyaw, radius,
-      0.0, height;
-  const Eigen::MatrixXd P0 = Eigen::MatrixXd::Zero(11, 11);
+      0.0, heights.z2_z1, heights.dz1, heights.dz2;
+  const Eigen::MatrixXd P0 = Eigen::MatrixXd::Zero(kStateSize, kStateSize);
 
   // 与上面的构造入口保持同一套流形运算，避免两条初始化路径行为分叉。
   auto x_add = [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
@@ -114,22 +120,12 @@ void TrackedTarget::predict(std::chrono::steady_clock::time_point t) {
 
 void TrackedTarget::predict(double dt) {
   // 位置和 yaw 采用恒速度模型，半径差与高度差在预测阶段保持不变。
-  // clang-format off
-  Eigen::MatrixXd F{
-    {1, dt,  0,  0,  0,  0,  0,  0,  0,  0,  0},
-    {0,  1,  0,  0,  0,  0,  0,  0,  0,  0,  0},
-    {0,  0,  1, dt,  0,  0,  0,  0,  0,  0,  0},
-    {0,  0,  0,  1,  0,  0,  0,  0,  0,  0,  0},
-    {0,  0,  0,  0,  1, dt,  0,  0,  0,  0,  0},
-    {0,  0,  0,  0,  0,  1,  0,  0,  0,  0,  0},
-    {0,  0,  0,  0,  0,  0,  1, dt,  0,  0,  0},
-    {0,  0,  0,  0,  0,  0,  0,  1,  0,  0,  0},
-    {0,  0,  0,  0,  0,  0,  0,  0,  1,  0,  0},
-    {0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  0},
-    {0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1}
-  };
-  // clang-format on
-
+  Eigen::MatrixXd F = Eigen::MatrixXd::Identity(kStateSize, kStateSize);
+  F(0, 1) = dt;  // xc  <- vx
+  F(2, 3) = dt;  // yc  <- vy
+  F(4, 5) = dt;  // z   <- vz
+  F(6, 7) = dt;  // yaw <- v_yaw
+  // 半径差和三个高度差在预测阶段保持不变，对应单位阵的对角元。
   // 前哨站运动模式更稳定，因此使用更小的平移和角速度过程噪声。
   const bool outpost = name == ArmorName::Outpost;
   const double q_translation =
@@ -147,7 +143,7 @@ void TrackedTarget::predict(double dt) {
   Eigen::Matrix2d constant_velocity_noise;
   constant_velocity_noise << a, b, b, c;
 
-  Eigen::MatrixXd Q = Eigen::MatrixXd::Zero(11, 11);
+  Eigen::MatrixXd Q = Eigen::MatrixXd::Zero(kStateSize, kStateSize);
   Q.block<2, 2>(0, 0) = q_translation * constant_velocity_noise;  // x, vx
   Q.block<2, 2>(2, 2) = q_translation * constant_velocity_noise;  // y, vy
   Q.block<2, 2>(4, 4) = q_translation * constant_velocity_noise;  // z, vz
@@ -270,6 +266,13 @@ void TrackedTarget::update_ypda(const Armor &armor, int id) {
   z << armor.ypd_in_world.x(), armor.ypd_in_world.y(), armor.ypd_in_world.z(),
       armor.ypr_in_world[0];
   ekf_.update(z, H, R, observation, subtract_observation);
+
+  // 高度差夹回物理范围。半径不做投影是因为越界意味着整车模型和观测无法调和，
+  // 该丢整个目标；高度差不同——某一块板的高度估歪不影响其余板，就地夹住比
+  // 作废整车更合理。上限取 RPS 的 ±0.25 m。
+  for (const int index : {10, 11, 12}) {
+    ekf_.x[index] = std::clamp(ekf_.x[index], -kMaxHeightOffset, kMaxHeightOffset);
+  }
 }
 
 Eigen::VectorXd TrackedTarget::ekf_x() const { return ekf_.x; }
@@ -313,17 +316,32 @@ bool TrackedTarget::converged() {
   return is_converged_;
 }
 
+int TrackedTarget::heightIndex(int id) const noexcept {
+  // 四板车：奇数板整体抬高 x[10]。
+  if (armor_num_ == 4) {
+    return (id == 1 || id == 3) ? 10 : -1;
+  }
+  // 三板车（2026 规则的前哨站、基地）：三块板高度各不相同，0 号板作为基准，
+  // 另外两块各带一个独立偏移。追加在状态末尾而不是插进中间，是因为 L4 按
+  // 下标读 x[0..10]，插入会静默错位。
+  if (armor_num_ == 3) {
+    return id == 1 ? 11 : (id == 2 ? 12 : -1);
+  }
+  return -1;
+}
+
 Eigen::Vector3d TrackedTarget::h_armor_xyz(const Eigen::VectorXd &x,
                                            int id) const {
   // 编号 id 决定装甲板绕中心的离散相位。
   const double angle =
       L6Telemetry::limit_rad(x[6] + id * 2.0 * std::numbers::pi / armor_num_);
   const bool use_alternate_radius = armor_num_ == 4 && (id == 1 || id == 3);
+  const int height_index = heightIndex(id);
 
   const double radius = use_alternate_radius ? x[8] + x[9] : x[8];
   const double armor_x = x[0] - radius * std::cos(angle);
   const double armor_y = x[2] - radius * std::sin(angle);
-  const double armor_z = use_alternate_radius ? x[4] + x[10] : x[4];
+  const double armor_z = height_index < 0 ? x[4] : x[4] + x[height_index];
   return {armor_x, armor_y, armor_z};
 }
 
@@ -340,17 +358,20 @@ Eigen::MatrixXd TrackedTarget::h_jacobian(const Eigen::VectorXd &x,
   const double dy_dr = -std::sin(angle);
   const double dx_dl = use_alternate_radius ? -std::cos(angle) : 0.0;
   const double dy_dl = use_alternate_radius ? -std::sin(angle) : 0.0;
-  const double dz_dh = use_alternate_radius ? 1.0 : 0.0;
 
   // 先求整车状态到 [armor_x, armor_y, armor_z, armor_yaw] 的 Jacobian。
   // clang-format off
   Eigen::MatrixXd H_armor_xyza{
-    {1, 0, 0, 0, 0, 0, dx_da, 0, dx_dr, dx_dl,     0},
-    {0, 0, 1, 0, 0, 0, dy_da, 0, dy_dr, dy_dl,     0},
-    {0, 0, 0, 0, 1, 0,     0, 0,     0,     0, dz_dh},
-    {0, 0, 0, 0, 0, 0,     1, 0,     0,     0,     0}
+    {1, 0, 0, 0, 0, 0, dx_da, 0, dx_dr, dx_dl, 0, 0, 0},
+    {0, 0, 1, 0, 0, 0, dy_da, 0, dy_dr, dy_dl, 0, 0, 0},
+    {0, 0, 0, 0, 1, 0,     0, 0,     0,     0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0,     1, 0,     0,     0, 0, 0, 0}
   };
   // clang-format on
+  // 本板用到哪个高度偏移，就在那一列写 1；其余高度列保持 0。
+  if (const int height_index = heightIndex(id); height_index >= 0) {
+    H_armor_xyza(2, height_index) = 1.0;
+  }
 
   // 再与 xyz -> ypd 的 Jacobian 链乘，得到最终四维观测 Jacobian。
   const Eigen::Vector3d armor_xyz = h_armor_xyz(x, id);

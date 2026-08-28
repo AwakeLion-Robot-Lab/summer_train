@@ -78,8 +78,41 @@ void expect(bool condition, std::string_view message)
 
 }  // namespace
 
+// 2026 规则的前哨站是三块高度互不相同的装甲板。整车模型必须把每块板的高度
+// 单独展开，否则 EKF 会拿中心 z 去凑，中心高度和 pitch 都会被带歪。
+void testOutpostArmorsCarryIndependentHeights()
+{
+  // 中心在 (4, 0, 0)，1 号板高 8 cm、2 号板低 6 cm。
+  L3Estimation::TrackedTarget outpost(
+    L3Estimation::ArmorName::Outpost, 4.0, 0.0, 0.2765, 0.0,
+    {.z2_z1 = 0.0, .dz1 = 0.08, .dz2 = -0.06});
+
+  expect(
+    outpost.ekf_x().size() == L3Estimation::TrackedTarget::kStateSize,
+    "state must carry the two extra outpost height offsets");
+
+  const auto plates = outpost.armor_xyza_list();
+  expect(plates.size() == 3, "an outpost must expand into three plates");
+  if (plates.size() == 3) {
+    expect(std::abs(plates[0].z()) < 1e-12, "plate 0 is the height reference");
+    expect(std::abs(plates[1].z() - 0.08) < 1e-12, "plate 1 must use dz1");
+    expect(std::abs(plates[2].z() + 0.06) < 1e-12, "plate 2 must use dz2");
+  }
+
+  // 四板车共用同一个状态向量，但不该碰这两维。
+  L3Estimation::TrackedTarget car(
+    L3Estimation::ArmorName::Infantry3, 4.0, 0.0, 0.2, 0.0,
+    {.z2_z1 = 0.0, .dz1 = 0.08, .dz2 = -0.06});
+  for (const auto & plate : car.armor_xyza_list()) {
+    expect(
+      std::abs(plate.z()) < 1e-12,
+      "a four-plate vehicle must ignore the outpost height offsets");
+  }
+}
+
 int main()
 {
+  testOutpostArmorsCarryIndependentHeights();
   const auto camera_config =
     YAML::LoadFile("tests/data/camera_calibration_inline.yaml");
   const auto calibration = L1Sensor::loadCameraCalibration(

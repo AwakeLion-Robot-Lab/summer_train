@@ -28,8 +28,8 @@ void require(bool condition, const char * message)
 // 都会被可观测性门禁挡在 0 号板。
 L3Estimation::TrackedTarget makeTarget(double v_yaw, double yaw = 0.0)
 {
-  L3Estimation::TrackedTarget target(4.0, v_yaw, 0.2, 0.0, yaw);
-  target.name = L3Estimation::ArmorName::Infantry3;
+  L3Estimation::TrackedTarget target(
+    L3Estimation::ArmorName::Infantry3, 4.0, v_yaw, 0.2, yaw);
   target.jumped = true;
   return target;
 }
@@ -77,8 +77,8 @@ void testPredictorTranslates()
   observation.ypr_in_world = {0.0, 0.0, 0.0};
   observation.ypd_in_world = L6Telemetry::xyz2ypd(observation.xyz_in_world);
 
-  Eigen::VectorXd P0(11);
-  P0 << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0, 0.4, 100.0, 1.0, 1.0, 1.0;
+  Eigen::VectorXd P0(L3Estimation::TrackedTarget::kStateSize);
+  P0 << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0, 0.4, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0;
   L3Estimation::TrackedTarget target(observation, t0, 0.2, 4, P0);
 
   // 十帧，每帧 20 ms 沿 +x 前进 2 cm，即 1 m/s。

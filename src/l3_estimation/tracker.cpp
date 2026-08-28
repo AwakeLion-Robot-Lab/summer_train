@@ -220,21 +220,23 @@ bool Tracker::initializeTarget(
   double radius = 0.2;
   // 板数取 types.hpp 的共用映射，与 PnpSolver 的双板配对同源；类别未知时按四板。
   int armor_count = armorCountOf(armor.name).value_or(4);
-  Eigen::VectorXd covariance_diagonal(11);
+  Eigen::VectorXd covariance_diagonal(TrackedTarget::kStateSize);
 
-  // 不同车辆结构使用对应的初始半径和协方差。
-  // 平衡步兵已退出赛场，普通车辆一律按四板整车模型初始化。
+  // 不同车辆结构使用对应的初始半径和协方差。末两位是三板车 1、2 号板的高度
+  // 差：三板车打开（2026 规则下前哨站三块板高度互不相同，初值 0 由滤波器估），
+  // 四板车置 0 冻结。平衡步兵已退出赛场，普通车辆一律按四板整车模型初始化。
+  //          xc   vx    yc   vy    z    vz   yaw  v_yaw  r1   dr   dz   dz1  dz2
   if (armor.name == ArmorName::Outpost) {
     radius = 0.2765;
     covariance_diagonal << 1.0, 64.0, 1.0, 64.0, 1.0, 81.0,
-      0.4, 100.0, 1e-4, 0.0, 0.0;
+      0.4, 100.0, 1e-4, 0.0, 0.0, 0.1, 0.1;
   } else if (isBase(armor.name)) {
     radius = 0.3205;
     covariance_diagonal << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0,
-      0.4, 100.0, 1e-4, 0.0, 0.0;
+      0.4, 100.0, 1e-4, 0.0, 0.0, 0.1, 0.1;
   } else {
     covariance_diagonal << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0,
-      0.4, 100.0, 1.0, 1.0, 1.0;
+      0.4, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0;
   }
 
   target_.emplace(

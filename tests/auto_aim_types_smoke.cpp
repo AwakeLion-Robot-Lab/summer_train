@@ -42,14 +42,16 @@ int main()
   const auto timestamp = std::chrono::steady_clock::now();
 
   L3Estimation::TrackedTarget tracked_target(
-    observation, timestamp, 0.2, 4, Eigen::VectorXd::Ones(11));
+    observation, timestamp, 0.2, 4, Eigen::VectorXd::Ones(L3Estimation::TrackedTarget::kStateSize));
 
-  // 内部十一维状态的元素顺序是 L3/L4 之间的硬契约：
-  // [xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
+  // 状态的元素顺序是 L3/L4 之间的硬契约：
+  // [xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1, dz1, dz2]。
+  // 前十一维顺序不可改（L4 按下标读），末两维是三板车的板间高度差。
   // 观测在 (1, 0, 0)、板 yaw 为 0、半径 0.2，所以旋转中心是 (1.2, 0, 0)。
   const Eigen::VectorXd x0 = tracked_target.ekf_x();
   const bool state_order_ok =
-    x0.size() == 11 && std::abs(x0[0] - 1.2) < 1e-12 && x0[1] == 0.0 &&
+    x0.size() == L3Estimation::TrackedTarget::kStateSize &&
+    std::abs(x0[0] - 1.2) < 1e-12 && x0[1] == 0.0 &&
     std::abs(x0[2]) < 1e-12 && x0[3] == 0.0 && x0[4] == 0.0 && x0[5] == 0.0 &&
     x0[6] == 0.0 && x0[7] == 0.0 && std::abs(x0[8] - 0.2) < 1e-12;
   if (!state_order_ok) {

@@ -8,6 +8,15 @@
 
 namespace L3Estimation {
 
+// 板间高度差。四板车只用 z2_z1（奇数板整体抬高）；三板车只用 dz1/dz2
+// （1、2 号板各自相对 0 号板）。
+struct HeightOffsets
+{
+  double z2_z1{0.0};
+  double dz1{0.0};
+  double dz2{0.0};
+};
+
 // 整车 EKF，实现对齐 sp_vision 的 auto_aim::Target。内部十一维状态为
 // [xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
 //
@@ -18,6 +27,11 @@ namespace L3Estimation {
 class TrackedTarget
 {
 public:
+  // 状态维度。前十一维是 sp_vision 的整车模型，L4 按下标读它们，顺序不可改；
+  // 末两维是三板车（2026 规则的前哨站、基地）1、2 号板相对 0 号板的高度差，
+  // 四板车恒为 0。新增状态一律往后追加。
+  static constexpr int kStateSize = 13;
+
   // 目标类别、板型以及最近一次装甲板关联结果。
   ArmorName name{ArmorName::Unknown};
   ArmorType armor_type{ArmorType::Small};
@@ -35,12 +49,13 @@ public:
   TrackedTarget(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
     Eigen::VectorXd P0_dig, TargetConfig config = {});
-  // 构造指定旋转状态的目标，用于无观测的确定性初始化（离线回放和单测）。
-  // 旋转中心落在 (x, 0, 0)，h 是 z2-z1。yaw 在 sp_vision 的同名入口里固定为
-  // 0，这里放开成可选参数，否则测不到"整车转到某个角度"的构型。
+  // 构造指定构型的目标，用于无观测的确定性初始化（离线回放和单测）。
+  // 板数由 name 推出，而不是再单独传一个——否则 name 和板数可以各说各话。
+  // 旋转中心落在 (x, 0, 0)。yaw 在 sp_vision 的同名入口里固定为 0，这里放开
+  // 成可选参数，否则测不到"整车转到某个角度"的构型。
   TrackedTarget(
-    double x, double vyaw, double radius, double h, double yaw = 0.0,
-    TargetConfig config = {});
+    ArmorName name, double x, double vyaw, double radius, double yaw = 0.0,
+    HeightOffsets heights = {}, TargetConfig config = {});
 
   // 按绝对时间或显式时间间隔执行恒速度预测。
   void predict(std::chrono::steady_clock::time_point t);
@@ -81,6 +96,8 @@ private:
   // 使用 [方位角, 俯仰角, 距离, 装甲板 yaw] 观测更新指定物理装甲板。
   void update_ypda(const Armor & armor, int id);
 
+  // 该编号的板用哪一维高度偏移；-1 表示直接用中心高度 x[4]。
+  [[nodiscard]] int heightIndex(int id) const noexcept;
   // 从整车状态计算指定装甲板的位置及其观测 Jacobian。
   Eigen::Vector3d h_armor_xyz(const Eigen::VectorXd & x, int id) const;
   Eigen::MatrixXd h_jacobian(const Eigen::VectorXd & x, int id) const;
