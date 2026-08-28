@@ -64,6 +64,7 @@ std::optional<SerialCommand> Controller::update(
       command_jump_threshold_;
 
   const FireDecision decision = fire_decider_.decide(input);
+  last_decision_ = decision;
   std::optional<SerialCommand> command = makeCommand(plan, decision);
   if (command) {
     last_command_ = command;

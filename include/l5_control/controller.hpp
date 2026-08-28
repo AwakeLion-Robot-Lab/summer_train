@@ -26,6 +26,13 @@ public:
     const L4Planning::Plan& plan,
     const std::optional<Eigen::Quaterniond>& actual_pose);
 
+  // 最近一次 update() 的开火判定。调试叠加层要显示拒绝原因，命令本身
+  // 看不出"为什么不开火"。
+  [[nodiscard]] const FireDecision& lastDecision() const noexcept
+  {
+    return last_decision_;
+  }
+
   // 保持最后 yaw/pitch 并强制关火；尚未有过命令时返回空。
   [[nodiscard]] std::optional<SerialCommand> safeHold() const;
   // 保留低层组装函数，供离线回放直接检查 FireDecision。
@@ -36,6 +43,7 @@ private:
   FireDecider fire_decider_;
   double command_jump_threshold_{0.0};
   std::optional<SerialCommand> last_command_;
+  FireDecision last_decision_;
 };
 
 }  // namespace L5Control

@@ -12,6 +12,14 @@
 
 namespace runtime {
 
+// 调试叠加层。实机默认全关：cv::imshow 在 1440x1080 上要几毫秒，直接计入
+// image_to_plan；而且比赛用的 NUC 上根本没有显示器，无条件 namedWindow 会抛。
+struct DebugConfig {
+  bool overlay{false};
+  // 每 N 帧画一次。画面只是用来目视对齐，不必每帧都画。
+  int overlay_every{1};
+};
+
 // 只负责 runtime 胶水层的相邻命令检查，不重复 L3/L4/L5 的业务参数。
 struct RuntimeSafetyConfig {
   double command_jump_threshold{10.0 * std::numbers::pi / 180.0};
@@ -40,6 +48,7 @@ struct AutoAimConfig {
   L4Planning::ArmorPlanConfig plan;
   L5Control::FireConfig fire;
   RuntimeSafetyConfig runtime;
+  DebugConfig debug;
 };
 
 // 缺失字段保留各层的安全默认值；特别是 shoot_enable 默认为 false。

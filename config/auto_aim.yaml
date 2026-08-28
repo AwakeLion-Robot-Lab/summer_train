@@ -158,3 +158,15 @@ fire:
 # runtime 只管相邻命令跳变，不会修改 L4 预测结果。
 runtime:
   command_jump_deg: 10.0
+
+# 调试叠加层。实机默认全关：cv::imshow 在 1440x1080 上要几毫秒，会计进
+# L4Planning::Delay 的 image_to_plan；而且比赛用的 NUC 上没有显示器，
+# 打开会直接抛。串流调试时把 overlay 改成 true。
+#
+# 画的内容：蓝框=L2 网络原始角点，绿框+绿箭头=真正送进滤波器的单板 PnP，
+# 绿色整车=EKF 展开的全部物理板，红框=Plan 选中的命中时刻板，
+# 顶部一行=跟踪状态 / 计划状态 / 第一条开火拒绝原因。
+debug:
+  overlay: false
+  # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
+  overlay_every: 1

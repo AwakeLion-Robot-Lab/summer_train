@@ -193,6 +193,8 @@ void normalize(AutoAimConfig& config)
     config.fire.min_pitch_tolerance = fire_defaults.min_pitch_tolerance;
   }
 
+  config.debug.overlay_every = std::max(config.debug.overlay_every, 1);
+
   const RuntimeSafetyConfig runtime_defaults;
   if (!std::isfinite(config.runtime.command_jump_threshold) ||
       config.runtime.command_jump_threshold < 0.0) {
@@ -385,6 +387,10 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     runtime,
     "command_jump_deg",
     config.runtime.command_jump_threshold);
+
+  const YAML::Node debug = root["debug"];
+  readValue(debug, "overlay", config.debug.overlay);
+  readValue(debug, "overlay_every", config.debug.overlay_every);
 
   normalize(config);
 

@@ -8,6 +8,7 @@
 #include "l3_estimation/armor/tracker.hpp"
 #include "l4_planning/armor/planner.hpp"
 #include "l5_control/controller.hpp"
+#include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include <opencv2/opencv.hpp>
@@ -135,7 +136,19 @@ void AutoAimRuntime::run() {
     sendSafeHold();
   };
 
-  cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
+  // 叠加层默认关闭：imshow 的耗时会计进 image_to_plan，而且比赛用的机器
+  // 没有显示器，无条件 namedWindow 会直接抛。
+  const bool overlay_enabled = auto_aim_config.debug.overlay;
+  if (overlay_enabled) {
+    cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
+  }
+  std::uint64_t frame_index = 0;
+  // 叠加层要把世界系位姿投回图像，需要一个求解器。这里另建一个与 Tracker
+  // 内部同参数的实例，只做重投影、不参与滤波——不为了画图去开 Tracker 的内部。
+  std::optional<L3Estimation::PnpSolver> overlay_solver;
+  if (overlay_enabled && camera_calibration) {
+    overlay_solver.emplace(*camera_calibration, auto_aim_config.armor);
+  }
 
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
@@ -214,6 +227,22 @@ void AutoAimRuntime::run() {
           if (command) {
             serial.updateCommand(*command);
           }
+
+          // 叠加层画在命令下发之后，不占用瞄准链路的时间预算。
+          if (overlay_solver && tracker &&
+              frame_index % auto_aim_config.debug.overlay_every == 0) {
+            overlay_solver->set_R_world_barrel(image_pose);
+            L6Telemetry::drawAimOverlay(
+              frame,
+              {.detections = armors,
+               .observations = tracker->observations(),
+               .target = target,
+               .track_state = track_state,
+               .plan = plan,
+               .fire = controller.lastDecision(),
+               .q_world_barrel = image_pose},
+              *overlay_solver, *camera_calibration);
+          }
           measured_plan_to_send = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - plan_time).count();
           break;
@@ -236,10 +265,13 @@ void AutoAimRuntime::run() {
       }
     }
 
-    cv::imshow("auto_aim", frame);
-    const int key = cv::waitKey(1);
-    if (key == 27 || key == 'q' || key == 'Q') {
-      running_ = false;
+    ++frame_index;
+    if (overlay_enabled) {
+      cv::imshow("auto_aim", frame);
+      const int key = cv::waitKey(1);
+      if (key == 27 || key == 'q' || key == 'Q') {
+        running_ = false;
+      }
     }
   }
 
@@ -252,7 +284,9 @@ void AutoAimRuntime::run() {
       active_camera_.reset();
     }
   }
-  cv::destroyWindow("auto_aim");
+  if (overlay_enabled) {
+    cv::destroyWindow("auto_aim");
+  }
 }
 
 void AutoAimRuntime::stop() {
