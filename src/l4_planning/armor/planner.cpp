@@ -1,4 +1,4 @@
-#include "l4_planning/planner.hpp"
+#include "l4_planning/armor/planner.hpp"
 
 #include "l6_telemetry/math.hpp"
 
@@ -66,7 +66,7 @@ struct TrajectorySolution {
 
 }  // namespace
 
-Planner::Planner(PlanConfig config)
+Planner::Planner(ArmorPlanConfig config)
 : config_(std::move(config))
 {
 }
@@ -192,15 +192,15 @@ Plan Planner::plan(const PlanInput& input)
   const Eigen::VectorXd target_x = target.ekf_x();
 
   // 当前延迟分档使用有符号 yaw 角速度：只有正向超过阈值才使用高速延迟。
-  const double delay_time = target_x[7] > config_.decision_speed
-    ? config_.high_speed_delay_time
-    : config_.low_speed_delay_time;
+  const double delay_time = target_x[7] > config_.impact.decision_speed
+    ? config_.impact.high_speed_delay_time
+    : config_.impact.low_speed_delay_time;
 
   double bullet_speed = input.robot_state.bullet_speed;
-  const bool bullet_speed_ok = config_.bulletSpeedValid(bullet_speed);
+  const bool bullet_speed_ok = config_.impact.bulletSpeedValid(bullet_speed);
   if (!bullet_speed_ok) {
     // 弹速异常时仍用回退值生成跟随角，但最终状态降级为 TrackOnly。
-    bullet_speed = config_.fallback_bullet_speed;
+    bullet_speed = config_.impact.fallback_bullet_speed;
   }
 
   Delay delay;
@@ -211,7 +211,7 @@ Plan Planner::plan(const PlanInput& input)
   // 规划到发送由 runtime 实测后回灌；串口到电控只能实车标定，未标定按 0 计，
   // 同时把计划降级成 TrackOnly，不允许在缺段的延迟上开火。
   delay.plan_to_send = input.plan_to_send;
-  delay.send_to_control = config_.send_to_control.value_or(0.0);
+  delay.send_to_control = config_.impact.send_to_control.value_or(0.0);
   delay.control_to_fire = delay_time;
   const double before_fire = delay.beforeFire();
 
@@ -234,9 +234,9 @@ Plan Planner::plan(const PlanInput& input)
 
   double previous_fly_time = current_trajectory.fly_time;
   const double tolerance =
-    std::chrono::duration<double>(config_.fly_time_tolerance).count();
+    std::chrono::duration<double>(config_.impact.fly_time_tolerance).count();
 
-  for (int iteration = 0; iteration < config_.max_iterations; ++iteration) {
+  for (int iteration = 0; iteration < config_.impact.max_iterations; ++iteration) {
     // 飞行时间决定命中时刻，命中点又会改变飞行时间。每轮都从同一个发射时刻
     // 状态重新外推，避免把上一轮的 dt 重复累计。
     L3Estimation::TrackedTarget iteration_target = target;
@@ -271,7 +271,7 @@ Plan Planner::plan(const PlanInput& input)
   if (!bullet_speed_ok) {
     plan.status = PlanStatus::TrackOnly;
     plan.reason = PlanError::BadBulletSpeed;
-  } else if (!config_.fireDelayReady()) {
+  } else if (!config_.impact.fireDelayReady()) {
     plan.status = PlanStatus::TrackOnly;
     plan.reason = PlanError::DelayNotCalibrated;
   } else {
@@ -280,9 +280,9 @@ Plan Planner::plan(const PlanInput& input)
   }
   plan.aim = AimReference{
     point,
-    std::atan2(point.y(), point.x()) + config_.yaw_offset,
+    std::atan2(point.y(), point.x()) + config_.impact.yaw_offset,
     // 世界系约定 pitch 向下为正，因此弹道仰角在此取反。
-    -(current_trajectory.pitch + config_.pitch_offset)};
+    -(current_trajectory.pitch + config_.impact.pitch_offset)};
   plan.fire = FireReference{final_aim.armor_id, final_aim.xyza};
   plan.timing = PlanTiming{
     future + secondsToDuration(current_trajectory.fly_time),

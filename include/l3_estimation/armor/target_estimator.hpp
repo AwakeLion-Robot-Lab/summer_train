@@ -1,7 +1,7 @@
 #pragma once
 
-#include "l3_estimation/ekf_.hpp"
-#include "l3_estimation/types.hpp"
+#include "l3_estimation/ekf.hpp"
+#include "l3_estimation/armor/types.hpp"
 
 #include <chrono>
 #include <vector>

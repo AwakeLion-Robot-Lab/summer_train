@@ -2,8 +2,8 @@
 
 #include "l2_perception/armor/armor_decoder.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
-#include "l3_estimation/types.hpp"
-#include "l4_planning/types.hpp"
+#include "l3_estimation/armor/types.hpp"
+#include "l4_planning/armor/types.hpp"
 #include "l5_control/fire_decision.hpp"
 
 #include <filesystem>
@@ -37,7 +37,7 @@ struct AutoAimConfig {
   L3Estimation::ArmorConfig armor;
   L3Estimation::TrackerConfig tracker;
   L3Estimation::TargetConfig target;
-  L4Planning::PlanConfig plan;
+  L4Planning::ArmorPlanConfig plan;
   L5Control::FireConfig fire;
   RuntimeSafetyConfig runtime;
 };

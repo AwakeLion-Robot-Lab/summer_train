@@ -63,6 +63,9 @@ struct AimReference {
 
 // L5 判定始终落在一块实体装甲板上；armor_pose = [x, y, z, normal_yaw]。
 struct FireReference {
+  // 命中目标面在各自规划器里的编号：装甲板是整车展开后的物理板编号，
+  // 符是叶片编号。字段名沿用 armor_ 前缀只是历史包袱，不是类型依赖——
+  // 共享层不引用任何 armor/ 头文件。等 buff 规划器落地再一起改名。
   int armor_id{-1};
   Eigen::Vector4d armor_pose{Eigen::Vector4d::Zero()};
 
@@ -105,14 +108,8 @@ struct Plan {
   }
 };
 
-struct SelectorConfig {
-  double coming_angle{60.0 / 57.3};  // 候选板进入可击打区域的角度
-  double leaving_angle{20.0 / 57.3}; // 结合旋转方向排除即将离开的板
-  // 前哨站转速固定且板面更窄，进入角放宽、离开角收紧，与普通车分开配。
-  double outpost_coming_angle{70.0 / 57.3};
-  double outpost_leaving_angle{30.0 / 57.3};
-};
-
+// 命中解算的共用参数：弹道、延迟链、弹速。与目标是装甲板还是符无关，
+// 两条规划链路用同一组。选板一类的目标专有参数放各自的 armor/ 或 buff/。
 struct PlanConfig {
   // 飞行时间与目标位置相互依赖，迭代到相邻两次飞行时间之差小于该阈值。
   int max_iterations{10};
@@ -127,8 +124,6 @@ struct PlanConfig {
 
   double fallback_bullet_speed{23.0};
   double min_valid_bullet_speed{14.0};
-
-  SelectorConfig selector;
 
   // 串口发出到电控执行的耗时，只能在实车上标定，未标定时保持空值。
   // 其余四段都是可算或可测的：image_to_plan 和 plan_to_send 由 runtime 实测，

@@ -2,7 +2,7 @@
 
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l2_perception/armor.hpp"
-#include "l3_estimation/types.hpp"
+#include "l3_estimation/armor/types.hpp"
 
 #include <optional>
 #include <vector>

@@ -2,8 +2,8 @@
 // 不依赖相机、串口和推理后端。
 
 #include "l4_planning/ballistic.hpp"
-#include "l4_planning/planner.hpp"
-#include "l4_planning/predictor.hpp"
+#include "l4_planning/armor/planner.hpp"
+#include "l4_planning/armor/predictor.hpp"
 #include "l6_telemetry/math.hpp"
 
 #include <Eigen/Dense>
@@ -37,10 +37,10 @@ L3Estimation::TrackedTarget makeTarget(double v_yaw, double yaw = 0.0)
 // 默认配置的 send_to_control 是空的，表示延迟链还没在实车上标定，Planner 会
 // 把每个计划降级成 TrackOnly。测别的行为时用这个"已标定"配置，免得所有断言
 // 都被开火闸门挡住。
-L4Planning::PlanConfig calibratedConfig()
+L4Planning::ArmorPlanConfig calibratedConfig()
 {
-  L4Planning::PlanConfig config;
-  config.send_to_control = 0.002;
+  L4Planning::ArmorPlanConfig config;
+  config.impact.send_to_control = 0.002;
   return config;
 }
 
@@ -373,7 +373,7 @@ void testPlannerGatesOnDelayCalibration()
 void testDelayChainCarriesEveryStage()
 {
   auto config = calibratedConfig();
-  config.send_to_control = 0.004;
+  config.impact.send_to_control = 0.004;
   L4Planning::Planner planner(config);
 
   L1Sensor::RobotState robot_state;

@@ -1,9 +1,9 @@
 #pragma once
 
 #include "l2_perception/armor.hpp"
-#include "l3_estimation/pnp_solver.hpp"
-#include "l3_estimation/target_estimator.hpp"
-#include "l3_estimation/types.hpp"
+#include "l3_estimation/armor/pnp_solver.hpp"
+#include "l3_estimation/armor/target_estimator.hpp"
+#include "l3_estimation/armor/types.hpp"
 
 #include <Eigen/Geometry>
 

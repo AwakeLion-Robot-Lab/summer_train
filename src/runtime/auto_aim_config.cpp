@@ -121,33 +121,33 @@ void normalize(AutoAimConfig& config)
     }
   }
 
-  const L4Planning::PlanConfig plan_defaults;
-  config.plan.max_iterations = std::max(config.plan.max_iterations, 1);
-  config.plan.fly_time_tolerance = std::max(
-    config.plan.fly_time_tolerance, std::chrono::microseconds{1});
-  if (!std::isfinite(config.plan.high_speed_delay_time) ||
-      config.plan.high_speed_delay_time < 0.0) {
-    config.plan.high_speed_delay_time = plan_defaults.high_speed_delay_time;
+  const L4Planning::ArmorPlanConfig plan_defaults;
+  config.plan.impact.max_iterations = std::max(config.plan.impact.max_iterations, 1);
+  config.plan.impact.fly_time_tolerance = std::max(
+    config.plan.impact.fly_time_tolerance, std::chrono::microseconds{1});
+  if (!std::isfinite(config.plan.impact.high_speed_delay_time) ||
+      config.plan.impact.high_speed_delay_time < 0.0) {
+    config.plan.impact.high_speed_delay_time = plan_defaults.impact.high_speed_delay_time;
   }
-  if (!std::isfinite(config.plan.low_speed_delay_time) ||
-      config.plan.low_speed_delay_time < 0.0) {
-    config.plan.low_speed_delay_time = plan_defaults.low_speed_delay_time;
+  if (!std::isfinite(config.plan.impact.low_speed_delay_time) ||
+      config.plan.impact.low_speed_delay_time < 0.0) {
+    config.plan.impact.low_speed_delay_time = plan_defaults.impact.low_speed_delay_time;
   }
-  if (!std::isfinite(config.plan.decision_speed) ||
-      config.plan.decision_speed < 0.0) {
-    config.plan.decision_speed = plan_defaults.decision_speed;
+  if (!std::isfinite(config.plan.impact.decision_speed) ||
+      config.plan.impact.decision_speed < 0.0) {
+    config.plan.impact.decision_speed = plan_defaults.impact.decision_speed;
   }
-  if (!std::isfinite(config.plan.yaw_offset)) {
-    config.plan.yaw_offset = plan_defaults.yaw_offset;
+  if (!std::isfinite(config.plan.impact.yaw_offset)) {
+    config.plan.impact.yaw_offset = plan_defaults.impact.yaw_offset;
   }
-  if (!std::isfinite(config.plan.pitch_offset)) {
-    config.plan.pitch_offset = plan_defaults.pitch_offset;
+  if (!std::isfinite(config.plan.impact.pitch_offset)) {
+    config.plan.impact.pitch_offset = plan_defaults.impact.pitch_offset;
   }
-  if (!positiveFinite(config.plan.fallback_bullet_speed)) {
-    config.plan.fallback_bullet_speed = plan_defaults.fallback_bullet_speed;
+  if (!positiveFinite(config.plan.impact.fallback_bullet_speed)) {
+    config.plan.impact.fallback_bullet_speed = plan_defaults.impact.fallback_bullet_speed;
   }
-  if (!positiveFinite(config.plan.min_valid_bullet_speed)) {
-    config.plan.min_valid_bullet_speed = plan_defaults.min_valid_bullet_speed;
+  if (!positiveFinite(config.plan.impact.min_valid_bullet_speed)) {
+    config.plan.impact.min_valid_bullet_speed = plan_defaults.impact.min_valid_bullet_speed;
   }
   if (!positiveFinite(config.plan.selector.coming_angle)) {
     config.plan.selector.coming_angle = plan_defaults.selector.coming_angle;
@@ -164,11 +164,11 @@ void normalize(AutoAimConfig& config)
       plan_defaults.selector.outpost_leaving_angle;
   }
   // 标定值必须是正的有限数，否则当作没标定。
-  if (config.plan.send_to_control &&
-      !(std::isfinite(*config.plan.send_to_control) &&
-        *config.plan.send_to_control >= 0.0)) {
+  if (config.plan.impact.send_to_control &&
+      !(std::isfinite(*config.plan.impact.send_to_control) &&
+        *config.plan.impact.send_to_control >= 0.0)) {
     L6Telemetry::logWarn("planning.send_to_control_ms is invalid, treated as uncalibrated");
-    config.plan.send_to_control.reset();
+    config.plan.impact.send_to_control.reset();
   }
 
   const L5Control::FireConfig fire_defaults;
@@ -335,25 +335,25 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     estimator, "armor_yaw_distance_divisor", config.target.armor_yaw_distance_divisor);
 
   const YAML::Node planning = root["planning"];
-  readValue(planning, "max_iterations", config.plan.max_iterations);
+  readValue(planning, "max_iterations", config.plan.impact.max_iterations);
   readMicroseconds(
-    planning, "fly_time_tolerance_us", config.plan.fly_time_tolerance);
+    planning, "fly_time_tolerance_us", config.plan.impact.fly_time_tolerance);
   readMillisecondsAsSeconds(
-    planning, "high_speed_delay_ms", config.plan.high_speed_delay_time);
+    planning, "high_speed_delay_ms", config.plan.impact.high_speed_delay_time);
   readMillisecondsAsSeconds(
-    planning, "low_speed_delay_ms", config.plan.low_speed_delay_time);
+    planning, "low_speed_delay_ms", config.plan.impact.low_speed_delay_time);
   readValue(
-    planning, "decision_speed_rad_s", config.plan.decision_speed);
-  readDegrees(planning, "yaw_offset_deg", config.plan.yaw_offset);
-  readDegrees(planning, "pitch_offset_deg", config.plan.pitch_offset);
+    planning, "decision_speed_rad_s", config.plan.impact.decision_speed);
+  readDegrees(planning, "yaw_offset_deg", config.plan.impact.yaw_offset);
+  readDegrees(planning, "pitch_offset_deg", config.plan.impact.pitch_offset);
   readValue(
     planning,
     "fallback_bullet_speed_mps",
-    config.plan.fallback_bullet_speed);
+    config.plan.impact.fallback_bullet_speed);
   readValue(
     planning,
     "min_valid_bullet_speed_mps",
-    config.plan.min_valid_bullet_speed);
+    config.plan.impact.min_valid_bullet_speed);
   readDegrees(
     planning, "coming_angle_deg", config.plan.selector.coming_angle);
   readDegrees(
@@ -365,7 +365,7 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   // 不写这一项就表示还没在实车上标定：Planner 会把计划降级成 TrackOnly，
   // 云台照常跟随但不允许开火。写了才算标定完成。
   if (planning && planning["send_to_control_ms"]) {
-    config.plan.send_to_control =
+    config.plan.impact.send_to_control =
       planning["send_to_control_ms"].as<double>() * 1e-3;
   }
 

@@ -1,5 +1,5 @@
-#include "l3_estimation/types.hpp"
-#include "l3_estimation/target_estimator.hpp"
+#include "l3_estimation/armor/types.hpp"
+#include "l3_estimation/armor/target_estimator.hpp"
 #include "l4_planning/types.hpp"
 #include "l5_control/reject_reason.hpp"
 #include "l6_telemetry/auto_aim_trace.hpp"

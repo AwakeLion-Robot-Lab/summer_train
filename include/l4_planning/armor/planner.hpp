@@ -1,8 +1,8 @@
 #pragma once
 
 #include "l1_sensor/serial/robot_state.hpp"
-#include "l3_estimation/target_estimator.hpp"
-#include "l4_planning/types.hpp"
+#include "l3_estimation/armor/target_estimator.hpp"
+#include "l4_planning/armor/types.hpp"
 
 #include <Eigen/Core>
 
@@ -31,7 +31,7 @@ public:
 // 定点规划器：预测命中时刻、选择实体装甲板并解算 yaw/pitch。
 class Planner final : public IPlanner {
 public:
-  explicit Planner(PlanConfig config = {});
+  explicit Planner(ArmorPlanConfig config = {});
 
   [[nodiscard]] Plan plan(const PlanInput& input) override;
   [[nodiscard]] Plan plan(
@@ -53,7 +53,7 @@ private:
   [[nodiscard]] AimPoint chooseAimPoint(
     const L3Estimation::TrackedTarget& target);
 
-  PlanConfig config_;
+  ArmorPlanConfig config_;
   int locked_id_{-1};
 };
 
