@@ -157,6 +157,28 @@ struct ArmorConfig {
   double corner_noise_px{1.0};
 };
 
+// 整车 EKF 的过程噪声与观测噪声。这两组是靠回放标定的主要旋钮，所以出到
+// 配置；半径物理范围、前哨固定转速这类物理常量仍留在代码里。
+struct TargetConfig {
+  // 过程噪声强度。平移与高度用 translation，整车 yaw 用 rotation。
+  double q_translation{100.0};
+  double q_rotation{400.0};
+  // 前哨站转速固定、轨迹规整，过程噪声显著更小。
+  double outpost_q_translation{10.0};
+  double outpost_q_rotation{0.1};
+
+  // 观测噪声，观测量为 [方位角, 俯仰角, 距离, 装甲板 yaw]。
+  // 方位角/俯仰角取常量方差。
+  double angle_variance{4e-3};
+  // 距离方差 = factor * d^2 * (1 + delta_angle^2)。单板 PnP 的深度误差
+  // 大致正比于距离平方（板在像素上的张角 ∝ 1/d），斜视时进一步变差。
+  // 默认 0.0625 使 4 m 正视处的方差等于 1.0 m^2。
+  double distance_variance_factor{0.0625};
+  // 板 yaw 方差 = base + log1p(d) / distance_divisor。
+  double armor_yaw_variance_base{9e-2};
+  double armor_yaw_distance_divisor{200.0};
+};
+
 struct TrackerConfig {
   // 从 Detecting 转入 Tracking 所需的连续有效观测帧数。
   int min_detect_count{5};

@@ -34,11 +34,13 @@ public:
   // 使用首个装甲板观测反推旋转中心并初始化十一维状态。
   TrackedTarget(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
-    Eigen::VectorXd P0_dig);
+    Eigen::VectorXd P0_dig, TargetConfig config = {});
   // 构造指定旋转状态的目标，用于无观测的确定性初始化（离线回放和单测）。
   // 旋转中心落在 (x, 0, 0)，h 是 z2-z1。yaw 在 sp_vision 的同名入口里固定为
   // 0，这里放开成可选参数，否则测不到"整车转到某个角度"的构型。
-  TrackedTarget(double x, double vyaw, double radius, double h, double yaw = 0.0);
+  TrackedTarget(
+    double x, double vyaw, double radius, double h, double yaw = 0.0,
+    TargetConfig config = {});
 
   // 按绝对时间或显式时间间隔执行恒速度预测。
   void predict(std::chrono::steady_clock::time_point t);
@@ -63,6 +65,8 @@ public:
   bool converged();
 
 private:
+  // 过程噪声与观测噪声，由 Tracker 从 auto_aim.yaml 透传。
+  TargetConfig config_{};
   // 车辆物理装甲板数量以及关联、收敛统计。
   int armor_num_{4};
   int switch_count_{0};

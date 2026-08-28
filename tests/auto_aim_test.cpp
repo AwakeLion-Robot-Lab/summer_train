@@ -12,6 +12,7 @@
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/pnp_solver.hpp"
 #include "l3_estimation/tracker.hpp"
+#include "runtime/auto_aim_config.hpp"
 #include "l4_planning/planner.hpp"
 #include "l4_planning/predictor.hpp"
 #include "l5_control/controller.hpp"
@@ -125,6 +126,7 @@ void require(bool condition, const std::string& message)
   case L4Planning::PlanError::None:            return "none";
   case L4Planning::PlanError::NoTarget:        return "no-target";
   case L4Planning::PlanError::BadBulletSpeed:  return "bad-speed";
+  case L4Planning::PlanError::DelayNotCalibrated: return "delay-uncal";
   case L4Planning::PlanError::BallisticFailed: return "ballistic";
   case L4Planning::PlanError::OutOfWindow:     return "out-of-window";
   }
@@ -908,9 +910,12 @@ int main(int argc, char** argv)
     L2Perception::ArmorDetector detector(std::move(backend), decoder_config);
     require(detector.ready(), "ArmorDetector 未就绪");
 
-    const L3Estimation::ArmorConfig armor_config;
-    const L3Estimation::TrackerConfig tracker_config;
-    L3Estimation::Tracker tracker(calibration, armor_config, tracker_config);
+    // L3/L4/L5 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
+    // YAML 里调噪声，这里根本看不出变化。
+    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
+    const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
+    L3Estimation::Tracker tracker(
+      calibration, armor_config, runtime_config.tracker, runtime_config.target);
     require(tracker.ready(), "Tracker 拒绝了该标定");
     // 与 Tracker 内部同参数的求解器，只用来做重投影和代价曲线，不参与滤波。
     L3Estimation::PnpSolver solver(calibration, armor_config);
@@ -919,10 +924,10 @@ int main(int argc, char** argv)
     const L4Planning::Predictor predictor;
     // 完整的 L4 -> L5 链路。回放与 runtime 现在共用同一组
     // Planner / FireDecider / Controller 语义，这里另外负责离线诊断。
-    const L4Planning::PlanConfig plan_config;
-    L4Planning::Planner planner(plan_config);
+    L4Planning::Planner planner(runtime_config.plan);
     // 回放固定关闭实际开火，但仍记录 fire_feasible 的时序。
-    L5Control::FireConfig fire_config;
+    L5Control::FireConfig fire_config = runtime_config.fire;
+    fire_config.shoot_enable = false;
     const L5Control::FireDecider fire_decider{fire_config};
     const L5Control::Controller controller;
 

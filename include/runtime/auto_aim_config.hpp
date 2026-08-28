@@ -36,6 +36,7 @@ struct AutoAimConfig {
 
   L3Estimation::ArmorConfig armor;
   L3Estimation::TrackerConfig tracker;
+  L3Estimation::TargetConfig target;
   L4Planning::PlanConfig plan;
   L5Control::FireConfig fire;
   RuntimeSafetyConfig runtime;

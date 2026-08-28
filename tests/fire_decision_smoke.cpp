@@ -289,6 +289,17 @@ void testPlanReasonsStayPrecise()
       !hasReason(speed_decision, L5Control::RejectReason::OutsideHitWindow),
     "bad bullet speed must not masquerade as an armor-window failure");
 
+  // 延迟链没标完：只跟随不开火，而且要报成自己的原因，不能混进 PlanInvalid。
+  auto uncalibrated = makeInput();
+  uncalibrated.plan.status = L4Planning::PlanStatus::TrackOnly;
+  uncalibrated.plan.reason = L4Planning::PlanError::DelayNotCalibrated;
+  const auto uncalibrated_decision = decider.decide(uncalibrated);
+  require(
+    hasReason(uncalibrated_decision, L5Control::RejectReason::DelayNotCalibrated) &&
+      !hasReason(uncalibrated_decision, L5Control::RejectReason::PlanInvalid) &&
+      !uncalibrated_decision.fire_feasible,
+    "an uncalibrated delay chain must block firing under its own reason");
+
   auto no_target = makeInput();
   no_target.plan.status = L4Planning::PlanStatus::Rejected;
   no_target.plan.reason = L4Planning::PlanError::NoTarget;

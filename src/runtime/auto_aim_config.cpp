@@ -102,6 +102,25 @@ void normalize(AutoAimConfig& config)
   config.tracker.outpost_max_temp_lost_count =
     std::max(config.tracker.outpost_max_temp_lost_count, 0);
 
+  // 噪声为零或负会让 EKF 的增益直接发散，越界一律退回默认。
+  const L3Estimation::TargetConfig target_defaults;
+  for (const auto & [value, fallback] : {
+         std::pair{&config.target.q_translation, target_defaults.q_translation},
+         std::pair{&config.target.q_rotation, target_defaults.q_rotation},
+         std::pair{&config.target.outpost_q_translation, target_defaults.outpost_q_translation},
+         std::pair{&config.target.outpost_q_rotation, target_defaults.outpost_q_rotation},
+         std::pair{&config.target.angle_variance, target_defaults.angle_variance},
+         std::pair{&config.target.distance_variance_factor,
+                   target_defaults.distance_variance_factor},
+         std::pair{&config.target.armor_yaw_variance_base,
+                   target_defaults.armor_yaw_variance_base},
+         std::pair{&config.target.armor_yaw_distance_divisor,
+                   target_defaults.armor_yaw_distance_divisor}}) {
+    if (!positiveFinite(*value)) {
+      *value = fallback;
+    }
+  }
+
   const L4Planning::PlanConfig plan_defaults;
   config.plan.max_iterations = std::max(config.plan.max_iterations, 1);
   config.plan.fly_time_tolerance = std::max(
@@ -135,6 +154,21 @@ void normalize(AutoAimConfig& config)
   }
   if (!positiveFinite(config.plan.selector.leaving_angle)) {
     config.plan.selector.leaving_angle = plan_defaults.selector.leaving_angle;
+  }
+  if (!positiveFinite(config.plan.selector.outpost_coming_angle)) {
+    config.plan.selector.outpost_coming_angle =
+      plan_defaults.selector.outpost_coming_angle;
+  }
+  if (!positiveFinite(config.plan.selector.outpost_leaving_angle)) {
+    config.plan.selector.outpost_leaving_angle =
+      plan_defaults.selector.outpost_leaving_angle;
+  }
+  // 标定值必须是正的有限数，否则当作没标定。
+  if (config.plan.send_to_control &&
+      !(std::isfinite(*config.plan.send_to_control) &&
+        *config.plan.send_to_control >= 0.0)) {
+    L6Telemetry::logWarn("planning.send_to_control_ms is invalid, treated as uncalibrated");
+    config.plan.send_to_control.reset();
   }
 
   const L5Control::FireConfig fire_defaults;
@@ -288,6 +322,18 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     "outpost_max_temp_lost_count",
     config.tracker.outpost_max_temp_lost_count);
 
+  // EKF 噪声。回放标定的主要旋钮，改这些必须重跑 track_diag 看 NIS。
+  const YAML::Node estimator = root["estimator"];
+  readValue(estimator, "q_translation", config.target.q_translation);
+  readValue(estimator, "q_rotation", config.target.q_rotation);
+  readValue(estimator, "outpost_q_translation", config.target.outpost_q_translation);
+  readValue(estimator, "outpost_q_rotation", config.target.outpost_q_rotation);
+  readValue(estimator, "angle_variance", config.target.angle_variance);
+  readValue(estimator, "distance_variance_factor", config.target.distance_variance_factor);
+  readValue(estimator, "armor_yaw_variance_base", config.target.armor_yaw_variance_base);
+  readValue(
+    estimator, "armor_yaw_distance_divisor", config.target.armor_yaw_distance_divisor);
+
   const YAML::Node planning = root["planning"];
   readValue(planning, "max_iterations", config.plan.max_iterations);
   readMicroseconds(
@@ -312,6 +358,16 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     planning, "coming_angle_deg", config.plan.selector.coming_angle);
   readDegrees(
     planning, "leaving_angle_deg", config.plan.selector.leaving_angle);
+  readDegrees(
+    planning, "outpost_coming_angle_deg", config.plan.selector.outpost_coming_angle);
+  readDegrees(
+    planning, "outpost_leaving_angle_deg", config.plan.selector.outpost_leaving_angle);
+  // 不写这一项就表示还没在实车上标定：Planner 会把计划降级成 TrackOnly，
+  // 云台照常跟随但不允许开火。写了才算标定完成。
+  if (planning && planning["send_to_control_ms"]) {
+    config.plan.send_to_control =
+      planning["send_to_control_ms"].as<double>() * 1e-3;
+  }
 
   const YAML::Node fire = root["fire"];
   readValue(fire, "shoot_enable", config.fire.shoot_enable);

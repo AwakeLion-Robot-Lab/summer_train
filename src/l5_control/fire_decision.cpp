@@ -88,6 +88,10 @@ FireDecision FireDecider::decide(const FireInput& input) const
   if (plan.reason == L4Planning::PlanError::BadBulletSpeed) {
     reject(RejectReason::BadBulletSpeed);
   }
+  // 延迟链没标完就开火等于按偏早的落点打，验收前必须挡住。
+  if (plan.reason == L4Planning::PlanError::DelayNotCalibrated) {
+    reject(RejectReason::DelayNotCalibrated);
+  }
   // 命中时刻没有板落在可击发窗口内。高速小陀螺时这是常态间歇，不是故障——
   // 云台照常跟随，只是不开火。
   if (plan.reason == L4Planning::PlanError::OutOfWindow) {
@@ -97,6 +101,7 @@ FireDecision FireDecider::decide(const FireInput& input) const
   // 安全拒绝，避免没有任何拒绝项时 fire_feasible 被误判为 true。
   if (plan.status == L4Planning::PlanStatus::TrackOnly &&
       plan.reason != L4Planning::PlanError::BadBulletSpeed &&
+      plan.reason != L4Planning::PlanError::DelayNotCalibrated &&
       plan.reason != L4Planning::PlanError::OutOfWindow) {
     reject(RejectReason::PlanInvalid);
   }

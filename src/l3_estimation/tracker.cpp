@@ -57,9 +57,11 @@ Armor toArmorObservation(
 Tracker::Tracker(
   const L1Sensor::CameraCalibration& calibration,
   ArmorConfig armor_config,
-  TrackerConfig tracker_config)
+  TrackerConfig tracker_config,
+  TargetConfig target_config)
   : armor_config_(armor_config),
     tracker_config_(tracker_config),
+    target_config_(target_config),
     pnp_solver_(calibration, armor_config_),
     image_center_{
       static_cast<float>(calibration.image_size.width) * 0.5F,
@@ -236,7 +238,8 @@ bool Tracker::initializeTarget(
   }
 
   target_.emplace(
-    armor, timestamp, radius, armor_count, std::move(covariance_diagonal));
+    armor, timestamp, radius, armor_count, std::move(covariance_diagonal),
+    target_config_);
   return true;
 }
 

@@ -34,6 +34,16 @@ L3Estimation::TrackedTarget makeTarget(double v_yaw, double yaw = 0.0)
   return target;
 }
 
+// 默认配置的 send_to_control 是空的，表示延迟链还没在实车上标定，Planner 会
+// 把每个计划降级成 TrackOnly。测别的行为时用这个"已标定"配置，免得所有断言
+// 都被开火闸门挡住。
+L4Planning::PlanConfig calibratedConfig()
+{
+  L4Planning::PlanConfig config;
+  config.send_to_control = 0.002;
+  return config;
+}
+
 // 只推中心不推 yaw 是改造前的缺陷：小陀螺目标会被算成原地不动。
 void testPredictorAdvancesYaw()
 {
@@ -270,7 +280,7 @@ void testBallisticRejectsBadInput()
 // 不动点迭代应当收敛，且命中时刻的瞄准点确实由飞行时间决定。
 void testPlannerConverges()
 {
-  L4Planning::Planner planner;
+  L4Planning::Planner planner(calibratedConfig());
   const auto target = makeTarget(0.0);
 
   L1Sensor::RobotState robot_state;
@@ -302,7 +312,7 @@ void testPlannerConverges()
 // 弹速低于 14 m/s 时回退到 23；14 m/s 及以上不设上限。
 void testPlannerUsesOneSidedBulletFallback()
 {
-  L4Planning::Planner planner;
+  L4Planning::Planner planner(calibratedConfig());
   L1Sensor::RobotState robot_state;
   robot_state.bullet_speed = 0.0;
 
@@ -329,6 +339,94 @@ void testPlannerUsesOneSidedBulletFallback()
       "planner must not impose an upper bullet-speed gate");
   }
   std::cout << "  [ok] planner uses a one-sided 14 m/s fallback\n";
+}
+
+// 延迟链缺 send_to_control 时只跟随不开火；标定后才放行。
+void testPlannerGatesOnDelayCalibration()
+{
+  L1Sensor::RobotState robot_state;
+  robot_state.bullet_speed = 23.0;
+
+  L4Planning::Planner uncalibrated;
+  const auto blocked = uncalibrated.plan(makeTarget(0.0), robot_state, {});
+  require(blocked.valid(), "an uncalibrated delay chain must still produce aim angles");
+  require(!blocked.fireAdmissible(), "an uncalibrated delay chain must block firing");
+  require(
+    blocked.reason == L4Planning::PlanError::DelayNotCalibrated,
+    "the uncalibrated delay stage must be the reported reason");
+
+  L4Planning::Planner calibrated(calibratedConfig());
+  const auto allowed = calibrated.plan(makeTarget(0.0), robot_state, {});
+  require(allowed.fireAdmissible(), "a calibrated delay chain must allow firing");
+  require(allowed.reason == L4Planning::PlanError::None, "no rejection expected");
+
+  // 弹速同时不合格时先报弹速：它让弹道解本身失真，比缺一段延迟更严重。
+  robot_state.bullet_speed = 0.0;
+  require(
+    uncalibrated.plan(makeTarget(0.0), robot_state, {}).reason ==
+      L4Planning::PlanError::BadBulletSpeed,
+    "bad bullet speed must take priority over the delay gate");
+  std::cout << "  [ok] planner gates firing on delay calibration\n";
+}
+
+// 五段延迟里，runtime 实测的两段必须真的进到 beforeFire()，而不是恒为 0。
+void testDelayChainCarriesEveryStage()
+{
+  auto config = calibratedConfig();
+  config.send_to_control = 0.004;
+  L4Planning::Planner planner(config);
+
+  L1Sensor::RobotState robot_state;
+  robot_state.bullet_speed = 23.0;
+
+  L4Planning::PlanInput input;
+  input.target = makeTarget(0.0);
+  input.robot_state = robot_state;
+  input.plan_time = input.target->t();
+  input.to_now = false;  // image_to_plan 走离线的固定 5 ms
+  input.plan_to_send = 0.003;
+
+  const auto plan = planner.plan(input);
+  const auto & delay = plan.timing.delay;
+  require(std::abs(delay.image_to_plan - 0.005) < 1e-12, "image_to_plan is wrong");
+  require(std::abs(delay.plan_to_send - 0.003) < 1e-12, "plan_to_send was not carried");
+  require(std::abs(delay.send_to_control - 0.004) < 1e-12, "send_to_control was not carried");
+  require(delay.control_to_fire > 0.0, "control_to_fire must come from the speed bands");
+  require(std::abs(delay.fire_to_hit - plan.timing.fly_time) < 1e-12, "fire_to_hit is wrong");
+  require(
+    std::abs(delay.beforeFire() -
+             (delay.image_to_plan + delay.plan_to_send + delay.send_to_control +
+              delay.control_to_fire)) < 1e-12,
+    "beforeFire must sum every stage before the shot");
+  require(
+    std::abs(delay.total() - (delay.beforeFire() + delay.fire_to_hit)) < 1e-12,
+    "total must add the flight time");
+  std::cout << "  [ok] delay chain carries every stage, before_fire="
+            << delay.beforeFire() << " s\n";
+}
+
+// coming_angle 以前在常规车那条分支里是写死的 60 度，配置改了不生效。
+void testComingAngleIsConfigurable()
+{
+  L1Sensor::RobotState robot_state;
+  robot_state.bullet_speed = 23.0;
+
+  // 让 0 号板偏离视线 50 度：默认 60 度窗口收得下，收紧到 40 度就该落空。
+  const auto target = makeTarget(0.0, 50.0 / 57.3);
+
+  L4Planning::Planner wide(calibratedConfig());
+  require(
+    wide.plan(target, robot_state, {}).fire.has_value(),
+    "a 50-degree armor must fit inside the default 60-degree window");
+
+  auto narrow_config = calibratedConfig();
+  narrow_config.selector.coming_angle = 40.0 / 57.3;
+  L4Planning::Planner narrow(narrow_config);
+  const auto narrowed = narrow.plan(target, robot_state, {});
+  require(
+    narrowed.reason == L4Planning::PlanError::OutOfWindow,
+    "a tightened coming_angle must actually shrink the normal-branch window");
+  std::cout << "  [ok] selector.coming_angle drives the normal branch\n";
 }
 
 void testPlannerRejectsNoTarget()
@@ -499,6 +597,9 @@ int main()
   testBallisticRejectsBadInput();
   testPlannerConverges();
   testPlannerUsesOneSidedBulletFallback();
+  testPlannerGatesOnDelayCalibration();
+  testDelayChainCarriesEveryStage();
+  testComingAngleIsConfigurable();
   testPlannerRejectsNoTarget();
   testUnobservedGeometryLocksArmorZero();
   testSelectorHoldsUntilArmorLeavesWindow();

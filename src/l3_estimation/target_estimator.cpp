@@ -48,8 +48,9 @@ namespace L3Estimation {
 TrackedTarget::TrackedTarget(const Armor &armor,
                              std::chrono::steady_clock::time_point t,
                              double radius, int armor_num,
-                             Eigen::VectorXd P0_dig)
-    : name(armor.name), armor_type(armor.type), armor_num_(armor_num), t_(t) {
+                             Eigen::VectorXd P0_dig, TargetConfig config)
+    : name(armor.name), armor_type(armor.type), config_(config),
+      armor_num_(armor_num), t_(t) {
   if (armor_num_ < 1) {
     throw std::invalid_argument("armor_num must be positive");
   }
@@ -86,7 +87,8 @@ TrackedTarget::TrackedTarget(const Armor &armor,
 }
 
 TrackedTarget::TrackedTarget(double x, double vyaw, double radius,
-                             double height, double yaw) {
+                             double height, double yaw, TargetConfig config)
+    : config_(config) {
   // 该构造入口直接给定部分运动状态，其余分量和初始协方差置零。
   Eigen::VectorXd x0(11);
   x0 << x, 0.0, 0.0, 0.0, 0.0, 0.0, L6Telemetry::limit_rad(yaw), vyaw, radius,
@@ -128,13 +130,12 @@ void TrackedTarget::predict(double dt) {
   };
   // clang-format on
 
-  double v1 = 100.0;
-  double v2 = 400.0;
   // 前哨站运动模式更稳定，因此使用更小的平移和角速度过程噪声。
-  if (name == ArmorName::Outpost) {
-    v1 = 10.0;
-    v2 = 0.1;
-  }
+  const bool outpost = name == ArmorName::Outpost;
+  const double q_translation =
+      outpost ? config_.outpost_q_translation : config_.q_translation;
+  const double q_rotation =
+      outpost ? config_.outpost_q_rotation : config_.q_rotation;
 
   const double dt2 = dt * dt;
   const double dt3 = dt2 * dt;
@@ -147,10 +148,10 @@ void TrackedTarget::predict(double dt) {
   constant_velocity_noise << a, b, b, c;
 
   Eigen::MatrixXd Q = Eigen::MatrixXd::Zero(11, 11);
-  Q.block<2, 2>(0, 0) = v1 * constant_velocity_noise;  // x, vx
-  Q.block<2, 2>(2, 2) = v1 * constant_velocity_noise;  // y, vy
-  Q.block<2, 2>(4, 4) = v1 * constant_velocity_noise;  // z, vz
-  Q.block<2, 2>(6, 6) = v2 * constant_velocity_noise;  // yaw, v_yaw
+  Q.block<2, 2>(0, 0) = q_translation * constant_velocity_noise;  // x, vx
+  Q.block<2, 2>(2, 2) = q_translation * constant_velocity_noise;  // y, vy
+  Q.block<2, 2>(4, 4) = q_translation * constant_velocity_noise;  // z, vz
+  Q.block<2, 2>(6, 6) = q_rotation * constant_velocity_noise;     // yaw, v_yaw
 
   auto transition = [&F](const Eigen::VectorXd &x) {
     Eigen::VectorXd prior = F * x;
@@ -230,20 +231,20 @@ void TrackedTarget::update_ypda(const Armor &armor, int id) {
   const double delta_angle =
       L6Telemetry::limit_rad(armor.ypr_in_world[0] - center_yaw);
 
-  // 观测噪声取 sp_vision 的数值：方位角/俯仰角 4e-3（sigma 3.62 度），距离
-  // 基底 1.0 m²（正视时 sigma 就有 1 米），两者都远大于实测噪声。
-  //
-  // 距离方差随 delta_angle 增长，编码的是"斜视时单板 PnP 深度精度迅速变差"；
-  // 板 yaw 方差随距离增长。这两条随动关系与本项目此前的实现一致，差别只在基底。
-  constexpr double kAngleVariance = 4e-3;
-  constexpr double kDistanceVarianceFloor = 1.0;
+  // 观测噪声，两条随动关系都有物理含义：
+  // 距离方差 ∝ d²——单板 PnP 的深度误差来自角点视差，而视差 ∝ 1/d；斜视时
+  // 两条灯条在像素上靠拢，深度进一步变差，所以再乘 (1 + delta_angle²)。
+  // 板 yaw 方差随距离缓慢增长，形式沿用之前的实测拟合。
+  const double distance = std::abs(armor.ypd_in_world.z());
+  const double armor_yaw_variance =
+    std::log1p(distance) / config_.armor_yaw_distance_divisor +
+    config_.armor_yaw_variance_base;
+  const double distance_variance = config_.distance_variance_factor * distance *
+                                   distance * (1.0 + delta_angle * delta_angle);
 
   Eigen::VectorXd R_diagonal(4);
-  const double armor_yaw_variance =
-    std::log1p(std::abs(armor.ypd_in_world.z())) / 200.0 + 9e-2;
-  const double distance_variance =
-    kDistanceVarianceFloor + std::log1p(std::abs(delta_angle));
-  R_diagonal << kAngleVariance, kAngleVariance, distance_variance, armor_yaw_variance;
+  R_diagonal << config_.angle_variance, config_.angle_variance, distance_variance,
+    armor_yaw_variance;
   const Eigen::MatrixXd R = R_diagonal.asDiagonal();
 
   // 将十一维整车状态映射到指定物理装甲板的四维观测空间。

@@ -19,6 +19,8 @@ std::string toString(RejectReason reason)
       return "ballistic_invalid";
     case RejectReason::BadBulletSpeed:
       return "bad_bullet_speed";
+    case RejectReason::DelayNotCalibrated:
+      return "delay_not_calibrated";
     case RejectReason::OutsideHitWindow:
       return "outside_hit_window";
     case RejectReason::AimError:

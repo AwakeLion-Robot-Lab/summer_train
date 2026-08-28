@@ -27,7 +27,8 @@ public:
   Tracker(
     const L1Sensor::CameraCalibration& calibration,
     ArmorConfig armor_config = {},
-    TrackerConfig tracker_config = {});
+    TrackerConfig tracker_config = {},
+    TargetConfig target_config = {});
 
   [[nodiscard]] bool ready() const noexcept;
   [[nodiscard]] TrackState state() const noexcept;
@@ -67,6 +68,7 @@ private:
 
   ArmorConfig armor_config_;
   TrackerConfig tracker_config_;
+  TargetConfig target_config_;
   PnpSolver pnp_solver_;
   cv::Point2f image_center_{};
   bool ready_{false};

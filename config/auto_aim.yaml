@@ -83,6 +83,27 @@ tracker:
   max_temp_lost_count: 15
   outpost_max_temp_lost_count: 75
 
+# L3 整车 EKF 的噪声。这两组是靠回放标定的主要旋钮：改完必须重跑
+# `xmake run track_diag` 看单步创新和 NIS 失败率，不要凭感觉调。
+# 半径物理范围、前哨固定转速这类物理常量仍在代码里，不在这里配。
+estimator:
+  # 过程噪声强度。平移与高度用 q_translation，整车 yaw 用 q_rotation。
+  q_translation: 100.0
+  q_rotation: 400.0
+  # 前哨站转速固定、轨迹规整，过程噪声显著更小。
+  outpost_q_translation: 10.0
+  outpost_q_rotation: 0.1
+  # 方位角/俯仰角的观测方差，常量。4e-3 对应 sigma 约 3.6 度。
+  angle_variance: 0.004
+  # 距离方差 = factor * d^2 * (1 + delta_angle^2)。
+  # 单板 PnP 的深度误差来自角点视差而视差 ∝ 1/d，所以方差 ∝ d^2；
+  # 斜视时两条灯条在像素上靠拢，深度进一步变差。
+  # 0.0625 使 4 m 正视处的方差等于 1.0 m^2。
+  distance_variance_factor: 0.0625
+  # 板 yaw 方差 = base + log1p(d) / divisor。
+  armor_yaw_variance_base: 0.09
+  armor_yaw_distance_divisor: 200.0
+
 # L4 定点规划。根据整车 yaw 角速度选择高、低速发射延迟。
 planning:
   # 飞行时间与目标命中位置相互影响时，允许进行的最大迭代次数。
@@ -105,10 +126,23 @@ planning:
   fallback_bullet_speed_mps: 23.0
   # 实测弹速低于该值时使用回退弹速，并把 Plan 降级为 TrackOnly，禁止开火。
   min_valid_bullet_speed_mps: 14.0
-  # 旋转目标的候选板进入角：板面相对视线误差需小于该值，单位 degree。
+  # 候选板进入角：板面相对视线的误差需小于该值，单位 degree。
+  # 常规车和旋转目标两条选板分支都用它。
   coming_angle_deg: 60.0
   # 结合旋转方向排除即将离开可击打区域的装甲板，单位 degree。
   leaving_angle_deg: 20.0
+  # 前哨站转速固定、板面更窄，进入角放宽、离开角收紧，单独配一组。
+  outpost_coming_angle_deg: 70.0
+  outpost_leaving_angle_deg: 30.0
+
+  # ---- 延迟链的实车标定段 ----
+  # 五段延迟里，image_to_plan 和 plan_to_send 由 runtime 每帧实测，
+  # control_to_fire 用上面的高低速档，fire_to_hit 是弹道飞行时间；
+  # 只有"串口发出 -> 电控执行"这一段测不到，必须在实车上标。
+  #
+  # 不写这一项 = 还没标定：Planner 把计划降级成 TrackOnly，云台照常跟随，
+  # 但 L5 会以 delay_not_calibrated 拒绝开火。验收标完再取消注释。
+  # send_to_control_ms: 5.0
 
 # L5 开火闸门。shoot_enable=false 时仍会跟随，但不会发出开火位。
 fire:

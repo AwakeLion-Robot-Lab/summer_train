@@ -10,6 +10,7 @@
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/pnp_solver.hpp"
 #include "l3_estimation/tracker.hpp"
+#include "runtime/auto_aim_config.hpp"
 #include "l4_planning/planner.hpp"
 #include "l4_planning/predictor.hpp"
 #include "l6_telemetry/logger.hpp"
@@ -398,15 +399,17 @@ int main(int argc, char* argv[])
     L2Perception::ArmorDetector detector(std::move(backend), decoder_config);
     require(detector.ready(), "ArmorDetector 未就绪");
 
-    const L3Estimation::ArmorConfig armor_config;
-    const L3Estimation::TrackerConfig tracker_config;
-    L3Estimation::Tracker tracker(calibration, armor_config, tracker_config);
+    // L3/L4 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
+    // YAML 里调噪声，这里根本看不出变化。
+    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
+    const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
+    L3Estimation::Tracker tracker(
+      calibration, armor_config, runtime_config.tracker, runtime_config.target);
     require(tracker.ready(), "Tracker 拒绝了该标定");
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
     const L4Planning::Predictor predictor;
-    const L4Planning::PlanConfig plan_config;
-    L4Planning::Planner planner(plan_config);
+    L4Planning::Planner planner(runtime_config.plan);
     const double bullet_speed = cli.get<double>("bullet-speed");
 
     cv::VideoCapture video(video_path);

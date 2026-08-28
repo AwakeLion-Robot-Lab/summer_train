@@ -15,6 +15,9 @@ struct PlanInput {
   L1Sensor::RobotState robot_state;
   TimePoint plan_time{};  // 本次规划开始的 steady_clock 时间
   bool to_now{true};      // 是否补偿 target.t() 到 plan_time 的已发生延迟
+  // 上一帧实测的"规划结束 -> 串口发出"耗时，单位秒。本帧的值要等规划做完
+  // 才知道，所以只能用上一帧的量代入；帧间这一段基本恒定。
+  double plan_to_send{0.0};
 };
 
 class IPlanner {

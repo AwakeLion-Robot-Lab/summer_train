@@ -102,7 +102,8 @@ void AutoAimRuntime::run() {
     tracker.emplace(
       *camera_calibration,
       auto_aim_config.armor,
-      auto_aim_config.tracker);
+      auto_aim_config.tracker,
+      auto_aim_config.target);
     if (tracker->ready()) {
       L6Telemetry::logInfo("L3 tracker configured");
     } else {
@@ -138,6 +139,9 @@ void AutoAimRuntime::run() {
 
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
+  // "规划结束 -> 串口发出"的实测耗时。本帧的值要等规划做完才知道，所以
+  // 用上一帧的量代入本帧的延迟链；这一段帧间基本恒定。
+  double measured_plan_to_send = 0.0;
 
   // 主循环是**单线程同步**的，这是设计选择而不是待办事项：自瞄的代价函数是
   // 开火那一刻的位置误差，不是帧率。异步/流水线推理换来的是吞吐，代价是结果
@@ -190,7 +194,13 @@ void AutoAimRuntime::run() {
           const auto actual_pose = serial.gimbalPoseAt(plan_time);
 
           // L4: 预测命中时刻、选板并解算弹道。
-          const auto plan = planner.plan(target, *state, plan_time, true);
+          L4Planning::PlanInput plan_input;
+          plan_input.target = target;
+          plan_input.robot_state = *state;
+          plan_input.plan_time = plan_time;
+          plan_input.to_now = true;
+          plan_input.plan_to_send = measured_plan_to_send;
+          const auto plan = planner.plan(plan_input);
 
           // L5: 开火判定、命令跳变检查和安全保持。
           const auto command = controller.update(
@@ -199,10 +209,13 @@ void AutoAimRuntime::run() {
             plan,
             actual_pose);
 
-          // L1: 下发 L5 生成的控制命令。
+          // L1: 下发 L5 生成的控制命令，并量出本帧规划到发送的耗时，
+          // 供下一帧的延迟链使用。
           if (command) {
             serial.updateCommand(*command);
           }
+          measured_plan_to_send = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - plan_time).count();
           break;
         }
 

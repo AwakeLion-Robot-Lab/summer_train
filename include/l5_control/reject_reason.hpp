@@ -12,6 +12,8 @@ enum class RejectReason {
   PlanInvalid,
   BallisticInvalid,
   BadBulletSpeed,
+  // 延迟链缺少实车标定段，落点会系统性偏早，只跟随不开火。
+  DelayNotCalibrated,
   // 命中时刻没有装甲板落在可击发窗口内（小陀螺的正常间歇）。
   OutsideHitWindow,
   // 云台还没转到位：实际角与规划角之差超过了装甲板在该距离上张开的角度。

@@ -16,6 +16,8 @@ enum class PlanError : std::uint8_t {
   None,
   NoTarget,
   BadBulletSpeed,
+  // 延迟链还没在实车上标定完，只跟随不开火。
+  DelayNotCalibrated,
   BallisticFailed,
   OutOfWindow
 };
@@ -106,6 +108,9 @@ struct Plan {
 struct SelectorConfig {
   double coming_angle{60.0 / 57.3};  // 候选板进入可击打区域的角度
   double leaving_angle{20.0 / 57.3}; // 结合旋转方向排除即将离开的板
+  // 前哨站转速固定且板面更窄，进入角放宽、离开角收紧，与普通车分开配。
+  double outpost_coming_angle{70.0 / 57.3};
+  double outpost_leaving_angle{30.0 / 57.3};
 };
 
 struct PlanConfig {
@@ -125,18 +130,21 @@ struct PlanConfig {
 
   SelectorConfig selector;
 
-  // 预留的实车延迟标定值；未标定时保持空值。
+  // 串口发出到电控执行的耗时，只能在实车上标定，未标定时保持空值。
+  // 其余四段都是可算或可测的：image_to_plan 和 plan_to_send 由 runtime 实测，
+  // control_to_fire 用上面的高低速档，fire_to_hit 是弹道飞行时间。
   std::optional<double> send_to_control;
-  std::optional<double> control_to_fire;
 
   [[nodiscard]] bool bulletSpeedValid(double speed) const noexcept
   {
     return std::isfinite(speed) && speed >= min_valid_bullet_speed;
   }
 
+  // 延迟链是否已经完整到可以开火。缺这一段时目标外推的落点会系统性偏早，
+  // 所以 Planner 会把计划降级成 TrackOnly：云台照常跟随，但不允许开火。
   [[nodiscard]] bool fireDelayReady() const noexcept
   {
-    return send_to_control.has_value() && control_to_fire.has_value();
+    return send_to_control.has_value();
   }
 };
 

@@ -126,7 +126,7 @@ Planner::AimPoint Planner::chooseAimPoint(
     std::vector<int> ids;
     ids.reserve(armors.size());
     for (std::size_t id = 0; id < armors.size(); ++id) {
-      if (std::abs(delta_angles[id]) > 60.0 / 57.3) {
+      if (std::abs(delta_angles[id]) > config_.selector.coming_angle) {
         continue;
       }
       ids.push_back(static_cast<int>(id));
@@ -160,8 +160,8 @@ Planner::AimPoint Planner::chooseAimPoint(
   double coming_angle = config_.selector.coming_angle;
   double leaving_angle = config_.selector.leaving_angle;
   if (target.name == L3Estimation::ArmorName::Outpost) {
-    coming_angle = 70.0 / 57.3;
-    leaving_angle = 30.0 / 57.3;
+    coming_angle = config_.selector.outpost_coming_angle;
+    leaving_angle = config_.selector.outpost_leaving_angle;
   }
 
   // 旋转目标先用 coming_angle 限制正面区域，再结合旋转方向和
@@ -208,6 +208,10 @@ Plan Planner::plan(const PlanInput& input)
   delay.image_to_plan = input.to_now
     ? std::chrono::duration<double>(input.plan_time - target.t()).count()
     : 0.005;
+  // 规划到发送由 runtime 实测后回灌；串口到电控只能实车标定，未标定按 0 计，
+  // 同时把计划降级成 TrackOnly，不允许在缺段的延迟上开火。
+  delay.plan_to_send = input.plan_to_send;
+  delay.send_to_control = config_.send_to_control.value_or(0.0);
   delay.control_to_fire = delay_time;
   const double before_fire = delay.beforeFire();
 
@@ -262,9 +266,18 @@ Plan Planner::plan(const PlanInput& input)
   delay.fire_to_hit = current_trajectory.fly_time;
 
   Plan plan;
-  // 回退弹速只允许继续跟随，不能把估算弹速生成的解标成可开火。
-  plan.status = bullet_speed_ok ? PlanStatus::FireReady : PlanStatus::TrackOnly;
-  plan.reason = bullet_speed_ok ? PlanError::None : PlanError::BadBulletSpeed;
+  // 两种降级：回退弹速生成的解不能标成可开火；延迟链缺实车标定段时落点会
+  // 系统性偏早，同样只跟随。弹速优先报，因为它同时也让弹道解本身失真。
+  if (!bullet_speed_ok) {
+    plan.status = PlanStatus::TrackOnly;
+    plan.reason = PlanError::BadBulletSpeed;
+  } else if (!config_.fireDelayReady()) {
+    plan.status = PlanStatus::TrackOnly;
+    plan.reason = PlanError::DelayNotCalibrated;
+  } else {
+    plan.status = PlanStatus::FireReady;
+    plan.reason = PlanError::None;
+  }
   plan.aim = AimReference{
     point,
     std::atan2(point.y(), point.x()) + config_.yaw_offset,
