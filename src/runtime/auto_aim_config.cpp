@@ -102,6 +102,29 @@ void normalize(AutoAimConfig& config)
   config.tracker.outpost_max_temp_lost_count =
     std::max(config.tracker.outpost_max_temp_lost_count, 0);
 
+  // 精修参数越界会让它静默失效（阈值 255 时二值图全黑，一块灯条也找不到）
+  // 或者全盘接受（端点距离无穷大时任何传统解都覆盖网络角点），都不会报错。
+  const L2Perception::ArmorRefinerConfig refiner_defaults;
+  if (!(config.refiner.binary_threshold > 0.0 &&
+        config.refiner.binary_threshold < 255.0)) {
+    config.refiner.binary_threshold = refiner_defaults.binary_threshold;
+  }
+  if (!positiveFinite(config.refiner.min_lightbar_length_px)) {
+    config.refiner.min_lightbar_length_px = refiner_defaults.min_lightbar_length_px;
+  }
+  if (!positiveFinite(config.refiner.max_endpoint_distance_px)) {
+    config.refiner.max_endpoint_distance_px = refiner_defaults.max_endpoint_distance_px;
+  }
+  if (!(config.refiner.min_lightbar_ratio > 0.0F &&
+        config.refiner.min_lightbar_ratio < config.refiner.max_lightbar_ratio)) {
+    config.refiner.min_lightbar_ratio = refiner_defaults.min_lightbar_ratio;
+    config.refiner.max_lightbar_ratio = refiner_defaults.max_lightbar_ratio;
+  }
+  if (!(config.refiner.max_angle_error_deg > 0.0F &&
+        config.refiner.max_angle_error_deg <= 90.0F)) {
+    config.refiner.max_angle_error_deg = refiner_defaults.max_angle_error_deg;
+  }
+
   // 噪声为零或负会让 EKF 的增益直接发散，越界一律退回默认。
   const L3Estimation::TargetConfig target_defaults;
   for (const auto & [value, fallback] : {
@@ -323,6 +346,18 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     tracker,
     "outpost_max_temp_lost_count",
     config.tracker.outpost_max_temp_lost_count);
+
+  // 传统灯条精修。默认值来自 sp_vision 的 standard3.yaml，按场地光照调
+  // binary_threshold 是最常动的一个。
+  const YAML::Node refiner = root["refiner"];
+  readValue(refiner, "enable", config.refiner.enable);
+  readValue(refiner, "binary_threshold", config.refiner.binary_threshold);
+  readValue(refiner, "min_lightbar_length_px", config.refiner.min_lightbar_length_px);
+  readValue(refiner, "max_angle_error_deg", config.refiner.max_angle_error_deg);
+  readValue(refiner, "min_lightbar_ratio", config.refiner.min_lightbar_ratio);
+  readValue(refiner, "max_lightbar_ratio", config.refiner.max_lightbar_ratio);
+  readValue(
+    refiner, "max_endpoint_distance_px", config.refiner.max_endpoint_distance_px);
 
   // EKF 噪声。回放标定的主要旋钮，改这些必须重跑 track_diag 看 NIS。
   const YAML::Node estimator = root["estimator"];

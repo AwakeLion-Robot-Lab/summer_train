@@ -1,6 +1,7 @@
 #pragma once
 
 #include "l2_perception/armor/armor_decoder.hpp"
+#include "l2_perception/armor/armor_refiner.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/armor/types.hpp"
 #include "l4_planning/armor/types.hpp"
@@ -41,6 +42,10 @@ struct AutoAimConfig {
   // 模型输出契约。和 model_path 是一对：换模型必须同时换契约，否则解码出的
   // 是垃圾角点而不是报错。默认是 SP YOLOV5 的 [1, 25200, 22]。
   L2Perception::ArmorDecoderConfig decoder;
+
+  // 传统灯条精修：网络四点划 ROI，ROI 内跑传统灯条，端点足够近才覆盖网络角点。
+  // 角点抖动直接放大成 PnP 的 yaw 抖动，所以这几个数是要按场地光照调的。
+  L2Perception::ArmorRefinerConfig refiner;
 
   L3Estimation::ArmorConfig armor;
   L3Estimation::TrackerConfig tracker;

@@ -10,6 +10,7 @@
 //   xmake run armor_refiner_video_test -- --only-rejected=true # 只停在有拒绝的帧
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
+#include "runtime/auto_aim_config.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -186,7 +187,10 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  L2Perception::ArmorRefinerConfig refiner_config;
+  // 精修参数从 auto_aim.yaml 读，回放和实机用同一份；--threshold 只是临时覆盖，
+  // 方便扫阈值，扫出来的值要写回 YAML 才对实机生效。
+  const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
+  L2Perception::ArmorRefinerConfig refiner_config = runtime_config.refiner;
   if (threshold_override >= 0.0) {
     refiner_config.binary_threshold = threshold_override;
   }

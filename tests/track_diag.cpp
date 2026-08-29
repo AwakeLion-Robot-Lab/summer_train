@@ -385,6 +385,10 @@ int main(int argc, char* argv[])
       L1Sensor::loadCameraCalibration(calibration_yaml["calibration"], calibration_path);
     require(calibration.barrelExtrinsicsReady(), calibration_path + " 缺少 T_barrel_camera");
 
+    // L2/L3/L4 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
+    // YAML 里调噪声或精修阈值，这里根本看不出变化。
+    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
+
     auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
     L2Perception::InferenceModelConfig model_config;
     model_config.model_path = cli.get<std::string>("model");
@@ -396,12 +400,11 @@ int main(int argc, char* argv[])
     // 模型来自 --model，没有 auto_aim.yaml 的 layout 可依，按输出形状探契约。
     const auto decoder_config =
       L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
-    L2Perception::ArmorDetector detector(std::move(backend), decoder_config);
+    L2Perception::ArmorDetector detector(
+      std::move(backend), decoder_config, L2Perception::ImagePreprocessConfig{},
+      runtime_config.refiner);
     require(detector.ready(), "ArmorDetector 未就绪");
 
-    // L3/L4 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
-    // YAML 里调噪声，这里根本看不出变化。
-    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
     const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
     L3Estimation::Tracker tracker(
       calibration, armor_config, runtime_config.tracker, runtime_config.target);

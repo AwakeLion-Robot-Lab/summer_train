@@ -54,8 +54,11 @@ L2Perception::ArmorDetector makeArmorDetector(
       "armor model loaded",
       std::string{L2Perception::inferenceBackendName(config.inference_backend)},
       config.model_path.string(), model_config.device);
-    // Decoder 的字段布局跟着 model_path 走，同样来自 inference 节点。
-    return L2Perception::ArmorDetector(std::move(backend), config.decoder);
+    // Decoder 的字段布局跟着 model_path 走；预处理保持默认（letterbox 的对齐和
+    // 填充色对现有模型实测无差别）；传统灯条精修来自 refiner 节点。
+    return L2Perception::ArmorDetector(
+      std::move(backend), config.decoder, L2Perception::ImagePreprocessConfig{},
+      config.refiner);
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
     L6Telemetry::logError(

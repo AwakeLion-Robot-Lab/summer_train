@@ -65,6 +65,26 @@ inference:
     # nms_iou_threshold: 0.3
     # nms_score_threshold: 0.7
 
+# 传统灯条精修。网络给出四点后在其 ROI 内跑一次传统灯条检测，两侧端点到网络
+# 角点的距离和小于 max_endpoint_distance_px 时，才用传统端点覆盖网络角点；
+# 覆盖不了就保留网络的。角点抖 1 px 在 5 m 处就是单板 yaw 抖好几度，所以这几个
+# 数值得按场地光照实调，用 `xmake run armor_refiner_video_test --headless=true`
+# 看 refined / network_kept / rejected 的比例。
+#
+# 默认值取自 sp_vision 的 configs/standard3.yaml。
+refiner:
+  enable: true
+  # 最常动的一个：场地偏暗调低，曝光偏亮调高。取值须在 (0, 255) 内。
+  binary_threshold: 150.0
+  # 灯条筛选：长度下限、与竖直方向的最大夹角、长宽比区间。
+  min_lightbar_length_px: 8.0
+  max_angle_error_deg: 45.0
+  min_lightbar_ratio: 1.5
+  max_lightbar_ratio: 20.0
+  # 传统端点到网络角点的距离和上限。放大会让传统解无条件覆盖网络解，
+  # 光照不好时反而更差。
+  max_endpoint_distance_px: 15.0
+
 # L3 PnP 使用的装甲板几何尺寸。
 armor:
   small_width_m: 0.135
