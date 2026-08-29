@@ -154,6 +154,32 @@ BallisticSolver::BallisticSolver(BallisticConfig config)
   }
 }
 
+Ballistic BallisticSolver::solve(double d, double h, double bullet_speed) const
+{
+  Ballistic result;
+
+  if (!std::isfinite(d) || !std::isfinite(h) || !std::isfinite(bullet_speed) ||
+      d < kMinDistance || bullet_speed < kMinSolvableSpeed) {
+    return result;
+  }
+
+  // 模型能直接反解时优先使用闭式结果；仅在模型不提供反解时才做高度补偿迭代。
+  if (const auto launch = model_->launch(d, h, bullet_speed); launch.has_value()) {
+    if (std::abs(launch->pitch) > config_.max_pitch ||
+        !std::isfinite(launch->pitch) || !std::isfinite(launch->fly_time) ||
+        launch->fly_time <= 0.0) {
+      return result;
+    }
+    // yaw 与弹道无关，由调用方从水平分量直接求得，这里保持 0。
+    result.pitch = launch->pitch;
+    result.fly_time = launch->fly_time;
+    result.valid = true;
+    return result;
+  }
+
+  return solveByHeightCompensation(d, h, bullet_speed);
+}
+
 Ballistic BallisticSolver::solveByHeightCompensation(
   double d, double h, double bullet_speed) const
 {
@@ -190,32 +216,6 @@ Ballistic BallisticSolver::solveByHeightCompensation(
 
   // 未收敛说明该初速在这个距离上打不到目标高度，不输出可疑解。
   return result;
-}
-
-Ballistic BallisticSolver::solve(double d, double h, double bullet_speed) const
-{
-  Ballistic result;
-
-  if (!std::isfinite(d) || !std::isfinite(h) || !std::isfinite(bullet_speed) ||
-      d < kMinDistance || bullet_speed < kMinSolvableSpeed) {
-    return result;
-  }
-
-  // 模型能直接反解时优先使用闭式结果；仅在模型不提供反解时才做高度补偿迭代。
-  if (const auto launch = model_->launch(d, h, bullet_speed); launch.has_value()) {
-    if (std::abs(launch->pitch) > config_.max_pitch ||
-        !std::isfinite(launch->pitch) || !std::isfinite(launch->fly_time) ||
-        launch->fly_time <= 0.0) {
-      return result;
-    }
-    // yaw 与弹道无关，由调用方从水平分量直接求得，这里保持 0。
-    result.pitch = launch->pitch;
-    result.fly_time = launch->fly_time;
-    result.valid = true;
-    return result;
-  }
-
-  return solveByHeightCompensation(d, h, bullet_speed);
 }
 
 }  // namespace L4Planning

@@ -1133,7 +1133,7 @@ int main(int argc, char** argv)
                      armor.ypr_in_world[0] * kRadToDeg),
           {10, 92}, {0, 255, 0});
       }
-      // 十一维内部状态：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
+      // 内部状态前十一维：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
       if (full_view && target) {
         const Eigen::VectorXd tx = target->ekf_x();
         drawOutlinedText(

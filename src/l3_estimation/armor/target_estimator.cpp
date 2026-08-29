@@ -218,63 +218,6 @@ void TrackedTarget::update(const Armor &armor) {
   update_ypda(armor, id);
 }
 
-void TrackedTarget::update_ypda(const Armor &armor, int id) {
-  // 四维观测为 [方位角, 俯仰角, 距离, 装甲板 yaw]。普通 EKF 只在先验点线性化
-  // 一次，所以这里直接算好矩阵；换成迭代滤波器时需要改传 Jacobian 函数。
-  const Eigen::MatrixXd H = h_jacobian(ekf_.x, id);
-  const double center_yaw =
-      std::atan2(armor.xyz_in_world.y(), armor.xyz_in_world.x());
-  const double delta_angle =
-      L6Telemetry::limit_rad(armor.ypr_in_world[0] - center_yaw);
-
-  // 观测噪声，两条随动关系都有物理含义：
-  // 距离方差 ∝ d²——单板 PnP 的深度误差来自角点视差，而视差 ∝ 1/d；斜视时
-  // 两条灯条在像素上靠拢，深度进一步变差，所以再乘 (1 + delta_angle²)。
-  // 板 yaw 方差随距离缓慢增长，形式沿用之前的实测拟合。
-  const double distance = std::abs(armor.ypd_in_world.z());
-  const double armor_yaw_variance =
-    std::log1p(distance) / config_.armor_yaw_distance_divisor +
-    config_.armor_yaw_variance_base;
-  const double distance_variance = config_.distance_variance_factor * distance *
-                                   distance * (1.0 + delta_angle * delta_angle);
-
-  Eigen::VectorXd R_diagonal(4);
-  R_diagonal << config_.angle_variance, config_.angle_variance, distance_variance,
-    armor_yaw_variance;
-  const Eigen::MatrixXd R = R_diagonal.asDiagonal();
-
-  // 将十一维整车状态映射到指定物理装甲板的四维观测空间。
-  auto observation = [this, id](const Eigen::VectorXd &x) {
-    const Eigen::Vector3d xyz = h_armor_xyz(x, id);
-    const Eigen::Vector3d ypd = L6Telemetry::xyz2ypd(xyz);
-    const double angle =
-        L6Telemetry::limit_rad(x[6] + id * 2.0 * std::numbers::pi / armor_num_);
-    return Eigen::Vector4d{ypd.x(), ypd.y(), ypd.z(), angle};
-  };
-
-  // 三个角度残差都必须走最短圆周差，距离分量保持普通减法。
-  auto subtract_observation = [](const Eigen::VectorXd &a,
-                                 const Eigen::VectorXd &b) {
-    Eigen::VectorXd result = a - b;
-    result[0] = L6Telemetry::limit_rad(result[0]);
-    result[1] = L6Telemetry::limit_rad(result[1]);
-    result[3] = L6Telemetry::limit_rad(result[3]);
-    return result;
-  };
-
-  Eigen::VectorXd z(4);
-  z << armor.ypd_in_world.x(), armor.ypd_in_world.y(), armor.ypd_in_world.z(),
-      armor.ypr_in_world[0];
-  ekf_.update(z, H, R, observation, subtract_observation);
-
-  // 高度差夹回物理范围。半径不做投影是因为越界意味着整车模型和观测无法调和，
-  // 该丢整个目标；高度差不同——某一块板的高度估歪不影响其余板，就地夹住比
-  // 作废整车更合理。上限取 RPS 的 ±0.25 m。
-  for (const int index : {10, 11, 12}) {
-    ekf_.x[index] = std::clamp(ekf_.x[index], -kMaxHeightOffset, kMaxHeightOffset);
-  }
-}
-
 Eigen::VectorXd TrackedTarget::ekf_x() const { return ekf_.x; }
 
 const ExtendedKalmanFilter &TrackedTarget::ekf() const { return ekf_; }
@@ -314,6 +257,65 @@ bool TrackedTarget::converged() {
     is_converged_ = true;
   }
   return is_converged_;
+}
+
+// ---- 以下为私有实现 ----
+
+void TrackedTarget::update_ypda(const Armor &armor, int id) {
+  // 四维观测为 [方位角, 俯仰角, 距离, 装甲板 yaw]。普通 EKF 只在先验点线性化
+  // 一次，所以这里直接算好矩阵；换成迭代滤波器时需要改传 Jacobian 函数。
+  const Eigen::MatrixXd H = h_jacobian(ekf_.x, id);
+  const double center_yaw =
+      std::atan2(armor.xyz_in_world.y(), armor.xyz_in_world.x());
+  const double delta_angle =
+      L6Telemetry::limit_rad(armor.ypr_in_world[0] - center_yaw);
+
+  // 观测噪声，两条随动关系都有物理含义：
+  // 距离方差 ∝ d²——单板 PnP 的深度误差来自角点视差，而视差 ∝ 1/d；斜视时
+  // 两条灯条在像素上靠拢，深度进一步变差，所以再乘 (1 + delta_angle²)。
+  // 板 yaw 方差随距离缓慢增长，形式沿用之前的实测拟合。
+  const double distance = std::abs(armor.ypd_in_world.z());
+  const double armor_yaw_variance =
+    std::log1p(distance) / config_.armor_yaw_distance_divisor +
+    config_.armor_yaw_variance_base;
+  const double distance_variance = config_.distance_variance_factor * distance *
+                                   distance * (1.0 + delta_angle * delta_angle);
+
+  Eigen::VectorXd R_diagonal(4);
+  R_diagonal << config_.angle_variance, config_.angle_variance, distance_variance,
+    armor_yaw_variance;
+  const Eigen::MatrixXd R = R_diagonal.asDiagonal();
+
+  // 将整车状态映射到指定物理装甲板的四维观测空间。
+  auto observation = [this, id](const Eigen::VectorXd &x) {
+    const Eigen::Vector3d xyz = h_armor_xyz(x, id);
+    const Eigen::Vector3d ypd = L6Telemetry::xyz2ypd(xyz);
+    const double angle =
+        L6Telemetry::limit_rad(x[6] + id * 2.0 * std::numbers::pi / armor_num_);
+    return Eigen::Vector4d{ypd.x(), ypd.y(), ypd.z(), angle};
+  };
+
+  // 三个角度残差都必须走最短圆周差，距离分量保持普通减法。
+  auto subtract_observation = [](const Eigen::VectorXd &a,
+                                 const Eigen::VectorXd &b) {
+    Eigen::VectorXd result = a - b;
+    result[0] = L6Telemetry::limit_rad(result[0]);
+    result[1] = L6Telemetry::limit_rad(result[1]);
+    result[3] = L6Telemetry::limit_rad(result[3]);
+    return result;
+  };
+
+  Eigen::VectorXd z(4);
+  z << armor.ypd_in_world.x(), armor.ypd_in_world.y(), armor.ypd_in_world.z(),
+      armor.ypr_in_world[0];
+  ekf_.update(z, H, R, observation, subtract_observation);
+
+  // 高度差夹回物理范围。半径不做投影是因为越界意味着整车模型和观测无法调和，
+  // 该丢整个目标；高度差不同——某一块板的高度估歪不影响其余板，就地夹住比
+  // 作废整车更合理。上限取 RPS 的 ±0.25 m。
+  for (const int index : {10, 11, 12}) {
+    ekf_.x[index] = std::clamp(ekf_.x[index], -kMaxHeightOffset, kMaxHeightOffset);
+  }
 }
 
 int TrackedTarget::heightIndex(int id) const noexcept {

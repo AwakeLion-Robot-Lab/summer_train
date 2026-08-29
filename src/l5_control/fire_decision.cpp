@@ -13,38 +13,6 @@ FireDecider::FireDecider(FireConfig config) noexcept
 {
 }
 
-AimTolerance FireDecider::tolerance(
-  const L4Planning::Plan& plan, L3Estimation::ArmorType type) const noexcept
-{
-  AimTolerance result;
-  if (!plan.fire.has_value() || plan.fire->armor_id < 0) {
-    return result;
-  }
-
-  const Eigen::Vector3d point = plan.fire->point();
-  const double horizontal = std::hypot(point.x(), point.y());
-  const double slant = std::hypot(horizontal, point.z());
-  if (!std::isfinite(horizontal) || horizontal < 1e-3 || !std::isfinite(slant)) {
-    return result;
-  }
-
-  const double width = type == L3Estimation::ArmorType::Big
-                         ? config_.armor_width_big
-                         : config_.armor_width_small;
-
-  // 板面斜对枪口时，水平可命中宽度按 cos(facing_angle) 收缩。
-  // 正对时取完整宽度，接近侧对时逐渐收紧到最小 yaw 容差。
-  const double facing = std::abs(std::cos(plan.fire->facingAngle()));
-  const double half_width = 0.5 * width * config_.hit_margin_ratio * facing;
-  const double half_height = 0.5 * config_.armor_height * config_.hit_margin_ratio;
-
-  // yaw 是水平角，用水平距离；pitch 是竖直角，用斜距。
-  result.yaw = std::max(std::atan2(half_width, horizontal), config_.min_yaw_tolerance);
-  result.pitch = std::max(std::atan2(half_height, slant), config_.min_pitch_tolerance);
-  result.valid = std::isfinite(result.yaw) && std::isfinite(result.pitch);
-  return result;
-}
-
 FireDecision FireDecider::decide(const FireInput& input) const
 {
   FireDecision decision;
@@ -143,6 +111,38 @@ FireDecision FireDecider::decide(const FireInput& input) const
   decision.fire_feasible = only_disabled;
   decision.shoot = decision.fire_feasible && config_.shoot_enable;
   return decision;
+}
+
+AimTolerance FireDecider::tolerance(
+  const L4Planning::Plan& plan, L3Estimation::ArmorType type) const noexcept
+{
+  AimTolerance result;
+  if (!plan.fire.has_value() || plan.fire->armor_id < 0) {
+    return result;
+  }
+
+  const Eigen::Vector3d point = plan.fire->point();
+  const double horizontal = std::hypot(point.x(), point.y());
+  const double slant = std::hypot(horizontal, point.z());
+  if (!std::isfinite(horizontal) || horizontal < 1e-3 || !std::isfinite(slant)) {
+    return result;
+  }
+
+  const double width = type == L3Estimation::ArmorType::Big
+                         ? config_.armor_width_big
+                         : config_.armor_width_small;
+
+  // 板面斜对枪口时，水平可命中宽度按 cos(facing_angle) 收缩。
+  // 正对时取完整宽度，接近侧对时逐渐收紧到最小 yaw 容差。
+  const double facing = std::abs(std::cos(plan.fire->facingAngle()));
+  const double half_width = 0.5 * width * config_.hit_margin_ratio * facing;
+  const double half_height = 0.5 * config_.armor_height * config_.hit_margin_ratio;
+
+  // yaw 是水平角，用水平距离；pitch 是竖直角，用斜距。
+  result.yaw = std::max(std::atan2(half_width, horizontal), config_.min_yaw_tolerance);
+  result.pitch = std::max(std::atan2(half_height, slant), config_.min_pitch_tolerance);
+  result.valid = std::isfinite(result.yaw) && std::isfinite(result.pitch);
+  return result;
 }
 
 }  // namespace L5Control

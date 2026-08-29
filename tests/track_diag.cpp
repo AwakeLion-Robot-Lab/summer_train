@@ -648,7 +648,7 @@ int main(int argc, char* argv[])
                 << gimbal_yaw * kRadToDeg << ',' << armors.size() << ',' << usable_here << ','
                 << match_here << ',' << stateName(state) << ',';
       if (target) {
-        // 十一维内部状态：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
+        // 内部状态前十一维：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
         const Eigen::VectorXd tx = target->ekf_x();
         const double nis = target->ekf().last_nis;
         frame_csv << tx[0] << ',' << tx[1] << ','

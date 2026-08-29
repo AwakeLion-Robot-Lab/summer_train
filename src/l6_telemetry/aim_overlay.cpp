@@ -25,12 +25,54 @@ namespace {
 
 }  // namespace
 
-[[nodiscard]] bool isFilterInputArmor(const L3Estimation::Armor& armor)
+void drawAimOverlay(
+  cv::Mat& image, const AimOverlayInput& input,
+  const L3Estimation::PnpSolver& solver,
+  const L1Sensor::CameraCalibration& calibration)
 {
-  // 与 Tracker::observationUsable 保持一致，避免把被滤掉的坏解画出来。
-  return armor.name != L3Estimation::ArmorName::Unknown &&
-    armor.xyz_in_world.allFinite() &&
-    std::isfinite(armor.ypr_in_world[0]);
+  // 蓝色：L2 网络给出的原始角点，还没经过任何 PnP。
+  for (const auto& detection : input.detections) {
+    for (std::size_t index = 0; index < detection.corners.size(); ++index) {
+      cv::line(
+        image, toPixel(detection.corners[index]),
+        toPixel(detection.corners[(index + 1) % detection.corners.size()]),
+        {255, 128, 0}, 1, cv::LINE_AA);
+    }
+  }
+
+  if (input.q_world_barrel) {
+    // 绿色：当前帧真正送进滤波器的单板位姿及其朝向。
+    drawFilterInputArmors(
+      image, input.observations, solver, calibration, *input.q_world_barrel);
+  }
+
+  if (input.target) {
+    const auto type = L3Estimation::armorTypeOf(input.target->name)
+                        .value_or(L3Estimation::ArmorType::Small);
+    // 绿色：EKF 展开的全部物理装甲板，直接压在图像上，贴不贴板可以目视判断。
+    drawVehicle(
+      image, input.target->armor_xyza_list(), type, input.target->name, solver,
+      {0, 255, 0}, 2);
+    // 红色：Plan 选中的命中时刻实体板，它领先绿框是延迟补偿的正常结果。
+    if (input.plan.valid() && input.plan.fire.has_value()) {
+      drawVehicle(
+        image, {input.plan.fire->armor_pose}, type, input.target->name, solver,
+        {0, 0, 255}, 2);
+    }
+  }
+
+  // 一行状态：跟踪状态、规划是否可开火、以及不开火的第一个原因。
+  std::string status = trackStateName(input.track_state);
+  status += input.plan.fireAdmissible() ? " | plan:fire-ready" : " | plan:track-only";
+  if (!input.fire.reasons.empty()) {
+    status += " | " + L5Control::toString(input.fire.reasons.front());
+    if (input.fire.reasons.size() > 1) {
+      status += " +" + std::to_string(input.fire.reasons.size() - 1);
+    }
+  }
+  drawOutlinedText(
+    image, status, {12, 28},
+    input.fire.shoot ? cv::Scalar{0, 0, 255} : cv::Scalar{0, 255, 255}, 0.7);
 }
 
 [[nodiscard]] cv::Point toPixel(const cv::Point2f& point)
@@ -114,6 +156,14 @@ void drawVehicle(
   }
 }
 
+[[nodiscard]] bool isFilterInputArmor(const L3Estimation::Armor& armor)
+{
+  // 与 Tracker::observationUsable 保持一致，避免把被滤掉的坏解画出来。
+  return armor.name != L3Estimation::ArmorName::Unknown &&
+    armor.xyz_in_world.allFinite() &&
+    std::isfinite(armor.ypr_in_world[0]);
+}
+
 // 将当前帧实际送入目标滤波器的单板 PnP 位姿重投影为红框。
 void drawFilterInputArmors(
   cv::Mat& image,
@@ -187,56 +237,6 @@ void drawFilterInputArmors(
       }
     }
   }
-}
-
-void drawAimOverlay(
-  cv::Mat& image, const AimOverlayInput& input,
-  const L3Estimation::PnpSolver& solver,
-  const L1Sensor::CameraCalibration& calibration)
-{
-  // 蓝色：L2 网络给出的原始角点，还没经过任何 PnP。
-  for (const auto& detection : input.detections) {
-    for (std::size_t index = 0; index < detection.corners.size(); ++index) {
-      cv::line(
-        image, toPixel(detection.corners[index]),
-        toPixel(detection.corners[(index + 1) % detection.corners.size()]),
-        {255, 128, 0}, 1, cv::LINE_AA);
-    }
-  }
-
-  if (input.q_world_barrel) {
-    // 绿色：当前帧真正送进滤波器的单板位姿及其朝向。
-    drawFilterInputArmors(
-      image, input.observations, solver, calibration, *input.q_world_barrel);
-  }
-
-  if (input.target) {
-    const auto type = L3Estimation::armorTypeOf(input.target->name)
-                        .value_or(L3Estimation::ArmorType::Small);
-    // 绿色：EKF 展开的全部物理装甲板，直接压在图像上，贴不贴板可以目视判断。
-    drawVehicle(
-      image, input.target->armor_xyza_list(), type, input.target->name, solver,
-      {0, 255, 0}, 2);
-    // 红色：Plan 选中的命中时刻实体板，它领先绿框是延迟补偿的正常结果。
-    if (input.plan.valid() && input.plan.fire.has_value()) {
-      drawVehicle(
-        image, {input.plan.fire->armor_pose}, type, input.target->name, solver,
-        {0, 0, 255}, 2);
-    }
-  }
-
-  // 一行状态：跟踪状态、规划是否可开火、以及不开火的第一个原因。
-  std::string status = trackStateName(input.track_state);
-  status += input.plan.fireAdmissible() ? " | plan:fire-ready" : " | plan:track-only";
-  if (!input.fire.reasons.empty()) {
-    status += " | " + L5Control::toString(input.fire.reasons.front());
-    if (input.fire.reasons.size() > 1) {
-      status += " +" + std::to_string(input.fire.reasons.size() - 1);
-    }
-  }
-  drawOutlinedText(
-    image, status, {12, 28},
-    input.fire.shoot ? cv::Scalar{0, 0, 255} : cv::Scalar{0, 255, 255}, 0.7);
 }
 
 }  // namespace L6Telemetry

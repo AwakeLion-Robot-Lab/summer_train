@@ -71,117 +71,6 @@ Planner::Planner(ArmorPlanConfig config)
 {
 }
 
-void Planner::reset() noexcept
-{
-  // locked_id_ 由候选板变化时更新。短暂中断不清锁，避免恢复后立即切板。
-}
-
-Plan Planner::plan(
-  const std::optional<L3Estimation::TrackedTarget>& target,
-  const L1Sensor::RobotState& robot_state,
-  TimePoint plan_time,
-  bool to_now)
-{
-  PlanInput input;
-  input.target = target;
-  input.robot_state = robot_state;
-  input.plan_time = plan_time;
-  input.to_now = to_now;
-  return plan(input);
-}
-
-Planner::AimPoint Planner::chooseAimPoint(
-  const L3Estimation::TrackedTarget& target)
-{
-  const Eigen::VectorXd ekf_x = target.ekf_x();
-  const std::vector<Eigen::Vector4d> armors = target.armor_xyza_list();
-  if (armors.empty()) {
-    return {};
-  }
-
-  const double center_yaw = centerYaw(target);
-  std::vector<double> delta_angles;
-  delta_angles.reserve(armors.size());
-  for (const auto& armor : armors) {
-    delta_angles.push_back(
-      L6Telemetry::limit_rad(armor[3] - center_yaw));
-  }
-
-  const auto pointAt = [&](int armor_id) {
-    AimPoint point;
-    point.valid = true;
-    point.armor_id = armor_id;
-    point.xyza = armors[static_cast<std::size_t>(armor_id)];
-    return point;
-  };
-
-  // 尚未发生过板间关联跳变时，L3 只确认了当前观测板（0 号板）。
-  if (!target.jumped) {
-    return pointAt(0);
-  }
-
-  // x[8] 是第一组装甲板半径；正常尺寸车辆通常进入这一常规选板分支。
-  if (std::abs(ekf_x[8]) <= 2.0 &&
-      target.name != L3Estimation::ArmorName::Outpost) {
-    std::vector<int> ids;
-    ids.reserve(armors.size());
-    for (std::size_t id = 0; id < armors.size(); ++id) {
-      if (std::abs(delta_angles[id]) > config_.selector.coming_angle) {
-        continue;
-      }
-      ids.push_back(static_cast<int>(id));
-    }
-
-    // 当前没有正面候选板，返回无有效瞄准点；旧锁保留到候选重新出现。
-    if (ids.empty()) {
-      return {};
-    }
-
-    // 两块板同时可见时锁定其中朝向更正的一块，后续帧沿用锁定结果，
-    // 避免在角度接近时来回切换。
-    if (ids.size() > 1) {
-      const int id0 = ids[0];
-      const int id1 = ids[1];
-      if (locked_id_ != id0 && locked_id_ != id1) {
-        locked_id_ =
-          std::abs(delta_angles[static_cast<std::size_t>(id0)]) <
-              std::abs(delta_angles[static_cast<std::size_t>(id1)])
-            ? id0
-            : id1;
-      }
-      return pointAt(locked_id_);
-    }
-
-    // 只剩一块候选时无需迟滞，退出双板锁定。
-    locked_id_ = -1;
-    return pointAt(ids[0]);
-  }
-
-  double coming_angle = config_.selector.coming_angle;
-  double leaving_angle = config_.selector.leaving_angle;
-  if (target.name == L3Estimation::ArmorName::Outpost) {
-    coming_angle = config_.selector.outpost_coming_angle;
-    leaving_angle = config_.selector.outpost_leaving_angle;
-  }
-
-  // 旋转目标先用 coming_angle 限制正面区域，再结合旋转方向和
-  // leaving_angle 排除即将离开可击打区域的板。
-  for (std::size_t id = 0; id < armors.size(); ++id) {
-    const double delta = delta_angles[id];
-    if (std::abs(delta) > coming_angle) {
-      continue;
-    }
-    if (ekf_x[7] > 0.0 && delta < leaving_angle) {
-      return pointAt(static_cast<int>(id));
-    }
-    if (ekf_x[7] < 0.0 && delta > -leaving_angle) {
-      return pointAt(static_cast<int>(id));
-    }
-  }
-
-  return {};
-}
-
 Plan Planner::plan(const PlanInput& input)
 {
   if (!input.target.has_value()) {
@@ -294,6 +183,119 @@ Plan Planner::plan(const PlanInput& input)
     return rejected(PlanError::BallisticFailed);
   }
   return plan;
+}
+
+Plan Planner::plan(
+  const std::optional<L3Estimation::TrackedTarget>& target,
+  const L1Sensor::RobotState& robot_state,
+  TimePoint plan_time,
+  bool to_now)
+{
+  PlanInput input;
+  input.target = target;
+  input.robot_state = robot_state;
+  input.plan_time = plan_time;
+  input.to_now = to_now;
+  return plan(input);
+}
+
+void Planner::reset() noexcept
+{
+  // locked_id_ 由候选板变化时更新。短暂中断不清锁，避免恢复后立即切板。
+}
+
+// ---- 以下为私有实现 ----
+
+Planner::AimPoint Planner::chooseAimPoint(
+  const L3Estimation::TrackedTarget& target)
+{
+  const Eigen::VectorXd ekf_x = target.ekf_x();
+  const std::vector<Eigen::Vector4d> armors = target.armor_xyza_list();
+  if (armors.empty()) {
+    return {};
+  }
+
+  const double center_yaw = centerYaw(target);
+  std::vector<double> delta_angles;
+  delta_angles.reserve(armors.size());
+  for (const auto& armor : armors) {
+    delta_angles.push_back(
+      L6Telemetry::limit_rad(armor[3] - center_yaw));
+  }
+
+  const auto pointAt = [&](int armor_id) {
+    AimPoint point;
+    point.valid = true;
+    point.armor_id = armor_id;
+    point.xyza = armors[static_cast<std::size_t>(armor_id)];
+    return point;
+  };
+
+  // 尚未发生过板间关联跳变时，L3 只确认了当前观测板（0 号板）。
+  if (!target.jumped) {
+    return pointAt(0);
+  }
+
+  // x[8] 是第一组装甲板半径；正常尺寸车辆通常进入这一常规选板分支。
+  if (std::abs(ekf_x[8]) <= 2.0 &&
+      target.name != L3Estimation::ArmorName::Outpost) {
+    std::vector<int> ids;
+    ids.reserve(armors.size());
+    for (std::size_t id = 0; id < armors.size(); ++id) {
+      if (std::abs(delta_angles[id]) > config_.selector.coming_angle) {
+        continue;
+      }
+      ids.push_back(static_cast<int>(id));
+    }
+
+    // 当前没有正面候选板，返回无有效瞄准点；旧锁保留到候选重新出现。
+    if (ids.empty()) {
+      return {};
+    }
+
+    // 两块板同时可见时锁定其中朝向更正的一块，后续帧沿用锁定结果，
+    // 避免在角度接近时来回切换。
+    if (ids.size() > 1) {
+      const int id0 = ids[0];
+      const int id1 = ids[1];
+      if (locked_id_ != id0 && locked_id_ != id1) {
+        locked_id_ =
+          std::abs(delta_angles[static_cast<std::size_t>(id0)]) <
+              std::abs(delta_angles[static_cast<std::size_t>(id1)])
+            ? id0
+            : id1;
+      }
+      return pointAt(locked_id_);
+    }
+
+    // 只剩一块候选时无需迟滞，退出双板锁定。
+    locked_id_ = -1;
+    return pointAt(ids[0]);
+  }
+
+  double coming_angle = config_.selector.coming_angle;
+  double leaving_angle = config_.selector.leaving_angle;
+  if (target.name == L3Estimation::ArmorName::Outpost) {
+    coming_angle = config_.selector.outpost_coming_angle;
+    leaving_angle = config_.selector.outpost_leaving_angle;
+  }
+
+  // 旋转目标先用 coming_angle 限制正面区域，再结合旋转方向和
+  // leaving_angle 排除即将离开可击打区域的板。
+  for (std::size_t id = 0; id < armors.size(); ++id) {
+    const double delta = delta_angles[id];
+    if (std::abs(delta) > coming_angle) {
+      continue;
+    }
+    if (ekf_x[7] > 0.0 && delta < leaving_angle) {
+      return pointAt(static_cast<int>(id));
+    }
+    if (ekf_x[7] < 0.0 && delta > -leaving_angle) {
+      return pointAt(static_cast<int>(id));
+    }
+  }
+
+  return {};
 }
 
 }  // namespace L4Planning

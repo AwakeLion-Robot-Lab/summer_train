@@ -78,18 +78,10 @@ struct ArmorDecoderConfig
   bool class_aware_nms{false};  // true 时不同颜色/类别候选不互相抑制。
 };
 
-// 已知的输出契约。换模型时选契约、调阈值，不要逐个字段手配 offset：
-// 这些下标是模型导出时定死的，配错不会报错，只会静默解出垃圾角点。
-//
-// yolov5_22：SP-Vision assets/yolov5.xml，以及深大 RobotPilots 公开的
-//   Infantry-v5n（szu-v5n.xml）。两者输出契约逐字段相同，可直接互换。
-//   [1, 25200, 22]，输出名 output。
-// yolov8_21：深大 RobotPilots 的 Infantry-v8n（szu-v8n-fp16）。
-//   [1, 21, 6300]，channels-first，输出名 output0，没有 objectness 通道。
-//   注意其 .xml/.bin 需要较新的 OpenVINO 运行时；旧运行时改用同名 .onnx。
-//
-// 三个入口对应三种"我知道多少"：知道名字（YAML）、只知道模型输出（离线工具）、
-// 什么都不知道（默认构造即 yolov5_22）。它们共用同一张表。
+// 已知的输出契约。换模型时选契约、调阈值，不要逐个字段手配 offset——下标由
+// 模型导出时定死，配错不报错，只会静默解出垃圾角点。
+//   yolov5_22  [1, 25200, 22]  输出名 output   SP yolov5.xml / 深大 Infantry-v5n
+//   yolov8_21  [1, 21, 6300]   输出名 output0  深大 Infantry-v8n，无 objectness
 [[nodiscard]] ArmorDecoderConfig yolov5_22DecoderConfig() noexcept;
 [[nodiscard]] ArmorDecoderConfig yolov8_21DecoderConfig() noexcept;
 

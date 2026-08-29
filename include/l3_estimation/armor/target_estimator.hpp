@@ -17,13 +17,11 @@ struct HeightOffsets
   double dz2{0.0};
 };
 
-// 整车 EKF，实现对齐 sp_vision 的 auto_aim::Target。内部十一维状态为
-// [xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
+// 整车 EKF，前十一维对齐 sp_vision 的 auto_aim::Target，末两维是三板车的
+// 板间高度差，完整顺序见 kStateSize 处。
 //
-// 本类型**就是** L3 交给 L4 的对象：Tracker::track() 返回它的副本，L4 在自己
-// 的副本上调 predict(dt) 外推，再用 armor_xyza_list() 展开装甲板。这与 sp 的
-// Aimer::aim(std::list<Target>, ...) 按值收目标、就地 predict 的做法一致，
-// 因此不再有独立的跨层状态快照类型。
+// 本类型**就是** L3 交给 L4 的对象：Tracker::track() 返回它的副本，L4 在副本
+// 上 predict(dt) 外推再用 armor_xyza_list() 展开。所以没有独立的跨层快照类型。
 class TrackedTarget
 {
 public:
@@ -41,11 +39,11 @@ public:
   bool jumped{false};
   int last_id{0};  // debug only
 
-  // 没有默认构造：TrackedTarget 一经存在，状态就是完整的十一维。
+  // 没有默认构造：TrackedTarget 一经存在，状态就是完整的 kStateSize 维。
   // 这样下游不必到处验维度，也不会出现"半个目标"。
   // 需要可空语义时用 std::optional<TrackedTarget>。
   //
-  // 使用首个装甲板观测反推旋转中心并初始化十一维状态。
+  // 使用首个装甲板观测反推旋转中心并初始化整个状态。
   TrackedTarget(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
     Eigen::VectorXd P0_dig, TargetConfig config = {});

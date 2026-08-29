@@ -442,7 +442,7 @@ void testPlannerRejectsNoTarget()
   require(empty.reason == L4Planning::PlanError::NoTarget, "NoTarget expected");
 
   // "滤波器为空的目标"不再是一种可表示的状态：TrackedTarget 没有默认构造，
-  // 一经存在状态就是完整的十一维，所以这里只剩空值这一条拒绝路径。
+  // 一经存在状态就是完整的，所以这里只剩空值这一条拒绝路径。
   std::cout << "  [ok] planner rejects a missing target\n";
 }
 
