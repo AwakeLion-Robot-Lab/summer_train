@@ -13,6 +13,7 @@
 
 #include <ceres/jet.h>
 
+#include <Eigen/Eigenvalues>
 #include <Eigen/Geometry>
 
 #include <cmath>
@@ -273,6 +274,87 @@ int main()
     expectNear(
       std::exp(next[VM::idx::LOG_R1]), VM::kOutpostRadius, 1e-12,
       "前哨站半径应当被钉死为规则值");
+  }
+
+  // --- 6. 过程噪声：体系构造、常加速度结构、log 半径换算 --------------
+  {
+    VM::NoiseConfig config;
+    config.body_acceleration = Eigen::Vector3d{30.0, 10.0, 1.0};  // 三轴刻意不同
+    config.yaw_acceleration = 25.0;
+    config.radius = 1e-6;
+    config.roll_pitch = 0.2;
+
+    constexpr double kDt = 0.02;
+
+    // 车头朝世界 x（yaw = 0）时，体系与世界系重合。
+    State aligned = State::Zero();
+    aligned[VM::idx::LOG_R1] = std::log(0.26);
+    aligned[VM::idx::LOG_R2] = std::log(0.30);
+    const auto q_aligned = VM::processNoise(aligned, kDt, kName, config);
+
+    const double dt2 = kDt * kDt;
+    const double dt3 = dt2 * kDt;
+    const double dt4 = dt2 * dt2;
+
+    // 常加速度模型的四个系数。
+    expectNear(
+      q_aligned(VM::idx::CX, VM::idx::CX), 0.25 * dt4 * 30.0, 1e-15, "Q 位置-位置块系数错");
+    expectNear(
+      q_aligned(VM::idx::CX, VM::idx::VCX), 0.5 * dt3 * 30.0, 1e-15, "Q 位置-速度块系数错");
+    expectNear(
+      q_aligned(VM::idx::VCX, VM::idx::VCX), dt2 * 30.0, 1e-15, "Q 速度-速度块系数错");
+    expectNear(
+      q_aligned(VM::idx::VCY, VM::idx::VCY), dt2 * 10.0, 1e-15, "Q 的 y 轴强度没有独立生效");
+    expectNear(
+      q_aligned(VM::idx::ROT_Z, VM::idx::VYAW), 0.5 * dt3 * 25.0, 1e-15, "Q 的 yaw 耦合块错");
+
+    // 车头转 90 度后，体系 x 的强度应当出现在世界 y 上 —— 这是"体系 Q 再旋转"
+    // 的全部意义。若直接在世界系给对角阵，这个测试必然失败。
+    State turned = aligned;
+    turned[VM::idx::ROT_Z] = std::numbers::pi / 2.0;
+    const auto q_turned = VM::processNoise(turned, kDt, kName, config);
+    expectNear(
+      q_turned(VM::idx::VCY, VM::idx::VCY), dt2 * 30.0, 1e-12,
+      "车头转 90 度后体系 x 的噪声没有旋到世界 y");
+    expectNear(
+      q_turned(VM::idx::VCX, VM::idx::VCX), dt2 * 10.0, 1e-12,
+      "车头转 90 度后体系 y 的噪声没有旋到世界 x");
+
+    // log 半径的噪声换算：q_ℓℓ = q_r / r²
+    expectNear(
+      q_aligned(VM::idx::LOG_R1, VM::idx::LOG_R1), 1e-6 / (0.26 * 0.26), 1e-15,
+      "LOG_R1 的噪声没有按 1/r² 换算");
+    expectNear(
+      q_aligned(VM::idx::LOG_R2, VM::idx::LOG_R2), 1e-6 / (0.30 * 0.30), 1e-15,
+      "LOG_R2 的噪声没有按 1/r² 换算");
+    expect(
+      q_aligned(VM::idx::LOG_R2, VM::idx::LOG_R2) <
+        q_aligned(VM::idx::LOG_R1, VM::idx::LOG_R1),
+      "大半径目标的对数噪声应当更小");
+
+    // roll/pitch 是随机游走，yaw 那一维不重复计入。
+    expectNear(
+      q_aligned(VM::idx::ROT_X, VM::idx::ROT_X), kDt * 0.2, 1e-15, "roll 噪声错");
+    expect(
+      q_aligned(VM::idx::ROT_Z, VM::idx::ROT_Z) > 0.0 &&
+        std::abs(q_aligned(VM::idx::ROT_Z, VM::idx::ROT_Z) - 0.25 * dt4 * 25.0) < 1e-15,
+      "yaw 方向不应叠加 roll_pitch 的随机游走");
+
+    // 对称半正定。
+    expect(
+      (q_turned - q_turned.transpose()).cwiseAbs().maxCoeff() < 1e-15, "Q 不对称");
+    const Eigen::MatrixXd q_dynamic = q_turned;
+    const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver{q_dynamic};
+    expect(solver.eigenvalues().minCoeff() > -1e-15, "Q 不是半正定");
+
+    // 前哨站走另一组参数。
+    State outpost = State::Zero();
+    outpost[VM::idx::LOG_R1] = std::log(VM::kOutpostRadius);
+    const auto q_outpost = VM::processNoise(
+      outpost, kDt, L3Estimation::ArmorName::Outpost, config);
+    expect(
+      q_outpost(VM::idx::VYAW, VM::idx::VYAW) < q_aligned(VM::idx::VYAW, VM::idx::VYAW),
+      "前哨站的角加速度噪声应当远小于常规车");
   }
 
   if (failure_count != 0) {

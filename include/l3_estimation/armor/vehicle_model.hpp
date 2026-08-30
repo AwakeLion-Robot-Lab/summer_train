@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <array>
 
 // 整车模型：十三维状态、由状态生成每块装甲板位姿的结构先验、流形上的 ⊞/⊟，
 // 以及恒速度运动模型。对齐 awakening 的 armor_track/motion_model.hpp。
@@ -335,5 +336,105 @@ struct Motion
     }
   }
 };
+
+
+// --- 过程噪声 -----------------------------------------------------------
+
+// 整车 ESEKF 的过程噪声强度。这些是靠回放标定的主要旋钮，所以出到配置；
+// 半径物理范围、前哨固定转速那类物理常量仍留在代码里。
+struct NoiseConfig
+{
+  // 车体系加速度方差 [前, 左, 上]。三个数不相等是这套写法的全部意义所在：
+  // 地面轮式车可以突然前后左右加速，但不会突然上下加速。这句话只有在**车体
+  // 坐标系**里才成立，所以 Q 必须先在体系建好再旋到世界系。
+  Eigen::Vector3d body_acceleration{30.0, 30.0, 1.0};
+  // 绕车体 z 轴的角加速度方差。
+  double yaw_acceleration{30.0};
+
+  // 前哨站转速由规则固定、轨迹规整，过程噪声显著更小。
+  Eigen::Vector3d outpost_body_acceleration{1.0, 1.0, 1.0};
+  double outpost_yaw_acceleration{0.01};
+
+  // 半径与高度差的随机游走强度。
+  double radius{1e-7};
+  double height{1e-7};
+  double outpost_height{1e-7};
+  // 非 yaw 姿态漂移，吸收车体 roll/pitch 小幅误差、地面坡度和外参残差。
+  double roll_pitch{0.1};
+};
+
+// 构造过程噪声矩阵。
+//
+// 平移与 yaw 都用常加速度模型：把未建模的加速度当白噪声 a ~ N(0, σ²)，在 dt
+// 内它对位置和速度的影响是 G = [½dt², dt]ᵀ，于是那个 2×2 块是
+// G σ² Gᵀ = σ² [[¼dt⁴, ½dt³], [½dt³, dt²]]。四个系数就是这么来的。
+//
+// 平移部分先在车体系建对角阵再旋到世界系（协方差的标准传播律
+// Cov(Ra) = R Cov(a) Rᵀ）；yaw 部分**不需要旋转**，因为选了右乘之后误差状态
+// 本来就定义在体系里。若当初选左乘，这里既要把 yaw 噪声旋进世界系，
+// ROT_Z–VYAW 的耦合块还会变成三维稠密的——右乘的选择让这段保持简单。
+inline Eigen::Matrix<double, kStateSize, kStateSize> processNoise(
+  const Eigen::VectorXd & x, double dt, ArmorName name, const NoiseConfig & config)
+{
+  const bool outpost = name == ArmorName::Outpost;
+  const Eigen::Vector3d body_acceleration =
+    outpost ? config.outpost_body_acceleration : config.body_acceleration;
+  const double yaw_acceleration =
+    outpost ? config.outpost_yaw_acceleration : config.yaw_acceleration;
+
+  Eigen::Matrix<double, kStateSize, kStateSize> q;
+  q.setZero();
+
+  const double dt2 = dt * dt;
+  const double dt3 = dt2 * dt;
+  const double dt4 = dt2 * dt2;
+
+  // ① 平移：车体系加速度噪声旋到世界系
+  const Eigen::Matrix3d vehicle_rotation = vehicleRotation<double>(x.data(), name);
+  const Eigen::Matrix3d acceleration_in_world =
+    vehicle_rotation * body_acceleration.asDiagonal() * vehicle_rotation.transpose();
+
+  constexpr std::array<int, 3> position_index{idx::CX, idx::CY, idx::CZ};
+  constexpr std::array<int, 3> velocity_index{idx::VCX, idx::VCY, idx::VCZ};
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      const double value = acceleration_in_world(i, j);
+      q(position_index[i], position_index[j]) = 0.25 * dt4 * value;
+      q(position_index[i], velocity_index[j]) = 0.5 * dt3 * value;
+      q(velocity_index[i], position_index[j]) = 0.5 * dt3 * value;
+      q(velocity_index[i], velocity_index[j]) = dt2 * value;
+    }
+  }
+
+  // ② yaw：常角加速度，误差已在体系，不旋转
+  q(idx::VYAW, idx::VYAW) += dt2 * yaw_acceleration;
+  q(idx::ROT_Z, idx::VYAW) += 0.5 * dt3 * yaw_acceleration;
+  q(idx::VYAW, idx::ROT_Z) += 0.5 * dt3 * yaw_acceleration;
+  q(idx::ROT_Z, idx::ROT_Z) += 0.25 * dt4 * yaw_acceleration;
+
+  // ③ roll/pitch：随机游走。第三维给 0，yaw 的噪声已由 ② 负责。
+  constexpr std::array<int, 3> rotation_index{idx::ROT_X, idx::ROT_Y, idx::ROT_Z};
+  const Eigen::Vector3d roll_pitch_diagonal(config.roll_pitch, config.roll_pitch, 0.0);
+  for (int i = 0; i < 3; ++i) {
+    q(rotation_index[i], rotation_index[i]) += dt * roll_pitch_diagonal[i];
+  }
+
+  // ④ 半径与高度：随机游走。状态存的是 ln r，配置里的 radius 描述的是**物理
+  //    半径**每秒能漂多少，所以要按一阶传播 σ_ℓ ≈ σ_r / r 换算，即除以 r²。
+  //    副作用是大半径目标的对数噪声更小，符合直觉。
+  const double r1 = std::exp(x[idx::LOG_R1]);
+  q(idx::LOG_R1, idx::LOG_R1) = config.radius / (r1 * r1);
+
+  if (outpost) {
+    q(idx::OUTPOST_DZ1, idx::OUTPOST_DZ1) = config.outpost_height;
+    q(idx::OUTPOST_DZ2, idx::OUTPOST_DZ2) = config.outpost_height;
+  } else {
+    const double r2 = std::exp(x[idx::LOG_R2]);
+    q(idx::LOG_R2, idx::LOG_R2) = config.radius / (r2 * r2);
+    q(idx::HEIGHT, idx::HEIGHT) = config.height;
+  }
+
+  return q;
+}
 
 }  // namespace L3Estimation::VehicleModel
