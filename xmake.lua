@@ -228,6 +228,10 @@ local standalone_tests = {
         files    = {"src/l1_sensor/serial/serial_protocol.cpp", "src/l6_telemetry/logger.cpp"},
         includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
+    -- Jet 与 SO(3) 都是 header-only，只依赖 Eigen。
+    jet_smoke = {
+        includes = {"include", "/usr/include/eigen3"},
+    },
     -- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK。
     armor_refiner_smoke = {
         files    = {"src/l2_perception/armor/armor_refiner.cpp"},
