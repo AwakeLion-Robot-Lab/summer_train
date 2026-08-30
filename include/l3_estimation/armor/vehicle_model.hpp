@@ -3,6 +3,8 @@
 #include "l3_estimation/armor/types.hpp"
 #include "l3_estimation/so3.hpp"
 
+#include <ceres/jet.h>
+
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
@@ -79,21 +81,18 @@ inline constexpr bool kEstimateFullAttitude = true;
 template <typename T>
 T normalizeAngle(T angle)
 {
-  using std::floor;
   const T two_pi = T(2.0 * std::numbers::pi);
-  return angle - two_pi * floor((angle + T(std::numbers::pi)) / two_pi);
+  return angle - two_pi * ceres::floor((angle + T(std::numbers::pi)) / two_pi);
 }
 
 // Rz(yaw) · Ry(pitch)。装甲板在车体系的姿态只用得到这两轴。
 template <typename T>
 Eigen::Matrix<T, 3, 3> rotationZY(const T & yaw, const T & pitch)
 {
-  using std::sin;
-  using std::cos;
-  const T cos_yaw = cos(yaw);
-  const T sin_yaw = sin(yaw);
-  const T cos_pitch = cos(pitch);
-  const T sin_pitch = sin(pitch);
+  const T cos_yaw = ceres::cos(yaw);
+  const T sin_yaw = ceres::sin(yaw);
+  const T cos_pitch = ceres::cos(pitch);
+  const T sin_pitch = ceres::sin(pitch);
 
   Eigen::Matrix<T, 3, 3> result;
   result << cos_yaw * cos_pitch, -sin_yaw, cos_yaw * sin_pitch,
@@ -135,12 +134,11 @@ Eigen::Matrix<T, 3, 3> vehicleRotation(const T * x, ArmorName name)
 template <typename T>
 T armorRadius(const T * x, int id, int armor_num, ArmorName name)
 {
-  using std::exp;
   if (isBase(name)) {
     return T(0.0);  // 基地的板就在中心，不绕转
   }
   const bool is_r2 = (armor_num == 4) && ((id & 1) != 0);
-  return exp(is_r2 ? x[idx::LOG_R2] : x[idx::LOG_R1]);
+  return ceres::exp(is_r2 ? x[idx::LOG_R2] : x[idx::LOG_R1]);
 }
 
 // 整车在世界系的位姿：状态的前六维取位置，姿态三维取朝向。
@@ -170,10 +168,8 @@ Eigen::Transform<T, 3, Eigen::Isometry> armorPose(
   const T yaw = normalizeAngle(T(id) * T(2.0 * std::numbers::pi / armor_num));
   const T radius = armorRadius<T>(x, id, armor_num, name);
 
-  using std::sin;
-  using std::cos;
-  const T offset_x = -cos(yaw) * radius;
-  const T offset_y = -sin(yaw) * radius;
+  const T offset_x = -ceres::cos(yaw) * radius;
+  const T offset_y = -ceres::sin(yaw) * radius;
 
   T offset_z = T(0.0);
   if (name == ArmorName::Outpost) {
@@ -312,30 +308,26 @@ struct Motion
   template <typename T>
   void clamp(T * x) const
   {
-    using std::fmin;
-    using std::fmax;
-    using std::abs;
-
-    x[idx::LOG_R1] = fmax(
-      T(std::log(kMinArmorRadius)), fmin(T(std::log(kMaxArmorRadius)), x[idx::LOG_R1]));
+    x[idx::LOG_R1] = ceres::fmax(
+      T(std::log(kMinArmorRadius)), ceres::fmin(T(std::log(kMaxArmorRadius)), x[idx::LOG_R1]));
 
     if (name == ArmorName::Outpost) {
-      if (abs(x[idx::OUTPOST_DZ1]) > T(kMaxOutpostHeightOffset)) {
+      if (ceres::abs(x[idx::OUTPOST_DZ1]) > T(kMaxOutpostHeightOffset)) {
         x[idx::OUTPOST_DZ1] = T(0.0);
       }
-      if (abs(x[idx::OUTPOST_DZ2]) > T(kMaxOutpostHeightOffset)) {
+      if (ceres::abs(x[idx::OUTPOST_DZ2]) > T(kMaxOutpostHeightOffset)) {
         x[idx::OUTPOST_DZ2] = T(0.0);
       }
       x[idx::LOG_R1] = T(std::log(kOutpostRadius));  // 规则固定，不估计
     } else {
-      x[idx::LOG_R2] = fmax(
-        T(std::log(kMinArmorRadius)), fmin(T(std::log(kMaxArmorRadius)), x[idx::LOG_R2]));
-      if (abs(x[idx::HEIGHT]) > T(kMaxHeightOffset)) {
+      x[idx::LOG_R2] = ceres::fmax(
+        T(std::log(kMinArmorRadius)), ceres::fmin(T(std::log(kMaxArmorRadius)), x[idx::LOG_R2]));
+      if (ceres::abs(x[idx::HEIGHT]) > T(kMaxHeightOffset)) {
         x[idx::HEIGHT] = T(0.0);
       }
     }
 
-    if (abs(x[idx::VYAW]) > T(kMaxYawRate)) {
+    if (ceres::abs(x[idx::VYAW]) > T(kMaxYawRate)) {
       x[idx::VYAW] = T(0.0);
     }
     if (isBase(name)) {

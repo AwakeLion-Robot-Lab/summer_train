@@ -228,8 +228,9 @@ local standalone_tests = {
         files    = {"src/l1_sensor/serial/serial_protocol.cpp", "src/l6_telemetry/logger.cpp"},
         includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
-    -- Jet 与 SO(3) 都是 header-only，只依赖 Eigen。
-    jet_smoke = {
+    -- SO(3) 是 header-only，只依赖 Eigen 与 ceres/jet.h（后者也是纯头文件，
+    -- 不需要链 libceres）。
+    so3_smoke = {
         includes = {"include", "/usr/include/eigen3"},
     },
     -- 整车模型只依赖 Eigen 与 L3 的类型定义，同样不牵扯 SDK。

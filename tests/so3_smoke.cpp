@@ -1,6 +1,6 @@
-// 前向自动微分与 SO(3) 映射的正确性检查。
+// SO(3) 映射与其自动微分 Jacobian 的正确性检查。
 //
-// Jet 的每一条求导规则都拿中心差分对拍。这一步看着琐碎，但它是后面所有
+// so3Exp / so3Log 以及穿过它们的 ceres::Jet 导数，全部拿中心差分对拍。这一步看着琐碎，但它是后面所有
 // Jacobian 的地基：inject/box_minus 的符号错误、左右乘搞反、小角度分支写
 // 错，最终都表现为某个 Jacobian 与数值微分对不上。先把地基钉死，后面出
 // 问题时才能确定不是这一层的错。
@@ -8,8 +8,9 @@
 // 数值微分的精度上限约为 eps^(2/3) ≈ 6e-6（中心差分的截断误差与舍入误差
 // 折中），所以断言门限取 1e-6 量级而不是机器精度。
 
-#include "l3_estimation/jet.hpp"
 #include "l3_estimation/so3.hpp"
+
+#include <ceres/jet.h>
 
 #include <Eigen/Geometry>
 #include <Eigen/LU>
@@ -41,7 +42,7 @@ void expectNear(double actual, double expected, double tolerance, std::string_vi
 }
 
 constexpr int kDim = 4;
-using Jet = L3Estimation::Jet<kDim>;
+using Jet = ceres::Jet<double, kDim>;
 using Vector = Eigen::Matrix<double, kDim, 1>;
 
 // 中心差分求梯度，作为自动微分的参照物。
@@ -64,7 +65,7 @@ std::array<Jet, kDim> seedAll(const Vector & x)
 {
   std::array<Jet, kDim> jets;
   for (int i = 0; i < kDim; ++i) {
-    jets[i] = Jet::seed(x[i], i);
+    jets[i] = Jet(x[i], i);
   }
   return jets;
 }
@@ -101,32 +102,32 @@ int main()
     [](const Vector & x) { return x[0] * x[1] + x[2] / x[3]; }, sample, "乘除");
 
   checkScalarFunction(
-    [](const auto & j) { return L3Estimation::sqrt(j[2] * j[2] + j[0] * j[0]); },
+    [](const auto & j) { return ceres::sqrt(j[2] * j[2] + j[0] * j[0]); },
     [](const Vector & x) { return std::sqrt(x[2] * x[2] + x[0] * x[0]); }, sample, "sqrt");
 
   checkScalarFunction(
-    [](const auto & j) { return L3Estimation::exp(j[0]) * L3Estimation::log(j[2]); },
+    [](const auto & j) { return ceres::exp(j[0]) * ceres::log(j[2]); },
     [](const Vector & x) { return std::exp(x[0]) * std::log(x[2]); }, sample, "exp/log");
 
   checkScalarFunction(
-    [](const auto & j) { return L3Estimation::sin(j[1]) * L3Estimation::cos(j[3]); },
+    [](const auto & j) { return ceres::sin(j[1]) * ceres::cos(j[3]); },
     [](const Vector & x) { return std::sin(x[1]) * std::cos(x[3]); }, sample, "sin/cos");
 
   checkScalarFunction(
-    [](const auto & j) { return L3Estimation::atan2(j[0], j[2]); },
+    [](const auto & j) { return ceres::atan2(j[0], j[2]); },
     [](const Vector & x) { return std::atan2(x[0], x[2]); }, sample, "atan2");
 
   checkScalarFunction(
-    [](const auto & j) { return L3Estimation::acos(j[3]); },
+    [](const auto & j) { return ceres::acos(j[3]); },
     [](const Vector & x) { return std::acos(x[3]); }, sample, "acos");
 
   // 复合表达式：把整条链路会用到的算子串起来，抓单独测不出的组合错误。
   checkScalarFunction(
     [](const auto & j) {
-      return L3Estimation::atan2(
-               L3Estimation::exp(j[0]) * L3Estimation::sin(j[1]),
-               L3Estimation::sqrt(j[2] * j[2] + Jet(1.0))) *
-             L3Estimation::cos(j[3]);
+      return ceres::atan2(
+               ceres::exp(j[0]) * ceres::sin(j[1]),
+               ceres::sqrt(j[2] * j[2] + Jet(1.0))) *
+             ceres::cos(j[3]);
     },
     [](const Vector & x) {
       return std::atan2(std::exp(x[0]) * std::sin(x[1]), std::sqrt(x[2] * x[2] + 1.0)) *
@@ -138,8 +139,8 @@ int main()
   //
   // normalize_angle 依赖这一点：加减 2π 不改变角度的物理含义，导数也不该变。
   {
-    const Jet x = Jet::seed(3.7, 0);
-    const Jet y = L3Estimation::floor(x);
+    const Jet x = Jet(3.7, 0);
+    const Jet y = ceres::floor(x);
     expectNear(y.a, 3.0, 1e-15, "floor 函数值错误");
     expect(y.v.isZero(), "floor 的导数必须恒为零");
   }
@@ -186,12 +187,12 @@ int main()
   // 这是本测试真正要守住的东西。ESEKF 的 F 就是靠 Jet 穿过 so3Exp / so3Log
   // 求出来的，这一步对了，后面才谈得上 inject/box_minus 对不对。
   {
-    using Jet3 = L3Estimation::Jet<3>;
+    using Jet3 = ceres::Jet<double, 3>;
     const Eigen::Vector3d phi{0.42, -0.17, 0.31};
 
     Eigen::Matrix<Jet3, 3, 1> phi_jet;
     for (int i = 0; i < 3; ++i) {
-      phi_jet[i] = Jet3::seed(phi[i], i);
+      phi_jet[i] = Jet3(phi[i], i);
     }
     const Eigen::Matrix<Jet3, 3, 3> rotation_jet = so3Exp<Jet3>(phi_jet);
 
@@ -218,14 +219,14 @@ int main()
 
   // --- 7. so3Log 的 Jacobian：同样对拍 --------------------------------
   {
-    using Jet3 = L3Estimation::Jet<3>;
+    using Jet3 = ceres::Jet<double, 3>;
     const Eigen::Vector3d phi{0.28, 0.36, -0.19};
     const Eigen::Matrix3d base = so3Exp<double>(phi);
 
     // 以 R·Exp(δ) 的形式扰动，δ 在零点求导——这正是 inject_state 的形状。
     Eigen::Matrix<Jet3, 3, 1> delta_jet;
     for (int i = 0; i < 3; ++i) {
-      delta_jet[i] = Jet3::seed(0.0, i);
+      delta_jet[i] = Jet3(0.0, i);
     }
     const Eigen::Matrix<Jet3, 3, 3> base_jet = base.cast<Jet3>();
     const Eigen::Matrix<Jet3, 3, 1> logged =
@@ -252,9 +253,9 @@ int main()
   }
 
   if (failure_count != 0) {
-    std::cerr << "jet smoke test failed with " << failure_count << " error(s)\n";
+    std::cerr << "so3 smoke test failed with " << failure_count << " error(s)\n";
     return 1;
   }
-  std::cout << "jet smoke test passed\n";
+  std::cout << "so3 smoke test passed\n";
   return 0;
 }

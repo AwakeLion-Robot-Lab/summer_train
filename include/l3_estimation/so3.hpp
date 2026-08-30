@@ -1,16 +1,19 @@
 #pragma once
 
-#include "l3_estimation/jet.hpp"
+#include <ceres/jet.h>
 
 #include <Eigen/Core>
 
-#include <cmath>
-
-// SO(3) 的指数与对数映射，模板化在标量类型上，double 和 Jet 都能跑。
+// SO(3) 的指数与对数映射，模板化在标量类型上。
 //
-// 误差状态滤波把姿态的所有运算都关进"小角度"这个安全区：δ 恒在零附近，
-// 所以 so3Exp 的泰勒分支才是常走的路径，而 so3Log 在 θ→π 处的奇异永远
-// 碰不到。推导见 docs/esekf_uvl_port.md 第 1 节。
+// 全程用 ceres:: 而不是 std::：ceres/jet.h 把 std 的数学函数重新导出到 ceres
+// 命名空间，所以同一份写法对 double 和 ceres::Jet 都成立。这是整条链路能被
+// 自动微分穿过去的前提——ESEKF 求 F = ∂(f(x̌ ⊞ δ) ⊟ f(x̌))/∂δ 就是把 Jet 播种
+// 成单位阵推过 ⊞ → f → ⊟。
+//
+// 误差状态滤波把姿态的所有运算都关进"小角度"这个安全区：δ 恒在零附近，所以
+// so3Exp 的泰勒分支才是常走的路径，而 so3Log 在 θ→π 处的奇异永远碰不到。
+// 推导见 docs/esekf_uvl_port.md 第 1 节。
 namespace L3Estimation {
 
 // 反对称矩阵（hat 算子），把叉乘写成矩阵乘法：so3Hat(w) * v == w × v。
@@ -33,10 +36,6 @@ Eigen::Matrix<T, 3, 3> so3Hat(const Eigen::Matrix<T, 3, 1> & w)
 template <typename T>
 Eigen::Matrix<T, 3, 3> so3Exp(const Eigen::Matrix<T, 3, 1> & phi)
 {
-  using std::sqrt;
-  using std::sin;
-  using std::cos;
-
   const T theta_squared = phi.squaredNorm();
 
   const Eigen::Matrix<T, 3, 3> hat = so3Hat<T>(phi);
@@ -49,9 +48,9 @@ Eigen::Matrix<T, 3, 3> so3Exp(const Eigen::Matrix<T, 3, 1> & phi)
     a = T(1.0) - theta_squared / T(6.0) + theta_fourth / T(120.0);
     b = T(0.5) - theta_squared / T(24.0) + theta_fourth / T(720.0);
   } else {
-    const T theta = sqrt(theta_squared);
-    a = sin(theta) / theta;
-    b = (T(1.0) - cos(theta)) / theta_squared;
+    const T theta = ceres::sqrt(theta_squared);
+    a = ceres::sin(theta) / theta;
+    b = (T(1.0) - ceres::cos(theta)) / theta_squared;
   }
 
   Eigen::Matrix<T, 3, 3> result = Eigen::Matrix<T, 3, 3>::Identity();
@@ -70,9 +69,6 @@ Eigen::Matrix<T, 3, 3> so3Exp(const Eigen::Matrix<T, 3, 1> & phi)
 template <typename T>
 Eigen::Matrix<T, 3, 1> so3Log(const Eigen::Matrix<T, 3, 3> & rotation)
 {
-  using std::sin;
-  using std::acos;
-
   const T cos_theta = (rotation.trace() - T(1.0)) * T(0.5);
 
   Eigen::Matrix<T, 3, 1> vee;
@@ -85,8 +81,8 @@ Eigen::Matrix<T, 3, 1> so3Log(const Eigen::Matrix<T, 3, 3> & rotation)
     return T(0.5) * vee;
   }
 
-  const T theta = acos(cos_theta);
-  const T scale = theta / (T(2.0) * sin(theta));
+  const T theta = ceres::acos(cos_theta);
+  const T scale = theta / (T(2.0) * ceres::sin(theta));
   return scale * vee;
 }
 

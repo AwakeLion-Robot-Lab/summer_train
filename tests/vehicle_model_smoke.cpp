@@ -10,7 +10,8 @@
 // 错误要到实车上才暴露。
 
 #include "l3_estimation/armor/vehicle_model.hpp"
-#include "l3_estimation/jet.hpp"
+
+#include <ceres/jet.h>
 
 #include <Eigen/Geometry>
 
@@ -177,7 +178,7 @@ int main()
   // 这是整个移植真正要守住的东西。F 不是 ∂f/∂x，而是 ∂δ⁺/∂δ，两个 δ 住在
   // 不同点的切空间里，所以必须绕 ⊞ → f → ⊟ 一圈。
   {
-    using Jet = L3Estimation::Jet<VM::kStateSize>;
+    using Jet = ceres::Jet<double, VM::kStateSize>;
     using JetState = Eigen::Matrix<Jet, VM::kStateSize, 1>;
 
     const VM::Motion motion{.dt = 0.02, .name = kName};
@@ -191,7 +192,7 @@ int main()
     JetState state_jet;
     JetState nominal_next_jet;
     for (int i = 0; i < VM::kStateSize; ++i) {
-      delta_jet[i] = Jet::seed(0.0, i);
+      delta_jet[i] = Jet(0.0, i);
       state_jet[i] = Jet(state[i]);
       nominal_next_jet[i] = Jet(nominal_next[i]);
     }
