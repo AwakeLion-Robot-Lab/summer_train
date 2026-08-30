@@ -238,6 +238,10 @@ local standalone_tests = {
         includes = {"include", "/usr/include/eigen3"},
         opencv   = {"opencv_core"},
     },
+    error_state_ekf_smoke = {
+        includes = {"include", "/usr/include/eigen3"},
+        opencv   = {"opencv_core"},
+    },
     -- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK。
     armor_refiner_smoke = {
         files    = {"src/l2_perception/armor/armor_refiner.cpp"},

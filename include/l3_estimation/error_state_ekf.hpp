@@ -1,0 +1,343 @@
+#pragma once
+
+#include <ceres/jet.h>
+
+#include <Eigen/Cholesky>
+#include <Eigen/Core>
+
+#include <array>
+#include <cassert>
+#include <functional>
+#include <memory>
+#include <vector>
+
+// 误差状态扩展卡尔曼滤波器。照搬 awakening 的
+// 3rdparty/KalmanHyLib/error_state_extended_kalman_filter.hpp。
+//
+// 与普通 EKF 的区别只有一句话：**协方差 P 描述的是误差状态 δ，不是状态 x**。
+// 状态被劈成"名义状态在流形上"与"误差状态在切空间里"，卡尔曼增益算出的是 δ，
+// 再通过 ⊞ 注入回名义状态。因为 δ 恒在零附近，旋转永远碰不到奇异点，而切空间
+// 是货真价实的向量空间，所有线性代数都合法。
+//
+// 两处刻意与教科书不同，是照搬上游的结果，先保持一致以便对拍：
+//   1. update_multi 的迭代式是 δ += K·r，没有往先验拉的项。标准 IEKF 是
+//      δ = K(r + H·δ)，两者差 (I - KH)δ。见 docs/iterated_ekf.md。
+//   2. H 用中心差分而非 Jet——ObsBase 是类型擦除的虚接口，VectorXd 只认
+//      double，Jet 流不过去。ObsImpl::evaluate 里那条 Jet 路径因此是死代码。
+//
+// 逐行拆解见 docs/esekf_uvl_port.md 第 6 节。
+namespace L3Estimation {
+
+template <int N_X, class PredictFunc>
+class ErrorStateEkf
+{
+public:
+  using MatrixXX = Eigen::Matrix<double, N_X, N_X>;
+  using MatrixX1 = Eigen::Matrix<double, N_X, 1>;
+  using Jet = ceres::Jet<double, N_X>;
+  using JetMatrixX1 = Eigen::Matrix<Jet, N_X, 1>;
+
+  using UpdateQFunc = std::function<MatrixXX()>;
+  using InjectFunc = std::function<void(const MatrixX1 &, MatrixX1 &)>;
+  using BoxMinusFunc = std::function<void(const MatrixX1 &, const MatrixX1 &, MatrixX1 &)>;
+  using InjectJetFunc = std::function<void(const JetMatrixX1 &, JetMatrixX1 &)>;
+  using BoxMinusJetFunc =
+    std::function<void(const JetMatrixX1 &, const JetMatrixX1 &, JetMatrixX1 &)>;
+
+  ErrorStateEkf() = default;
+
+  // inject 与 box_minus 必须是同一个泛型可调用体：它要同时被 double 和 Jet
+  // 实例化，前者用于名义状态推进，后者用于求 F。
+  template <class Inject, class BoxMinus>
+  ErrorStateEkf(
+    const PredictFunc & f, const UpdateQFunc & update_q, const Inject & inject,
+    const BoxMinus & box_minus, const MatrixXX & p0)
+  : f_(f), update_Q_(update_q), P_delta_(p0)
+  {
+    setInject(inject);
+    setBoxMinus(box_minus);
+  }
+
+  void setState(const MatrixX1 & x0) noexcept
+  {
+    x_nominal_ = x0;
+    delta_x_.setZero();
+  }
+
+  void setUpdateQ(const UpdateQFunc & update_q) { update_Q_ = update_q; }
+  void setPredictFunc(const PredictFunc & f) { f_ = f; }
+  void setIterationNum(int n) { iteration_num_ = std::max(1, n); }
+
+  template <class Inject>
+  void setInject(const Inject & inject)
+  {
+    inject_state_ = inject;
+    inject_state_jet_ = inject;
+  }
+
+  template <class BoxMinus>
+  void setBoxMinus(const BoxMinus & box_minus)
+  {
+    box_minus_state_ = box_minus;
+    box_minus_state_jet_ = box_minus;
+  }
+
+  const MatrixX1 & state() const noexcept { return x_nominal_; }
+  const MatrixXX & covariance() const noexcept { return P_delta_; }
+
+  // 预测步。
+  //
+  // 名义状态照常推进 x̌⁺ = f(x̌)；F 则是 ∂δ⁺/∂δ，而 δ 与 δ⁺ 住在不同点的切空间
+  // 里，不能直接对状态求导，必须绕道：
+  //
+  //   δ ──⊞──▶ x̌ ⊞ δ ──f──▶ f(x̌ ⊞ δ) ──⊟──▶ δ⁺
+  //
+  // 把 δ 播种成单位阵推过这条链，出口每一行的导数就是 F。链式法则由 Jet 自动
+  // 完成，∂⊞/∂δ、∂f/∂x、∂⊟/∂x 三段被乘在一起——右雅可比 Jr(φ) 就是这样被
+  // 吸收掉的，我们永远不必显式算它。
+  MatrixX1 predict() noexcept
+  {
+    const MatrixX1 x_prev = x_nominal_;
+    MatrixX1 x_pred;
+    f_(x_prev.data(), x_pred.data());
+    x_nominal_ = x_pred;
+
+    JetMatrixX1 x_nominal_jet;
+    JetMatrixX1 x_prev_jet;
+    for (int i = 0; i < N_X; ++i) {
+      x_nominal_jet[i] = Jet(x_nominal_[i]);
+      x_prev_jet[i] = Jet(x_prev[i]);
+    }
+
+    JetMatrixX1 delta_jet;
+    for (int i = 0; i < N_X; ++i) {
+      delta_jet[i] = Jet(0.0, i);  // 单位阵播种
+    }
+
+    JetMatrixX1 x_pert_jet = x_prev_jet;
+    inject_state_jet_(delta_jet, x_pert_jet);
+
+    JetMatrixX1 x_pert_pred_jet;
+    f_(x_pert_jet.data(), x_pert_pred_jet.data());
+
+    JetMatrixX1 delta_pred_jet;
+    box_minus_state_jet_(x_nominal_jet, x_pert_pred_jet, delta_pred_jet);
+
+    for (int i = 0; i < N_X; ++i) {
+      F_.row(i) = delta_pred_jet[i].v.transpose();
+    }
+
+    // 正常流程里 delta_x_ 在每次更新末尾清零，这一行乘的是零向量。它存在是为了
+    // 支持"预测多次再更新一次"的用法。
+    delta_x_ = F_ * delta_x_;
+
+    Q_ = update_Q_();
+    P_delta_ = F_ * P_delta_ * F_.transpose() + Q_;
+    P_delta_ = 0.5 * (P_delta_ + P_delta_.transpose());  // 强制对称，抗数值漂移
+
+    return x_nominal_;
+  }
+
+  // 一个观测的类型擦除接口。照搬上游：正因为这里只认 VectorXd，Jet 流不过去，
+  // update_multi 才不得不用中心差分求 H。
+  struct ObsBase
+  {
+    virtual ~ObsBase() = default;
+    virtual int dim() const = 0;
+    virtual void predict(const Eigen::VectorXd & x, Eigen::VectorXd & z_pred) const = 0;
+    virtual void residualAndR(
+      const Eigen::VectorXd & z_pred, Eigen::VectorXd & residual,
+      Eigen::MatrixXd & r) const = 0;
+  };
+
+  template <int N_Z, class MeasureFunc, class UpdateRFunc, class ResidualFunc>
+  struct ObsImpl : public ObsBase
+  {
+    using MatrixZ1 = Eigen::Matrix<double, N_Z, 1>;
+
+    MatrixZ1 z;
+    MeasureFunc h;
+    UpdateRFunc update_R;
+    ResidualFunc residual_func;
+
+    ObsImpl(const MatrixZ1 & z_in, MeasureFunc h_in, UpdateRFunc r_in, ResidualFunc res_in)
+    : z(z_in), h(std::move(h_in)), update_R(std::move(r_in)), residual_func(std::move(res_in))
+    {
+    }
+
+    int dim() const override { return N_Z; }
+
+    void predict(const Eigen::VectorXd & x, Eigen::VectorXd & z_pred) const override
+    {
+      assert(x.size() == N_X);
+      std::array<double, N_X> x_data;
+      for (int i = 0; i < N_X; ++i) {
+        x_data[i] = x[i];
+      }
+      std::array<double, N_Z> z_data;
+      h(x_data.data(), z_data.data());
+
+      z_pred.resize(N_Z);
+      for (int i = 0; i < N_Z; ++i) {
+        z_pred[i] = z_data[i];
+      }
+    }
+
+    void residualAndR(
+      const Eigen::VectorXd & z_pred, Eigen::VectorXd & residual,
+      Eigen::MatrixXd & r) const override
+    {
+      assert(z_pred.size() == N_Z);
+      MatrixZ1 z_pred_fixed;
+      for (int i = 0; i < N_Z; ++i) {
+        z_pred_fixed[i] = z_pred[i];
+      }
+      residual = residual_func(z_pred_fixed, z);
+      r = update_R(z);
+    }
+  };
+
+  template <int N_Z, class MeasureFunc, class UpdateRFunc, class ResidualFunc>
+  static std::shared_ptr<ObsBase> makeObs(
+    const Eigen::Matrix<double, N_Z, 1> & z, MeasureFunc && h, UpdateRFunc && r,
+    ResidualFunc && res)
+  {
+    using ObsT = ObsImpl<
+      N_Z, std::decay_t<MeasureFunc>, std::decay_t<UpdateRFunc>, std::decay_t<ResidualFunc>>;
+    return std::make_shared<ObsT>(
+      z, std::forward<MeasureFunc>(h), std::forward<UpdateRFunc>(r),
+      std::forward<ResidualFunc>(res));
+  }
+
+  // 多观测迭代更新。
+  //
+  // 一帧里所有观测垂直拼成一个大的 [H; residual; R]，R 是块对角，于是信息严格
+  // 相加：P₊⁻¹ = P₋⁻¹ + Σ Hₖᵀ Rₖ⁻¹ Hₖ。一块完整装甲板拆成两条灯条共 8 行，
+  // 每条孤立灯条再加 4 行。
+  MatrixX1 updateMulti(const std::vector<std::shared_ptr<ObsBase>> & obs_list) noexcept
+  {
+    int total_dim = 0;
+    for (const auto & obs : obs_list) {
+      total_dim += obs->dim();
+    }
+    if (total_dim == 0) {
+      return x_nominal_;
+    }
+
+    Eigen::MatrixXd h_matrix(total_dim, N_X);
+    Eigen::VectorXd residual(total_dim);
+    Eigen::MatrixXd r_matrix = Eigen::MatrixXd::Zero(total_dim, total_dim);
+
+    MatrixX1 delta_iter = delta_x_;
+    MatrixXX p_iter = P_delta_;  // 迭代中不更新
+    Eigen::MatrixXd k_matrix(N_X, total_dim);
+
+    for (int iter = 0; iter < iteration_num_; ++iter) {
+      MatrixX1 x_eval = x_nominal_;
+      inject_state_(delta_iter, x_eval);  // 在当前迭代点线性化
+
+      int offset = 0;
+      for (const auto & obs : obs_list) {
+        const int d = obs->dim();
+
+        Eigen::VectorXd z_pred;
+        Eigen::VectorXd rk;
+        Eigen::MatrixXd rk_cov;
+        obs->predict(x_eval, z_pred);
+        obs->residualAndR(z_pred, rk, rk_cov);
+
+        // 中心差分求 H。两处关键：
+        //   扰动加在 δ 上再 ⊞ 进去，求出的才是 ∂z/∂δ，与 P 同一坐标系；
+        //   差的是 residual 而不是 z_pred，这样角度分量的缠绕归一化也进到导数
+        //   里——否则预测值分居 ±π 两侧时会差出一个 2π 的假梯度。
+        //   末尾取负因为 r = z - ẑ，故 -∂r/∂δ = ∂ẑ/∂δ = H。
+        Eigen::MatrixXd hk(d, N_X);
+        constexpr double kEps = 1e-6;
+        for (int i = 0; i < N_X; ++i) {
+          MatrixX1 delta_plus = delta_iter;
+          MatrixX1 delta_minus = delta_iter;
+          delta_plus[i] += kEps;
+          delta_minus[i] -= kEps;
+
+          MatrixX1 x_plus = x_nominal_;
+          MatrixX1 x_minus = x_nominal_;
+          inject_state_(delta_plus, x_plus);
+          inject_state_(delta_minus, x_minus);
+
+          Eigen::VectorXd z_plus;
+          Eigen::VectorXd z_minus;
+          obs->predict(x_plus, z_plus);
+          obs->predict(x_minus, z_minus);
+
+          Eigen::VectorXd residual_plus;
+          Eigen::VectorXd residual_minus;
+          Eigen::MatrixXd ignored;
+          obs->residualAndR(z_plus, residual_plus, ignored);
+          obs->residualAndR(z_minus, residual_minus, ignored);
+
+          hk.col(i) = -(residual_plus - residual_minus) / (2.0 * kEps);
+        }
+
+        h_matrix.block(offset, 0, d, N_X) = hk;
+        residual.segment(offset, d) = rk;
+        r_matrix.block(offset, offset, d, d) = rk_cov;
+        offset += d;
+      }
+
+      const Eigen::MatrixXd s_matrix =
+        h_matrix * p_iter * h_matrix.transpose() + r_matrix;
+      const auto ldlt = s_matrix.ldlt();
+      const Eigen::MatrixXd pht = p_iter * h_matrix.transpose();
+      k_matrix = ldlt.solve(pht.transpose()).transpose();  // K = P Hᵀ S⁻¹
+
+      // 照搬上游：累加高斯牛顿步，没有往先验拉的项。
+      delta_iter.noalias() += k_matrix * residual;
+    }
+
+    inject_state_(delta_iter, x_nominal_);
+    delta_x_.setZero();
+
+    // Joseph form：对任意 K 都保持半正定。迭代 EKF 里 K 本来就不是最优增益
+    // （用的是最后一轮的），所以这里不是可选优化而是必需。
+    const MatrixXX identity = MatrixXX::Identity();
+    const Eigen::MatrixXd ikh = identity - k_matrix * h_matrix;
+    P_delta_ = ikh * p_iter * ikh.transpose() +
+               k_matrix * r_matrix * k_matrix.transpose();
+    P_delta_ = 0.5 * (P_delta_ + P_delta_.transpose());
+
+    last_residual_ = residual;
+    last_innovation_covariance_ =
+      h_matrix * p_iter * h_matrix.transpose() + r_matrix;
+
+    return x_nominal_;
+  }
+
+  // 最近一次更新的创新量与其协方差，供 NIS 记账与遥测读取。
+  const Eigen::VectorXd & lastResidual() const noexcept { return last_residual_; }
+  const Eigen::MatrixXd & lastInnovationCovariance() const noexcept
+  {
+    return last_innovation_covariance_;
+  }
+
+private:
+  PredictFunc f_{};
+  UpdateQFunc update_Q_{};
+  InjectFunc inject_state_{};
+  BoxMinusFunc box_minus_state_{};
+  InjectJetFunc inject_state_jet_{};
+  BoxMinusJetFunc box_minus_state_jet_{};
+
+  MatrixXX F_{MatrixXX::Zero()};
+  MatrixXX Q_{MatrixXX::Zero()};
+
+  MatrixX1 x_nominal_{MatrixX1::Zero()};
+  MatrixX1 delta_x_{MatrixX1::Zero()};
+  MatrixXX P_delta_{MatrixXX::Identity()};
+
+  Eigen::VectorXd last_residual_{};
+  Eigen::MatrixXd last_innovation_covariance_{};
+
+  int iteration_num_{1};
+};
+
+}  // namespace L3Estimation
