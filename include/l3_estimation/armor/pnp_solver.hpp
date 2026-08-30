@@ -19,7 +19,7 @@ public:
     ArmorConfig config = {});
 
   // 返回相机标定、静态外参和装甲板配置是否可用于求解。
-  [[nodiscard]] bool ready() const noexcept;
+  bool ready() const noexcept;
 
   // 姿态表示枪管坐标系到世界坐标系的旋转，必须对应图像曝光时刻。
   void set_R_world_barrel(
@@ -41,7 +41,7 @@ public:
     const L1Sensor::CameraCalibration& calibration);
 
   // 将给定世界系装甲板重投影到图像；前置条件不满足时返回空数组。
-  [[nodiscard]] std::vector<cv::Point2f> reproject_armor(
+  std::vector<cv::Point2f> reproject_armor(
     const Eigen::Vector3d& xyz_in_world,
     double yaw,
     ArmorType type,
@@ -54,11 +54,11 @@ private:
 
   // 单板在给定世界系 yaw 下的四角点重投影代价，与 optimize_yaw 共用同一支：
   // 重投影不可用时返回无穷，使调用方的比较自然跳过该采样点。
-  [[nodiscard]] double yaw_cost(const Armor& armor, double yaw) const;
+  double yaw_cost(const Armor& armor, double yaw) const;
 
   // 双板联合搜索。窗口、步长与单板完全一致，只把代价换成两块板之和，右板 yaw
   // 恒为左板 + 2π/n；成功时改写两块板的 ypr_in_world[0] 并返回 true。
-  [[nodiscard]] bool optimize_yaw_pair(Armor& left, Armor& right) const;
+  bool optimize_yaw_pair(Armor& left, Armor& right) const;
 
   // 静态 camera -> barrel 外参，以及逐帧更新的 barrel -> world 旋转。
   L1Sensor::CameraCalibration calibration_;

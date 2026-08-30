@@ -44,14 +44,14 @@ void drawAimOverlay(
   const L1Sensor::CameraCalibration& calibration);
 
 // 以下是叠加层的组成部件，离线回放另外还要画代价曲线和外推框，所以单独导出。
-[[nodiscard]] cv::Point toPixel(const cv::Point2f& point);
+cv::Point toPixel(const cv::Point2f& point);
 
 void drawOutlinedText(
   cv::Mat& image, const std::string& text, cv::Point origin,
   const cv::Scalar& color, double scale = 0.6);
 
 // 把一个世界系点投到图像上。整车旋转中心不是装甲板，用不了 reproject_armor。
-[[nodiscard]] std::optional<cv::Point2f> projectWorldPoint(
+std::optional<cv::Point2f> projectWorldPoint(
   const Eigen::Vector3d& point_in_world,
   const L1Sensor::CameraCalibration& calibration,
   const Eigen::Quaterniond& q_world_barrel);
@@ -65,7 +65,7 @@ void drawVehicle(
 
 // 这块观测会不会真的进滤波器。必须与 Tracker::observationUsable 保持一致，
 // 否则画出来的和实际喂进 EKF 的不是一回事。
-[[nodiscard]] bool isFilterInputArmor(const L3Estimation::Armor& armor);
+bool isFilterInputArmor(const L3Estimation::Armor& armor);
 
 // 当前帧真正送入目标滤波器的单板 PnP 位姿：绿色重投影框和绿色朝向箭头。
 void drawFilterInputArmors(

@@ -78,7 +78,7 @@ void require(bool condition, const std::string& message)
   }
 }
 
-[[nodiscard]] const char* stateName(L3Estimation::TrackState state) noexcept
+const char* stateName(L3Estimation::TrackState state) noexcept
 {
   switch (state) {
   case L3Estimation::TrackState::Lost:
@@ -93,7 +93,7 @@ void require(bool condition, const std::string& message)
   return "unknown";
 }
 
-[[nodiscard]] L2Perception::ArmorColor parseEnemyColor(const std::string& value)
+L2Perception::ArmorColor parseEnemyColor(const std::string& value)
 {
   if (value == "red") return L2Perception::ArmorColor::Red;
   if (value == "blue") return L2Perception::ArmorColor::Blue;
@@ -101,7 +101,7 @@ void require(bool condition, const std::string& message)
   throw std::invalid_argument("enemy 必须是 red、blue 或 any");
 }
 
-[[nodiscard]] bool readPose(std::istream& input, PoseSample& sample)
+bool readPose(std::istream& input, PoseSample& sample)
 {
   double w = 0.0;
   double x = 0.0;
@@ -119,7 +119,7 @@ void require(bool condition, const std::string& message)
 }
 
 // 与 auto_aim_test 保持同一份约定转换，两个工具的绝对 yaw 必须可比。
-[[nodiscard]] Eigen::Quaterniond toWorldBarrelPose(
+Eigen::Quaterniond toWorldBarrelPose(
   const PoseSample& sample, bool sp_convention, const Eigen::Matrix3d& R_imu_barrel)
 {
   if (!sp_convention && R_imu_barrel.isIdentity(0.0)) {
@@ -138,7 +138,7 @@ void require(bool condition, const std::string& message)
 
 // 把 world 系的一个点投到像素。overlay.csv 用它输出整车中心的像素位置，
 // 定义与 auto_aim_test 里画十字用的那个完全一致。
-[[nodiscard]] std::optional<cv::Point2d> projectWorldPoint(
+std::optional<cv::Point2d> projectWorldPoint(
   const Eigen::Vector3d& point_in_world,
   const L1Sensor::CameraCalibration& calibration,
   const Eigen::Quaterniond& q_world_barrel)
@@ -173,7 +173,7 @@ void require(bool condition, const std::string& message)
 // 一块装甲板在图像上的"框中心"：四个投影角点的均值。这就是屏幕上看到的
 // 那个绿框的中心，和把三维板心单独投一次不完全相等（透视 + 畸变都非线性），
 // 但它才是目视对比的那个量，所以两边统一用这个定义。
-[[nodiscard]] std::optional<cv::Point2d> armorBoxCenter(
+std::optional<cv::Point2d> armorBoxCenter(
   const L3Estimation::PnpSolver& solver, const Eigen::Vector4d& xyza,
   L3Estimation::ArmorType type, L3Estimation::ArmorName name)
 {
@@ -192,7 +192,7 @@ void require(bool condition, const std::string& message)
 
 // PnpSolver::armor_reprojection_error 是私有的，这里用它公开的 reproject_armor
 // 复算同一个代价：四角点像素距离之和，定义必须与求解器内部完全一致。
-[[nodiscard]] double yawCost(
+double yawCost(
   const L3Estimation::PnpSolver& solver, const L3Estimation::Armor& armor, double yaw)
 {
   const std::vector<cv::Point2f> projected =
@@ -222,7 +222,7 @@ struct YawScan {
   double second_yaw{std::numeric_limits<double>::quiet_NaN()};
 };
 
-[[nodiscard]] YawScan scanYawCost(
+YawScan scanYawCost(
   const L3Estimation::PnpSolver& solver, const L3Estimation::Armor& armor, double step_deg)
 {
   YawScan scan;
@@ -279,7 +279,7 @@ struct YawScan {
 // 复刻 TrackedTarget::update 的装甲面关联：按距离取最近的 3 个候选面，
 // 代价是"观测射线方位角之差 + 装甲板 yaw 之差"。诊断必须用同一套规则，
 // 否则算出来的残差不是滤波器真正吃进去的那一个。
-[[nodiscard]] int associateFace(
+int associateFace(
   const std::vector<Eigen::Vector4d>& faces, const L3Estimation::Armor& armor)
 {
   std::vector<std::pair<double, int>> candidates;
@@ -315,18 +315,18 @@ struct PendingPrediction {
   std::vector<Eigen::Vector4d> armors;
 };
 
-[[nodiscard]] double quadWidth(const std::array<cv::Point2f, 4>& c)
+double quadWidth(const std::array<cv::Point2f, 4>& c)
 {
   return 0.5 * (cv::norm(c[1] - c[0]) + cv::norm(c[2] - c[3]));
 }
 
-[[nodiscard]] double quadHeight(const std::array<cv::Point2f, 4>& c)
+double quadHeight(const std::array<cv::Point2f, 4>& c)
 {
   return 0.5 * (cv::norm(c[3] - c[0]) + cv::norm(c[2] - c[1]));
 }
 
 // 一列数的分位数，用于最后的汇总。就地排序，调用方给的是副本。
-[[nodiscard]] double percentile(std::vector<double> values, double ratio)
+double percentile(std::vector<double> values, double ratio)
 {
   if (values.empty()) return std::numeric_limits<double>::quiet_NaN();
   std::sort(values.begin(), values.end());
@@ -335,7 +335,7 @@ struct PendingPrediction {
   return values[index];
 }
 
-[[nodiscard]] double mean(const std::vector<double>& values)
+double mean(const std::vector<double>& values)
 {
   if (values.empty()) return std::numeric_limits<double>::quiet_NaN();
   double sum = 0.0;

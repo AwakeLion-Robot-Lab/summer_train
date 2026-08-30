@@ -28,18 +28,18 @@ struct AimCalibration {
   bool time_sync_ok{false};
 
   // 这里只检查 PnP 所需矩阵是否存在，矩阵数值由 PnpSolver 进一步验证。
-  [[nodiscard]] bool intrinsicsOk() const noexcept
+  bool intrinsicsOk() const noexcept
   {
     return !camera.camera_matrix.empty() &&
            !camera.distortion_coefficients.empty();
   }
 
-  [[nodiscard]] bool trackingReady() const noexcept
+  bool trackingReady() const noexcept
   {
     return intrinsicsOk() && camera.barrelExtrinsicsReady() && time_sync_ok;
   }
 
-  [[nodiscard]] bool fireReady() const noexcept
+  bool fireReady() const noexcept
   {
     return trackingReady();
   }

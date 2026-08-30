@@ -14,7 +14,7 @@ namespace L3Estimation {
 
 // L2 -> L3 的显式转换入口。这里只复制检测字段，位姿字段由 Tracker
 // 内部持有的 PnpSolver 补充。
-[[nodiscard]] Armor toArmorObservation(
+Armor toArmorObservation(
   const L2Perception::Armor& detection,
   TimePoint timestamp);
 
@@ -30,8 +30,8 @@ public:
     TrackerConfig tracker_config = {},
     TargetConfig target_config = {});
 
-  [[nodiscard]] bool ready() const noexcept;
-  [[nodiscard]] TrackState state() const noexcept;
+  bool ready() const noexcept;
+  TrackState state() const noexcept;
 
   // 处理一帧检测。枪管姿态必须对应 timestamp 所表示的图像曝光时刻。
   // Lost 或初始化失败时返回空；TempLost 时返回纯预测状态。
@@ -41,24 +41,24 @@ public:
     TimePoint timestamp);
 
   // 保留本帧所有 PnP 结果（包含被质量门限拒绝的结果），供 L6 调试。
-  [[nodiscard]] const std::vector<Armor>& observations() const noexcept;
+  const std::vector<Armor>& observations() const noexcept;
 
   // 当前 EKF 整车模型生成的物理装甲板 [x, y, z, yaw]。这是只读调试
   // 快照，供离线回放和 L6 可视化使用；Lost 状态返回空数组。
-  [[nodiscard]] std::vector<Eigen::Vector4d> targetArmorPoses() const;
+  std::vector<Eigen::Vector4d> targetArmorPoses() const;
 
   // 清空状态机、时间连续性记录和本帧观测。
   void reset() noexcept;
 
 private:
   // 筛掉 PnP 未成功提交的观测，并按图像中心距离生成候选列表。
-  [[nodiscard]] bool observationUsable(const Armor& armor) const noexcept;
-  [[nodiscard]] std::vector<const Armor*> usableObservations() const;
+  bool observationUsable(const Armor& armor) const noexcept;
+  std::vector<const Armor*> usableObservations() const;
   // 分别处理 Lost 状态初始化和已有目标的预测、观测更新。
-  [[nodiscard]] bool initializeTarget(
+  bool initializeTarget(
     const std::vector<const Armor*>& observations,
     TimePoint timestamp);
-  [[nodiscard]] bool updateTarget(
+  bool updateTarget(
     const std::vector<const Armor*>& observations,
     TimePoint timestamp);
   // 根据本帧是否成功关联观测推进四态状态机。

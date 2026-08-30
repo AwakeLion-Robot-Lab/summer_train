@@ -23,8 +23,8 @@ public:
   TensorRtBackend& operator=(const TensorRtBackend&) = delete;
 
   void load(const InferenceModelConfig& config) override;
-  [[nodiscard]] bool ready() const noexcept override;
-  [[nodiscard]] const InferenceInputSpec& inputSpec() const override;
+  bool ready() const noexcept override;
+  const InferenceInputSpec& inputSpec() const override;
   [[nodiscard]] InferenceResult infer(const InferenceInput& input) override;
 
 private:

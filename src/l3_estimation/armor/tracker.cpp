@@ -11,7 +11,7 @@
 namespace L3Estimation {
 namespace {
 
-[[nodiscard]] bool validTrackerConfig(const TrackerConfig& config) noexcept
+bool validTrackerConfig(const TrackerConfig& config) noexcept
 {
   return config.min_detect_count > 0 &&
          config.max_frame_interval > std::chrono::milliseconds::zero() &&
@@ -20,12 +20,12 @@ namespace {
          config.outpost_max_temp_lost_count >= config.max_temp_lost_count;
 }
 
-[[nodiscard]] bool isBase(ArmorName name) noexcept
+bool isBase(ArmorName name) noexcept
 {
   return name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
 }
 
-[[nodiscard]] bool badRecentNis(const TrackedTarget& target)
+bool badRecentNis(const TrackedTarget& target)
 {
   // 最近窗口中至少 40% 的更新超过 NIS 门限时认为滤波持续异常。
   const auto& ekf = target.ekf();

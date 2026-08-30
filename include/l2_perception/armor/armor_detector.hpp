@@ -26,16 +26,16 @@ public:
     ImagePreprocessConfig preprocess_config = {},
     ArmorRefinerConfig refiner_config = {});
 
-  [[nodiscard]] bool ready() const noexcept;
+  bool ready() const noexcept;
   // 一帧同步检测。Backend/Decoder 抛出的异常会被转换为日志和空结果，避免中断主循环。
   [[nodiscard]] std::vector<Armor> detect(const cv::Mat& image) const;
 
   // 最近一次 detect() 的传统精修统计。
-  [[nodiscard]] const RefineStats& lastRefineStats() const noexcept { return last_refine_stats_; }
+  const RefineStats& lastRefineStats() const noexcept { return last_refine_stats_; }
 
   // 逐块判定明细。仅在 collectRefineRecords(true) 之后才填充，实机路径保持关闭
   // 以免每帧多一次分配。
-  [[nodiscard]] const std::vector<RefineRecord>& lastRefineRecords() const noexcept
+  const std::vector<RefineRecord>& lastRefineRecords() const noexcept
   {
     return last_refine_records_;
   }

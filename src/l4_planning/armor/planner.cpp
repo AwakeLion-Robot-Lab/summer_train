@@ -19,7 +19,7 @@ struct TrajectorySolution {
 };
 
 // 真空弹道存在高、低两条解析解；选择飞行时间更短的一条。
-[[nodiscard]] TrajectorySolution solveTrajectory(
+TrajectorySolution solveTrajectory(
   double bullet_speed, double distance, double height)
 {
   TrajectorySolution result;
@@ -46,19 +46,19 @@ struct TrajectorySolution {
 }
 
 // 规划时间统一量化到微秒，保证每轮迭代使用相同的时间精度。
-[[nodiscard]] std::chrono::microseconds secondsToDuration(double seconds)
+std::chrono::microseconds secondsToDuration(double seconds)
 {
   return std::chrono::microseconds(static_cast<int>(seconds * 1e6));
 }
 
-[[nodiscard]] Plan rejected(PlanError error)
+Plan rejected(PlanError error)
 {
   Plan plan;
   plan.reason = error;
   return plan;
 }
 
-[[nodiscard]] double centerYaw(const L3Estimation::TrackedTarget& target)
+double centerYaw(const L3Estimation::TrackedTarget& target)
 {
   const Eigen::VectorXd x = target.ekf_x();
   return std::atan2(x[2], x[0]);

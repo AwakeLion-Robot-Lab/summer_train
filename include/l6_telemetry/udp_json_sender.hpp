@@ -25,8 +25,8 @@ public:
 
   [[nodiscard]] bool send(const nlohmann::json& payload) noexcept;
 
-  [[nodiscard]] const std::string& host() const noexcept;
-  [[nodiscard]] uint16_t port() const noexcept;
+  const std::string& host() const noexcept;
+  uint16_t port() const noexcept;
 
 private:
   int socket_fd_ = -1;

@@ -19,12 +19,12 @@ void require(bool condition, const std::string& message)
   }
 }
 
-[[nodiscard]] float logit(float probability)
+float logit(float probability)
 {
   return std::log(probability / (1.0F - probability));
 }
 
-[[nodiscard]] bool near(float actual, float expected, float tolerance = 1e-4F)
+bool near(float actual, float expected, float tolerance = 1e-4F)
 {
   return std::abs(actual - expected) <= tolerance;
 }

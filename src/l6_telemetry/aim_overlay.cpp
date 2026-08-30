@@ -12,7 +12,7 @@
 namespace L6Telemetry {
 namespace {
 
-[[nodiscard]] const char* trackStateName(L3Estimation::TrackState state) noexcept
+const char* trackStateName(L3Estimation::TrackState state) noexcept
 {
   switch (state) {
   case L3Estimation::TrackState::Lost:      return "lost";
@@ -75,7 +75,7 @@ void drawAimOverlay(
     input.fire.shoot ? cv::Scalar{0, 0, 255} : cv::Scalar{0, 255, 255}, 0.7);
 }
 
-[[nodiscard]] cv::Point toPixel(const cv::Point2f& point)
+cv::Point toPixel(const cv::Point2f& point)
 {
   return {
     static_cast<int>(std::lround(point.x)),
@@ -98,7 +98,7 @@ void drawOutlinedText(
 
 // 把一个世界系点投到图像上。整车的旋转中心不是装甲板，用不了
 // reproject_armor，所以这里单独走一次 world -> camera -> pixel。
-[[nodiscard]] std::optional<cv::Point2f> projectWorldPoint(
+std::optional<cv::Point2f> projectWorldPoint(
   const Eigen::Vector3d& point_in_world,
   const L1Sensor::CameraCalibration& calibration,
   const Eigen::Quaterniond& q_world_barrel)
@@ -156,7 +156,7 @@ void drawVehicle(
   }
 }
 
-[[nodiscard]] bool isFilterInputArmor(const L3Estimation::Armor& armor)
+bool isFilterInputArmor(const L3Estimation::Armor& armor)
 {
   // 与 Tracker::observationUsable 保持一致，避免把被滤掉的坏解画出来。
   return armor.name != L3Estimation::ArmorName::Unknown &&
@@ -191,9 +191,7 @@ void drawFilterInputArmors(
 
     // armorPoints 使用局部 x=0 的 y-z 平面，因此局部 +x 是装甲板法向；
     // 它在世界系中的方向正是 yaw 所表示的朝向。
-    const double pitch = armor.name == L3Estimation::ArmorName::Outpost
-      ? -15.0 * std::numbers::pi / 180.0
-      : 15.0 * std::numbers::pi / 180.0;
+    const double pitch = L3Estimation::armorPitchOf(armor.name);
     const double yaw = armor.ypr_in_world[0];
     const Eigen::Vector3d normal_in_world{
       std::cos(yaw) * std::cos(pitch),

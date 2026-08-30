@@ -31,7 +31,7 @@ void expect(bool condition, std::string_view message)
   }
 }
 
-[[nodiscard]] std::vector<cv::Point3f> armorPoints(double width)
+std::vector<cv::Point3f> armorPoints(double width)
 {
   const float half_width = static_cast<float>(width / 2.0);
   const float half_height = static_cast<float>(kArmorHeight / 2.0);
@@ -44,7 +44,7 @@ void expect(bool condition, std::string_view message)
 
 // 复刻 PnpSolver 内部的 armor -> world 旋转：安装倾角固定 15 度，只有 yaw 自由。
 // 这里必须独立写一遍而不是调求解器，否则两边一起写错就测不出来。
-[[nodiscard]] Eigen::Matrix3d armorRotationInWorldReference(double yaw)
+Eigen::Matrix3d armorRotationInWorldReference(double yaw)
 {
   const double sin_yaw = std::sin(yaw);
   const double cos_yaw = std::cos(yaw);
@@ -57,14 +57,14 @@ void expect(bool condition, std::string_view message)
     {-sin_pitch, 0.0, cos_pitch}};
 }
 
-[[nodiscard]] cv::Vec3d rotationVector(const cv::Matx33d& rotation)
+cv::Vec3d rotationVector(const cv::Matx33d& rotation)
 {
   cv::Vec3d rvec;
   cv::Rodrigues(rotation, rvec);
   return rvec;
 }
 
-[[nodiscard]] std::array<cv::Point2f, 4> projectArmor(
+std::array<cv::Point2f, 4> projectArmor(
   const L1Sensor::CameraCalibration& calibration,
   double width,
   const cv::Matx33d& rotation,
@@ -86,7 +86,7 @@ void expect(bool condition, std::string_view message)
     cv::Point2f(projected[3])};
 }
 
-[[nodiscard]] double manualReprojectionRmse(
+double manualReprojectionRmse(
   const L1Sensor::CameraCalibration& calibration,
   const L3Estimation::Armor& armor)
 {
@@ -118,7 +118,7 @@ void expect(bool condition, std::string_view message)
   return std::sqrt(squared_error_sum / armor.points.size());
 }
 
-[[nodiscard]] bool outputsCleared(const L3Estimation::Armor& armor)
+bool outputsCleared(const L3Estimation::Armor& armor)
 {
   return armor.xyz_in_camera.isZero(0.0) &&
          armor.xyz_in_world.isZero(0.0) &&
@@ -132,12 +132,12 @@ void expect(bool condition, std::string_view message)
 
 // PnP 是否成功提交了位姿。name 只在提交的那一步才被赋值，任何失败路径上都
 // 保持 Unknown——这是 Tracker 唯一的观测门限，ArmorQuality 已经不存在了。
-[[nodiscard]] bool poseCommitted(const L3Estimation::Armor& armor)
+bool poseCommitted(const L3Estimation::Armor& armor)
 {
   return armor.name != L3Estimation::ArmorName::Unknown;
 }
 
-[[nodiscard]] L1Sensor::CameraCalibration cloneCalibration(
+L1Sensor::CameraCalibration cloneCalibration(
   const L1Sensor::CameraCalibration& calibration)
 {
   auto clone = calibration;

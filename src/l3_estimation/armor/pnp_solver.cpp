@@ -33,14 +33,14 @@ constexpr double kMaximumPairGap = 0.75;
 
 // 将识别类别映射为实际 PnP 几何尺寸；未知类别不参与求解。映射本身放在
 // types.hpp，与 L5 火控共用同一份，避免两处各写一遍后悄悄分叉。
-[[nodiscard]] constexpr std::optional<ArmorType>
+constexpr std::optional<ArmorType>
 armorTypeFromClassId(int class_id) noexcept {
   return armorTypeOf(L2Perception::armorClassFromId(class_id));
 }
 
 // SP 的 solvePnP 与重投影全链路使用 Point3f。这里在构造时按同一顺序和同一
 // float 窄化生成一次，避免 yaw 的 140 次搜索反复分配。
-[[nodiscard]] std::vector<cv::Point3f> armorPoints(
+std::vector<cv::Point3f> armorPoints(
     double width, double height) {
   const float half_width = static_cast<float>(width / 2.0);
   const float half_height = static_cast<float>(height / 2.0);
@@ -50,7 +50,7 @@ armorTypeFromClassId(int class_id) noexcept {
           {0.0F, half_width, -half_height}};
 }
 
-[[nodiscard]] double spLimitRad(double angle) noexcept {
+double spLimitRad(double angle) noexcept {
   while (angle > CV_PI) angle -= 2.0 * CV_PI;
   while (angle <= -CV_PI) angle += 2.0 * CV_PI;
   return angle;
@@ -58,12 +58,10 @@ armorTypeFromClassId(int class_id) noexcept {
 
 // 世界系 yaw 到 armor -> world 旋转。装甲板按车辆类别使用固定安装倾角，
 // 只有 yaw 是自由量——这正是 yaw 搜索成立的前提。
-[[nodiscard]] Eigen::Matrix3d armorRotationInWorld(double yaw, ArmorName name) {
+Eigen::Matrix3d armorRotationInWorld(double yaw, ArmorName name) {
   const double sin_yaw = std::sin(yaw);
   const double cos_yaw = std::cos(yaw);
-  const double pitch = name == ArmorName::Outpost
-                           ? -15.0 * std::numbers::pi / 180.0
-                           : 15.0 * std::numbers::pi / 180.0;
+  const double pitch = armorPitchOf(name);
   const double sin_pitch = std::sin(pitch);
   const double cos_pitch = std::cos(pitch);
 
@@ -73,7 +71,7 @@ armorTypeFromClassId(int class_id) noexcept {
       {-sin_pitch, 0, cos_pitch}};
 }
 
-[[nodiscard]] bool
+bool
 validCalibration(const L1Sensor::CameraCalibration &calibration) {
   // OpenCV 支持的常用畸变参数长度；拒绝形状虽合法但模型含义未知的数组。
   const std::size_t distortion_count =
@@ -106,7 +104,7 @@ validCalibration(const L1Sensor::CameraCalibration &calibration) {
          std::abs(rotation.determinant() - 1.0) <= kRotationTolerance;
 }
 
-[[nodiscard]] bool validConfig(const ArmorConfig &config) {
+bool validConfig(const ArmorConfig &config) {
   // 几何尺寸必须为有限的正值。
   return std::isfinite(config.small_width) && config.small_width > 0.0 &&
          std::isfinite(config.big_width) && config.big_width > 0.0 &&
@@ -127,7 +125,7 @@ void resetPnpOutput(Armor &armor) {
 
 // SP 对 3/4/5 号的大装甲（平衡步兵）跳过固定俯仰假设的 yaw 优化。当前板型映射
 // 里平衡步兵已不存在，保留这条判据只为让单板与双板两条路径口径一致。
-[[nodiscard]] bool isBalanceInfantry(const Armor &armor) noexcept {
+bool isBalanceInfantry(const Armor &armor) noexcept {
   return armor.type == ArmorType::Big &&
          (armor.name == ArmorName::Infantry3 ||
           armor.name == ArmorName::Infantry4 ||
@@ -136,12 +134,12 @@ void resetPnpOutput(Armor &armor) {
 
 // 能否参与双板配对：single_pnp 必须已提交位姿（name 只在提交那一步被赋值），
 // 类别必须能查到板数，且该类别的 yaw 优化没有被跳过。
-[[nodiscard]] bool pairableObservation(const Armor &armor) noexcept {
+bool pairableObservation(const Armor &armor) noexcept {
   return armor.name != ArmorName::Unknown && armor.xyz_in_world.allFinite() &&
          armorCountOf(armor.name).has_value() && !isBalanceInfantry(armor);
 }
 
-[[nodiscard]] bool finiteImagePoints(const std::array<cv::Point2f, 4> &points) {
+bool finiteImagePoints(const std::array<cv::Point2f, 4> &points) {
   // 在调用 OpenCV 前拦截 NaN 和无穷像素坐标。
   return std::all_of(points.begin(), points.end(),
                      [](const cv::Point2f &point) {

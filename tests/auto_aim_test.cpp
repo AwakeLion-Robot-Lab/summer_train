@@ -115,7 +115,7 @@ void require(bool condition, const std::string& message)
   }
 }
 
-[[nodiscard]] std::string_view stateName(L3Estimation::TrackState state) noexcept
+std::string_view stateName(L3Estimation::TrackState state) noexcept
 {
   switch (state) {
   case L3Estimation::TrackState::Lost:
@@ -130,7 +130,7 @@ void require(bool condition, const std::string& message)
   return "unknown";
 }
 
-[[nodiscard]] const char* planErrorName(L4Planning::PlanError error) noexcept
+const char* planErrorName(L4Planning::PlanError error) noexcept
 {
   switch (error) {
   case L4Planning::PlanError::None:            return "none";
@@ -144,7 +144,7 @@ void require(bool condition, const std::string& message)
 }
 
 // 拒绝原因拼成一行，画在图上。数值曲线看得出"没开火"，看不出"为什么"。
-[[nodiscard]] std::string rejectReasons(const L5Control::FireDecision& decision)
+std::string rejectReasons(const L5Control::FireDecision& decision)
 {
   std::string text;
   for (const auto reason : decision.reasons) {
@@ -156,7 +156,7 @@ void require(bool condition, const std::string& message)
   return text.empty() ? std::string{"-"} : text;
 }
 
-[[nodiscard]] L2Perception::ArmorColor parseEnemyColor(const std::string& value)
+L2Perception::ArmorColor parseEnemyColor(const std::string& value)
 {
   if (value == "red") {
     return L2Perception::ArmorColor::Red;
@@ -170,7 +170,7 @@ void require(bool condition, const std::string& message)
   throw std::invalid_argument("enemy 必须是 red、blue 或 any");
 }
 
-[[nodiscard]] bool readPose(std::istream& input, PoseSample& sample)
+bool readPose(std::istream& input, PoseSample& sample)
 {
   double w = 0.0;
   double x = 0.0;
@@ -198,7 +198,7 @@ void require(bool condition, const std::string& message)
 //          不在这里另写一份。
 // 两者自洽。用哪个取决于录像配套的 T_barrel_camera 是按哪套约定标定的：
 // sp 的 barrel 与 IMU 差 180 度绕 z，本项目的 barrel 由 R_imu_barrel 描述。
-[[nodiscard]] Eigen::Quaterniond toWorldBarrelPose(
+Eigen::Quaterniond toWorldBarrelPose(
   const PoseSample& sample,
   bool sp_convention,
   const Eigen::Matrix3d& R_imu_barrel)
@@ -220,7 +220,7 @@ void require(bool condition, const std::string& message)
   return Eigen::Quaterniond(R_world_barrel);
 }
 
-[[nodiscard]] const char* armorClassName(L3Estimation::ArmorName name) noexcept
+const char* armorClassName(L3Estimation::ArmorName name) noexcept
 {
   switch (name) {
   case L3Estimation::ArmorName::Guard:
@@ -249,7 +249,7 @@ void require(bool condition, const std::string& message)
 
 // 与 PnpSolver::armor_reprojection_error 定义一致：把装甲板按给定世界系
 // yaw 重投影，取四个对应角点的像素距离之和。
-[[nodiscard]] double yawCost(
+double yawCost(
   const L3Estimation::PnpSolver& solver,
   const L3Estimation::Armor& armor,
   double yaw)
@@ -270,7 +270,7 @@ void require(bool condition, const std::string& message)
   return cost;
 }
 
-[[nodiscard]] YawCostCurve sampleYawCost(
+YawCostCurve sampleYawCost(
   const L3Estimation::PnpSolver& solver,
   const L3Estimation::Armor& armor,
   const Eigen::Quaterniond& q_world_barrel)
@@ -317,7 +317,7 @@ void require(bool condition, const std::string& message)
 //
 // 返回 partner 下标，以及 partner 相对所选板的朝向差（含符号）。世界系 y 指左，
 // 方位角大的是左板，左板 yaw 比右板小 2π/n。
-[[nodiscard]] std::optional<std::pair<std::size_t, double>> selectPairPartner(
+std::optional<std::pair<std::size_t, double>> selectPairPartner(
   const std::vector<L3Estimation::Armor>& observations,
   std::size_t index)
 {
@@ -359,7 +359,7 @@ void require(bool condition, const std::string& message)
 // 双板联合代价曲线。横轴仍是所选装甲板自身相对枪管的 yaw 偏角，纵轴换成两块板
 // 共八个角点的距离之和，与 PnpSolver::optimize_yaw_pair 的代价同一定义：
 // partner 的朝向恒为所选板 + partner_offset。
-[[nodiscard]] YawCostCurve sampleJointYawCost(
+YawCostCurve sampleJointYawCost(
   const L3Estimation::PnpSolver& solver,
   const L3Estimation::Armor& armor,
   const L3Estimation::Armor& partner,
@@ -403,7 +403,7 @@ void require(bool condition, const std::string& message)
 }
 
 // 选一块装甲板画代价曲线：优先跟踪器当前关联的那块，其次取图像中心附近的。
-[[nodiscard]] std::optional<std::size_t> selectArmor(
+std::optional<std::size_t> selectArmor(
   const std::vector<L3Estimation::Armor>& observations,
   const std::optional<L3Estimation::TrackedTarget>& target,
   const std::vector<Eigen::Vector4d>& target_armor_poses,
@@ -448,7 +448,7 @@ void require(bool condition, const std::string& message)
 }
 
 // 代价曲线窗口。横轴是相对枪管 yaw 的偏角，竖线标出几个关键 yaw 的位置。
-[[nodiscard]] cv::Mat drawCostPlot(
+cv::Mat drawCostPlot(
   const YawCostCurve* curve,
   const YawCostCurve* joint_curve,
   double pair_offset_degrees,

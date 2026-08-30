@@ -17,17 +17,17 @@ double delta_time(
 
 double limit_rad(double angle);
 
-[[nodiscard]] Eigen::Matrix3d toEigen(
+Eigen::Matrix3d toEigen(
   const cv::Matx33d& rotation) noexcept;
 
-[[nodiscard]] cv::Matx33d toCv(
+cv::Matx33d toCv(
   const Eigen::Matrix3d& rotation) noexcept;
 
 // 使用鞋带公式计算四边形的像素面积。
-[[nodiscard]] double polygonArea(
+double polygonArea(
   const std::array<cv::Point2f, 4>& corners) noexcept;
 
-[[nodiscard]] double squaredDistance(
+double squaredDistance(
   const cv::Point2f& lhs,
   const cv::Point2f& rhs) noexcept;
 

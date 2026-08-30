@@ -86,8 +86,11 @@ FireDecision FireDecider::decide(const FireInput& input) const
   const auto armor_type =
     input.target.has_value() ? L3Estimation::armorTypeOf(input.target->name)
                              : std::optional<L3Estimation::ArmorType>{};
-  decision.tolerance =
-    tolerance(plan, armor_type.value_or(L3Estimation::ArmorType::Small));
+  const auto armor_name = input.target.has_value()
+    ? input.target->name
+    : L3Estimation::ArmorName::Unknown;
+  decision.tolerance = tolerance(
+    plan, armor_type.value_or(L3Estimation::ArmorType::Small), armor_name);
   decision.yaw_error =
     std::abs(L6Telemetry::limit_rad(plan.aim.yaw - input.actual_yaw));
   decision.pitch_error =
@@ -114,7 +117,8 @@ FireDecision FireDecider::decide(const FireInput& input) const
 }
 
 AimTolerance FireDecider::tolerance(
-  const L4Planning::Plan& plan, L3Estimation::ArmorType type) const noexcept
+  const L4Planning::Plan& plan, L3Estimation::ArmorType type,
+  L3Estimation::ArmorName name) const noexcept
 {
   AimTolerance result;
   if (!plan.fire.has_value() || plan.fire->armor_id < 0) {
@@ -136,7 +140,18 @@ AimTolerance FireDecider::tolerance(
   // 正对时取完整宽度，接近侧对时逐渐收紧到最小 yaw 容差。
   const double facing = std::abs(std::cos(plan.fire->facingAngle()));
   const double half_width = 0.5 * width * config_.hit_margin_ratio * facing;
-  const double half_height = 0.5 * config_.armor_height * config_.hit_margin_ratio;
+
+  // 竖直方向同理，只是收缩量由两个角相加决定：装甲板本身后仰 α，视线仰角 β，
+  // 可见高度是 h·|cos(α + β)|。板顶后仰、又从下往上看时两者叠加，可命中的
+  // 竖直窗口比板高小得多；俯角恰好抵消后仰时（α + β = 0）才看到完整板高。
+  //
+  // 用视线仰角而不是枪管 pitch：枪管 pitch 含弹道抬升，不是看过去的方向，
+  // 而这里要的是"从射手位置看这块板有多高"。
+  const double line_of_sight_pitch = std::atan2(point.z(), horizontal);
+  const double tilt =
+    std::abs(std::cos(L3Estimation::armorPitchOf(name) + line_of_sight_pitch));
+  const double half_height =
+    0.5 * config_.armor_height * config_.hit_margin_ratio * tilt;
 
   // yaw 是水平角，用水平距离；pitch 是竖直角，用斜距。
   result.yaw = std::max(std::atan2(half_width, horizontal), config_.min_yaw_tolerance);

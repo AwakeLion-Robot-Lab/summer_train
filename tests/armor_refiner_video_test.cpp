@@ -45,7 +45,7 @@ const cv::Scalar kRejectedColor{60, 60, 240};     // 红：被拒绝
 const cv::Scalar kNetworkCornerColor{220, 160, 60};  // 蓝：网络原始角点
 const cv::Scalar kTextColor{240, 240, 240};
 
-[[nodiscard]] cv::Scalar verdictColor(L2Perception::RefineVerdict verdict)
+cv::Scalar verdictColor(L2Perception::RefineVerdict verdict)
 {
   switch (verdict) {
     case L2Perception::RefineVerdict::Refined:
@@ -58,7 +58,7 @@ const cv::Scalar kTextColor{240, 240, 240};
   return kKeptColor;
 }
 
-[[nodiscard]] const char* verdictName(L2Perception::RefineVerdict verdict)
+const char* verdictName(L2Perception::RefineVerdict verdict)
 {
   switch (verdict) {
     case L2Perception::RefineVerdict::Refined:
@@ -72,7 +72,7 @@ const cv::Scalar kTextColor{240, 240, 240};
 }
 
 // 判定落到该结果的原因。被拒时最需要看的就是这一行。
-[[nodiscard]] std::string verdictReason(const L2Perception::RefineRecord& record)
+std::string verdictReason(const L2Perception::RefineRecord& record)
 {
   if (record.size_skipped) {
     return cv::format("lightbar %.1fpx < min, check skipped", record.lightbar_length);
@@ -107,7 +107,7 @@ void drawQuad(cv::Mat& image, const std::array<cv::Point2f, 4>& corners, const c
 
 // 把各 ROI 的二值化结果拼成一条横向面板。调 threshold 时看这个窗口最直接：
 // 灯条是否完整、是否粘连、光晕有没有被圈进来，一眼就能判断。
-[[nodiscard]] cv::Mat buildPatchPanel(const cv::Mat& frame,
+cv::Mat buildPatchPanel(const cv::Mat& frame,
                                       const std::vector<L2Perception::RefineRecord>& records,
                                       double threshold)
 {

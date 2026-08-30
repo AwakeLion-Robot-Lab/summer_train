@@ -22,7 +22,7 @@ struct DecodedCandidate
   float nms_score{0.0F};
 };
 
-[[nodiscard]] double sigmoid(double value) noexcept
+double sigmoid(double value) noexcept
 {
   if (value > 0.0) {
     return 1.0 / (1.0 + std::exp(-value));
@@ -31,7 +31,7 @@ struct DecodedCandidate
   return exp_value / (1.0 + exp_value);
 }
 
-[[nodiscard]] cv::Rect boundsOf(const std::array<cv::Point2f, 4>& corners)
+cv::Rect boundsOf(const std::array<cv::Point2f, 4>& corners)
 {
   float min_x = std::numeric_limits<float>::max();
   float min_y = std::numeric_limits<float>::max();
@@ -48,14 +48,14 @@ struct DecodedCandidate
           static_cast<int>(max_y - min_y)};
 }
 
-[[nodiscard]] float iou(const cv::Rect& first, const cv::Rect& second) noexcept
+float iou(const cv::Rect& first, const cv::Rect& second) noexcept
 {
   const float intersection = (first & second).area();
   const float union_area = first.area() + second.area() - intersection;
   return union_area > 0.0F ? intersection / union_area : 0.0F;
 }
 
-[[nodiscard]] bool finiteCorners(const std::array<cv::Point2f, 4>& corners) noexcept
+bool finiteCorners(const std::array<cv::Point2f, 4>& corners) noexcept
 {
   return std::all_of(corners.begin(), corners.end(), [](const cv::Point2f& point) {
     return std::isfinite(point.x) && std::isfinite(point.y);

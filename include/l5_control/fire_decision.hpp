@@ -58,9 +58,11 @@ public:
 
   [[nodiscard]] FireDecision decide(const FireInput& input) const;
   // 根据实体板尺寸、距离和朝向计算本帧 yaw/pitch 容差。
-  [[nodiscard]] AimTolerance tolerance(
-    const L4Planning::Plan& plan, L3Estimation::ArmorType type) const noexcept;
-  [[nodiscard]] const FireConfig& config() const noexcept { return config_; }
+  // 命中窗口。要板型定宽高，还要类别定后仰角——前哨站的板反着倾。
+  AimTolerance tolerance(
+    const L4Planning::Plan& plan, L3Estimation::ArmorType type,
+    L3Estimation::ArmorName name) const noexcept;
+  const FireConfig& config() const noexcept { return config_; }
 
 private:
   FireConfig config_;

@@ -70,7 +70,7 @@ struct TensorRtDeleter
 template<typename Type>
 using TensorRtPtr = std::unique_ptr<Type, TensorRtDeleter<Type>>;
 
-[[nodiscard]] std::string cudaErrorText(cudaError_t error)
+std::string cudaErrorText(cudaError_t error)
 {
   const char* message = cudaGetErrorString(error);
   return message == nullptr ? "unknown CUDA error" : std::string{message};
@@ -111,7 +111,7 @@ private:
   bool restore_previous_device_{false};
 };
 
-[[nodiscard]] std::string lowerExtension(const std::filesystem::path& path)
+std::string lowerExtension(const std::filesystem::path& path)
 {
   std::string extension = path.extension().string();
   std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char character) {
@@ -120,7 +120,7 @@ private:
   return extension;
 }
 
-[[nodiscard]] int parseCudaDevice(std::string_view configured_device)
+int parseCudaDevice(std::string_view configured_device)
 {
   const std::string device{configured_device};
   std::string upper = device;
@@ -160,7 +160,7 @@ private:
   }
 }
 
-[[nodiscard]] std::size_t dataTypeSize(nvinfer1::DataType data_type)
+std::size_t dataTypeSize(nvinfer1::DataType data_type)
 {
   switch (data_type) {
     case nvinfer1::DataType::kFLOAT:
@@ -172,7 +172,7 @@ private:
   }
 }
 
-[[nodiscard]] std::vector<std::size_t> staticShape(
+std::vector<std::size_t> staticShape(
   const nvinfer1::Dims& dims, std::string_view tensor_name)
 {
   if (dims.nbDims <= 0) {
@@ -197,7 +197,7 @@ private:
   return shape;
 }
 
-[[nodiscard]] std::size_t shapeElementCount(
+std::size_t shapeElementCount(
   const std::vector<std::size_t>& shape, std::string_view tensor_name)
 {
   std::size_t count = 1;
@@ -211,7 +211,7 @@ private:
   return count;
 }
 
-[[nodiscard]] std::size_t byteCount(
+std::size_t byteCount(
   std::size_t element_count, nvinfer1::DataType data_type, std::string_view tensor_name)
 {
   const std::size_t element_size = dataTypeSize(data_type);
@@ -234,7 +234,7 @@ void requireLinearIoFormat(const nvinfer1::ICudaEngine& engine, const char* tens
     + " uses " + (description == nullptr ? "an unknown TensorRT format" : description));
 }
 
-[[nodiscard]] TensorRtPtr<nvinfer1::ICudaEngine> deserializeEngine(
+TensorRtPtr<nvinfer1::ICudaEngine> deserializeEngine(
   nvinfer1::IRuntime& runtime, const std::filesystem::path& engine_path)
 {
   std::ifstream file(engine_path, std::ios::binary | std::ios::ate);
@@ -263,7 +263,7 @@ void requireLinearIoFormat(const nvinfer1::ICudaEngine& engine, const char* tens
   return TensorRtPtr<nvinfer1::ICudaEngine>{engine};
 }
 
-[[nodiscard]] TensorRtPtr<nvinfer1::ICudaEngine> buildEngineFromOnnx(
+TensorRtPtr<nvinfer1::ICudaEngine> buildEngineFromOnnx(
   nvinfer1::IRuntime& runtime, const std::filesystem::path& onnx_path)
 {
   auto builder = TensorRtPtr<nvinfer1::IBuilder>{
@@ -353,7 +353,7 @@ void requireLinearIoFormat(const nvinfer1::ICudaEngine& engine, const char* tens
   return TensorRtPtr<nvinfer1::ICudaEngine>{engine};
 }
 
-[[nodiscard]] std::uint16_t floatToHalf(float value) noexcept
+std::uint16_t floatToHalf(float value) noexcept
 {
   const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
   const std::uint16_t sign = static_cast<std::uint16_t>((bits >> 16U) & 0x8000U);
@@ -400,7 +400,7 @@ void requireLinearIoFormat(const nvinfer1::ICudaEngine& engine, const char* tens
                                     | half_mantissa);
 }
 
-[[nodiscard]] float halfToFloat(std::uint16_t value) noexcept
+float halfToFloat(std::uint16_t value) noexcept
 {
   const std::uint32_t sign = (value >> 15U) & 1U;
   const std::uint32_t exponent = (value >> 10U) & 0x1fU;

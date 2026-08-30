@@ -12,7 +12,7 @@ namespace L2Perception
 namespace
 {
 
-[[nodiscard]] std::string normalizedBackendName(std::string_view name)
+std::string normalizedBackendName(std::string_view name)
 {
   std::string normalized;
   normalized.reserve(name.size());

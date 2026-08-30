@@ -30,12 +30,12 @@ struct Delay {
   double control_to_fire{0.0};    // 电控执行 -> 弹丸离膛
   double fire_to_hit{0.0};        // 弹丸离膛 -> 命中目标
 
-  [[nodiscard]] double beforeFire() const noexcept
+  double beforeFire() const noexcept
   {
     return image_to_plan + plan_to_send + send_to_control + control_to_fire;
   }
 
-  [[nodiscard]] double total() const noexcept
+  double total() const noexcept
   {
     return beforeFire() + fire_to_hit;
   }
@@ -69,12 +69,12 @@ struct FireReference {
   int armor_id{-1};
   Eigen::Vector4d armor_pose{Eigen::Vector4d::Zero()};
 
-  [[nodiscard]] Eigen::Vector3d point() const noexcept
+  Eigen::Vector3d point() const noexcept
   {
     return armor_pose.head<3>();
   }
 
-  [[nodiscard]] double facingAngle() const noexcept
+  double facingAngle() const noexcept
   {
     // 视线方向减板面法向并归一化到 [-pi, pi]。
     const double line_of_sight = std::atan2(armor_pose.y(), armor_pose.x());
@@ -97,12 +97,12 @@ struct Plan {
   std::optional<FireReference> fire;
   PlanTiming timing;
 
-  [[nodiscard]] bool valid() const noexcept
+  bool valid() const noexcept
   {
     return status != PlanStatus::Rejected;
   }
 
-  [[nodiscard]] bool fireAdmissible() const noexcept
+  bool fireAdmissible() const noexcept
   {
     return status == PlanStatus::FireReady;
   }
@@ -130,14 +130,14 @@ struct PlanConfig {
   // control_to_fire 用上面的高低速档，fire_to_hit 是弹道飞行时间。
   std::optional<double> send_to_control;
 
-  [[nodiscard]] bool bulletSpeedValid(double speed) const noexcept
+  bool bulletSpeedValid(double speed) const noexcept
   {
     return std::isfinite(speed) && speed >= min_valid_bullet_speed;
   }
 
   // 延迟链是否已经完整到可以开火。缺这一段时目标外推的落点会系统性偏早，
   // 所以 Planner 会把计划降级成 TrackOnly：云台照常跟随，但不允许开火。
-  [[nodiscard]] bool fireDelayReady() const noexcept
+  bool fireDelayReady() const noexcept
   {
     return send_to_control.has_value();
   }

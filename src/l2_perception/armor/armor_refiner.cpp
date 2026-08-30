@@ -15,7 +15,7 @@ namespace L2Perception
 namespace
 {
 
-[[nodiscard]] float distance(const cv::Point2f& left, const cv::Point2f& right) noexcept
+float distance(const cv::Point2f& left, const cv::Point2f& right) noexcept
 {
   return static_cast<float>(cv::norm(left - right));
 }
@@ -32,7 +32,7 @@ struct Lightbar
   double angle_error{0.0};
 };
 
-[[nodiscard]] Lightbar makeLightbar(const cv::RotatedRect& rotated_rect)
+Lightbar makeLightbar(const cv::RotatedRect& rotated_rect)
 {
   std::array<cv::Point2f, 4> corners{};
   rotated_rect.points(corners.data());
@@ -54,7 +54,7 @@ struct Lightbar
   return lightbar;
 }
 
-[[nodiscard]] bool finiteCorners(const std::array<cv::Point2f, 4>& corners) noexcept
+bool finiteCorners(const std::array<cv::Point2f, 4>& corners) noexcept
 {
   return std::all_of(corners.begin(), corners.end(), [](const cv::Point2f& point) {
     return std::isfinite(point.x) && std::isfinite(point.y);

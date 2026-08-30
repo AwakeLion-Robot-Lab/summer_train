@@ -29,7 +29,7 @@ void expect(bool condition, std::string_view message)
   }
 }
 
-[[nodiscard]] std::vector<cv::Point3d> armorPoints()
+std::vector<cv::Point3d> armorPoints()
 {
   const double half_width = kSmallWidth / 2.0;
   const double half_height = kArmorHeight / 2.0;
@@ -40,7 +40,7 @@ void expect(bool condition, std::string_view message)
     {0.0, half_width, -half_height}};
 }
 
-[[nodiscard]] L2Perception::Armor makeDetection(
+L2Perception::Armor makeDetection(
   const L1Sensor::CameraCalibration& calibration,
   L2Perception::ArmorClass armor_class = L2Perception::ArmorClass::Infantry3,
   cv::Vec3d translation = cv::Vec3d{0.05, -0.03, 3.0})

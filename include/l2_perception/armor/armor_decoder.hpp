@@ -58,11 +58,11 @@ struct ArmorTensorContract
   bool coordinates_are_normalized{false};  // true 时角点 0~1，需先乘模型宽高。
 
   // 契约是否匹配靠整体比较，不靠逐字段核对。
-  [[nodiscard]] friend bool operator==(
+  friend bool operator==(
     const ArmorTensorContract&, const ArmorTensorContract&) = default;
 
   // 该契约要求模型至少提供多少个字段。
-  [[nodiscard]] std::size_t requiredFieldCount() const noexcept;
+  std::size_t requiredFieldCount() const noexcept;
 };
 
 // 与契约无关的筛选策略。这些是可以按场地和距离自由调的数，改它们不会
@@ -82,8 +82,8 @@ struct ArmorDecoderConfig
 // 模型导出时定死，配错不报错，只会静默解出垃圾角点。
 //   yolov5_22  [1, 25200, 22]  输出名 output   SP yolov5.xml / 深大 Infantry-v5n
 //   yolov8_21  [1, 21, 6300]   输出名 output0  深大 Infantry-v8n，无 objectness
-[[nodiscard]] ArmorDecoderConfig yolov5_22DecoderConfig() noexcept;
-[[nodiscard]] ArmorDecoderConfig yolov8_21DecoderConfig() noexcept;
+ArmorDecoderConfig yolov5_22DecoderConfig() noexcept;
+ArmorDecoderConfig yolov8_21DecoderConfig() noexcept;
 
 // 按名字取预设，名字无效时返回 nullopt 由调用方报错。
 [[nodiscard]] std::optional<ArmorDecoderConfig> armorDecoderPreset(std::string_view name);

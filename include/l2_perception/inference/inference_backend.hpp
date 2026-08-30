@@ -90,9 +90,9 @@ public:
   std::vector<std::size_t> shape;
 
   void setOwnedData(std::vector<std::uint8_t> data);
-  [[nodiscard]] std::span<const std::uint8_t> values() const noexcept;
-  [[nodiscard]] std::size_t elementCount() const noexcept;
-  [[nodiscard]] bool isConsistent() const noexcept;
+  std::span<const std::uint8_t> values() const noexcept;
+  std::size_t elementCount() const noexcept;
+  bool isConsistent() const noexcept;
 
 private:
   std::vector<std::uint8_t> owned_data_;
@@ -107,8 +107,8 @@ public:
   // 一般在创建 ArmorDetector 前完成，不要在每帧 detect() 中重复 load()。
   virtual void load(const InferenceModelConfig& config) = 0;
 
-  [[nodiscard]] virtual bool ready() const noexcept = 0;
-  [[nodiscard]] virtual const InferenceInputSpec& inputSpec() const = 0;
+  virtual bool ready() const noexcept = 0;
+  virtual const InferenceInputSpec& inputSpec() const = 0;
 
   // 同步推理。U8 NHWC input.values() 在 infer() 返回前必须有效。
   // 返回结果可以拥有数据，也可以用带生命周期租约的只读零拷贝视图。
@@ -121,7 +121,7 @@ public:
 // L2 装甲模块的事，两者不要混在一起。
 [[nodiscard]] std::vector<InferenceOutputSpec> probeOutputSpecs(IInferenceBackend& backend);
 
-[[nodiscard]] std::string_view inferenceBackendName(InferenceBackendKind backend) noexcept;
+std::string_view inferenceBackendName(InferenceBackendKind backend) noexcept;
 [[nodiscard]] std::optional<InferenceBackendKind> inferenceBackendFromString(
   std::string_view name);
 [[nodiscard]] std::unique_ptr<IInferenceBackend> makeInferenceBackend(

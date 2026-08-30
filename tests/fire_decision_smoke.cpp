@@ -21,7 +21,7 @@ void require(bool condition, const std::string& message)
   }
 }
 
-[[nodiscard]] bool hasReason(
+bool hasReason(
   const L5Control::FireDecision& decision, L5Control::RejectReason reason)
 {
   for (const auto& item : decision.reasons) {
@@ -31,14 +31,14 @@ void require(bool condition, const std::string& message)
 }
 
 // 所有闸门都打开、云台完全对准的一帧。各用例在此基础上只破坏一个条件。
-[[nodiscard]] L5Control::FireConfig makeConfig()
+L5Control::FireConfig makeConfig()
 {
   L5Control::FireConfig config;
   config.shoot_enable = true;
   return config;
 }
 
-[[nodiscard]] L5Control::FireInput makeInput()
+L5Control::FireInput makeInput()
 {
   L5Control::FireInput input;
 
@@ -314,8 +314,58 @@ void testPlanReasonsStayPrecise()
 
 }  // namespace
 
+// 竖直命中窗口要随"装甲板后仰角 α + 视线仰角 β"收缩，可见高度是 h·|cos(α+β)|。
+void testVerticalWindowFollowsPlateTilt()
+{
+  // 用近距离目标并放开 min_pitch_tolerance：默认 0.5 度的下限在 4 m 处会把
+  // 倾角带来的差别整个夹平，那样测不出公式有没有接上。
+  L5Control::FireConfig config;
+  config.min_pitch_tolerance = 1e-6;
+  const L5Control::FireDecider decider{config};
+
+  // 同一个点、同一板型，只有类别不同——前哨站的板反着倾，于是只有 α 的符号变了。
+  const auto windowAt = [&decider](double height_m, L3Estimation::ArmorName name) {
+    L4Planning::Plan plan;
+    plan.status = L4Planning::PlanStatus::FireReady;
+    plan.fire = L4Planning::FireReference{0, {1.5, 0.0, height_m, 0.0}};
+    return decider.tolerance(plan, L3Estimation::ArmorType::Small, name).pitch;
+  };
+
+  const auto kInfantry = L3Estimation::ArmorName::Infantry3;
+  const auto kOutpost = L3Estimation::ArmorName::Outpost;
+
+  // 抬头看：常规板后仰 +15 度与视线仰角叠加，窗口收窄；前哨站板前倾，两者
+  // 部分抵消，同一位置反而看得更全。几何完全相同，差别只来自 α 的符号。
+  require(
+    windowAt(0.75, kOutpost) > windowAt(0.75, kInfantry),
+    "抬头看时前倾的前哨板应当比后仰的常规板留出更大的竖直窗口");
+
+  // 低头看：符号反过来。
+  require(
+    windowAt(-0.75, kInfantry) > windowAt(-0.75, kOutpost),
+    "低头看时后仰的常规板反而更正对枪口");
+
+  // 俯角恰好抵消后仰（α + β = 0）时看到完整板高，是这块板的窗口上界。
+  const double aligned = windowAt(-1.5 * std::tan(15.0 * std::numbers::pi / 180.0), kInfantry);
+  require(aligned > windowAt(0.75, kInfantry), "α+β=0 应当给出更大的窗口");
+  require(aligned > windowAt(1.5, kInfantry), "偏离越多窗口越窄");
+
+  // 视线接近与板面平行时窗口趋于 0，必须由 min_pitch_tolerance 兜住。
+  const L5Control::FireConfig defaults;
+  const L5Control::FireDecider clamped{defaults};
+  L4Planning::Plan grazing;
+  grazing.status = L4Planning::PlanStatus::FireReady;
+  grazing.fire = L4Planning::FireReference{0, {1.5, 0.0, 8.0, 0.0}};
+  require(
+    clamped.tolerance(grazing, L3Estimation::ArmorType::Small, kInfantry).pitch >=
+      defaults.min_pitch_tolerance,
+    "掠射时必须退到最小 pitch 容差而不是 0");
+  std::cout << "  [ok] vertical window follows plate tilt and line of sight\n";
+}
+
 int main()
 {
+  testVerticalWindowFollowsPlateTilt();
   testAlignedShotIsAdmitted();
   testShootEnableGatesOnlyTheOutput();
   testToleranceShrinksWithDistance();

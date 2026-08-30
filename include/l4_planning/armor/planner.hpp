@@ -41,7 +41,7 @@ public:
     bool to_now = true);
 
   void reset() noexcept override;
-  [[nodiscard]] int lockedArmorId() const noexcept { return locked_id_; }
+  int lockedArmorId() const noexcept { return locked_id_; }
 
 private:
   struct AimPoint {
@@ -50,7 +50,7 @@ private:
     Eigen::Vector4d xyza{Eigen::Vector4d::Zero()};  // [x, y, z, normal_yaw]
   };
 
-  [[nodiscard]] AimPoint chooseAimPoint(
+  AimPoint chooseAimPoint(
     const L3Estimation::TrackedTarget& target);
 
   ArmorPlanConfig config_;

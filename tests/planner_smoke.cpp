@@ -211,13 +211,13 @@ class ForwardOnlyDragModel final : public L4Planning::IBallisticModel {
 public:
   ForwardOnlyDragModel(double gravity, double drag) noexcept : inner_(gravity, drag) {}
 
-  [[nodiscard]] std::optional<L4Planning::Impact> impact(
+  std::optional<L4Planning::Impact> impact(
     double range, double pitch, double v0) const noexcept override
   {
     return inner_.impact(range, pitch, v0);
   }
   // 刻意不覆盖 launch()，落到基类的 nullopt 上。
-  [[nodiscard]] std::string_view name() const noexcept override
+  std::string_view name() const noexcept override
   {
     return "forward_only";
   }

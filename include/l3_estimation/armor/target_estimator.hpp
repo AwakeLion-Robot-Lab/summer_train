@@ -68,8 +68,8 @@ public:
 
   // 车辆物理装甲板数量，以及滤波器最后一次推进到的时刻。L4 用后者算曝光到
   // 规划的可测量延迟段。
-  [[nodiscard]] int armor_num() const noexcept { return armor_num_; }
-  [[nodiscard]] std::chrono::steady_clock::time_point t() const noexcept { return t_; }
+  int armor_num() const noexcept { return armor_num_; }
+  std::chrono::steady_clock::time_point t() const noexcept { return t_; }
 
   // 任一候选半径离开物理范围时认为滤波器发散。
   bool diverged() const;
@@ -95,7 +95,7 @@ private:
   void update_ypda(const Armor & armor, int id);
 
   // 该编号的板用哪一维高度偏移；-1 表示直接用中心高度 x[4]。
-  [[nodiscard]] int heightIndex(int id) const noexcept;
+  int heightIndex(int id) const noexcept;
   // 从整车状态计算指定装甲板的位置及其观测 Jacobian。
   Eigen::Vector3d h_armor_xyz(const Eigen::VectorXd & x, int id) const;
   Eigen::MatrixXd h_jacobian(const Eigen::VectorXd & x, int id) const;

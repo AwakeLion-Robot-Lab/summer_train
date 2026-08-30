@@ -28,7 +28,7 @@ public:
 
   // 最近一次 update() 的开火判定。调试叠加层要显示拒绝原因，命令本身
   // 看不出"为什么不开火"。
-  [[nodiscard]] const FireDecision& lastDecision() const noexcept
+  const FireDecision& lastDecision() const noexcept
   {
     return last_decision_;
   }

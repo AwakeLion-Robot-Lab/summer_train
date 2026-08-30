@@ -17,12 +17,12 @@ void require(bool condition, const std::string& message)
   }
 }
 
-[[nodiscard]] bool near(float actual, float expected, float tolerance = 1e-5F)
+bool near(float actual, float expected, float tolerance = 1e-5F)
 {
   return std::abs(actual - expected) <= tolerance;
 }
 
-[[nodiscard]] std::size_t pixelOffset(int x, int y, int width)
+std::size_t pixelOffset(int x, int y, int width)
 {
   return (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
           static_cast<std::size_t>(x)) *

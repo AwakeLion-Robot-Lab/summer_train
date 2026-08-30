@@ -31,7 +31,7 @@ struct SerialConfig {
   Eigen::Matrix3d R_imu_barrel = Eigen::Matrix3d::Identity();
 
   // 该外参是否为单位阵之外的值；用于跳过恒等变换并输出启动日志。
-  [[nodiscard]] bool imuBarrelRotationNeeded() const noexcept
+  bool imuBarrelRotationNeeded() const noexcept
   {
     return !R_imu_barrel.isApprox(Eigen::Matrix3d::Identity());
   }

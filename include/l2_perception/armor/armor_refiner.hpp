@@ -78,7 +78,7 @@ public:
   RefineStats refine(const cv::Mat& image, std::vector<Armor>& armors,
                      std::vector<RefineRecord>* records = nullptr) const;
 
-  [[nodiscard]] const ArmorRefinerConfig& config() const noexcept { return config_; }
+  const ArmorRefinerConfig& config() const noexcept { return config_; }
 
 private:
   bool detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord* record) const;

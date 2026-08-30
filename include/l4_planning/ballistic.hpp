@@ -33,7 +33,7 @@ public:
     double range, double pitch, double v0) const noexcept = 0;
   [[nodiscard]] virtual std::optional<Launch> launch(
     double range, double height, double v0) const noexcept;
-  [[nodiscard]] virtual std::string_view name() const noexcept = 0;
+  virtual std::string_view name() const noexcept = 0;
 };
 
 class VacuumModel final : public IBallisticModel {
@@ -44,7 +44,7 @@ public:
     double range, double pitch, double v0) const noexcept override;
   [[nodiscard]] std::optional<Launch> launch(
     double range, double height, double v0) const noexcept override;
-  [[nodiscard]] std::string_view name() const noexcept override;
+  std::string_view name() const noexcept override;
 
 private:
   double gravity_;
@@ -58,10 +58,10 @@ public:
     double range, double pitch, double v0) const noexcept override;
   [[nodiscard]] std::optional<Launch> launch(
     double range, double height, double v0) const noexcept override;
-  [[nodiscard]] std::string_view name() const noexcept override;
+  std::string_view name() const noexcept override;
 
 private:
-  [[nodiscard]] double effectiveRange(double range) const noexcept;
+  double effectiveRange(double range) const noexcept;
 
   double gravity_;
   double drag_;
@@ -81,10 +81,10 @@ public:
 
   // d 为水平距离、h 为目标相对枪口高度、bullet_speed 为枪口速度。
   [[nodiscard]] Ballistic solve(double d, double h, double bullet_speed) const;
-  [[nodiscard]] const IBallisticModel& model() const noexcept { return *model_; }
+  const IBallisticModel& model() const noexcept { return *model_; }
 
 private:
-  [[nodiscard]] Ballistic solveByHeightCompensation(
+  Ballistic solveByHeightCompensation(
     double d, double h, double bullet_speed) const;
 
   BallisticConfig config_;

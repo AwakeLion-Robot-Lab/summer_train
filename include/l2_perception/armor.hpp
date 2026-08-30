@@ -30,7 +30,7 @@ enum class ArmorClass : int {
   Unknown = -1
 };
 
-[[nodiscard]] constexpr ArmorClass armorClassFromId(int class_id) noexcept
+constexpr ArmorClass armorClassFromId(int class_id) noexcept
 {
   return class_id >= static_cast<int>(ArmorClass::Guard)
              && class_id <= static_cast<int>(ArmorClass::BaseLarge)

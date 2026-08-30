@@ -36,9 +36,9 @@ struct ImageTransform
   int pad_bottom{0};
 
   // 原图点 -> 模型坐标：point * scale + 左上补边。
-  [[nodiscard]] cv::Point2f sourceToModel(const cv::Point2f& point) const noexcept;
+  cv::Point2f sourceToModel(const cv::Point2f& point) const noexcept;
   // 模型点 -> 原图坐标：(point - 左上补边) / scale。
-  [[nodiscard]] cv::Point2f modelToSource(const cv::Point2f& point) const noexcept;
+  cv::Point2f modelToSource(const cv::Point2f& point) const noexcept;
 };
 
 struct PreprocessedImage

@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <numbers>
 #include <limits>
 #include <optional>
 
@@ -25,7 +26,7 @@ enum class ArmorType : std::uint8_t {
 //
 // 未知类别返回 nullopt，不猜板型：猜错会同时污染 PnP 几何和火控的角度容差。
 // L3 的 PnpSolver 和 L5 的 FireDecider 共用这一份映射，不各写一份。
-[[nodiscard]] constexpr std::optional<ArmorType> armorTypeOf(ArmorName name) noexcept
+constexpr std::optional<ArmorType> armorTypeOf(ArmorName name) noexcept
 {
   switch (name) {
     case ArmorName::Hero:
@@ -52,7 +53,18 @@ enum class ArmorType : std::uint8_t {
 // 这一份同时被 Tracker::initializeTarget 的整车初始化和 PnpSolver 的双板配对
 // 读取：双板联合 yaw 要求两块相邻板的朝向差恰好 2π/n，n 写错会把整车 yaw 直接
 // 拉偏 30 度（前哨按 90 度配对就是这个错）。未知类别返回 nullopt，不猜板数。
-[[nodiscard]] constexpr std::optional<int> armorCountOf(ArmorName name) noexcept
+// 装甲板绕自身水平轴的后仰角，单位 rad。常规车的板顶向后倾 15 度；前哨站的
+// 三块板反过来向前倾，所以取负。
+//
+// 这个量有三个用处，必须同一个来源：PnP 的物点姿态、叠加层画法向箭头、
+// 火控算竖直命中窗口。分头写死会在改板型时漏掉其中一处。
+constexpr double armorPitchOf(ArmorName name) noexcept
+{
+  constexpr double kTilt = 15.0 * std::numbers::pi / 180.0;
+  return name == ArmorName::Outpost ? -kTilt : kTilt;
+}
+
+constexpr std::optional<int> armorCountOf(ArmorName name) noexcept
 {
   switch (name) {
     case ArmorName::Outpost:
