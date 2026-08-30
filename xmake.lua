@@ -232,6 +232,11 @@ local standalone_tests = {
     jet_smoke = {
         includes = {"include", "/usr/include/eigen3"},
     },
+    -- 整车模型只依赖 Eigen 与 L3 的类型定义，同样不牵扯 SDK。
+    vehicle_model_smoke = {
+        includes = {"include", "/usr/include/eigen3"},
+        opencv   = {"opencv_core"},
+    },
     -- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK。
     armor_refiner_smoke = {
         files    = {"src/l2_perception/armor/armor_refiner.cpp"},
