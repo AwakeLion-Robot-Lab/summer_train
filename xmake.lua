@@ -242,6 +242,11 @@ local standalone_tests = {
         includes = {"include", "/usr/include/eigen3"},
         opencv   = {"opencv_core"},
     },
+    -- UVL 观测要 calib3d 里的 projectPoints 做对拍参照。
+    uvl_measure_smoke = {
+        includes = {"include", "/usr/include/eigen3"},
+        opencv   = {"opencv_core", "opencv_calib3d"},
+    },
     -- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK。
     armor_refiner_smoke = {
         files    = {"src/l2_perception/armor/armor_refiner.cpp"},

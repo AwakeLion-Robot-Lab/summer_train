@@ -1082,8 +1082,14 @@ static inline void points_to_observation(const ImagePoint&lt;T&gt;&amp; top,
 
     <div class="note trap">
       <div class="note-h">atan2(Δx, Δy) —— x 在前,不是笔误</div>
-      <p>标准写法是 <code>atan2(y, x)</code> 量的是"偏离水平方向"的角。这里参数交换,量的是<strong>偏离竖直方向</strong>的角。</p>
-      <p>原因很实际:装甲板灯条基本竖直,\(|\Delta_y| \gg |\Delta_x|\)。用标准写法 \(\alpha\) 会在 \(\pm\pi/2\) 附近工作,残差归一化和线性化都别扭;交换之后 \(\alpha \approx 0\),干净得多。</p>
+      <p>标准写法是 <code>atan2(y, x)</code>,量的是"偏离水平方向"的角。这里参数交换,量的是<strong>偏离竖直方向</strong>的角。灯条基本竖直,于是物理倾斜直接对应 \(\alpha\) 的小变化,\(\partial\alpha/\partial\mathbf{x}\) 的条件数更好。</p>
+      <p><strong>但 \(\alpha\) 的绝对值不在 0 附近,而在 \(\pm\pi\) 附近。</strong>实测(焦距 1210、距离 3 m):</p>
+<pre>上端点（世界 +z） v = 483.658
+下端点            v = 507.269
+Δy = -23.61,  Δx = -0.87
+<span class="hl">α  = -3.1047 rad</span>          π = 3.1416</pre>
+      <p>因为 <code>build_light</code> 的第一个点取世界 <strong>+z(上)</strong>,而相机光学系 y 轴<strong>朝下</strong>,投影后"上端点"的 v 反而更小,\(\Delta_y &lt; 0\),<code>atan2</code> 自然落到 \(\pm\pi\)。检测角点序(先 <code>LEFT_TOP</code>)也是这个方向,预测与观测同号,残差走 <code>normalize_angle</code> 就抹平了,滤波器不受影响。</p>
+      <p><strong>后果不该忽略:角度观测常年贴着 ±π 的分支切口。</strong>于是 §6.2 里"中心差分差的是 <code>residual</code> 而不是 <code>z_pred</code>"<strong>不是防御性写法,是必需的</strong>——扰动只要跨过切口,直接差 <code>z_pred</code> 就得到 \(2\pi\) 的假梯度,H 的那一列彻底作废。</p>
     </div>
   </article>
 
@@ -1271,6 +1277,7 @@ residual(const Eigen::Matrix&lt;T, UVLZ_N, 1&gt;&amp; z_pred,
       <p><strong>为什么差 residual 而不是 z_pred?</strong>因为 \(\mathbf{r} = \mathbf{z} - \hat{\mathbf{z}}\),\(\mathbf{z}\) 是常量,所以</p>
       <div class="disp">$$\frac{\partial\mathbf{r}}{\partial\boldsymbol\delta} = -\frac{\partial\hat{\mathbf{z}}}{\partial\boldsymbol\delta} = -\mathbf{H} \;\Longrightarrow\; \mathbf{H} = -\frac{\partial\mathbf{r}}{\partial\boldsymbol\delta}$$</div>
       <p>这解释了代码里的负号。而<strong>真正的动机是角度缠绕</strong>:如果直接差 \(\hat{\mathbf{z}}\),当 \(\hat{z}_\alpha^+\) 和 \(\hat{z}_\alpha^-\) 分别落在 \(\pm\pi\) 两侧时,差出来是 \(\approx 2\pi\) 而不是 \(\approx 0\),\(\mathbf{H}\) 的那一列会得到一个巨大的假梯度。走 <code>residual</code> 就吃到了 <code>normalize_angle</code>(§5.5)。</p>
+      <p>而由 §5.4 的实测,\(\alpha\) <strong>常年就贴在 \(\pm\pi\) 上</strong>,所以这不是小概率的边界情况,是每一帧都在发生的事。<strong>这一行不能省。</strong></p>
       <p class="concl">代价:每个观测 \(2\times 13 = 26\) 次完整投影。<strong>这是纯粹的工程妥协,不是理论需要</strong>——见下方。</p>
     </div>
 
