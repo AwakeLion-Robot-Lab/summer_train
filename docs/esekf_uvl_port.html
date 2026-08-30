@@ -1,0 +1,1704 @@
+<title>ESEKF 与 UVL 观测</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+<script>
+window.MathJax = {
+  tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] },
+  svg: { fontCache: 'global' },
+  options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+};
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-svg.js"></script>
+<style>
+:root{
+  --ground:#F6F7FA; --surface:#FFFFFF; --surface-2:#F0F2F6;
+  --ink:#15181E; --body:#2C333F; --muted:#5D6675; --faint:#8892A1;
+  --rule:#DCE1E9; --rule-soft:#E9EDF3;
+  --accent:#2C57C4; --accent-soft:#E6ECFB;
+  --math:#8A5300; --math-soft:#FBF0DC; --math-rule:#E3C48A;
+  --port:#0E6A60; --port-soft:#DFF1EE; --port-rule:#8FCCC3;
+  --warn:#A33218; --warn-soft:#FBE9E4; --warn-rule:#E4A895;
+  --code-bg:#F4F6F9; --code-ink:#242A33;
+  --shadow:0 1px 2px rgba(21,24,30,.05), 0 8px 24px -14px rgba(21,24,30,.18);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0F1217; --surface:#161A21; --surface-2:#1C212A;
+    --ink:#E7EBF2; --body:#C7CEDA; --muted:#939CAB; --faint:#6E7887;
+    --rule:#262C37; --rule-soft:#1F242D;
+    --accent:#83A6FF; --accent-soft:#1A2440;
+    --math:#E3AC57; --math-soft:#2A2113; --math-rule:#5C4620;
+    --port:#54C4B4; --port-soft:#0F2A28; --port-rule:#255049;
+    --warn:#EA8A70; --warn-soft:#2E1A15; --warn-rule:#5C3025;
+    --code-bg:#12161C; --code-ink:#CBD3DF;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -16px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0F1217; --surface:#161A21; --surface-2:#1C212A;
+  --ink:#E7EBF2; --body:#C7CEDA; --muted:#939CAB; --faint:#6E7887;
+  --rule:#262C37; --rule-soft:#1F242D;
+  --accent:#83A6FF; --accent-soft:#1A2440;
+  --math:#E3AC57; --math-soft:#2A2113; --math-rule:#5C4620;
+  --port:#54C4B4; --port-soft:#0F2A28; --port-rule:#255049;
+  --warn:#EA8A70; --warn-soft:#2E1A15; --warn-rule:#5C3025;
+  --code-bg:#12161C; --code-ink:#CBD3DF;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -16px rgba(0,0,0,.7);
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--body);
+  font-family:"IBM Plex Sans","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+  font-size:16px; line-height:1.72; -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,h4{color:var(--ink); text-wrap:balance; line-height:1.25; margin:0}
+a{color:var(--accent)}
+code,kbd{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ---------- shell ---------- */
+.shell{display:grid; grid-template-columns:minmax(0,1fr); max-width:1400px; margin:0 auto}
+@media (min-width:1080px){
+  .shell{grid-template-columns:268px minmax(0,1fr); gap:0}
+}
+.rail{display:none}
+@media (min-width:1080px){
+  .rail{
+    display:block; position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+    border-right:1px solid var(--rule); padding:34px 22px 60px 32px; background:var(--surface);
+  }
+}
+.rail-title{font-size:12px; letter-spacing:.13em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:18px}
+.rail ol{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px}
+.rail .grp{margin-top:16px; padding-top:12px; border-top:1px solid var(--rule-soft)}
+.rail .grp:first-child{margin-top:0;border-top:0;padding-top:0}
+.rail .grp-h{font-size:11.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); font-weight:600; margin-bottom:6px}
+.rail a{display:block; text-decoration:none; color:var(--muted); font-size:13.5px; padding:3px 8px; border-radius:5px; border-left:2px solid transparent; line-height:1.5}
+.rail a:hover{color:var(--ink); background:var(--surface-2)}
+.rail a .n{font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--faint); margin-right:7px; font-variant-numeric:tabular-nums}
+main{padding:0 24px 120px; min-width:0}
+.wrap{max-width:790px; margin:0 auto}
+@media (min-width:1080px){ main{padding:0 56px 140px} }
+
+/* ---------- masthead ---------- */
+.mast{padding:76px 0 40px; border-bottom:1px solid var(--rule)}
+.eyebrow{font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); font-weight:500; margin-bottom:20px}
+.mast h1{font-size:clamp(34px,5.4vw,52px); font-weight:700; letter-spacing:-.024em; margin-bottom:20px}
+.lede{font-size:18.5px; line-height:1.66; color:var(--muted); max-width:64ch}
+.lede strong{color:var(--ink); font-weight:600}
+.srcbox{margin-top:34px; border:1px solid var(--rule); border-radius:9px; background:var(--surface); padding:18px 20px; box-shadow:var(--shadow)}
+.srcbox h4{font-size:11.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:11px}
+.srcbox ul{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:5px}
+.srcbox li{font-family:"IBM Plex Mono",monospace; font-size:12.8px; color:var(--body); display:flex; gap:10px; align-items:baseline}
+.srcbox li .ln{color:var(--faint); font-variant-numeric:tabular-nums; flex-shrink:0}
+
+/* ---------- layer heads ---------- */
+.layer{margin-top:78px}
+.layer-head{display:flex; align-items:baseline; gap:16px; padding-bottom:14px; border-bottom:2px solid var(--ink); margin-bottom:8px}
+.layer-num{font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:600; color:var(--accent); letter-spacing:.06em; flex-shrink:0}
+.layer-head h2{font-size:27px; font-weight:700; letter-spacing:-.017em}
+.layer-sub{color:var(--muted); font-size:15px; margin:14px 0 0; max-width:66ch}
+.layer-file{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--faint); margin-top:6px}
+
+/* ---------- function entries ---------- */
+.fn{margin-top:44px; scroll-margin-top:20px}
+.fn-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:6px}
+.fn-id{font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:600; color:var(--faint); font-variant-numeric:tabular-nums}
+.fn h3{font-family:"IBM Plex Mono",monospace; font-size:19px; font-weight:600; letter-spacing:-.01em}
+.fn-loc{font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--muted); background:var(--surface-2); border:1px solid var(--rule-soft); padding:2px 8px; border-radius:4px}
+.fn-role{color:var(--muted); font-size:14.5px; margin:0 0 16px; font-style:italic}
+.fn p{margin:14px 0}
+.fn ul,.fn ol{margin:14px 0; padding-left:22px; display:flex; flex-direction:column; gap:7px}
+.fn li{padding-left:2px}
+strong{color:var(--ink); font-weight:600}
+p code, li code, td code{background:var(--surface-2); border:1px solid var(--rule-soft); border-radius:4px; padding:1px 5px; font-size:.885em; color:var(--code-ink)}
+
+/* ---------- code ---------- */
+pre{
+  background:var(--code-bg); border:1px solid var(--rule); border-radius:8px;
+  padding:16px 18px; overflow-x:auto; margin:18px 0;
+  font-family:"IBM Plex Mono",monospace; font-size:13.1px; line-height:1.66; color:var(--code-ink);
+  tab-size:4;
+}
+pre .c{color:var(--faint)}
+pre .k{color:var(--accent); font-weight:500}
+pre .m{color:var(--math)}
+pre .hl{background:var(--accent-soft); border-radius:3px; padding:0 3px; margin:0 -3px}
+
+/* ---------- math note blocks ---------- */
+.math{
+  margin:26px 0; border-left:3px solid var(--math-rule); background:var(--math-soft);
+  border-radius:0 8px 8px 0; padding:20px 24px 22px;
+  font-family:"IBM Plex Serif",Georgia,"Songti SC",serif;
+}
+.math-h{
+  font-family:"IBM Plex Sans",sans-serif; font-size:11.5px; letter-spacing:.13em;
+  text-transform:uppercase; color:var(--math); font-weight:600; margin-bottom:12px;
+  display:flex; align-items:center; gap:8px;
+}
+.math-h::before{content:""; width:14px; height:1.5px; background:var(--math-rule); flex-shrink:0}
+.math p{margin:12px 0; line-height:1.78}
+.math ul,.math ol{margin:12px 0; padding-left:22px; display:flex; flex-direction:column; gap:8px}
+.math .disp{overflow-x:auto; overflow-y:hidden; margin:16px 0; padding:2px 0}
+.math code{font-family:"IBM Plex Mono",monospace; font-size:.88em; background:rgba(0,0,0,.045); padding:1px 5px; border-radius:4px}
+:root[data-theme="dark"] .math code, :root:not([data-theme="light"]) .math code{background:rgba(255,255,255,.06)}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]) .math code{background:rgba(0,0,0,.045)} }
+.math .concl{margin-top:16px; padding-top:14px; border-top:1px dashed var(--math-rule); font-weight:600; color:var(--ink)}
+
+/* ---------- callouts ---------- */
+.note{margin:22px 0; border:1px solid var(--rule); border-left:3px solid var(--rule); border-radius:0 8px 8px 0; background:var(--surface); padding:16px 20px}
+.note-h{font-size:11.5px; letter-spacing:.11em; text-transform:uppercase; font-weight:600; margin-bottom:8px}
+.note p:first-of-type{margin-top:0} .note p:last-child{margin-bottom:0}
+.note.trap{border-left-color:var(--warn-rule); background:var(--warn-soft); border-color:var(--warn-rule)}
+.note.trap .note-h{color:var(--warn)}
+.note.port{border-left-color:var(--port-rule); background:var(--port-soft); border-color:var(--port-rule)}
+.note.port .note-h{color:var(--port)}
+.note ul{margin:10px 0 0; padding-left:20px; display:flex; flex-direction:column; gap:6px}
+
+/* ---------- tables ---------- */
+.tw{overflow-x:auto; margin:20px 0; border:1px solid var(--rule); border-radius:8px; background:var(--surface)}
+table{border-collapse:collapse; width:100%; font-size:14px}
+th{
+  text-align:left; padding:11px 15px; font-size:11.5px; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--muted); font-weight:600; border-bottom:1px solid var(--rule); white-space:nowrap;
+}
+td{padding:11px 15px; border-bottom:1px solid var(--rule-soft); vertical-align:top; color:var(--body)}
+tr:last-child td{border-bottom:0}
+td.mono,th.mono{font-family:"IBM Plex Mono",monospace; font-size:12.8px; font-variant-numeric:tabular-nums; white-space:nowrap}
+
+/* ---------- misc ---------- */
+hr{border:0; border-top:1px solid var(--rule); margin:56px 0}
+.quiz{counter-reset:q; list-style:none; padding:0; margin:22px 0; display:flex; flex-direction:column; gap:14px}
+.quiz li{counter-increment:q; position:relative; padding:14px 18px 14px 52px; background:var(--surface); border:1px solid var(--rule); border-radius:8px}
+.quiz li::before{
+  content:counter(q); position:absolute; left:16px; top:14px;
+  font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:600; color:var(--accent);
+}
+.foot{margin-top:64px; padding-top:24px; border-top:1px solid var(--rule); color:var(--faint); font-size:13.5px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:3px}
+</style>
+
+<div class="shell">
+<nav class="rail">
+  <div class="rail-title">目录</div>
+  <div class="grp">
+    <div class="grp-h">起步</div>
+    <ol>
+      <li><a href="#conv"><span class="n">00</span>两条约定</a></li>
+    </ol>
+  </div>
+  <div class="grp">
+    <div class="grp-h">L1 · 李群工具</div>
+    <ol>
+      <li><a href="#f-hat"><span class="n">1.1</span>so3_hat</a></li>
+      <li><a href="#f-exp"><span class="n">1.2</span>so3_exp</a></li>
+      <li><a href="#f-log"><span class="n">1.3</span>so3_log</a></li>
+    </ol>
+  </div>
+  <div class="grp">
+    <div class="grp-h">L2 · 状态与几何</div>
+    <ol>
+      <li><a href="#f-idx"><span class="n">2.1</span>idx 枚举</a></li>
+      <li><a href="#f-narg"><span class="n">2.2</span>normalize_angle</a></li>
+      <li><a href="#f-carrot"><span class="n">2.3</span>car_rotation</a></li>
+      <li><a href="#f-radius"><span class="n">2.4</span>armor_radius</a></li>
+      <li><a href="#f-wcp"><span class="n">2.5</span>whole_car_pose</a></li>
+      <li><a href="#f-apose"><span class="n">2.6</span>armor_pose</a></li>
+    </ol>
+  </div>
+  <div class="grp">
+    <div class="grp-h">L3 · 流形运算</div>
+    <ol>
+      <li><a href="#f-srot"><span class="n">3.1</span>state_rotation</a></li>
+      <li><a href="#f-inject"><span class="n">3.2</span>inject_state</a></li>
+      <li><a href="#f-boxminus"><span class="n">3.3</span>box_minus_state</a></li>
+    </ol>
+  </div>
+  <div class="grp">
+    <div class="grp-h">L4 · 运动模型</div>
+    <ol>
+      <li><a href="#f-pred"><span class="n">4.1</span>Predict::operator()</a></li>
+      <li><a href="#f-clamp"><span class="n">4.2</span>Predict::clamp</a></li>
+    </ol>
+  </div>
+  <div class="grp">
+    <div class="grp-h">L5 · UVL 观测</div>
+    <ol>
+      <li><a href="#f-uvctx"><span class="n">5.1</span>UVCtx</a></li>
+      <li><a href="#f-proj"><span class="n">5.2</span>project_points_jets</a></li>
+      <li><a href="#f-pp"><span class="n">5.3</span>project_points</a></li>
+      <li><a href="#f-pto"><span class="n">5.4</span>points_to_observation</a></li>
+      <li><a href="#f-resid"><span class="n">5.5</span>residual</a></li>
+    </ol>
+  </div>
+  <div class="grp">
+    <div class="grp-h">L6 · 滤波器</div>
+    <ol>
+      <li><a href="#f-predict"><span class="n">6.1</span>predict</a></li>
+      <li><a href="#f-um"><span class="n">6.2</span>update_multi</a></li>
+    </ol>
+  </div>
+  <div class="grp">
+    <div class="grp-h">L7 · 装配</div>
+    <ol>
+      <li><a href="#f-reset"><span class="n">7.1</span>reset</a></li>
+      <li><a href="#f-q"><span class="n">7.2</span>process_noise</a></li>
+      <li><a href="#f-pekf"><span class="n">7.3</span>predict_ekf</a></li>
+      <li><a href="#f-update"><span class="n">7.4</span>update</a></li>
+    </ol>
+  </div>
+  <div class="grp">
+    <div class="grp-h">收尾</div>
+    <ol>
+      <li><a href="#port"><span class="n">08</span>移植到 newvision</a></li>
+      <li><a href="#quiz"><span class="n">09</span>自检</a></li>
+    </ol>
+  </div>
+</nav>
+
+<main><div class="wrap">
+
+<header class="mast">
+  <div class="eyebrow">awakening · 逐函数拆解</div>
+  <h1>ESEKF 与 UVL 观测</h1>
+  <p class="lede">从李群工具一路拆到整车滤波器装配,共 <strong>24 个函数</strong>。顺序是严格的依赖序——读到任何一节,它用到的东西前面都讲过了。数学推导单独成块,方便对照做笔记。最后一节是往 <strong>newvision</strong> 移植的对照表和陷阱清单。</p>
+  <div class="srcbox">
+    <h4>覆盖的源文件</h4>
+    <ul>
+      <li><span class="ln">~130 行</span>src/utils/utils.hpp<span class="ln">:19–90, :343–400</span></li>
+      <li><span class="ln">532 行</span>src/tasks/auto_aim/armor_track/motion_model.hpp</li>
+      <li><span class="ln">~280 行</span>3rdparty/KalmanHyLib/error_state_extended_kalman_filter.hpp</li>
+      <li><span class="ln">~410 行</span>src/tasks/auto_aim/armor_track/armor_target.cpp</li>
+    </ul>
+  </div>
+</header>
+
+<section class="layer" id="conv">
+  <div class="layer-head">
+    <span class="layer-num">00</span>
+    <h2>读之前:两条约定</h2>
+  </div>
+  <p class="layer-sub">这两条如果搞反,后面所有符号都会读反。先钉死。</p>
+
+  <div class="note trap">
+    <div class="note-h">约定一 · 装甲板系的 x 轴指向车心,不是朝外</div>
+    <p>在 <code>armor_pose()</code> 里,第 <em>i</em> 块板的位置是 <code>-r·(cos yaw, sin yaw)</code>,而姿态绕 z 轴转了 <code>+yaw</code>,于是旋转矩阵第一列(板的 x 轴)约等于 <code>+(cos yaw, sin yaw)</code>。</p>
+    <p><strong>这两个方向恰好相反</strong>——板的 x 轴从板心指回车心。板的<em>可见面</em>是它的 <strong>−x 侧</strong>。这就是代码里到处写 <code>front_normal = -axis_x</code> 的原因。</p>
+  </div>
+
+  <div class="note trap">
+    <div class="note-h">约定二 · 角点顺序是 TL, BL, BR, TR</div>
+<pre><span class="c">// type.hpp:50</span>
+enum ArmorKeyPointsIndex { LEFT_TOP, LEFT_BOTTOM, RIGHT_BOTTOM, RIGHT_TOP, N };</pre>
+    <p>逆时针,从左上出发<strong>先往下走</strong>。newvision 用的是 <code>TL, TR, BR, BL</code>(顺时针),移植时必须重映射:</p>
+    <ul>
+      <li>左灯条 = newvision <code>corners[0]</code>(TL)+ <code>corners[3]</code>(BL)</li>
+      <li>右灯条 = newvision <code>corners[1]</code>(TR)+ <code>corners[2]</code>(BR)</li>
+    </ul>
+  </div>
+
+  <div class="note port">
+    <div class="note-h">好消息 · 三维物点约定两边一致</div>
+    <p>两个项目的装甲板系都是 <strong>x = 板面法向,y = 左,z = 上</strong>,物点都是 <code>(0, ±W/2, ±H/2)</code>。相机光学系变换矩阵也一样,awakening 的 <code>R_CV2PHYSICS</code> 和 newvision <code>CLAUDE.md</code> 里记的 <code>[[0,0,1],[-1,0,0],[0,-1,0]]</code> 是同一个矩阵。这两块移植时不用动。</p>
+  </div>
+</section>
+
+<section class="layer">
+  <div class="layer-head">
+    <span class="layer-num">L1</span>
+    <h2>李群工具</h2>
+  </div>
+  <p class="layer-sub">三个函数,整套东西的地基。全部模板化在 <code>T</code> 上——因为要能同时吃 <code>double</code> 和 <code>ceres::Jet</code>。</p>
+  <p class="layer-file">src/utils/utils.hpp:19–90</p>
+
+  <article class="fn" id="f-hat">
+    <div class="fn-head">
+      <span class="fn-id">1.1</span>
+      <h3>so3_hat</h3>
+      <span class="fn-loc">utils.hpp:19</span>
+    </div>
+    <p class="fn-role">把三维向量变成反对称矩阵。</p>
+<pre>template&lt;class T&gt;
+inline Eigen::Matrix&lt;T, 3, 3&gt; so3_hat(const Eigen::Matrix&lt;T, 3, 1&gt;&amp; w) {
+    Eigen::Matrix&lt;T, 3, 3&gt; W;
+    W &lt;&lt; T(0), -w.z(),  w.y(),
+         w.z(),   T(0), -w.x(),
+        -w.y(),  w.x(),   T(0);
+    return W;
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · hat 算子</div>
+      <p>hat 算子 \(\wedge\) 把 \(\mathbb{R}^3\) 映到李代数 \(\mathfrak{so}(3)\)(3×3 反对称矩阵集合):</p>
+      <div class="disp">
+      $$\boldsymbol\omega^\wedge = \begin{bmatrix}\omega_1\\\omega_2\\\omega_3\end{bmatrix}^\wedge = \begin{bmatrix}0 &amp; -\omega_3 &amp; \omega_2\\ \omega_3 &amp; 0 &amp; -\omega_1\\ -\omega_2 &amp; \omega_1 &amp; 0\end{bmatrix}$$
+      </div>
+      <p>它的意义是<strong>把叉乘写成矩阵乘法</strong>:</p>
+      <div class="disp">$$\boldsymbol\omega^\wedge \mathbf{v} = \boldsymbol\omega \times \mathbf{v}$$</div>
+      <p>两条要背下来的性质,后面推导反复用:</p>
+      <div class="disp">$$(\boldsymbol\omega^\wedge)^\top = -\boldsymbol\omega^\wedge, \qquad (\boldsymbol\omega^\wedge)^3 = -\|\boldsymbol\omega\|^2\,\boldsymbol\omega^\wedge$$</div>
+      <p class="concl">第二条是罗德里格斯公式只有两项的根本原因——三次方能退回一次方,幂级数被截断。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-exp">
+    <div class="fn-head">
+      <span class="fn-id">1.2</span>
+      <h3>so3_exp</h3>
+      <span class="fn-loc">utils.hpp:26</span>
+    </div>
+    <p class="fn-role">指数映射:旋转向量 → 旋转矩阵。</p>
+<pre>template&lt;class T&gt;
+inline Eigen::Matrix&lt;T, 3, 3&gt; so3_exp(const Eigen::Matrix&lt;T, 3, 1&gt;&amp; phi) {
+    const T theta2 = phi.squaredNorm();
+    const T theta  = ceres::sqrt(theta2);        <span class="c">// 不是 std::sqrt</span>
+
+    const auto W  = so3_hat(phi);
+    const auto W2 = W * W;
+
+    Eigen::Matrix&lt;T, 3, 3&gt; R = Eigen::Matrix&lt;T, 3, 3&gt;::Identity();
+
+    T A, B;
+    <span class="hl">if (theta2 &lt; T(1e-12)) {</span>                    <span class="c">// 小角度分支</span>
+        const T theta4 = theta2 * theta2;
+        A = T(1)   - theta2 / T(6)  + theta4 / T(120);
+        B = T(0.5) - theta2 / T(24) + theta4 / T(720);
+    } else {
+        A = ceres::sin(theta) / theta;
+        B = (T(1) - ceres::cos(theta)) / theta2;
+    }
+
+    R += A * W + B * W2;
+    return R;
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 罗德里格斯公式的推导</div>
+      <p>指数映射按定义是矩阵幂级数。令 \(\boldsymbol\phi = \theta\mathbf{a}\),其中 \(\theta = \|\boldsymbol\phi\|\) 是转角,\(\mathbf{a}\) 是单位转轴:</p>
+      <div class="disp">$$\exp(\boldsymbol\phi^\wedge) = \sum_{n=0}^{\infty} \frac{1}{n!}(\boldsymbol\phi^\wedge)^n = \mathbf{I} + \boldsymbol\phi^\wedge + \tfrac{1}{2!}(\boldsymbol\phi^\wedge)^2 + \tfrac{1}{3!}(\boldsymbol\phi^\wedge)^3 + \cdots$$</div>
+      <p>用上面那条 \((\mathbf{a}^\wedge)^3 = -\mathbf{a}^\wedge\)(单位向量),所有高次项都能塌回 \(\mathbf{a}^\wedge\) 和 \((\mathbf{a}^\wedge)^2\) 两项。按奇偶次分组:</p>
+      <div class="disp">$$\exp(\theta \mathbf{a}^\wedge) = \mathbf{I} + \underbrace{\left(\theta - \tfrac{\theta^3}{3!} + \tfrac{\theta^5}{5!} - \cdots\right)}_{\sin\theta}\mathbf{a}^\wedge + \underbrace{\left(\tfrac{\theta^2}{2!} - \tfrac{\theta^4}{4!} + \cdots\right)}_{1-\cos\theta}(\mathbf{a}^\wedge)^2$$</div>
+      <p>即罗德里格斯公式:</p>
+      <div class="disp">$$\mathbf{R} = \mathbf{I} + \sin\theta\,\mathbf{a}^\wedge + (1-\cos\theta)(\mathbf{a}^\wedge)^2$$</div>
+      <p>代码里存的是 \(\boldsymbol\phi\) 而不是 \((\theta, \mathbf{a})\),所以 \(\mathbf{a}^\wedge = \boldsymbol\phi^\wedge/\theta\),代入后:</p>
+      <div class="disp">$$\mathbf{R} = \mathbf{I} + \underbrace{\frac{\sin\theta}{\theta}}_{A}\,\boldsymbol\phi^\wedge + \underbrace{\frac{1-\cos\theta}{\theta^2}}_{B}\,(\boldsymbol\phi^\wedge)^2$$</div>
+      <p class="concl">这正是代码里的 <code>A</code> 和 <code>B</code>。</p>
+    </div>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 为什么必须有小角度分支</div>
+      <p>\(\theta \to 0\) 时 \(A = \sin\theta/\theta\) 是 \(0/0\),\(B = (1-\cos\theta)/\theta^2\) 也是 \(0/0\)。极限存在(分别是 1 和 1/2),但<strong>浮点直接算会得到 NaN</strong>。所以要用泰勒展开替代:</p>
+      <div class="disp">$$A = \frac{\sin\theta}{\theta} = 1 - \frac{\theta^2}{6} + \frac{\theta^4}{120} - \cdots$$</div>
+      <div class="disp">$$B = \frac{1-\cos\theta}{\theta^2} = \frac{1}{2} - \frac{\theta^2}{24} + \frac{\theta^4}{720} - \cdots$$</div>
+      <p class="concl">在误差状态滤波里,\(\boldsymbol\delta\) 永远接近 0,所以<strong>这条分支才是常走的路径</strong>,不是边界情况。</p>
+    </div>
+
+    <div class="note">
+      <div class="note-h">为什么是 ceres:: 而不是 std::</div>
+      <p><code>T</code> 可能被实例化成 <code>ceres::Jet&lt;double,13&gt;</code>。<code>std::sqrt</code> 不认识 Jet,<code>ceres::sqrt</code> 通过 ADL 同时支持 <code>double</code> 和 <code>Jet</code>。整份代码模板化的原因就在这。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-log">
+    <div class="fn-head">
+      <span class="fn-id">1.3</span>
+      <h3>so3_log</h3>
+      <span class="fn-loc">utils.hpp:80</span>
+    </div>
+    <p class="fn-role">对数映射:旋转矩阵 → 旋转向量。<code>so3_exp</code> 的逆。</p>
+<pre>template&lt;class T&gt;
+inline Eigen::Matrix&lt;T, 3, 1&gt; so3_log(const Eigen::Matrix&lt;T, 3, 3&gt;&amp; R) {
+    const T cos_theta = (R.trace() - T(1.0)) * T(0.5);
+    Eigen::Matrix&lt;T, 3, 1&gt; w;
+    w &lt;&lt; R(2,1) - R(1,2),
+         R(0,2) - R(2,0),
+         R(1,0) - R(0,1);
+
+    <span class="hl">if (cos_theta &gt; T(1.0 - 1e-12)) {</span>
+        return T(0.5) * w;                       <span class="c">// θ→0 的极限</span>
+    }
+    const T theta = ceres::acos(cos_theta);
+    const T scale = theta / (T(2.0) * ceres::sin(theta));
+    return scale * w;
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 从迹和反对称部分取回 φ</div>
+      <p><strong>第一步,由迹取转角。</strong>对罗德里格斯公式取迹,注意 \(\mathrm{tr}(\mathbf{a}^\wedge)=0\)、\(\mathrm{tr}((\mathbf{a}^\wedge)^2)=-2\):</p>
+      <div class="disp">$$\mathrm{tr}(\mathbf{R}) = 3 + 0 - 2(1-\cos\theta) = 1 + 2\cos\theta$$</div>
+      <div class="disp">$$\Longrightarrow\quad \cos\theta = \frac{\mathrm{tr}(\mathbf{R}) - 1}{2}$$</div>
+      <p><strong>第二步,由反对称部分取转轴。</strong>\((\mathbf{a}^\wedge)^2\) 是对称的,所以 \(\mathbf{R}\) 的反对称部分只来自中间那一项:</p>
+      <div class="disp">$$\mathbf{R} - \mathbf{R}^\top = 2\sin\theta\,\mathbf{a}^\wedge$$</div>
+      <p>代码里的 <code>w</code> 正是从 \(\mathbf{R}-\mathbf{R}^\top\) 里 vee 出来的向量,所以 \(\mathbf{w} = 2\sin\theta\cdot\mathbf{a}\),于是:</p>
+      <div class="disp">$$\boldsymbol\phi = \theta\,\mathbf{a} = \frac{\theta}{2\sin\theta}\,\mathbf{w}$$</div>
+      <p class="concl">这就是 <code>scale = θ / (2·sin θ)</code>。而 \(\theta \to 0\) 时 \(\theta/(2\sin\theta) \to 1/2\),对应那条早退分支 <code>return 0.5 * w</code>。</p>
+    </div>
+
+    <div class="note trap">
+      <div class="note-h">θ → π 没有保护</div>
+      <p>\(\theta \to \pi\) 时 \(\sin\theta \to 0\),<code>scale</code> 会爆。代码只保护了 \(\theta\to 0\) 那一端。</p>
+      <p><strong>但这恰好是误差状态的价值所在。</strong><code>so3_log</code> 只被用在两处:<code>box_minus</code>(算两个接近姿态之差)和 <code>inject</code>(注入一个小 \(\boldsymbol\delta\))。两处的输入都保证接近单位阵,永远碰不到 \(\pi\)。</p>
+      <p>反过来说:<strong>如果你把旋转当普通向量存在状态里直接加减,就一定会撞上这个奇异点。</strong></p>
+    </div>
+  </article>
+</section>
+
+<section class="layer">
+  <div class="layer-head">
+    <span class="layer-num">L2</span>
+    <h2>状态与整车几何</h2>
+  </div>
+  <p class="layer-sub">13 维状态怎么定义,以及它如何确定性地生成每一块装甲板的位姿。这一层是"整车估计"这个思路的全部内容。</p>
+  <p class="layer-file">src/tasks/auto_aim/armor_track/motion_model.hpp:20–100</p>
+
+  <article class="fn" id="f-idx">
+    <div class="fn-head">
+      <span class="fn-id">2.1</span>
+      <h3>namespace idx</h3>
+      <span class="fn-loc">motion_model.hpp:20</span>
+    </div>
+    <p class="fn-role">状态向量的下标定义。初读最容易懵的地方。</p>
+<pre>namespace idx {
+    enum { CX, VCX, CY, VCY, CZ, VCZ, C_ROT_Z, VYAW, LOG_R1, P1, P2, C_ROT_Y, C_ROT_X, X_N };
+    <span class="hl">constexpr int LOG_R2      = P1;</span>   <span class="c">// 同一个槽位</span>
+    <span class="hl">constexpr int H           = P2;</span>
+    <span class="hl">constexpr int OUTPOST01DZ = P1;</span>   <span class="c">// 还是那个槽位</span>
+    <span class="hl">constexpr int OUTPOST02DZ = P2;</span>
+
+    enum { YPD_Y, YPD_P, YPD_D, A_ROT_X, A_ROT_Y, A_ROT_Z, _YPD_Z_N };
+    enum { UV_ANGLE, UV_CENTER_X, UV_CENTER_Y, UV_LENGTH, _UVLZ_N };
+}</pre>
+
+    <div class="tw"><table>
+      <thead><tr><th class="mono">下标</th><th>名字</th><th>含义</th><th>单位</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">0, 2, 4</td><td class="mono">CX, CY, CZ</td><td>整车旋转中心在 odom 系的位置</td><td>m</td></tr>
+        <tr><td class="mono">1, 3, 5</td><td class="mono">VCX, VCY, VCZ</td><td>整车中心速度</td><td>m/s</td></tr>
+        <tr><td class="mono">6</td><td class="mono">C_ROT_Z</td><td>整车姿态旋转向量的 z 分量</td><td>rad</td></tr>
+        <tr><td class="mono">7</td><td class="mono">VYAW</td><td>绕<em>车体</em> z 轴的角速度</td><td>rad/s</td></tr>
+        <tr><td class="mono">8</td><td class="mono">LOG_R1</td><td>第一组装甲板半径的<strong>对数</strong></td><td>ln(m)</td></tr>
+        <tr><td class="mono">9</td><td class="mono">P1</td><td>四板车 = <code>LOG_R2</code>;前哨 = <code>OUTPOST01DZ</code></td><td>—</td></tr>
+        <tr><td class="mono">10</td><td class="mono">P2</td><td>四板车 = <code>H</code>(奇偶板高差);前哨 = <code>OUTPOST02DZ</code></td><td>—</td></tr>
+        <tr><td class="mono">11, 12</td><td class="mono">C_ROT_Y, C_ROT_X</td><td>整车姿态旋转向量的 y、x 分量</td><td>rad</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note trap">
+      <div class="note-h">槽位复用:x[9] 和 x[10] 是"变形金刚"</div>
+      <p>看到 <code>x[idx::LOG_R2]</code> 和 <code>x[idx::OUTPOST01DZ]</code>——<strong>它们是同一个 double</strong>。所有碰这两个槽位的代码都必须先分支判 <code>armor_number</code>。</p>
+      <p>另外注意旋转三维<strong>不连续</strong>:z 在 6,y 和 x 在 11、12。这是历史演进的痕迹(先只有 yaw,后来才补上 roll/pitch),不是设计。移植时建议改成连续的 <code>rot_x, rot_y, rot_z</code>。</p>
+    </div>
+
+    <div class="note port">
+      <div class="note-h">newvision 对照</div>
+      <p>newvision 的 13 维是 <code>[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2−r1, z2−z1, dz1, dz2]</code>。<strong>前 8 维下标含义完全一致</strong>,所以 <code>planner.cpp</code> 里读的 <code>x[0] x[2] x[7]</code> 直接兼容。</p>
+      <p>唯一冲突是 <code>x[8]</code>:awakening 存 <code>log_r1</code>,而 <code>planner.cpp:240</code> 按线性半径判 <code>abs(x[8]) &lt;= 2.0</code>。建议让 <code>ekf_x()</code> 对外吐<em>线性</em>半径、内部保持 log,L4 就一行都不用改。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-narg">
+    <div class="fn-head">
+      <span class="fn-id">2.2</span>
+      <h3>normalize_angle</h3>
+      <span class="fn-loc">motion_model.hpp:44</span>
+    </div>
+    <p class="fn-role">把角度折回 (−π, π]。</p>
+<pre>template&lt;typename T&gt;
+inline T normalize_angle(T a) {
+    const T two_pi = T(2.0 * M_PI);
+    return a - two_pi * ceres::floor((a + T(M_PI)) / two_pi);
+}</pre>
+    <p>无分支写法,比 <code>while (a &gt; pi) a -= 2pi</code> 好在:<strong>对 Jet 友好</strong>(<code>floor</code> 的导数是 0,所以 Jet 穿过去后导数不变,正是我们要的——加减 2π 不改变角度的物理意义,导数当然也不该变)。</p>
+  </article>
+
+  <article class="fn" id="f-carrot">
+    <div class="fn-head">
+      <span class="fn-id">2.3</span>
+      <h3>car_rotation</h3>
+      <span class="fn-loc">motion_model.hpp:50</span>
+    </div>
+    <p class="fn-role">从状态取出整车姿态矩阵,带目标类型退化。</p>
+<pre>template&lt;typename T&gt;
+inline Eigen::Matrix&lt;T, 3, 3&gt; car_rotation(const T x[X_N], ArmorClass armor_number) {
+    if (armor_number == ArmorClass::OUTPOST || armor_number == ArmorClass::BASE || !USE_WROT) {
+        Eigen::Matrix&lt;T, 3, 1&gt; yaw_rotvec;
+        yaw_rotvec &lt;&lt; T(0), T(0), x[idx::C_ROT_Z];   <span class="c">// 只留 yaw</span>
+        return utils::so3_exp(yaw_rotvec);
+    }
+    return utils::so3_exp(
+        Eigen::Matrix&lt;T, 3, 1&gt;(x[idx::C_ROT_X], x[idx::C_ROT_Y], x[idx::C_ROT_Z]));
+}</pre>
+    <p>前哨站和基地<strong>不估完整三自由度姿态</strong>,只留 yaw。原因很实际:前哨站是固定装置绕竖直轴匀速转,基地根本不转,给它们估 roll/pitch 只会引入不可观测的自由度让滤波器漂。</p>
+    <p><code>USE_WROT</code> 是文件顶部的 <code>constexpr bool</code>(当前为 <code>true</code>),关掉它就整体退化成"只估 yaw"——也就是 newvision 现在的模型。<strong>这是个方便的对照开关</strong>,移植时可以照搬。</p>
+  </article>
+
+  <article class="fn" id="f-radius">
+    <div class="fn-head">
+      <span class="fn-id">2.4</span>
+      <h3>armor_radius</h3>
+      <span class="fn-loc">motion_model.hpp:60</span>
+    </div>
+    <p class="fn-role">第 <em>i</em> 块板用哪一组半径。</p>
+<pre>template&lt;typename T&gt;
+inline T armor_radius(const T x[X_N], int id, int armor_num, ArmorClass armor_number) {
+    if (armor_number == ArmorClass::BASE) {
+        return T(0.0);                                    <span class="c">// 基地：板就在中心</span>
+    }
+    const bool is_r2 = (armor_num == 4) &amp;&amp; (id &amp; 1);      <span class="c">// 只有四板车才分两组</span>
+    return ceres::exp(is_r2 ? x[idx::LOG_R2] : x[idx::LOG_R1]);
+}</pre>
+    <ul>
+      <li><strong><code>is_r2</code> 的两个条件缺一不可。</strong>三板车(前哨)所有板共用 <code>LOG_R1</code>,因为它们到轴心的距离物理上相同;四板车前后一组、左右一组,底盘不是正方形。</li>
+      <li><strong><code>ceres::exp</code> 是半径保正的全部机制。</strong>状态里存 \(\ln r\),取出来必然 &gt; 0,不需要任何约束或投影。</li>
+    </ul>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 为什么用 log 参数化</div>
+      <p>半径有硬性物理约束 \(r &gt; 0\)。三种处理方式:</p>
+      <ul>
+        <li><strong>不管</strong> —— 滤波器可能把 \(r\) 推成负数,几何整个翻转</li>
+        <li><strong>每步 clamp</strong> —— 破坏协方差与状态的一致性(状态被投影了,\(\mathbf{P}\) 没有)</li>
+        <li><strong>重参数化为 \(\ell = \ln r\)</strong> —— \(\ell\in\mathbb{R}\) 无约束,\(r = e^\ell &gt; 0\) 自动成立 ✔</li>
+      </ul>
+      <p>代价是噪声要换算。由一阶传播:</p>
+      <div class="disp">$$\ell = \ln r \;\Longrightarrow\; \frac{\partial \ell}{\partial r} = \frac{1}{r} \;\Longrightarrow\; \sigma_\ell^2 \approx \frac{\sigma_r^2}{r^2}$$</div>
+      <p class="concl">这就是 <code>process_noise()</code> 里那行 <code>q(LOG_R1,LOG_R1) = q_r / (r1*r1)</code> 的来历(见 §7.2)。另一个副作用:log 参数化让半径的<em>相对</em>不确定性恒定——远处目标半径估不准,自动表现为更大的绝对方差。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-wcp">
+    <div class="fn-head">
+      <span class="fn-id">2.5</span>
+      <h3>whole_car_pose</h3>
+      <span class="fn-loc">motion_model.hpp:69</span>
+    </div>
+    <p class="fn-role">状态 → 整车在 odom 系的位姿。</p>
+<pre>template&lt;typename T&gt;
+inline Eigen::Transform&lt;T, 3, Eigen::Isometry&gt;
+whole_car_pose(const T x[X_N], ArmorClass armor_number) {
+    auto car_in_odom = Eigen::Transform&lt;T, 3, Eigen::Isometry&gt;::Identity();
+    car_in_odom.translation() &lt;&lt; x[idx::CX], x[idx::CY], x[idx::CZ];
+    car_in_odom.linear() = car_rotation(x, armor_number);
+    return car_in_odom;
+}</pre>
+    <p>六行的包装,把状态的位置三维和姿态三维拼成一个 \(SE(3)\) 变换。<strong>注意平移用的是 <code>CX/CY/CZ</code> 三个状态,不含速度</strong>——速度只在 <code>Predict</code> 里推进位置时用。</p>
+  </article>
+
+  <article class="fn" id="f-apose">
+    <div class="fn-head">
+      <span class="fn-id">2.6</span>
+      <h3>armor_pose</h3>
+      <span class="fn-loc">motion_model.hpp:78</span>
+    </div>
+    <p class="fn-role"><strong>整个整车估计思路的核心。</strong>状态 + 板编号 → 该板在 odom 系的完整位姿。</p>
+<pre>template&lt;typename T&gt;
+inline Eigen::Transform&lt;T, 3, Eigen::Isometry&gt;
+armor_pose(const T x[X_N], int id, int armor_num, ArmorClass armor_number) {
+    <span class="c">// ① 该板在车上的方位角 —— 纯几何常量，不是状态</span>
+    const T yaw = normalize_angle(T(id) * T(2.0 * M_PI / armor_num));
+
+    const bool outpost = armor_number == ArmorClass::OUTPOST;
+    const bool is_r2   = (armor_num == 4) &amp;&amp; (id &amp; 1);
+
+    <span class="c">// ② 该板用哪一组半径 —— 状态量</span>
+    const T r = armor_radius(x, id, armor_num, armor_number);
+
+    <span class="c">// ③ 板心在车体系的位置</span>
+    <span class="hl">const T ax = -ceres::cos(yaw) * r;</span>          <span class="c">// 注意负号</span>
+    <span class="hl">const T ay = -ceres::sin(yaw) * r;</span>
+    T az = T(0);
+    if (outpost) {
+        if      (id == 1) az = x[idx::OUTPOST01DZ];
+        else if (id == 2) az = x[idx::OUTPOST02DZ];
+    } else {
+        az = is_r2 ? x[idx::H] : T(0);
+    }
+    auto pose_in_car = Eigen::Transform&lt;T, 3, Eigen::Isometry&gt;::Identity();
+    pose_in_car.translation() &lt;&lt; ax, ay, az;
+
+    <span class="c">// ④ 板在车体系的姿态：绕 z 转 yaw，再后仰 15°</span>
+    const T armor_pitch = outpost ? T(-FIFTTEN_DEGREE_RAD) : T(FIFTTEN_DEGREE_RAD);
+    pose_in_car.linear() =
+        utils::rpy2matrix(Eigen::Vector3&lt;T&gt;(T(0), armor_pitch, yaw), utils::RPYOrder::ZYX);
+
+    <span class="c">// ⑤ 复合</span>
+    return whole_car_pose(x, armor_number) * pose_in_car;
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 结构先验如何进入模型</div>
+      <p>第 \(i\) 块板的方位角是<strong>常量</strong>,不是待估量:</p>
+      <div class="disp">$$\theta_i = \frac{2\pi i}{N}, \qquad N \in \{3, 4\}$$</div>
+      <p>板心在车体系的位置:</p>
+      <div class="disp">$$\mathbf{p}_i^{\text{car}} = \begin{bmatrix} -r_i\cos\theta_i \\ -r_i\sin\theta_i \\ \Delta z_i \end{bmatrix}, \qquad r_i = \exp(\ell_{1}\ \text{或}\ \ell_{2})$$</div>
+      <p>板在车体系的姿态,ZYX 欧拉角 \((0, \alpha, \theta_i)\),其中 \(\alpha = \pm 15°\):</p>
+      <div class="disp">$$\mathbf{R}_i^{\text{car}} = \mathbf{R}_z(\theta_i)\,\mathbf{R}_y(\alpha)$$</div>
+      <p>复合到世界系:</p>
+      <div class="disp">$$\mathbf{T}^{\text{odom}}_{\text{armor}_i} = \underbrace{\begin{bmatrix}\mathrm{Exp}(\boldsymbol\phi) &amp; \mathbf{c}\\ \mathbf{0} &amp; 1\end{bmatrix}}_{\text{整车，来自状态}} \cdot \underbrace{\begin{bmatrix}\mathbf{R}_i^{\text{car}} &amp; \mathbf{p}_i^{\text{car}}\\ \mathbf{0} &amp; 1\end{bmatrix}}_{\text{结构先验 + 两个状态}}$$</div>
+      <p class="concl"><strong>"装甲板跳变"在这里消失了。</strong>无论当前看到的是正面板、侧面板还是相邻板的一条灯条,它们都只是<em>同一个 13 维状态</em>在不同 \(i\) 上的确定性投影。只要能把观测关联到正确的 \(i\),它们就共同约束同一个状态向量——这就是"整车估计"相对"每块板各自滤波"的全部收益。</p>
+    </div>
+
+    <div class="note trap">
+      <div class="note-h">那个负号:板的 x 轴指向车心</div>
+      <p>位置是 \(-r(\cos\theta_i, \sin\theta_i)\),而 \(\mathbf{R}_z(\theta_i)\mathbf{R}_y(\alpha)\) 的<strong>第一列</strong>约等于 \(+(\cos\theta_i, \sin\theta_i)\cos\alpha\)。两者反向 —— 板的 x 轴从板心指回车心。</p>
+      <p>所以可见性判据要用 \(-\mathbf{a}_x\):</p>
+<pre><span class="c">// armor_target.cpp:524  可见性打分</span>
+Vec3 axis_x       = pose_in_camera_cv.linear().col(0);
+Vec3 front_normal = -axis_x;                                <span class="c">// 朝外那一面</span>
+score = front_normal.dot(-pose_in_camera_cv.translation()); <span class="c">// 越大越正对</span></pre>
+      <p><code>-translation</code> 是从板指向相机的向量;它与板<em>外法向</em>的点积越大,板越正对相机。<code>armor_pnp()</code> 选 IPPE 双解时用的是同一个判据。</p>
+    </div>
+
+    <div class="note port">
+      <div class="note-h">移植提示</div>
+      <p>newvision 已经有 <code>armorPitchOf(name)</code>(常规车 +15°、前哨取负),语义和这里的 <code>armor_pitch</code> 完全一致,直接用即可,不要再写一份。它当前在 <code>pnp_solver.cpp:64</code>、<code>aim_overlay.cpp:194</code>、<code>fire_decision.cpp:152</code> 三处被调用。</p>
+    </div>
+  </article>
+</section>
+
+<section class="layer">
+  <div class="layer-head">
+    <span class="layer-num">L3</span>
+    <h2>流形运算 ⊞ / ⊟</h2>
+  </div>
+  <p class="layer-sub">全篇最该逐字读的 30 行。这两个算子定义了"状态空间是什么形状",滤波器的所有正确性都建立在它们互逆之上。</p>
+  <p class="layer-file">src/tasks/auto_aim/armor_track/motion_model.hpp:104–140</p>
+
+  <div class="math">
+    <div class="math-h">数学笔记 · 先想清楚为什么需要它们</div>
+    <p>普通 EKF 的三个动作都假设状态住在向量空间:</p>
+    <div class="disp">$$\mathbf{x} \mathrel{+}= \mathbf{K}\mathbf{r}, \qquad \mathbf{P} = \mathbf{F}\mathbf{P}\mathbf{F}^\top + \mathbf{Q}, \qquad \mathbf{P} = \mathbb{E}[(\mathbf{x}-\bar{\mathbf{x}})(\mathbf{x}-\bar{\mathbf{x}})^\top]$$</div>
+    <p>旋转不住在向量空间,\(SO(3)\) 是<strong>流形</strong>。把旋转向量当普通向量加会出四种问题:</p>
+    <ul>
+      <li>\(\boldsymbol\phi_1 + \boldsymbol\phi_2 \neq \mathrm{Log}(\mathrm{Exp}(\boldsymbol\phi_1)\mathrm{Exp}(\boldsymbol\phi_2))\) —— 差一个 BCH 修正</li>
+      <li>\(\|\boldsymbol\phi\|\to\pi\) 处 \(\mathrm{Log}\) 的雅可比发散,\(2\pi\) 处突变</li>
+      <li>同一个物理姿态不确定性,在 \(\boldsymbol\phi\approx 0\) 和 \(\boldsymbol\phi\approx\pi\) 附近算出的 3×3 协方差完全不同</li>
+      <li>直接对旋转向量分量求 \(\partial f/\partial \mathbf{x}\),差一个右雅可比 \(\mathbf{J}_r(\boldsymbol\phi)\)</li>
+    </ul>
+    <p><strong>解法:把状态劈成两半。</strong></p>
+    <div class="tw"><table>
+      <thead><tr><th></th><th>住在哪</th><th>大小</th><th>代码里</th></tr></thead>
+      <tbody>
+        <tr><td>名义状态 \(\check{\mathbf{x}}\)</td><td>流形上</td><td>任意大</td><td class="mono">x_nominal</td></tr>
+        <tr><td>误差状态 \(\boldsymbol\delta\)</td><td>\(\check{\mathbf{x}}\) 处的切空间</td><td><strong>恒小,更新后归零</strong></td><td class="mono">delta_x</td></tr>
+      </tbody>
+    </table></div>
+    <p class="concl">关键:<strong>滤波器的 \(\mathbf{P}\) 是 \(\boldsymbol\delta\) 的协方差,不是 \(\mathbf{x}\) 的。</strong>切空间是货真价实的向量空间,所有线性代数都合法;而 \(\boldsymbol\delta\) 恒在 0 附近,永远碰不到 \(\pi\) 的奇异点。</p>
+  </div>
+
+  <article class="fn" id="f-srot">
+    <div class="fn-head">
+      <span class="fn-id">3.1</span>
+      <h3>state_rotation</h3>
+      <span class="fn-loc">motion_model.hpp:104</span>
+    </div>
+    <p class="fn-role">从状态向量取出旋转矩阵。三行的小工具,但注意它<strong>不做类型退化</strong>。</p>
+<pre>template&lt;class StateVector&gt;
+inline auto state_rotation(const StateVector&amp; state) {
+    using Scalar = typename std::decay_t&lt;StateVector&gt;::Scalar;
+    using Vec3T  = Eigen::Matrix&lt;Scalar, 3, 1&gt;;
+    return utils::so3_exp(Vec3T(state[idx::C_ROT_X], state[idx::C_ROT_Y], state[idx::C_ROT_Z]));
+}</pre>
+    <p>和 <code>car_rotation</code> 的区别:<code>car_rotation</code> 对前哨/基地会退化成只用 <code>C_ROT_Z</code>,<code>state_rotation</code> <strong>永远用完整三维</strong>。这是对的——<code>inject</code>/<code>box_minus</code> 是纯粹的流形运算,不该知道目标类型;类型退化由 <code>Predict</code> 那边保证 <code>C_ROT_X/Y</code> 始终为 0。</p>
+  </article>
+
+  <article class="fn" id="f-inject">
+    <div class="fn-head">
+      <span class="fn-id">3.2</span>
+      <h3>inject_state <span style="color:var(--muted);font-weight:400">(⊞)</span></h3>
+      <span class="fn-loc">motion_model.hpp:111</span>
+    </div>
+    <p class="fn-role">把误差状态注入名义状态。</p>
+<pre>template&lt;class DeltaVector, class StateVector&gt;
+inline void inject_state(const DeltaVector&amp; delta, StateVector&amp; nominal) {
+    using Scalar = typename std::decay_t&lt;DeltaVector&gt;::Scalar;
+    using Vec3T  = Eigen::Matrix&lt;Scalar, 3, 1&gt;;
+
+    for (int i = 0; i &lt; X_N; ++i) {
+        const bool rotation_component =
+            i == idx::C_ROT_X || i == idx::C_ROT_Y || i == idx::C_ROT_Z;
+        if (!rotation_component)
+            nominal[i] += delta[i];                     <span class="c">// 欧氏分量：直接加</span>
+    }
+
+    const Vec3T delta_rot(delta[idx::C_ROT_X], delta[idx::C_ROT_Y], delta[idx::C_ROT_Z]);
+    const Vec3T injected_rot = utils::so3_log(
+        <span class="hl">(state_rotation(nominal) * utils::so3_exp(delta_rot)).eval()</span>  <span class="c">// R·Exp(δ) ← 右乘</span>
+    );
+    nominal[idx::C_ROT_X] = injected_rot.x();
+    nominal[idx::C_ROT_Y] = injected_rot.y();
+    nominal[idx::C_ROT_Z] = injected_rot.z();
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · ⊞ 的定义,以及为什么右乘</div>
+      <p>形式上:</p>
+      <div class="disp">$$\boxplus:\ \mathcal{M}\times\mathbb{R}^{13}\to\mathcal{M}, \qquad \check{\mathbf{x}}\boxplus\boldsymbol\delta = \begin{cases} x_i + \delta_i &amp; i \notin \{\text{rot}\}\\[4pt] \mathbf{R}\cdot\mathrm{Exp}(\boldsymbol\delta_{\text{rot}}) &amp; i \in \{\text{rot}\}\end{cases}$$</div>
+      <p><strong>右乘 vs 左乘。</strong>两种扰动方式:</p>
+      <div class="disp">$$\underbrace{\mathbf{R}\,\mathrm{Exp}(\boldsymbol\delta)}_{\text{右乘 · 局部/体坐标系}} \qquad\text{vs}\qquad \underbrace{\mathrm{Exp}(\boldsymbol\delta)\,\mathbf{R}}_{\text{左乘 · 全局/世界系}}$$</div>
+      <p>右乘的含义是"<em>这辆车绕自己的轴又转了一点</em>",左乘是"<em>整个世界绕世界轴转了一点</em>"。两者通过伴随矩阵相联:</p>
+      <div class="disp">$$\mathrm{Exp}(\boldsymbol\delta_{\text{世界}})\,\mathbf{R} = \mathbf{R}\,\mathrm{Exp}(\mathbf{R}^\top\boldsymbol\delta_{\text{世界}}) \;\Longrightarrow\; \boldsymbol\delta_{\text{体}} = \mathbf{R}^\top\boldsymbol\delta_{\text{世界}}$$</div>
+      <p>选右乘不是审美,是被下游两处逼的:</p>
+      <ol>
+        <li><strong>过程噪声天然是体坐标系的。</strong>地面轮式车沿行进方向的加速度噪声远大于竖直方向(配置里 <code>qxyz_common: [30, 30, 1]</code>)。\(\mathbf{Q}\) 只有在体系里表达才有物理意义,再旋到世界系:\(\mathbf{Q}_{\text{odom}} = \mathbf{R}\mathbf{Q}_{\text{body}}\mathbf{R}^\top\)。</li>
+        <li><strong><code>vyaw</code> 是绕车体自身 z 轴的角速度。</strong>\(\mathbf{Q}\) 里 <code>rot_z</code>–<code>vyaw</code> 那个 2×2 常角加速度耦合块,只有在 yaw 误差也是体系的时候才自洽。</li>
+      </ol>
+      <p class="concl">代码注释说得很直白:<em>"这里将误差设计为相对自身的旋转误差,所以 q 就是相对自身的运动"</em>(<code>armor_target.cpp:312</code>)。</p>
+    </div>
+
+    <div class="note">
+      <div class="note-h">实现细节</div>
+      <p>那个 <code>for</code> 循环<strong>跳过</strong>旋转三维,循环外再单独处理。这样写而不是"先全加再覆盖",是因为旋转分量参与加法会污染中间结果(<code>state_rotation(nominal)</code> 在循环后被调用,读的必须是<em>未被误加</em>的旋转)。</p>
+      <p>下一个函数 <code>box_minus_state</code> 反而用了"先全减再覆盖"的写法,因为那里的减法不影响后续读取。<strong>两个函数的写法不对称,不是笔误。</strong></p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-boxminus">
+    <div class="fn-head">
+      <span class="fn-id">3.3</span>
+      <h3>box_minus_state <span style="color:var(--muted);font-weight:400">(⊟)</span></h3>
+      <span class="fn-loc">motion_model.hpp:131</span>
+    </div>
+    <p class="fn-role">从两个名义状态反推出误差状态。<code>inject_state</code> 的逆。</p>
+<pre>template&lt;class StateVector, class DeltaVector&gt;
+inline void box_minus_state(const StateVector&amp; nominal, const StateVector&amp; value,
+                            DeltaVector&amp; delta) {
+    using Vec3T = Eigen::Matrix&lt;typename std::decay_t&lt;StateVector&gt;::Scalar, 3, 1&gt;;
+
+    <span class="hl">delta = value - nominal;</span>                       <span class="c">// 先整体相减（旋转三维此刻是错的）</span>
+
+    const Vec3T delta_rot = utils::so3_log(
+        <span class="hl">(state_rotation(nominal).transpose() * state_rotation(value)).eval()</span>  <span class="c">// Log(Řᵀ·R)</span>
+    );
+    delta[idx::C_ROT_X] = delta_rot.x();               <span class="c">// 再覆盖掉</span>
+    delta[idx::C_ROT_Y] = delta_rot.y();
+    delta[idx::C_ROT_Z] = delta_rot.z();
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 互逆性证明(第一个该写的单测)</div>
+      <p>定义:</p>
+      <div class="disp">$$\boxminus:\ \mathcal{M}\times\mathcal{M}\to\mathbb{R}^{13}, \qquad \mathbf{x}\boxminus\check{\mathbf{x}} = \begin{cases} x_i - \check{x}_i \\[4pt] \mathrm{Log}(\check{\mathbf{R}}^\top\mathbf{R})\end{cases}$$</div>
+      <p>要求的性质:</p>
+      <div class="disp">$$(\check{\mathbf{x}}\boxplus\boldsymbol\delta)\boxminus\check{\mathbf{x}} = \boldsymbol\delta \qquad\text{且}\qquad \check{\mathbf{x}}\boxplus(\mathbf{x}\boxminus\check{\mathbf{x}}) = \mathbf{x}$$</div>
+      <p><strong>验证旋转部分</strong>(欧氏部分显然):</p>
+      <div class="disp">$$\mathrm{Log}\big(\check{\mathbf{R}}^\top(\check{\mathbf{R}}\,\mathrm{Exp}(\boldsymbol\delta))\big) = \mathrm{Log}\big((\check{\mathbf{R}}^\top\check{\mathbf{R}})\,\mathrm{Exp}(\boldsymbol\delta)\big) = \mathrm{Log}(\mathrm{Exp}(\boldsymbol\delta)) = \boldsymbol\delta \quad\checkmark$$</div>
+      <p><strong>注意转置的位置必须和右乘配套。</strong>如果 ⊞ 用右乘而 ⊟ 写成 \(\mathrm{Log}(\mathbf{R}\check{\mathbf{R}}^\top)\)(左乘形式),互逆性就破了,而且<strong>不会报错</strong>——滤波器照样跑,只是雅可比全错、协方差没有意义、遇到大机动就发散。</p>
+      <p class="concl">所以第一个单测就写这个:随机生成 \(\check{\mathbf{x}}\) 和小 \(\boldsymbol\delta\),断言 \(\|(\check{\mathbf{x}}\boxplus\boldsymbol\delta)\boxminus\check{\mathbf{x}} - \boldsymbol\delta\| &lt; 10^{-10}\)。它能抓住 90% 的符号/左右乘错误。</p>
+    </div>
+  </article>
+</section>
+
+<section class="layer">
+  <div class="layer-head">
+    <span class="layer-num">L4</span>
+    <h2>运动模型</h2>
+  </div>
+  <p class="layer-sub">很朴素:匀速平移 + 绕车体 z 轴匀角速度,其余状态随机游走。复杂度全在观测端,不在这里。</p>
+  <p class="layer-file">src/tasks/auto_aim/armor_track/motion_model.hpp:176–258</p>
+
+  <article class="fn" id="f-pred">
+    <div class="fn-head">
+      <span class="fn-id">4.1</span>
+      <h3>Predict::operator()</h3>
+      <span class="fn-loc">motion_model.hpp:183</span>
+    </div>
+    <p class="fn-role">状态转移函数 \(f\)。模板化,因为要被 Jet 穿过去求 \(\mathbf{F}\)。</p>
+<pre>template&lt;typename T&gt;
+inline void operator()(const T x0[X_N], T x1[X_N]) const {
+    <span class="hl">std::copy(x0, x0 + X_N, x1);</span>       <span class="c">// 默认全部不变 —— 半径、高度都是随机游走</span>
+
+    x1[idx::CX] += x0[idx::VCX] * T(dt);
+    x1[idx::CY] += x0[idx::VCY] * T(dt);
+    x1[idx::CZ] += x0[idx::VCZ] * T(dt);
+
+    if (armor_number != auto_aim::ArmorClass::BASE) {
+        Eigen::Matrix&lt;T, 3, 1&gt; delta_rot;
+        if (armor_number == ArmorClass::OUTPOST) {
+            if (voter.state == Voter::Clockwise) {          <span class="c">// 方向已判明</span>
+                delta_rot &lt;&lt; T(0), T(0), T(OUTPOST_WZ) * T(dt);
+                x1[idx::VYAW] = T(OUTPOST_WZ);              <span class="c">// 前哨转速是规则常量 2.51 rad/s</span>
+            } else if (voter.state == Voter::Counterclockwise) {
+                delta_rot &lt;&lt; T(0), T(0), -T(OUTPOST_WZ) * T(dt);
+                x1[idx::VYAW] = -T(OUTPOST_WZ);
+            } else {
+                delta_rot &lt;&lt; T(0), T(0), x0[idx::VYAW] * T(dt);
+            }
+        } else {
+            delta_rot &lt;&lt; T(0), T(0), x0[idx::VYAW] * T(dt);
+        }
+
+        const Eigen::Matrix&lt;T, 3, 3&gt; R1 =
+            (utils::so3_exp(Eigen::Matrix&lt;T,3,1&gt;(x0[idx::C_ROT_X], x0[idx::C_ROT_Y], x0[idx::C_ROT_Z]))
+             <span class="hl">* utils::so3_exp(delta_rot)</span>).eval();       <span class="c">// 又是右乘</span>
+        auto rot_vec = utils::so3_log(R1);
+        x1[idx::C_ROT_X] = rot_vec.x();
+        x1[idx::C_ROT_Y] = rot_vec.y();
+        x1[idx::C_ROT_Z] = rot_vec.z();
+    }
+
+    clamp(x1);
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 状态转移</div>
+      <div class="disp">$$\mathbf{c}^+ = \mathbf{c} + \mathbf{v}\,\Delta t, \qquad \mathbf{v}^+ = \mathbf{v}$$</div>
+      <div class="disp">$$\mathbf{R}^+ = \mathbf{R}\cdot\mathrm{Exp}\!\big([0,\ 0,\ \omega\,\Delta t]^\top\big), \qquad \omega^+ = \omega$$</div>
+      <div class="disp">$$\ell_1^+ = \ell_1,\quad \ell_2^+ = \ell_2,\quad h^+ = h \qquad\text{(随机游走：均值不变，方差靠 } \mathbf{Q} \text{ 增长)}$$</div>
+      <p><strong>为什么 <code>delta_rot</code> 只有 z 分量?</strong>因为模型假设车只绕<em>自己的</em>竖直轴转(轮式地面机器人)。而"自己的竖直轴"这个概念之所以能成立,正是因为用了<strong>右乘</strong>——右乘的扰动天然表达在体坐标系里。如果用左乘,\([0,0,\omega\Delta t]\) 就变成"绕<em>世界</em> z 轴转",车一旦有 roll/pitch 就错了。</p>
+      <p class="concl">这是 §3.2 里"右乘是被下游逼出来的"的第二个具体兑现点。</p>
+    </div>
+
+    <div class="note">
+      <div class="note-h">Voter 的作用</div>
+      <p><code>Voter</code>(<code>motion_model.hpp:142</code>)只服务前哨站:开机 1 秒内不投票,之后每次 yaw 变化超过 0.05 rad 就给计数器 ±1,累计超过 10 票判定转向。<strong>方向一旦判明,角速度就钉死成规则常量 2.51 rad/s,不再估计</strong>——把一个自由度换成已知量,精度立刻提升。</p>
+      <p>第一版移植可以整个跳过,只做常规四板车。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-clamp">
+    <div class="fn-head">
+      <span class="fn-id">4.2</span>
+      <h3>Predict::clamp</h3>
+      <span class="fn-loc">motion_model.hpp:214</span>
+    </div>
+    <p class="fn-role">防发散的硬约束。读起来会觉得挺"暴力"。</p>
+<pre>template&lt;typename T&gt;
+inline void clamp(T x[X_N]) const {
+    auto&amp; h    = x[idx::H];
+    auto&amp; vyaw = x[idx::VYAW];
+
+    x[idx::LOG_R1] = ceres::fmax(T(std::log(MIN_ARMOR_R)),
+                     ceres::fmin(T(std::log(MAX_ARMOR_R)), x[idx::LOG_R1]));   <span class="c">// 5cm ~ 1m</span>
+
+    if (armor_number != ArmorClass::OUTPOST) {
+        x[idx::LOG_R2] = ceres::fmax(T(std::log(MIN_ARMOR_R)),
+                         ceres::fmin(T(std::log(MAX_ARMOR_R)), x[idx::LOG_R2]));
+        <span class="hl">if (ceres::abs(h) &gt; T(0.5)) h = T(0.0);</span>          <span class="c">// 超界直接归零，不是 clamp</span>
+    } else {
+        if (ceres::abs(x[idx::OUTPOST01DZ]) &gt; T(0.3)) x[idx::OUTPOST01DZ] = T(0.0);
+        if (ceres::abs(x[idx::OUTPOST02DZ]) &gt; T(0.3)) x[idx::OUTPOST02DZ] = T(0.0);
+        x[idx::LOG_R1] = T(std::log(OUTPOST_R));       <span class="c">// 前哨半径钉死 0.275m</span>
+    }
+
+    <span class="hl">if (ceres::abs(vyaw) &gt; T(20.0)) vyaw = T(0.0);</span>
+    if (armor_number == ArmorClass::BASE) x[idx::VYAW] = T(0.0);
+}</pre>
+    <ul>
+      <li><strong>半径用 clamp(饱和),高度和角速度用归零(复位)。</strong>区别在于:半径超界通常是估计偏了一点,拉回边界是合理的;而 <code>h</code> 或 <code>vyaw</code> 超界几乎一定是关联错误导致的发散,归零等于承认"这一维已经没救了,重来"。</li>
+      <li><strong>它在 \(f\) 内部,所以 Jet 会穿过这些分支。</strong><code>fmin</code>/<code>fmax</code> 在边界上导数是分段的(不光滑),理论上会让 \(\mathbf{F}\) 在饱和瞬间不连续。实践中因为很少触发所以无所谓,但这是个值得知道的近似。</li>
+      <li><code>MIN_ARMOR_R = 0.05</code>、<code>MAX_ARMOR_R = 1.0</code>、<code>OUTPOST_R = 0.55/2</code>、<code>OUTPOST_WZ = 2.51</code> 都在 <code>motion_model.hpp:32–37</code>。</li>
+    </ul>
+  </article>
+</section>
+
+<section class="layer">
+  <div class="layer-head">
+    <span class="layer-num">L5</span>
+    <h2>UVL 观测模型</h2>
+  </div>
+  <p class="layer-sub">整条链路的分水岭。观测不是 PnP 解出的位姿,而是<strong>图像平面上一条灯条的四个几何量</strong>。</p>
+  <p class="layer-file">motion_model.hpp:260–341 · utils.hpp:343–400</p>
+
+  <div class="math">
+    <div class="math-h">数学笔记 · 为什么不喂 PnP 位姿</div>
+    <p>传统做法:每块板 PnP 得到 \(\mathbf{z} = (x, y, z, \psi)\),当观测喂给滤波器。两个问题:</p>
+    <p><strong>① PnP 误差高度各向异性且相关。</strong>共面四点、远距小目标、斜视角下,协方差的真实形状是:</p>
+    <div class="disp">$$\mathbf{R}_{\text{PnP}} = \begin{bmatrix} \sigma_x^2 &amp; \cdot &amp; \cdot &amp; \cdot\\ \cdot &amp; \sigma_y^2 &amp; \cdot &amp; \cdot \\ \cdot &amp; \cdot &amp; \sigma_d^2 &amp; \rho\sigma_d\sigma_\psi \\ \cdot &amp; \cdot &amp; \rho\sigma_d\sigma_\psi &amp; \sigma_\psi^2\end{bmatrix}, \qquad \sigma_d \sim 10\text{–}50\times\sigma_x,\ \ |\rho| \to 1$$</div>
+    <p>深度和 yaw 强相关,量级差一两个数量级。在滤波器里给它一个<em>对角</em> \(\mathbf{R}\),就是在撒谎。</p>
+    <p><strong>② PnP 是非线性优化的输出。</strong>它已经替你"决定"了姿态。再去滤它,是在滤一个被处理过的量——信息在 PnP 那一步就损失且被扭曲了。</p>
+    <p class="concl"><strong>UVL 的做法是把观测退回到更接近传感器原始输出的地方。</strong>像素误差近似各向同性,对角 \(\mathbf{R}\) 是个诚实得多的近似;而且一块板拆成两条灯条 = 8 个约束,比 PnP 吐出的 4 维多一倍。</p>
+  </div>
+
+  <article class="fn" id="f-uvctx">
+    <div class="fn-head">
+      <span class="fn-id">5.1</span>
+      <h3>UVCtx</h3>
+      <span class="fn-loc">motion_model.hpp:260</span>
+    </div>
+    <p class="fn-role">一个 UVL 观测的上下文:"这是哪块板的哪条灯条,以及那一帧相机在哪"。</p>
+<pre>struct UVCtx {
+    int armor_num;                       <span class="c">// 这辆车几块板</span>
+    int id;                              <span class="c">// 这个观测对应第几块板</span>
+    ISO3 camera_cv_in_odom = ISO3::Identity();   <span class="c">// 该帧相机位姿（来自 TF 时间插值）</span>
+    CameraInfo camera_info;              <span class="c">// 内参 + 畸变</span>
+    auto_aim::ArmorClass armor_number;
+    bool is_left;                        <span class="c">// 左灯条 or 右灯条</span>
+    bool normalized = false;
+};</pre>
+    <p><code>camera_cv_in_odom</code> 是<strong>按图像曝光时刻从 TF 里 slerp 出来的</strong>,不是"当前"相机位姿。这是图像与 IMU 时间对齐实际发生的地方。</p>
+    <p><code>normalized</code> 切换观测是在像素坐标还是归一化坐标下表达;当前 <code>MEASURE_NORMALIZED = false</code>(<code>armor_target.hpp:69</code>),走像素路径。</p>
+  </article>
+
+  <article class="fn" id="f-proj">
+    <div class="fn-head">
+      <span class="fn-id">5.2</span>
+      <h3>project_points_jets</h3>
+      <span class="fn-loc">utils.hpp:343</span>
+    </div>
+    <p class="fn-role">手写的针孔 + 畸变投影。<strong>不能用 <code>cv::projectPoints</code>,因为要吃 Jet。</strong></p>
+<pre>template&lt;typename T&gt;
+inline void project_points_jets(
+    const std::vector&lt;cv::Point3f&gt;&amp; obj_pts,
+    const Eigen::Transform&lt;T, 3, Eigen::Isometry&gt;&amp; pose_cam,
+    const cv::Mat&amp; K, const cv::Mat&amp; dist_coeffs,
+    std::vector&lt;Eigen::Matrix&lt;T, 2, 1&gt;&gt;&amp; img_pts_jet)
+{
+    const Eigen::Matrix&lt;T,3,3&gt;&amp; R = pose_cam.linear();
+    const Eigen::Matrix&lt;T,3,1&gt;&amp; t = pose_cam.translation();
+    const T fx = T(K.at&lt;double&gt;(0,0)), fy = T(K.at&lt;double&gt;(1,1));
+    const T cx = T(K.at&lt;double&gt;(0,2)), cy = T(K.at&lt;double&gt;(1,2));
+    <span class="c">// k1 k2 p1 p2 k3 ...</span>
+
+    for (const auto&amp; pt3 : obj_pts) {
+        Eigen::Matrix&lt;T,3,1&gt; Pw(T(pt3.x), T(pt3.y), T(pt3.z));
+        Eigen::Matrix&lt;T,3,1&gt; Pc = R * Pw + t;
+        T Xc = Pc(0), Yc = Pc(1), Zc = Pc(2);
+        <span class="hl">T xp = Xc / Zc;   T yp = Yc / Zc;</span>            <span class="c">// 没有 Zc &lt;= 0 的保护</span>
+
+        T r2 = xp*xp + yp*yp, r4 = r2*r2, r6 = r4*r2;
+        T radial = T(1) + k1*r2 + k2*r4 + k3*r6;
+        T xd = xp*radial + T(2)*p1*xp*yp + p2*(r2 + T(2)*xp*xp);
+        T yd = yp*radial + p1*(r2 + T(2)*yp*yp) + T(2)*p2*xp*yp;
+
+        img_pts_jet.emplace_back(fx*xd + cx, fy*yd + cy);
+    }
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 针孔 + Brown–Conrady</div>
+      <p><strong>① 刚体变换到相机系:</strong></p>
+      <div class="disp">$$\mathbf{P}^c = \mathbf{R}\,\mathbf{P}^w + \mathbf{t}$$</div>
+      <p><strong>② 透视除法(归一化平面):</strong></p>
+      <div class="disp">$$x_p = \frac{X^c}{Z^c}, \qquad y_p = \frac{Y^c}{Z^c}$$</div>
+      <p><strong>③ 畸变。</strong>令 \(r^2 = x_p^2 + y_p^2\),径向 + 切向:</p>
+      <div class="disp">$$\begin{aligned} x_d &amp;= x_p\underbrace{(1 + k_1 r^2 + k_2 r^4 + k_3 r^6)}_{\text{径向}} + \underbrace{2p_1 x_p y_p + p_2(r^2 + 2x_p^2)}_{\text{切向}}\\ y_d &amp;= y_p(1 + k_1 r^2 + k_2 r^4 + k_3 r^6) + p_1(r^2 + 2y_p^2) + 2p_2 x_p y_p \end{aligned}$$</div>
+      <p><strong>④ 内参映射到像素:</strong></p>
+      <div class="disp">$$u = f_x x_d + c_x, \qquad v = f_y y_d + c_y$$</div>
+      <p class="concl">整条链 \(\mathbf{P}^w \to (u,v)\) 是<strong>纯代数、处处可微</strong>(除了 \(Z^c = 0\)),所以 Jet 能一路穿过去,中心差分也能稳定工作。这是 UVL 观测模型可行的技术前提。</p>
+    </div>
+
+    <div class="note trap">
+      <div class="note-h">Zc ≤ 0 没有保护</div>
+      <p>板转到相机背面时 \(X^c/Z^c\) 会翻符号甚至除零,投影出一个荒谬的像素坐标,直接毒化 \(\mathbf{H}\) 和残差。</p>
+      <p>实践中靠上层的可见性筛选挡住(<code>match_armor</code> 里按法向排序只取前 3 块),但那是<strong>启发式,不是保证</strong>。移植到 newvision 时建议补一个 <code>if (Zc &lt; eps) return failure</code>,并让观测被丢弃而不是被使用。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-pp">
+    <div class="fn-head">
+      <span class="fn-id">5.3</span>
+      <h3>UVLMeasure::project_points</h3>
+      <span class="fn-loc">motion_model.hpp:276</span>
+    </div>
+    <p class="fn-role">状态 → 该灯条两端点的像素坐标。把前面所有层串起来。</p>
+<pre>template&lt;typename T&gt;
+inline std::array&lt;ImagePoint&lt;T&gt;, 2&gt; project_points(const T x[X_N]) const {
+    <span class="c">// ① 状态 → 第 id 块板在 odom 的位姿          （§2.6）</span>
+    auto pose_in_odom = armor_pose(x, ctx.id, ctx.armor_num, ctx.armor_number);
+
+    <span class="c">// ② odom → 相机光学系（该帧位姿，来自 TF 插值）</span>
+    Eigen::Transform&lt;T, 3, Eigen::Isometry&gt; camera_cv_in_odom_jet;
+    camera_cv_in_odom_jet.matrix() = ctx.camera_cv_in_odom.matrix().template cast&lt;T&gt;();
+    auto pose_in_camera_cv = camera_cv_in_odom_jet.inverse() * pose_in_odom;
+
+    <span class="c">// ③ 该灯条上下两端点在板系的三维坐标</span>
+    std::vector&lt;cv::Point3f&gt; object_points =
+        getArmorLightKeyPoints3D&lt;cv::Point3f&gt;(ctx.armor_number, ctx.is_left);
+    <span class="c">//   左灯条 = {(0, +W/2, +H/2), (0, +W/2, -H/2)}</span>
+    <span class="c">//   右灯条 = {(0, -W/2, +H/2), (0, -W/2, -H/2)}</span>
+
+    <span class="c">// ④ 投影                                       （§5.2）</span>
+    std::vector&lt;ImagePoint&lt;T&gt;&gt; pts_jet;
+    if (ctx.normalized) {
+        utils::project_points_jets_normalized(object_points, pose_in_camera_cv,
+                                              ctx.camera_info.distortion_coefficients, pts_jet);
+    } else {
+        utils::project_points_jets(object_points, pose_in_camera_cv,
+                                   ctx.camera_info.camera_matrix,
+                                   ctx.camera_info.distortion_coefficients, pts_jet);
+    }
+    return { pts_jet[0], pts_jet[1] };     <span class="c">// (上端点, 下端点)</span>
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 完整的观测函数</div>
+      <div class="disp">$$h_{i,s}(\mathbf{x}) = \pi\Big(\mathbf{K},\ \mathbf{D},\ \big(\mathbf{T}^{\text{odom}}_{\text{cam}}\big)^{-1}\,\mathbf{T}^{\text{odom}}_{\text{armor}_i}(\mathbf{x})\,\mathbf{P}_s\Big)$$</div>
+      <p>其中 \(i\) 是板编号,\(s \in \{\text{左},\text{右}\}\),\(\mathbf{P}_s\) 是该灯条两端点在板系的<strong>常量</strong>三维坐标。</p>
+      <p class="concl">注意 \(\mathbf{x}\) 只通过 \(\mathbf{T}^{\text{odom}}_{\text{armor}_i}\) 进入。其余全是常量(内参、外参、板尺寸、板编号)。<strong>这就是为什么滤波器能用它反解状态</strong>——观测和状态之间只有一条通路。</p>
+    </div>
+
+    <div class="note port">
+      <div class="note-h">newvision 的对应物点</div>
+      <p><code>pnp_solver.cpp:43</code> 的 <code>armorPoints()</code> 已经用了同一个板系约定:</p>
+<pre>return {{0.0F,  half_width,  half_height},   <span class="c">// TL</span>
+        {0.0F, -half_width,  half_height},   <span class="c">// TR</span>
+        {0.0F, -half_width, -half_height},   <span class="c">// BR</span>
+        {0.0F,  half_width, -half_height}};  <span class="c">// BL</span></pre>
+      <p>所以只要写一个 <code>armorLightPoints(width, height, bool left)</code> 返回 <code>{(0, ±W/2, +H/2), (0, ±W/2, −H/2)}</code> 就够了,三维几何一行不用改。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-pto">
+    <div class="fn-head">
+      <span class="fn-id">5.4</span>
+      <h3>points_to_observation</h3>
+      <span class="fn-loc">motion_model.hpp:307</span>
+    </div>
+    <p class="fn-role">两个端点 → 四维观测。<strong>这是整个 UVL 设计里最值得琢磨的函数。</strong></p>
+<pre>template&lt;typename T&gt;
+static inline void points_to_observation(const ImagePoint&lt;T&gt;&amp; top,
+                                         const ImagePoint&lt;T&gt;&amp; bottom, T z[UVLZ_N]) {
+    const ImagePoint&lt;T&gt; delta  = top - bottom;
+    const ImagePoint&lt;T&gt; center = (top + bottom) / T(2);
+
+    <span class="hl">z[idx::UV_ANGLE]    = ceres::atan2(delta.x(), delta.y());</span>   <span class="c">// x 在前！</span>
+    z[idx::UV_CENTER_X] = center.x();
+    z[idx::UV_CENTER_Y] = center.y();
+    z[idx::UV_LENGTH]   = ceres::sqrt(delta.squaredNorm());
+}</pre>
+    <p>同一个函数被用在两处:<strong>预测值</strong>(喂投影出来的点)和<strong>观测值</strong>(喂检测出来的点,见 <code>armor_target.cpp:32</code> 的 <code>get_uvl_measurement</code>)。<strong>预测和观测必须走同一段代码</strong>,否则两边的定义一旦漂移就是灾难性的隐蔽 bug。</p>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 为什么是这四个量,而不是两个端点的四个坐标</div>
+      <p>维度一样是 4,信息量理论上也一样(是个可逆变换)。差别在<strong>误差结构</strong>。</p>
+      <p>设灯条上下端点的检测误差为 \(\boldsymbol\epsilon_{\text{top}}, \boldsymbol\epsilon_{\text{bot}}\)。真实的角点误差是<strong>各向异性</strong>的:沿灯条方向(纵向)的定位误差远大于垂直方向(横向),因为灯条两端是渐变的亮度衰减,而两侧是陡峭的边缘。记 \(\sigma_\parallel \gg \sigma_\perp\)。</p>
+      <p><strong>如果用原始端点坐标</strong> \(\mathbf{z} = (u_t, v_t, u_b, v_b)\):\(\sigma_\parallel\) 和 \(\sigma_\perp\) 会按灯条倾角混进<em>每一个</em>分量,\(\mathbf{R}\) 必须是稠密的、且随倾角变化。用对角 \(\mathbf{R}\) 就错了。</p>
+      <p><strong>换成 \((\alpha, u_c, v_c, L)\) 之后,误差被自然分离:</strong></p>
+      <div class="tw"><table>
+        <thead><tr><th>分量</th><th>定义</th><th>主要吸收</th><th>反映</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">L</td><td>\(\|\Delta\|\)</td><td>\(\sigma_\parallel\)(两端各一次)</td><td>距离 / 尺度</td></tr>
+          <tr><td class="mono">u_c, v_c</td><td>\((\mathbf{p}_t+\mathbf{p}_b)/2\)</td><td>\(\sigma_\parallel\) 被<strong>平均掉一半</strong></td><td>位置</td></tr>
+          <tr><td class="mono">α</td><td>\(\arctan(\Delta_x/\Delta_y)\)</td><td>\(\sigma_\perp/L\)</td><td>姿态</td></tr>
+        </tbody>
+      </table></div>
+      <p>中心点尤其关键:纵向误差在两端<em>反号时相消、同号时保留</em>,取中点相当于做了一次平均,\(\sigma\) 降到 \(\sigma_\parallel/\sqrt{2}\)。而角度只受横向误差影响,且被灯条长度归一化:</p>
+      <div class="disp">$$\sigma_\alpha \approx \frac{\sqrt{2}\,\sigma_\perp}{L}$$</div>
+      <p class="concl">于是三类量可以<strong>各给各的 sigma</strong>,对角 \(\mathbf{R}\) 才成立。这正是配置里三个独立参数 <code>r_sigma_px_by_length_ratio</code> / <code>r_sigma_length_by_length_ratio</code> / <code>r_sigma_angle</code> 的由来。</p>
+    </div>
+
+    <div class="note trap">
+      <div class="note-h">atan2(Δx, Δy) —— x 在前,不是笔误</div>
+      <p>标准写法是 <code>atan2(y, x)</code> 量的是"偏离水平方向"的角。这里参数交换,量的是<strong>偏离竖直方向</strong>的角。</p>
+      <p>原因很实际:装甲板灯条基本竖直,\(|\Delta_y| \gg |\Delta_x|\)。用标准写法 \(\alpha\) 会在 \(\pm\pi/2\) 附近工作,残差归一化和线性化都别扭;交换之后 \(\alpha \approx 0\),干净得多。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-resid">
+    <div class="fn-head">
+      <span class="fn-id">5.5</span>
+      <h3>UVLMeasure::residual</h3>
+      <span class="fn-loc">motion_model.hpp:325</span>
+    </div>
+    <p class="fn-role">残差计算。只有三行,但<strong>下一层求 \(\mathbf{H}\) 时它会以一种意想不到的方式再出现。</strong></p>
+<pre>template&lt;typename T&gt;
+static inline Eigen::Matrix&lt;T, UVLZ_N, 1&gt;
+residual(const Eigen::Matrix&lt;T, UVLZ_N, 1&gt;&amp; z_pred,
+         const Eigen::Matrix&lt;T, UVLZ_N, 1&gt;&amp; z) {
+    Eigen::Matrix&lt;T, UVLZ_N, 1&gt; v = z - z_pred;
+    <span class="hl">v[idx::UV_ANGLE] = normalize_angle(v[idx::UV_ANGLE]);</span>   <span class="c">// 只有这一维要缠绕归一化</span>
+    return v;
+}</pre>
+    <p>其余三维(中心 x、中心 y、长度)都是普通欧氏量,直接相减。只有角度活在 \(S^1\) 上,\(179° - (-179°)\) 必须是 \(2°\) 而不是 \(358°\)。</p>
+    <div class="note">
+      <div class="note-h">记住这个函数</div>
+      <p><code>update_multi</code> 用中心差分求 \(\mathbf{H}\) 时,<strong>差的不是 <code>z_pred</code> 而是 <code>residual</code></strong>——就是为了让缠绕归一化也进到导数里。详见 §6.2。</p>
+    </div>
+  </article>
+</section>
+
+<section class="layer">
+  <div class="layer-head">
+    <span class="layer-num">L6</span>
+    <h2>滤波器</h2>
+  </div>
+  <p class="layer-sub">只需要读两个函数。文件里的 <code>update</code>(单观测版)和 <code>ObsImpl::evaluate</code> 在这条链路上<strong>根本不会被调用</strong>。</p>
+  <p class="layer-file">3rdparty/KalmanHyLib/error_state_extended_kalman_filter.hpp</p>
+
+  <article class="fn" id="f-predict">
+    <div class="fn-head">
+      <span class="fn-id">6.1</span>
+      <h3>predict</h3>
+      <span class="fn-loc">esekf.hpp:69</span>
+    </div>
+    <p class="fn-role">预测步。名义状态照常推进;\(\mathbf{F}\) 用 <code>ceres::Jet</code> 自动微分求。</p>
+<pre>MatrixX1 predict() noexcept {
+    if (inject_state &amp;&amp; box_minus_state) {          <span class="c">// ArmorTarget 走的是这条</span>
+        const MatrixX1 x_prev = x_nominal;
+        MatrixX1 x_pred;
+        f(x_prev.data(), x_pred.data());            <span class="c">// ① 名义状态推进</span>
+        x_nominal = x_pred;
+
+        JetMatrixX1 x_nominal_jet, x_prev_jet;
+        for (int i = 0; i &lt; N_X; ++i) {
+            x_nominal_jet[i] = Jet(x_nominal[i]);
+            x_prev_jet[i]    = Jet(x_prev[i]);
+        }
+
+        JetMatrixX1 delta_jet;                      <span class="c">// ② 播种单位阵</span>
+        for (int i = 0; i &lt; N_X; ++i) {
+            delta_jet[i] = Jet(0.0);
+            <span class="hl">delta_jet[i].v[i] = 1.0;</span>                <span class="c">//    δ 的第 i 维带上第 i 个导数方向</span>
+        }
+
+        JetMatrixX1 x_pert_jet = x_prev_jet;
+        <span class="hl">inject_state_jet(delta_jet, x_pert_jet);</span>     <span class="c">// ③ ⊞</span>
+
+        JetMatrixX1 x_pert_pred_jet;
+        <span class="hl">f(x_pert_jet.data(), x_pert_pred_jet.data());</span> <span class="c">// ④ f</span>
+
+        JetMatrixX1 delta_pred_jet;
+        <span class="hl">box_minus_state_jet(x_nominal_jet, x_pert_pred_jet, delta_pred_jet);</span> <span class="c">// ⑤ ⊟</span>
+
+        for (int i = 0; i &lt; N_X; ++i)
+            <span class="hl">F.row(i) = delta_pred_jet[i].v.transpose();</span> <span class="c">// ⑥ 读出导数就是 F</span>
+
+        delta_x = F * delta_x;
+        Q = update_Q();
+        P_delta = F * P_delta * F.transpose() + Q;
+        <span class="hl">P_delta = 0.5 * (P_delta + P_delta.transpose());</span>  <span class="c">// 强制对称，抗数值漂移</span>
+
+        return x_nominal;
+    }
+    <span class="c">// ... 另一条分支：没有流形运算时直接对状态求 F，本链路不走</span>
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 误差状态转移矩阵 F</div>
+      <p>普通 EKF 里 \(\mathbf{F} = \partial f/\partial\mathbf{x}\)。ESEKF 要的是<strong>误差怎么传播</strong>:</p>
+      <div class="disp">$$\mathbf{F} = \frac{\partial \boldsymbol\delta^+}{\partial\boldsymbol\delta}$$</div>
+      <p>但 \(\boldsymbol\delta\) 和 \(\boldsymbol\delta^+\) 住在<strong>不同点的切空间</strong>(分别在 \(\check{\mathbf{x}}\) 和 \(f(\check{\mathbf{x}})\) 处),不能直接对状态求导。必须绕道名义状态:</p>
+      <div class="disp">$$\boldsymbol\delta \;\xrightarrow{\ \boxplus\ }\; \check{\mathbf{x}}\boxplus\boldsymbol\delta \;\xrightarrow{\ f\ }\; f(\check{\mathbf{x}}\boxplus\boldsymbol\delta) \;\xrightarrow{\ \boxminus\ }\; \boldsymbol\delta^+$$</div>
+      <p>于是:</p>
+      <div class="disp">$$\boxed{\;\mathbf{F} = \left.\frac{\partial}{\partial\boldsymbol\delta}\Big[\,f(\check{\mathbf{x}}\boxplus\boldsymbol\delta)\;\boxminus\;f(\check{\mathbf{x}})\,\Big]\right|_{\boldsymbol\delta=\mathbf{0}}\;}$$</div>
+      <p><strong>代码就是这个式子的逐字实现</strong>,步骤 ②–⑥ 一一对应。链式法则由 Jet 自动完成——它把 \(\partial\boxplus/\partial\boldsymbol\delta\)、\(\partial f/\partial\mathbf{x}\)、\(\partial\boxminus/\partial\mathbf{x}\) 三段乘起来了。</p>
+      <p><strong>如果偷懒直接对旋转向量分量求导会怎样?</strong>得到的是 \(\partial\boldsymbol\phi^+/\partial\boldsymbol\phi\),它与真正的 \(\mathbf{F}\) 相差右雅可比:</p>
+      <div class="disp">$$\mathbf{J}_r(\boldsymbol\phi) = \mathbf{I} - \frac{1-\cos\theta}{\theta^2}\boldsymbol\phi^\wedge + \frac{\theta-\sin\theta}{\theta^3}(\boldsymbol\phi^\wedge)^2$$</div>
+      <p class="concl">\(\boldsymbol\phi\approx 0\) 时 \(\mathbf{J}_r\approx\mathbf{I}\),差别看不出来;\(\|\boldsymbol\phi\|\) 一大就完全错,而且在 \(\pi\) 附近发散。<strong>ESEKF 的写法让你永远不必显式算 \(\mathbf{J}_r\)</strong>——它被吸收进 ⊞/⊟ 的自动微分里了。</p>
+    </div>
+
+    <div class="note">
+      <div class="note-h">delta_x = F * delta_x 是干什么的</div>
+      <p>正常流程里 <code>delta_x</code> 在每次 update 结束时被清零,所以这一行乘的是零向量,没有作用。它存在是为了支持"预测多次再更新一次"的用法——那种情况下上一次残留的误差状态也要跟着传播。</p>
+      <p><code>ArmorTarget</code> 的用法是 predict/update 严格交替,所以这行实际是 no-op。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-um">
+    <div class="fn-head">
+      <span class="fn-id">6.2</span>
+      <h3>update_multi</h3>
+      <span class="fn-loc">esekf.hpp:333</span>
+    </div>
+    <p class="fn-role">多观测迭代更新。<strong>这里有三个反直觉的地方。</strong></p>
+<pre>MatrixX1 update_multi(const std::vector&lt;std::shared_ptr&lt;ObsBase&gt;&gt;&amp; obs_list) noexcept {
+    int total_dim = 0;
+    for (const auto&amp; obs : obs_list) total_dim += obs-&gt;dim();   <span class="c">// 一帧所有观测拼起来</span>
+
+    Eigen::MatrixXd H(total_dim, N_X), R = Eigen::MatrixXd::Zero(total_dim, total_dim);
+    Eigen::VectorXd residual(total_dim);
+
+    MatrixX1 delta_iter = delta_x;      <span class="c">// = 0</span>
+    MatrixXX P_iter     = P_delta;      <span class="c">// 迭代中不更新 ←② </span>
+    Eigen::MatrixXd K(N_X, total_dim);
+
+    for (int iter = 0; iter &lt; iteration_num; ++iter) {          <span class="c">// esekf_iter_num: 5</span>
+        MatrixX1 x_eval = x_nominal;
+        inject_state(delta_iter, x_eval);                       <span class="c">// 在当前迭代点线性化</span>
+
+        int offset = 0;
+        for (auto&amp; obs : obs_list) {
+            <span class="c">// ---- ① H 用中心差分，不是 Jet ----</span>
+            constexpr double eps = 1e-6;
+            for (int i = 0; i &lt; N_X; ++i) {
+                MatrixX1 delta_plus = delta_iter, delta_minus = delta_iter;
+                <span class="hl">delta_plus[i] += eps;  delta_minus[i] -= eps;</span>   <span class="c">// 扰动加在 δ 上，不是 x 上</span>
+
+                MatrixX1 x_plus = x_nominal, x_minus = x_nominal;
+                inject_state(delta_plus,  x_plus);
+                inject_state(delta_minus, x_minus);
+
+                obs-&gt;predict(x_plus,  z_plus);
+                obs-&gt;predict(x_minus, z_minus);
+
+                <span class="c">// ---- ③ 差的是 residual，不是 z_pred ----</span>
+                obs-&gt;residual_and_R(z_minus, dz, unused_R);
+                obs-&gt;residual_and_R(z_plus,  unused_residual, unused_R);
+                dz = unused_residual - dz;
+                <span class="hl">Hk.col(i) = -dz / (2.0 * eps);</span>
+            }
+            H.block(offset, 0, d, N_X)   = Hk;
+            residual.segment(offset, d)  = rk;
+            R.block(offset, offset, d, d) = Rk;                 <span class="c">// 块对角</span>
+            offset += d;
+        }
+
+        const Eigen::MatrixXd S = H * P_iter * H.transpose() + R;
+        const auto ldlt = S.ldlt();
+        Eigen::MatrixXd PHt = P_iter * H.transpose();
+        K = ldlt.solve(PHt.transpose()).transpose();            <span class="c">// K = P Hᵀ S⁻¹，解方程不求逆</span>
+
+        <span class="hl">delta_iter.noalias() += K * residual;</span>                   <span class="c">// ← 见下方"偏离教科书"</span>
+    }
+
+    inject_state(delta_iter, x_nominal);                        <span class="c">// 一次性注入</span>
+    delta_x.setZero();                                          <span class="c">// 误差状态复位</span>
+
+    const MatrixXX I = MatrixXX::Identity();
+    P_delta = (I - K*H) * P_iter * (I - K*H).transpose() + K*R*K.transpose();  <span class="c">// Joseph</span>
+    P_delta = 0.5 * (P_delta + P_delta.transpose());
+    return x_nominal;
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 多观测拼接与信息累加</div>
+      <p>一帧里所有观测垂直拼接:</p>
+      <div class="disp">$$\mathbf{z} = \begin{bmatrix}\mathbf{z}_1\\\vdots\\\mathbf{z}_m\end{bmatrix},\quad \mathbf{H} = \begin{bmatrix}\mathbf{H}_1\\\vdots\\\mathbf{H}_m\end{bmatrix},\quad \mathbf{R} = \mathrm{blkdiag}(\mathbf{R}_1,\dots,\mathbf{R}_m)$$</div>
+      <p>一块完整板 = 2 条灯条 × 4 维 = <strong>8 行</strong>;每条孤立灯条再加 4 行。</p>
+      <p><strong>从信息形式看收益更清楚。</strong>后验信息矩阵是先验加上各观测的信息贡献:</p>
+      <div class="disp">$$\mathbf{P}_+^{-1} = \mathbf{P}_-^{-1} + \mathbf{H}^\top\mathbf{R}^{-1}\mathbf{H} = \mathbf{P}_-^{-1} + \sum_{k=1}^{m}\mathbf{H}_k^\top\mathbf{R}_k^{-1}\mathbf{H}_k$$</div>
+      <p class="concl">\(\mathbf{R}\) 块对角 ⟹ 信息<strong>严格相加</strong>。每多一个观测,后验不确定性单调下降。所以同时用装甲板和孤立灯条不是"多堆几个特征点",而是在滤波框架内给同一个整车状态<strong>增加独立约束</strong>。</p>
+    </div>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 中心差分求 H,以及为什么差 residual</div>
+      <p><strong>要求的是 \(\mathbf{H} = \partial\mathbf{z}/\partial\boldsymbol\delta\),不是 \(\partial\mathbf{z}/\partial\mathbf{x}\)</strong>。所以扰动必须加在 \(\boldsymbol\delta\) 上再 ⊞ 进去:</p>
+      <div class="disp">$$\mathbf{H}_{:,i} \approx \frac{h(\check{\mathbf{x}}\boxplus(\boldsymbol\delta + \epsilon\mathbf{e}_i)) - h(\check{\mathbf{x}}\boxplus(\boldsymbol\delta - \epsilon\mathbf{e}_i))}{2\epsilon}$$</div>
+      <p>这一点错了(比如把 \(\epsilon\) 直接加在 \(\mathbf{x}\) 的旋转分量上),\(\mathbf{H}\) 和 \(\mathbf{P}\) 就不在同一个坐标系里,增益全废。</p>
+      <p><strong>为什么差 residual 而不是 z_pred?</strong>因为 \(\mathbf{r} = \mathbf{z} - \hat{\mathbf{z}}\),\(\mathbf{z}\) 是常量,所以</p>
+      <div class="disp">$$\frac{\partial\mathbf{r}}{\partial\boldsymbol\delta} = -\frac{\partial\hat{\mathbf{z}}}{\partial\boldsymbol\delta} = -\mathbf{H} \;\Longrightarrow\; \mathbf{H} = -\frac{\partial\mathbf{r}}{\partial\boldsymbol\delta}$$</div>
+      <p>这解释了代码里的负号。而<strong>真正的动机是角度缠绕</strong>:如果直接差 \(\hat{\mathbf{z}}\),当 \(\hat{z}_\alpha^+\) 和 \(\hat{z}_\alpha^-\) 分别落在 \(\pm\pi\) 两侧时,差出来是 \(\approx 2\pi\) 而不是 \(\approx 0\),\(\mathbf{H}\) 的那一列会得到一个巨大的假梯度。走 <code>residual</code> 就吃到了 <code>normalize_angle</code>(§5.5)。</p>
+      <p class="concl">代价:每个观测 \(2\times 13 = 26\) 次完整投影。<strong>这是纯粹的工程妥协,不是理论需要</strong>——见下方。</p>
+    </div>
+
+    <div class="note trap">
+      <div class="note-h">为什么这里不用 Jet(而 predict 用了)</div>
+      <p>因为 <code>ObsBase</code> 是<strong>类型擦除</strong>的虚接口:</p>
+<pre>virtual void predict(const Eigen::VectorXd&amp; x, Eigen::VectorXd&amp; z_pred) const = 0;</pre>
+      <p><code>VectorXd</code> 只认 <code>double</code>,Jet 流不过去。<code>ObsImpl::evaluate()</code>(<code>esekf.hpp:277</code>)里其实<em>写了</em>完整的 Jet 路径,但 <code>update_multi</code> 只在 <code>inject_state</code> 未设置时才调它——而 <code>ArmorTarget</code> 一定会设置。<strong>所以那段 Jet 代码是死代码。</strong></p>
+      <p><strong>移植到 newvision 时这是个明确的改进点:</strong>不做类型擦除(用 <code>std::variant</code> 或模板 visitor 组织观测列表),Jet 就能一路走通,每个观测省掉 26 次投影,而且导数是精确的而非 \(O(\epsilon^2)\) 近似。</p>
+    </div>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 迭代更新,以及此处偏离教科书之处</div>
+      <p><strong>为什么迭代?</strong>标准 EKF 在<em>先验点</em> \(\check{\mathbf{x}}\) 处线性化 \(h\)。先验偏得远时线性化点很糟,更新落错地方。迭代版每轮在<em>当前估计</em>处重新线性化,本质是对 MAP 目标做高斯牛顿:</p>
+      <div class="disp">$$\min_{\boldsymbol\delta}\ \underbrace{\|\boldsymbol\delta\|^2_{\mathbf{P}^{-1}}}_{\text{先验}} + \underbrace{\|\mathbf{z} - h(\check{\mathbf{x}}\boxplus\boldsymbol\delta)\|^2_{\mathbf{R}^{-1}}}_{\text{观测}}$$</div>
+      <p>对这条链路收益很大,因为 \(h\) 强非线性:透视除法 + 畸变多项式 + <code>atan2</code> + <code>sqrt</code>。目标处在某些 yaw 上时,状态动一点投影出的灯条能扫过很大一片。</p>
+      <p><strong>标准 IEKF 的迭代式</strong>(Bell &amp; Cathey 形式):</p>
+      <div class="disp">$$\boldsymbol\delta_{k+1} = \mathbf{K}_k\big[\mathbf{r}_k + \mathbf{H}_k\boldsymbol\delta_k\big]$$</div>
+      <p><strong>这份代码的写法:</strong></p>
+      <div class="disp">$$\boldsymbol\delta_{k+1} = \boldsymbol\delta_k + \mathbf{K}_k\mathbf{r}_k$$</div>
+      <p>两者相差 \((\mathbf{I} - \mathbf{K}_k\mathbf{H}_k)\boldsymbol\delta_k\),而 \(\mathbf{K}\mathbf{H}\neq\mathbf{I}\),<strong>不等价</strong>。前者每轮都把 \(\boldsymbol\delta\) 重新锚回先验,后者是不断累加高斯牛顿步,理论上会偏离 MAP 解(先验项被反复计入)。</p>
+      <p>另外 \(\mathbf{P}_{\text{iter}}\) 在迭代中<strong>不更新</strong>,最后用最后一轮的 \(\mathbf{K}, \mathbf{H}\) 走 Joseph form。</p>
+      <p class="concl">这两处我没有实测过实际影响。<strong>移植时建议先按标准式实现,再和这一版对拍</strong>——如果差异可忽略就说明 \(\mathbf{K}\mathbf{H}\) 接近 0(观测信息远弱于先验),如果差异明显就说明这一版确实在过冲。</p>
+    </div>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · Joseph form 为什么值得</div>
+      <p>标准形式 \(\mathbf{P}_+ = (\mathbf{I}-\mathbf{K}\mathbf{H})\mathbf{P}_-\) 只在 \(\mathbf{K}\) 恰为最优增益时成立,浮点误差会让 \(\mathbf{P}\) 失去对称性甚至正定性。Joseph form 对<strong>任意</strong> \(\mathbf{K}\) 都成立:</p>
+      <div class="disp">$$\mathbf{P}_+ = (\mathbf{I}-\mathbf{K}\mathbf{H})\mathbf{P}_-(\mathbf{I}-\mathbf{K}\mathbf{H})^\top + \mathbf{K}\mathbf{R}\mathbf{K}^\top$$</div>
+      <p class="concl">右边是两个正定二次型之和,<strong>结构上保证半正定</strong>。在迭代 EKF 里 \(\mathbf{K}\) 本来就不是最优增益(它是最后一轮的),所以这里用 Joseph 不是可选优化而是必需。后面那行强制对称 <code>0.5*(P+Pᵀ)</code> 是再上一道保险。</p>
+    </div>
+  </article>
+</section>
+
+<section class="layer">
+  <div class="layer-head">
+    <span class="layer-num">L7</span>
+    <h2>装配</h2>
+  </div>
+  <p class="layer-sub">把前六层接起来:怎么初始化、噪声怎么给、每帧怎么推进、观测怎么组装。</p>
+  <p class="layer-file">src/tasks/auto_aim/armor_track/armor_target.cpp</p>
+
+  <article class="fn" id="f-reset">
+    <div class="fn-head">
+      <span class="fn-id">7.1</span>
+      <h3>ArmorTarget::reset</h3>
+      <span class="fn-loc">armor_target.cpp:83</span>
+    </div>
+    <p class="fn-role">从<strong>一块板</strong>的 PnP 结果反推出<strong>整车</strong>的 13 维初值。这是 §2.6 的逆向使用。</p>
+<pre>void ArmorTarget::reset(Armor&amp; a, const ArmorTrackerCfg&amp; c, const TimePoint&amp; timestamp,
+                        int frame_id, const CameraInfo&amp; camera_info,
+                        const ISO3&amp; camera_cv_in_odom) {
+    cfg = c;  target_number = a.number;
+    uvmeasure_ctx = { .armor_num = armor_num_by_armor_class(target_number), .id = 0,
+                      .camera_cv_in_odom = camera_cv_in_odom,
+                      .camera_info = camera_info.clone(), .armor_number = target_number };
+
+    <span class="c">// ① 初始协方差：完全靠先验知识给量级</span>
+    Eigen::DiagonalMatrix&lt;double, X_N&gt; p0;
+    p0.diagonal().setZero();
+    p0.diagonal()[idx::CX]      = p0.diagonal()[idx::CY]      = p0.diagonal()[idx::CZ]      = 1;
+    p0.diagonal()[idx::VCX]     = p0.diagonal()[idx::VCY]     = p0.diagonal()[idx::VCZ]     = 10;
+    p0.diagonal()[idx::C_ROT_Z] = p0.diagonal()[idx::C_ROT_Y] = p0.diagonal()[idx::C_ROT_X] = 1;
+    p0.diagonal()[idx::LOG_R1]  = p0.diagonal()[idx::LOG_R2]  = p0.diagonal()[idx::H]       = 1;
+    <span class="hl">p0.diagonal()[idx::VYAW] = 100;</span>     <span class="c">// 角速度最不确定 —— 一块板完全看不出转速</span>
+
+    <span class="c">// ② 半径先验：按目标类型给经验值</span>
+    double r_pre;
+    if      (a.number == ArmorClass::OUTPOST) r_pre = 0.2765;
+    else if (a.number == ArmorClass::BASE)    r_pre = 0.3205;
+    else                                      r_pre = 0.26;
+
+    esekf = RobotStateESEKF(Predict{ .dt = 0.005, .armor_number = target_number },
+                            u_q, inject, box_minus, p0);
+    esekf-&gt;set_iteration_num(cfg.esekf_iter_num);
+
+    <span class="c">// ③ 关键：从板位姿反推车心位姿</span>
+    auto armor_in_odom = a.pose;                    <span class="c">// PnP 给的，已在 odom 系</span>
+    auto armor_in_car  = ISO3::Identity();
+    const double r = r_pre;
+    <span class="hl">armor_in_car.translation() &lt;&lt; -r, 0, 0;</span>         <span class="c">// 假设这块板是 0 号（yaw = 0）</span>
+    const double armor_pitch = (target_number == ArmorClass::OUTPOST)
+                             ? -FIFTTEN_DEGREE_RAD : FIFTTEN_DEGREE_RAD;
+    armor_in_car.linear() = utils::rpy2matrix(Vec3(0, armor_pitch, 0));
+    <span class="hl">auto car_in_odom = armor_in_odom * armor_in_car.inverse();</span>
+
+    <span class="c">// ④ 填状态</span>
+    const Vec3 car_rot = utils::so3_log(car_in_odom.linear().eval());
+    target_state.x = Eigen::VectorXd::Zero(X_N);
+    target_state.set_pos(car_in_odom.translation());
+    target_state.x[idx::LOG_R1] = target_state.x[idx::LOG_R2] = std::log(r);
+    target_state.x[idx::C_ROT_Z] = car_rot.z();
+    target_state.x[idx::C_ROT_Y] = car_rot.y();
+    target_state.x[idx::C_ROT_X] = car_rot.x();
+    esekf-&gt;set_state(target_state.x);
+    <span class="c">// 速度、vyaw、h 全部初始化为 0</span>
+
+    last_update = timestamp;  is_inited = true;  jumped = false;  last_match_id = -1;
+    track_state.reset();  this_id = GLOBAL_ID++;  voter.reset(timestamp);
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 从一块板反推整车</div>
+      <p>§2.6 给的是正向:</p>
+      <div class="disp">$$\mathbf{T}^{\text{odom}}_{\text{armor}_i} = \mathbf{T}^{\text{odom}}_{\text{car}}\cdot\mathbf{T}^{\text{car}}_{\text{armor}_i}$$</div>
+      <p>初始化时已知 \(\mathbf{T}^{\text{odom}}_{\text{armor}}\)(PnP 给的),想求 \(\mathbf{T}^{\text{odom}}_{\text{car}}\),于是右乘逆:</p>
+      <div class="disp">$$\mathbf{T}^{\text{odom}}_{\text{car}} = \mathbf{T}^{\text{odom}}_{\text{armor}}\cdot\big(\mathbf{T}^{\text{car}}_{\text{armor}}\big)^{-1}$$</div>
+      <p><strong>但 \(\mathbf{T}^{\text{car}}_{\text{armor}}\) 依赖两个未知量:</strong>板编号 \(i\) 和半径 \(r\)。代码的处理是<strong>都用假设值</strong>:</p>
+      <ul>
+        <li><strong>假设看到的是 0 号板</strong>(\(\theta_0 = 0\)),于是 \(\mathbf{p}^{\text{car}}_{\text{armor}} = (-r, 0, 0)^\top\),\(\mathbf{R}^{\text{car}}_{\text{armor}} = \mathbf{R}_y(\alpha)\)</li>
+        <li><strong>半径用经验先验</strong> \(r_{\text{pre}}\)(常规车 0.26 m)</li>
+      </ul>
+      <p>这两个假设都会错,但都<strong>不致命</strong>:</p>
+      <div class="disp">$$\text{编号假设错} \Longrightarrow \text{整车 yaw 偏 } \frac{2\pi k}{N}, \qquad \text{半径假设错} \Longrightarrow \text{车心沿视线偏 } \Delta r$$</div>
+      <p class="concl">因为编号只是<strong>标签的循环平移</strong>——把实际的 2 号板叫作 0 号,整个几何仍然自洽,只是整车 yaw 差 \(2\pi k/N\)。而 \(r\) 的偏差在后续观测中被修正(\(p_0[\text{LOG\_R1}] = 1\) 给了足够的不确定性)。<strong>真正不可观测的是 <code>vyaw</code></strong>:单帧完全看不出车在不在转,所以 \(p_0 = 100\),等于告诉滤波器"这一维我基本不知道,请大胆用观测改它"。</p>
+    </div>
+
+    <div class="note">
+      <div class="note-h">jumped 标志的含义</div>
+      <p><code>jumped = false</code> 表示"还没关联到过 0 号以外的板"。在这个状态下,整车 yaw、第二组半径 <code>LOG_R2</code>、高度差 <code>H</code> 几乎<strong>完全不可观测</strong>——只见过一块板,其余板的位置全靠初值猜。</p>
+      <p>所以 <code>match_armor</code> 用两套门限:<code>armor_match_gate_not_all_init</code>(宽松,让第二块板更容易进来)和 <code>armor_match_gate</code>(收敛后收紧)。newvision 的 <code>TrackedTarget::jumped</code> 语义完全一致,而且注释里写明了是<strong>粘滞</strong>的(一旦为真不再复位)。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-q">
+    <div class="fn-head">
+      <span class="fn-id">7.2</span>
+      <h3>ArmorTarget::process_noise</h3>
+      <span class="fn-loc">armor_target.cpp:280</span>
+    </div>
+    <p class="fn-role">构造过程噪声 \(\mathbf{Q}\)。<strong>§3.2 里"右乘是被逼出来的"在这里兑现。</strong></p>
+<pre>Eigen::Matrix&lt;double, X_N, X_N&gt; ArmorTarget::process_noise(double dt) const noexcept {
+    Vec3 q_xyz_body;  double q_yaw;
+    if (target_number == ArmorClass::OUTPOST) {
+        q_xyz_body = cfg.qxyz_output;  q_yaw = cfg.qyaw_output;   <span class="c">// 前哨：极小</span>
+    } else {
+        q_xyz_body = cfg.qxyz_common;  q_yaw = cfg.qyaw_common;   <span class="c">// [30, 30, 1]</span>
+    }
+    Eigen::Matrix&lt;double, X_N, X_N&gt; q;  q.setZero();
+    const double dt2 = dt*dt, dt3 = dt2*dt, dt4 = dt2*dt2;
+
+    <span class="c">// ① 平移：体系加速度噪声 → 旋到 odom</span>
+    const Mat3 car_in_odom_R = whole_car_pose(target_state.x.data(), target_number).linear();
+    const Mat3 Q_acc_body = q_xyz_body.asDiagonal();
+    <span class="hl">const Mat3 Q_acc_odom = car_in_odom_R * Q_acc_body * car_in_odom_R.transpose();</span>
+
+    for (int i = 0; i &lt; 3; ++i) for (int j = 0; j &lt; 3; ++j) {
+        q(pos_idx[i], pos_idx[j]) = 0.25 * dt4 * Q_acc_odom(i,j);
+        q(pos_idx[i], vel_idx[j]) = 0.5  * dt3 * Q_acc_odom(i,j);
+        q(vel_idx[i], pos_idx[j]) = 0.5  * dt3 * Q_acc_odom(i,j);
+        q(vel_idx[i], vel_idx[j]) =        dt2 * Q_acc_odom(i,j);
+    }
+
+    <span class="c">// ② yaw：常角加速度模型，误差本来就在体系 → 不用旋转</span>
+    q(idx::VYAW,    idx::VYAW)    +=        dt2 * q_yaw;
+    q(idx::C_ROT_Z, idx::VYAW)    += 0.5  * dt3 * q_yaw;
+    q(idx::VYAW,    idx::C_ROT_Z) += 0.5  * dt3 * q_yaw;
+    q(idx::C_ROT_Z, idx::C_ROT_Z) += 0.25 * dt4 * q_yaw;
+
+    <span class="c">// ③ roll/pitch：随机游走，吸收地面坡度、外参残差</span>
+    const Mat3 Q_wpr_body = (Vec3(cfg.q_wpr, cfg.q_wpr, 0)).asDiagonal();
+    for (int i = 0; i &lt; 3; ++i) for (int j = 0; j &lt; 3; ++j)
+        q(rot_idx[i], rot_idx[j]) += dt * Q_wpr_body(i,j);
+
+    <span class="c">// ④ 半径 / 高度：随机游走（log 状态要换算）</span>
+    <span class="hl">q(idx::LOG_R1, idx::LOG_R1) = cfg.q_r / (target_state.r1() * target_state.r1());</span>
+    if (target_number == ArmorClass::OUTPOST) {
+        q(idx::OUTPOST01DZ, idx::OUTPOST01DZ) = cfg.q_outpost_dz;
+        q(idx::OUTPOST02DZ, idx::OUTPOST02DZ) = cfg.q_outpost_dz;
+    } else {
+        q(idx::LOG_R2, idx::LOG_R2) = cfg.q_r / (target_state.r2() * target_state.r2());
+        q(idx::H, idx::H) = cfg.q_h;
+    }
+    return q;
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 常加速度模型的 Q 从哪来</div>
+      <p>把未建模的加速度当白噪声 \(a \sim \mathcal{N}(0, \sigma_a^2)\)。在 \(\Delta t\) 内它对位置和速度的影响:</p>
+      <div class="disp">$$\Delta p = \tfrac{1}{2}a\,\Delta t^2, \qquad \Delta v = a\,\Delta t \qquad\Longrightarrow\qquad \mathbf{G} = \begin{bmatrix}\tfrac{1}{2}\Delta t^2\\ \Delta t\end{bmatrix}$$</div>
+      <p>于是这个 2×2 块是:</p>
+      <div class="disp">$$\mathbf{Q}_{pv} = \mathbf{G}\,\sigma_a^2\,\mathbf{G}^\top = \sigma_a^2\begin{bmatrix}\tfrac{1}{4}\Delta t^4 &amp; \tfrac{1}{2}\Delta t^3\\[3pt] \tfrac{1}{2}\Delta t^3 &amp; \Delta t^2\end{bmatrix}$$</div>
+      <p><strong>这就是代码里那四个系数 \(\tfrac14\Delta t^4,\ \tfrac12\Delta t^3,\ \tfrac12\Delta t^3,\ \Delta t^2\) 的来历</strong>,平移和 yaw 用的是同一套(yaw 那套是"常角加速度")。</p>
+    </div>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · 为什么 Q 必须先在体系建再旋转</div>
+      <p>配置 <code>qxyz_common: [30.0, 30.0, 1.0]</code> —— 水平两轴 30,竖直轴 1,相差 30 倍。这个先验的物理含义是:</p>
+      <div class="disp">$$\mathbf{Q}^{\text{body}}_{a} = \mathrm{diag}(30,\ 30,\ 1)$$</div>
+      <p><em>"地面轮式车可以突然前后左右加速,但不会突然上下加速。"</em>这句话只有在<strong>车体坐标系</strong>里才成立。车头朝东和朝北时,世界系下的噪声椭球方向完全不同。所以要旋转:</p>
+      <div class="disp">$$\mathbf{Q}^{\text{odom}}_{a} = \mathbf{R}^{\text{odom}}_{\text{car}}\,\mathbf{Q}^{\text{body}}_{a}\,\big(\mathbf{R}^{\text{odom}}_{\text{car}}\big)^\top$$</div>
+      <p>这是协方差在坐标变换下的标准传播律(\(\mathrm{Cov}(\mathbf{R}\mathbf{a}) = \mathbf{R}\,\mathrm{Cov}(\mathbf{a})\,\mathbf{R}^\top\))。</p>
+      <p><strong>而 yaw 那一块不需要旋转</strong>,因为选了右乘之后误差状态本来就定义在体系里。代码注释:<em>"这里将误差设计为相对自身的旋转误差,所以 q 就是相对自身的运动"</em>。</p>
+      <p class="concl">如果当初选了左乘(世界系扰动),这里就得反过来把 yaw 噪声旋进世界系,而且 <code>rot_z</code>–<code>vyaw</code> 的耦合块会变成三维稠密的,因为"绕车体 z 轴"在世界系里是三个分量的组合。<strong>右乘的选择让这段代码保持简单。</strong></p>
+    </div>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · log 半径的噪声换算</div>
+      <div class="disp">$$q_{\ell\ell} = \frac{q_r}{r^2}$$</div>
+      <p>由 §2.4 的一阶传播 \(\sigma_\ell \approx \sigma_r / r\) 得到。直觉:配置里的 <code>q_r</code> 描述的是<strong>物理半径</strong>每秒能漂多少(米²),而状态存的是 \(\ln r\),所以要除以 \(r^2\) 换算到对数尺度。</p>
+      <p class="concl">副作用是<strong>大半径目标的对数噪声更小</strong>——基地(r≈0.32)比步兵(r≈0.26)的半径更"稳",符合直觉。</p>
+    </div>
+
+    <div class="note port">
+      <div class="note-h">对 newvision 的启示</div>
+      <p>newvision 现在的 \(\mathbf{Q}\) 是直接在世界系给的对角阵。<code>CLAUDE.md</code> 里记着一个已知问题:<em>"NIS near 0.12 against a 4-DOF expectation of 4 … 一个 sweep 显示 Q 主导了这个差距"</em>,而且降 Q 会让 <code>3m_run_fast</code> 变差 3.6 倍。</p>
+      <p><strong>体系 Q + 旋转到世界系,很可能正是这个矛盾的出路</strong>:目前为了照顾机动目标只能整体抬高 Q,而体系 Q 允许你"沿行进方向给大、竖直方向给小",在不牺牲机动响应的前提下降低总的协方差膨胀。这是移植时值得优先验证的一项。</p>
+    </div>
+  </article>
+
+  <article class="fn" id="f-pekf">
+    <div class="fn-head">
+      <span class="fn-id">7.3</span>
+      <h3>ArmorTarget::predict_ekf</h3>
+      <span class="fn-loc">armor_target.cpp:333</span>
+    </div>
+    <p class="fn-role">每帧把滤波器推进到图像曝光时刻。十行。</p>
+<pre>void ArmorTarget::predict_ekf(const TimePoint&amp; timestamp) {
+    if (!esekf) throw std::runtime_error("ESEKF is not initialized");
+
+    <span class="hl">auto dt = std::chrono::duration&lt;double&gt;(timestamp - target_state.timestamp).count();</span>
+
+    esekf-&gt;set_predict_func(Predict{ .dt = dt, .armor_number = target_number, .voter = voter });
+    esekf-&gt;set_update_Q([&amp;]() { return process_noise(dt); });
+
+    target_state.x = esekf-&gt;predict();
+    target_state.timestamp = timestamp;
+    this_id = GLOBAL_ID++;
+}</pre>
+    <ul>
+      <li><strong><code>dt</code> 是实际帧间隔,不是标称值。</strong>由曝光时间戳相减得到,所以掉帧、检测耗时抖动都被自然吸收。这是 <code>Predict.dt</code> 每帧都要重设的原因。</li>
+      <li><strong><code>Q</code> 是 lambda 而非值。</strong>因为 \(\mathbf{Q}\) 依赖当前姿态(要旋转)和当前半径(log 换算),必须在 predict 内部、用推进前的状态求值。</li>
+      <li><strong><code>this_id = GLOBAL_ID++</code></strong> 是给下游用的"状态版本号"。<code>very_aimer</code> 靠它判断目标状态有没有变(<code>InputCtx::is_same</code>),没变就复用上一次构建的轨迹,只推进时间。</li>
+    </ul>
+  </article>
+
+  <article class="fn" id="f-update">
+    <div class="fn-head">
+      <span class="fn-id">7.4</span>
+      <h3>ArmorTarget::update</h3>
+      <span class="fn-loc">armor_target.cpp:345</span>
+    </div>
+    <p class="fn-role">把关联好的装甲板和灯条组装成观测列表,喂给滤波器。</p>
+<pre>int ArmorTarget::update(std::vector&lt;std::pair&lt;int, Armor&gt;&gt;&amp; matched_armors,
+                        std::vector&lt;std::tuple&lt;int, bool, Light&gt;&gt;&amp; matched_lights,
+                        const TimePoint&amp; timestamp, const CameraInfo&amp; camera_info,
+                        const ISO3&amp; camera_cv_in_odom) {
+    if (matched_armors.empty() &amp;&amp; matched_lights.empty()) return 0;
+    uvmeasure_ctx.camera_cv_in_odom = camera_cv_in_odom;
+
+    std::vector&lt;std::shared_ptr&lt;RobotStateESEKF::ObsBase&gt;&gt; obs;
+
+    <span class="c">// ── 单条灯条 → 一个 4 维观测 ──────────────────────────</span>
+    auto add_uvl_obs = [&amp;](const cv::Point2f&amp; top, const cv::Point2f&amp; bottom,
+                           int id, bool is_left) {
+        auto ctx = uvmeasure_ctx;  ctx.id = id;  ctx.is_left = is_left;
+        const auto observation = get_uvl_measurement(top, bottom, camera_info);  <span class="c">// §5.4 同一函数</span>
+
+        const auto u_r = [&amp;](const auto&amp; z) {
+            Eigen::Matrix&lt;double, UVLZ_N, UVLZ_N&gt; r;  r.setZero();
+            <span class="hl">auto length = cv::norm(top - bottom);</span>          <span class="c">// 用灯条长度描述误差强度</span>
+            const double sigma_px = cfg.r_sigma_px_by_length_ratio * length;
+            double sigma_length   = cfg.r_sigma_length_by_length_ratio * length;
+            double sigma_angle    = cfg.r_sigma_angle;               <span class="c">// 常数</span>
+            r(idx::UV_ANGLE,    idx::UV_ANGLE)    = sigma_angle  * sigma_angle  / 2.0;
+            r(idx::UV_CENTER_X, idx::UV_CENTER_X) = sigma_px     * sigma_px     / 2.0;
+            r(idx::UV_CENTER_Y, idx::UV_CENTER_Y) = sigma_px     * sigma_px     / 2.0;
+            r(idx::UV_LENGTH,   idx::UV_LENGTH)   = sigma_length * sigma_length / 2.0;
+            return r;
+        };
+        UVLMeasure measure{ .ctx = ctx };
+        obs.push_back(esekf-&gt;make_obs(observation, measure, u_r, cal_uvl_residual));
+    };
+
+    <span class="c">// ── 一块完整板 → 拆成左右两条灯条 ────────────────────</span>
+    auto add_uva_obs = [&amp;](Armor&amp; a, int id) {
+        const auto key_points = a.key_points.landmarks();
+        <span class="hl">add_uvl_obs(key_points[LEFT_TOP],  key_points[LEFT_BOTTOM],  id, true);</span>
+        <span class="hl">add_uvl_obs(key_points[RIGHT_TOP], key_points[RIGHT_BOTTOM], id, false);</span>
+
+        if (matched_armors.size() == 1 &amp;&amp; armor_pnp(a, camera_info, camera_cv_in_odom)) {
+            <span class="c">// 单板退化时补一维 IPPE 深度差约束（DiffMeasure，本文不展开）</span>
+        }
+    };
+
+    std::vector&lt;bool&gt; used_id(armor_num(), false);
+    for (auto&amp; [id, armor] : matched_armors) {
+        <span class="hl">jumped |= (id != 0);</span>                    <span class="c">// 见过 0 号以外的板 → 粘滞置位</span>
+        last_match_id = id;  used_id[id] = true;
+        add_uva_obs(armor, id);
+    }
+    for (const auto&amp; [id, is_left, light] : matched_lights) {
+        used_id[id] = true;
+        add_uvl_obs(light.top, light.bottom, id, is_left);   <span class="c">// 孤立灯条，同一个模型</span>
+    }
+
+    if (!obs.empty()) {
+        <span class="hl">target_state.x = esekf-&gt;update_multi(obs);</span>
+        target_state.timestamp = timestamp;
+        last_update = timestamp;
+        this_id = GLOBAL_ID++;
+        voter.update(/* 当前 yaw */, timestamp);
+    }
+    update_count += obs.size();
+    return obs.size();
+}</pre>
+
+    <div class="math">
+      <div class="math-h">数学笔记 · R 为什么正比于灯条长度</div>
+      <p>设角点检测误差在<strong>像素空间</strong>近似恒定 \(\sigma_{\text{px}}^{\,0}\)(网络回归精度不随距离变)。那为什么 \(\sigma\) 还要乘 \(L\)?</p>
+      <p>因为我们关心的不是像素误差本身,而是它<strong>折算到状态空间的影响</strong>。灯条长度 \(L\) 与距离 \(d\) 成反比:</p>
+      <div class="disp">$$L \approx \frac{f\,H_{\text{armor}}}{d} \qquad\Longrightarrow\qquad d \approx \frac{f\,H_{\text{armor}}}{L}$$</div>
+      <p>同样 1 像素的横向误差,在距离 \(d\) 处对应的物理横移是 \(d/f\) 米——<strong>远处放大得多</strong>。若把 \(\sigma\) 设成常数,滤波器会误以为远处观测和近处一样可信。</p>
+      <p>取 \(\sigma \propto L\) 相当于:</p>
+      <div class="disp">$$\sigma_{\text{px}} = \kappa L \propto \frac{1}{d} \qquad\Longrightarrow\qquad \sigma_{\text{物理}} = \sigma_{\text{px}}\cdot\frac{d}{f} \propto \text{常数}$$</div>
+      <p class="concl">也就是说,<strong>这个缩放让"物理尺度上的观测噪声"近似恒定</strong>,距离权重不用手调。这是 newvision <code>docs/pnp_observation_noise_and_covariance.md</code> 里那套完整协方差传播的一个廉价但方向正确的替代品。</p>
+      <p><strong>那个 <code>/ 2.0</code></strong>:一块板被拆成两条灯条、信息量翻倍,所以每条的方差减半,总信息量与"把整块板当一个观测"相当。</p>
+    </div>
+
+    <div class="note">
+      <div class="note-h">被注释掉的一行,和 README 的 TODO</div>
+<pre><span class="c">// sigma_angle *= std::cos(z(idx::UV_ANGLE));
+//   越接近垂直上下点的垂直灯条方向偏移越大，这个实际还是需要考虑遮挡模型</span></pre>
+      <p>作者知道 \(\sigma_\alpha\) 应该随灯条倾角变化(灯条越斜,端点定位对角度的影响越大),但没有遮挡模型支撑,就先按住了。对应 README TODO 里的 <em>"针对现实装甲板特征可见性的投影模型"</em>,以及那个 1 行空文件 <code>armor_obstruction_model.hpp</code>。</p>
+    </div>
+
+    <div class="note port">
+      <div class="note-h">观测的唯一入口</div>
+      <p>注意<strong>完整板和孤立灯条走的是同一个 <code>add_uvl_obs</code></strong>。这是 UVL 设计最漂亮的地方:配不成板的单根灯条不需要任何特殊处理,它就是少了一个搭档的普通观测。</p>
+      <p>移植 newvision 时,第一阶段可以<strong>只做完整板拆两条灯条</strong>(L2 不用改),孤立灯条留到第二阶段——那时才需要让 <code>ArmorDetector</code> 额外输出 <code>Light</code> 列表。</p>
+    </div>
+  </article>
+</section>
+
+<hr>
+
+<section class="layer" id="port">
+  <div class="layer-head">
+    <span class="layer-num">08</span>
+    <h2>移植到 newvision</h2>
+  </div>
+  <p class="layer-sub">按"改动量从小到大"排列。前三项不碰 L2 和 L4。</p>
+
+  <h3 style="font-size:19px;margin:36px 0 4px">状态布局对照</h3>
+  <div class="tw"><table>
+    <thead><tr><th class="mono">下标</th><th>awakening</th><th>newvision</th><th>是否兼容</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">0–5</td><td class="mono">cx,vcx,cy,vcy,cz,vcz</td><td class="mono">xc,vx,yc,vy,z,vz</td><td>✔ 完全一致</td></tr>
+      <tr><td class="mono">6</td><td class="mono">C_ROT_Z</td><td class="mono">yaw</td><td>✔ 数值一致(退化时)</td></tr>
+      <tr><td class="mono">7</td><td class="mono">VYAW</td><td class="mono">v_yaw</td><td>✔ 完全一致</td></tr>
+      <tr><td class="mono">8</td><td class="mono">LOG_R1</td><td class="mono">r1</td><td>✘ <strong>log vs 线性</strong></td></tr>
+      <tr><td class="mono">9</td><td class="mono">LOG_R2 / OUTPOST01DZ</td><td class="mono">r2 − r1</td><td>✘ 语义不同</td></tr>
+      <tr><td class="mono">10</td><td class="mono">H / OUTPOST02DZ</td><td class="mono">z2 − z1</td><td>≈ 含义相近</td></tr>
+      <tr><td class="mono">11–12</td><td class="mono">C_ROT_Y, C_ROT_X</td><td class="mono">dz1, dz2</td><td>✘ 完全不同</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note port">
+    <div class="note-h">L4 只读四个下标</div>
+    <p><code>planner.cpp</code> 对 L3 的全部耦合是 <code>x[0]</code>、<code>x[2]</code>(<code>:64</code>)、<code>x[7]</code>(<code>:84,:290,:293</code>)、<code>x[8]</code>(<code>:240</code>)加上 <code>armor_xyza_list()</code>。前三个直接兼容;<code>x[8]</code> 让 <code>ekf_x()</code> 对外吐<strong>线性</strong>半径即可,L4 一行不改。</p>
+  </div>
+
+  <h3 style="font-size:19px;margin:40px 0 4px">分阶段</h3>
+  <div class="tw"><table>
+    <thead><tr><th class="mono">阶段</th><th>内容</th><th>验证方式</th><th>动 L2/L4?</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">M0</td><td><code>so3_exp/log</code> + 手写 <code>Jet&lt;double,N&gt;</code></td><td>与中心差分交叉验证</td><td>否</td></tr>
+      <tr><td class="mono">M1</td><td><code>inject_state</code> / <code>box_minus_state</code></td><td>互逆性单测(§3.3)</td><td>否</td></tr>
+      <tr><td class="mono">M2</td><td>ESEKF 壳:predict 求 F + 迭代 update_multi</td><td>线性系统退化成标准 KF 对拍</td><td>否</td></tr>
+      <tr><td class="mono">M3</td><td>UVL 观测(由装甲板四角导出)</td><td>单板重投影自洽</td><td>否</td></tr>
+      <tr><td class="mono">M4</td><td>接进 <code>Tracker</code>,config 选后端</td><td><code>auto_aim_test</code> 同段 records A/B</td><td>否</td></tr>
+      <tr><td class="mono">M5</td><td>孤立灯条观测</td><td>遮挡场景对比</td><td>L2 要输出 Light</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 style="font-size:19px;margin:40px 0 4px">自动微分怎么选</h3>
+  <p>awakening 用 <code>ceres::Jet</code> 求 \(\mathbf{F}\)、中心差分求 \(\mathbf{H}\)。newvision 的 <code>xmake.lua</code> 没有 ceres(<strong>但 <code>/usr/include/ceres/jet.h</code> 在这台机器上是有的</strong>)。三个选项:</p>
+  <div class="tw"><table>
+    <thead><tr><th>方案</th><th>代价</th><th>学习价值</th></tr></thead>
+    <tbody>
+      <tr><td>引 Ceres</td><td>加构建依赖,<code>jet.h</code> 还要拖 <code>ceres/internal/*</code></td><td>低,直接抄</td></tr>
+      <tr><td><strong>自己写 <code>Jet&lt;double,N&gt;</code></strong></td><td><strong>~150 行 header,零依赖</strong></td><td><strong>高</strong></td></tr>
+      <tr><td>全用中心差分</td><td>最简单,但 13 维 × 每观测 26 次投影</td><td>中,适合当对照组</td></tr>
+    </tbody>
+  </table></div>
+  <p>自己写只需要这些算子:<code>+ − × ÷</code>、<code>exp</code>、<code>sqrt</code>、<code>sin</code>、<code>cos</code>、<code>atan2</code>、<code>abs</code>、<code>fmin</code>、<code>fmax</code>、<code>floor</code>。<strong>而且真正跑 \(\mathbf{H}\) 的 <code>update_multi</code> 用的是中心差分,Jet 只有 predict 求 \(\mathbf{F}\) 时才需要</strong>,规模比想象中小。建议把中心差分版一并写出来,在 smoke test 里交叉验证——这能抓住 <code>inject</code>/<code>box_minus</code> 的符号和左右乘错误。</p>
+
+  <h3 style="font-size:19px;margin:40px 0 4px">陷阱清单</h3>
+  <div class="tw"><table>
+    <thead><tr><th>项</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>角点顺序</td><td>awakening <code>TL,BL,BR,TR</code> vs newvision <code>TL,TR,BR,BL</code>。左灯条 = <code>corners[0]+corners[3]</code></td></tr>
+      <tr><td>板法向朝内</td><td>可见性判据要用 <code>-axis_x</code>,搞反则全部选错板</td></tr>
+      <tr><td><code>x[8]</code> 是 log</td><td><code>planner.cpp:240</code> 按线性半径判,必须在 <code>ekf_x()</code> 处转换</td></tr>
+      <tr><td><code>Zc ≤ 0</code></td><td>awakening 没保护,移植时补,并让观测被丢弃而非使用</td></tr>
+      <tr><td>迭代式</td><td>awakening 是 \(\boldsymbol\delta \mathrel{+}= \mathbf{K}\mathbf{r}\),标准 IEKF 是 \(\boldsymbol\delta = \mathbf{K}(\mathbf{r}+\mathbf{H}\boldsymbol\delta)\),建议两版对拍</td></tr>
+      <tr><td>类型擦除</td><td>不要照抄 <code>ObsBase</code> 虚接口,否则 Jet 用不上</td></tr>
+      <tr><td>前哨站</td><td>11/12 维语义两边冲突,第一版只做常规四板车</td></tr>
+      <tr><td><code>armorPitchOf</code></td><td>newvision 已有,直接用,别再写一份</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<hr>
+
+<section class="layer" id="quiz">
+  <div class="layer-head">
+    <span class="layer-num">09</span>
+    <h2>自检</h2>
+  </div>
+  <p class="layer-sub">能答上来就算读懂了。答案都在正文里。</p>
+  <ol class="quiz">
+    <li>如果把 <code>inject_state</code> 里的 \(\mathbf{R}\cdot\mathrm{Exp}(\boldsymbol\delta)\) 改成 \(\mathrm{Exp}(\boldsymbol\delta)\cdot\mathbf{R}\),<code>process_noise()</code> 里<strong>哪两处</strong>会变得不自洽?</li>
+    <li>为什么 <code>so3_log</code> 不保护 \(\theta\to\pi\) 也没事,而 <code>so3_exp</code> <strong>必须</strong>保护 \(\theta\to 0\)?</li>
+    <li>求 \(\mathbf{H}\) 时如果直接差 <code>z_pred</code> 而不走 <code>residual</code>,在什么情况下会出错?错成什么样?</li>
+    <li><code>x[9]</code> 这一个 double,在四板步兵和前哨站上分别是什么?哪些代码必须先分支才能碰它?</li>
+    <li>为什么观测要设计成 \((\alpha, u_c, v_c, L)\) 而不是两个端点的四个坐标?——提示:和对角 \(\mathbf{R}\) 能否成立有关。</li>
+    <li><code>reset()</code> 假设"看到的这块板是 0 号"。这个假设错了会怎样?为什么不致命?</li>
+    <li>为什么 \(p_0[\texttt{VYAW}] = 100\),而位置只给 1?</li>
+    <li>\(\mathbf{R}\) 里的 \(\sigma\) 为什么正比于灯条像素长度 \(L\)?如果设成常数会有什么后果?</li>
+  </ol>
+</section>
+
+<p class="foot">
+  源码基线:<code>/home/rm/super/awakening-main</code>(无 git 历史,按当前工作副本行号标注)。<br>
+  移植目标:<code>/home/rm/super/newvision</code>,分支 <code>fble17</code>。<br>
+  行号可能随上游更新漂移,阅读时以函数名为准。
+</p>
+
+</div></main>
+</div>
