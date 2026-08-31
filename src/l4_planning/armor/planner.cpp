@@ -58,7 +58,8 @@ Plan rejected(PlanError error)
   return plan;
 }
 
-double centerYaw(const L3Estimation::TrackedTarget& target)
+template <typename Target>
+double centerYaw(const Target& target)
 {
   const Eigen::VectorXd x = target.ekf_x();
   return std::atan2(x[2], x[0]);
@@ -73,11 +74,24 @@ Planner::Planner(ArmorPlanConfig config)
 
 Plan Planner::plan(const PlanInput& input)
 {
-  if (!input.target.has_value()) {
+  return planTarget(
+    input.target, input.robot_state, input.plan_time, input.to_now,
+    input.plan_to_send);
+}
+
+template <typename Target>
+Plan Planner::planTarget(
+  const std::optional<Target>& input_target,
+  const L1Sensor::RobotState& robot_state,
+  TimePoint plan_time,
+  bool to_now,
+  double plan_to_send)
+{
+  if (!input_target.has_value()) {
     return rejected(PlanError::NoTarget);
   }
 
-  L3Estimation::TrackedTarget target = *input.target;
+  Target target = *input_target;
   const Eigen::VectorXd target_x = target.ekf_x();
 
   // 当前延迟分档使用有符号 yaw 角速度：只有正向超过阈值才使用高速延迟。
@@ -85,7 +99,7 @@ Plan Planner::plan(const PlanInput& input)
     ? config_.impact.high_speed_delay_time
     : config_.impact.low_speed_delay_time;
 
-  double bullet_speed = input.robot_state.bullet_speed;
+  double bullet_speed = robot_state.bullet_speed;
   const bool bullet_speed_ok = config_.impact.bulletSpeedValid(bullet_speed);
   if (!bullet_speed_ok) {
     // 弹速异常时仍用回退值生成跟随角，但最终状态降级为 TrackOnly。
@@ -94,12 +108,12 @@ Plan Planner::plan(const PlanInput& input)
 
   Delay delay;
   // 实时运行直接测量曝光到规划的耗时；离线入口使用固定 5 ms。
-  delay.image_to_plan = input.to_now
-    ? std::chrono::duration<double>(input.plan_time - target.t()).count()
+  delay.image_to_plan = to_now
+    ? std::chrono::duration<double>(plan_time - target.t()).count()
     : 0.005;
   // 规划到发送由 runtime 实测后回灌；串口到电控只能实车标定，未标定按 0 计，
   // 同时把计划降级成 TrackOnly，不允许在缺段的延迟上开火。
-  delay.plan_to_send = input.plan_to_send;
+  delay.plan_to_send = plan_to_send;
   delay.send_to_control = config_.impact.send_to_control.value_or(0.0);
   delay.control_to_fire = delay_time;
   const double before_fire = delay.beforeFire();
@@ -128,7 +142,7 @@ Plan Planner::plan(const PlanInput& input)
   for (int iteration = 0; iteration < config_.impact.max_iterations; ++iteration) {
     // 飞行时间决定命中时刻，命中点又会改变飞行时间。每轮都从同一个发射时刻
     // 状态重新外推，避免把上一轮的 dt 重复累计。
-    L3Estimation::TrackedTarget iteration_target = target;
+    Target iteration_target = target;
     const TimePoint predict_time = future + secondsToDuration(previous_fly_time);
     iteration_target.predict(predict_time);
 
@@ -199,6 +213,24 @@ Plan Planner::plan(
   return plan(input);
 }
 
+Plan Planner::plan(
+  const std::optional<L3Estimation::EskfTarget>& target,
+  const L1Sensor::RobotState& robot_state,
+  TimePoint plan_time,
+  bool to_now)
+{
+  return planTarget(target, robot_state, plan_time, to_now, 0.0);
+}
+
+Plan Planner::plan(
+  std::nullopt_t,
+  const L1Sensor::RobotState&,
+  TimePoint,
+  bool)
+{
+  return rejected(PlanError::NoTarget);
+}
+
 void Planner::reset() noexcept
 {
   // locked_id_ 由候选板变化时更新。短暂中断不清锁，避免恢复后立即切板。
@@ -206,8 +238,8 @@ void Planner::reset() noexcept
 
 // ---- 以下为私有实现 ----
 
-Planner::AimPoint Planner::chooseAimPoint(
-  const L3Estimation::TrackedTarget& target)
+template <typename Target>
+Planner::AimPoint Planner::chooseAimPoint(const Target& target)
 {
   const Eigen::VectorXd ekf_x = target.ekf_x();
   const std::vector<Eigen::Vector4d> armors = target.armor_xyza_list();

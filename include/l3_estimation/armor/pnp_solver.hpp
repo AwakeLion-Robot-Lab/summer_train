@@ -28,6 +28,12 @@ public:
   // 原地补充 Armor 的相机系和世界系 PnP 结果；失败时质量标志保持无效。
   void single_pnp(Armor& armor) const;
 
+  // Awakening 单完整板约束专用：IPPE 求全部候选解，选择板正面朝向相机的
+  // 一支，只返回左右灯条中心在相机 z 轴上的深度差；前哨沿用其固定俯仰
+  // 与黄金分割 yaw 修正分支。
+  std::optional<double> armor_lights_depth_difference(
+    const Armor& armor) const;
+
   // 对本帧全部单板结果做第二遍双板联合 yaw 优化，移植 rm.cv.fans 的双板拟合。
   // 入参必须是同一帧、同一次 set_R_world_barrel 之后由 single_pnp 填好的观测：
   // 位置沿用各自的单板 PnP，联合优化只重写 ypr_in_world[0]。

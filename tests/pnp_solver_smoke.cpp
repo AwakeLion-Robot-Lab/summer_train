@@ -44,11 +44,12 @@ std::vector<cv::Point3f> armorPoints(double width)
 
 // 复刻 PnpSolver 内部的 armor -> world 旋转：安装倾角固定 15 度，只有 yaw 自由。
 // 这里必须独立写一遍而不是调求解器，否则两边一起写错就测不出来。
-Eigen::Matrix3d armorRotationInWorldReference(double yaw)
+Eigen::Matrix3d armorRotationInWorldReference(
+  double yaw,
+  double pitch = 15.0 * std::numbers::pi / 180.0)
 {
   const double sin_yaw = std::sin(yaw);
   const double cos_yaw = std::cos(yaw);
-  const double pitch = 15.0 * std::numbers::pi / 180.0;
   const double sin_pitch = std::sin(pitch);
   const double cos_pitch = std::cos(pitch);
   return Eigen::Matrix3d{
@@ -241,6 +242,64 @@ int main()
   expect(
     std::isinf(armor.yaw_sigma),
     "SP-compatible discrete yaw search unexpectedly estimated yaw sigma");
+
+  const Eigen::Vector3d expected_left_center =
+    R_camera_armor * Eigen::Vector3d(0.0, kSmallWidth * 0.5, 0.0) +
+    expected_camera;
+  const Eigen::Vector3d expected_right_center =
+    R_camera_armor * Eigen::Vector3d(0.0, -kSmallWidth * 0.5, 0.0) +
+    expected_camera;
+  const double expected_depth_difference =
+    expected_left_center.z() - expected_right_center.z();
+  const auto depth_difference = solver.armor_lights_depth_difference(armor);
+  expect(
+    depth_difference.has_value(),
+    "valid synthetic armor did not produce a light-center depth difference");
+  expect(
+    depth_difference &&
+      std::abs(*depth_difference - expected_depth_difference) < 1e-3,
+    "IPPE light-center depth difference selected the wrong pose branch");
+  if (depth_difference &&
+      std::abs(*depth_difference - expected_depth_difference) >= 1e-3) {
+    std::cerr << "  depth difference actual=" << *depth_difference
+              << " expected=" << expected_depth_difference << '\n';
+  }
+
+  // 前哨分支会在 IPPE 后固定 -15° 俯仰并用黄金分割修正世界系 yaw。
+  // 用满足该物理约束的无噪姿态验证深度差分支本身保持自洽。
+  {
+    const Eigen::Matrix3d R_world_camera =
+      R_world_barrel * calibration.T_barrel_camera->linear();
+    const Eigen::Vector3d camera_axis_in_world = R_world_camera.col(2);
+    const double outpost_yaw = std::atan2(
+      camera_axis_in_world.y(), camera_axis_in_world.x());
+    const double outpost_pitch = -15.0 * std::numbers::pi / 180.0;
+    const Eigen::Matrix3d R_world_outpost =
+      armorRotationInWorldReference(outpost_yaw, outpost_pitch);
+    const Eigen::Matrix3d R_camera_outpost =
+      R_world_camera.transpose() * R_world_outpost;
+    const cv::Vec3d outpost_translation{0.03, -0.02, 3.2};
+
+    L3Estimation::Armor outpost;
+    outpost.class_id =
+      static_cast<int>(L2Perception::ArmorClass::Outpost);
+    outpost.points = projectArmor(
+      calibration, kSmallWidth, L6Telemetry::toCv(R_camera_outpost),
+      outpost_translation);
+
+    const double expected_outpost_depth =
+      (R_camera_outpost *
+       Eigen::Vector3d(0.0, kSmallWidth, 0.0)).z();
+    const auto outpost_depth =
+      solver.armor_lights_depth_difference(outpost);
+    expect(
+      outpost_depth.has_value(),
+      "outpost did not produce a constrained light-center depth difference");
+    expect(
+      outpost_depth &&
+        std::abs(*outpost_depth - expected_outpost_depth) < 2e-3,
+      "outpost fixed-pitch/yaw depth-difference branch is inconsistent");
+  }
 
   // 回归用例：人为生成一个在枪管背后 180° 的零误差平面解。整周搜索
   // 会把这个背面极小值选中；SP 的行为是无论整周哪里代价更小，输出都必须

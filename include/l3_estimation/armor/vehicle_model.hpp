@@ -1,6 +1,7 @@
 #pragma once
 
 #include "l3_estimation/armor/types.hpp"
+#include "l3_estimation/types.hpp"
 #include "l3_estimation/so3.hpp"
 
 #include <ceres/jet.h>
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <numbers>
 #include <array>
 
@@ -255,6 +257,83 @@ void boxMinusState(const StateVector & nominal, const StateVector & value, Delta
   delta[idx::ROT_Y] = delta_rotation.y();
   delta[idx::ROT_Z] = delta_rotation.z();
 }
+
+// --- 前哨站转向投票 -----------------------------------------------------
+
+// 前哨站的转速由规则固定（kOutpostYawRate），未知的只是**转向**。与其把它
+// 当自由度交给滤波器估，不如攒够证据判明方向后直接钉死——少估一个自由度，
+// 精度和收敛速度都受益。
+//
+// 照搬 awakening 的 Voter：开机 1 秒内不投票（等状态先收敛），此后每次 yaw
+// 变化超过 0.05 rad 就给计数器 ±1，累计绝对值超过 10 票才判定。门限取得高是
+// 因为判错方向比判不出更糟——判不出只是退回按状态量推进，判错会让预测朝反
+// 方向跑。
+struct Voter
+{
+  enum class Direction
+  {
+    Collecting,      // 证据不足，仍按状态量推进
+    Clockwise,       // +kOutpostYawRate
+    Counterclockwise // -kOutpostYawRate
+  };
+
+  Direction direction{Direction::Collecting};
+  TimePoint start{};
+  int clockwise_count{0};
+  double last_yaw{0.0};
+  bool has_last_yaw{false};
+
+  void reset(TimePoint t) noexcept
+  {
+    direction = Direction::Collecting;
+    start = t;
+    clockwise_count = 0;
+    last_yaw = 0.0;
+    has_last_yaw = false;
+  }
+
+  void update(double yaw, TimePoint t) noexcept
+  {
+    if (t - start < std::chrono::milliseconds(1000)) {
+      return;
+    }
+    if (!has_last_yaw) {
+      last_yaw = yaw;
+      has_last_yaw = true;
+      return;
+    }
+
+    const double diff = normalizeAngle(yaw - last_yaw);
+    // 太小的变化多半是噪声，不投票，也不更新参考角——否则噪声会把参考角
+    // 一点点推着走，永远攒不出证据。
+    if (std::abs(diff) < 0.05) {
+      return;
+    }
+
+    clockwise_count += (diff > 0.0) ? 1 : -1;
+    last_yaw = yaw;
+
+    if (std::abs(clockwise_count) > 10) {
+      direction = clockwise_count > 0 ? Direction::Clockwise : Direction::Counterclockwise;
+    } else {
+      direction = Direction::Collecting;
+    }
+  }
+
+  // 喂给 Motion 的符号：0 表示尚未判明。
+  int sign() const noexcept
+  {
+    switch (direction) {
+      case Direction::Clockwise:
+        return 1;
+      case Direction::Counterclockwise:
+        return -1;
+      case Direction::Collecting:
+        break;
+    }
+    return 0;
+  }
+};
 
 // --- 运动模型 -----------------------------------------------------------
 

@@ -2,6 +2,8 @@
 
 #include "l6_telemetry/math.hpp"
 
+#include <Eigen/Cholesky>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -118,12 +120,25 @@ void EskfTarget::reset(
   filter_->setState(x_);
   filter_->setIterationNum(config_.iteration_num);
 
+  voter_.reset(timestamp);
+
   t_ = timestamp;
   initialized_ = true;
   converged_ = false;
   jumped = false;
   last_id = 0;
   update_count_ = 0;
+}
+
+Eigen::Isometry3d EskfTarget::cameraInWorld(
+  const L1Sensor::CameraCalibration & calibration, const Eigen::Quaterniond & q_world_barrel)
+{
+  Eigen::Isometry3d barrel_in_world = Eigen::Isometry3d::Identity();
+  barrel_in_world.linear() = q_world_barrel.toRotationMatrix();
+  if (!calibration.T_barrel_camera) {
+    return barrel_in_world;
+  }
+  return barrel_in_world * (*calibration.T_barrel_camera);
 }
 
 void EskfTarget::predictEkf(TimePoint timestamp)
@@ -133,7 +148,8 @@ void EskfTarget::predictEkf(TimePoint timestamp)
   }
   const double dt = std::chrono::duration<double>(timestamp - t_).count();
 
-  filter_->setPredictFunc(VM::Motion{.dt = dt, .name = name});
+  filter_->setPredictFunc(
+    VM::Motion{.dt = dt, .name = name, .outpost_direction = voter_.sign()});
   // Q 依赖当前姿态（要旋到世界系）和当前半径（log 换算），必须在推进前按当前
   // 状态求值，所以传的是 lambda 而不是值。
   filter_->setUpdateQ([this, dt]() {
@@ -273,9 +289,129 @@ std::vector<std::pair<int, Armor>> EskfTarget::matchArmor(
   return result;
 }
 
+std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
+  const std::vector<L2Perception::Light>& lights,
+  const std::vector<std::pair<int, Armor>>& matched_armors,
+  TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Isometry3d& camera_in_world) const
+{
+  std::vector<MatchedLight> result;
+  const bool is_base =
+    name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
+  // 只有本帧至少关联到一块完整装甲板时才启用：没有完整板做锚，孤立灯条的
+  // 编号/左右归属几乎是猜的。基地的板不绕转，整车预测对灯条位置没有约束力。
+  if (!config_.enable_lights_measure || is_base || matched_armors.empty() ||
+      lights.empty() || !initialized_) {
+    return result;
+  }
+
+  EskfTarget predicted = snapshot();
+  predicted.predict(timestamp);
+  const Eigen::VectorXd state = predicted.x_;
+  const int count = armor_num();
+
+  std::vector<std::pair<double, int>> facing;
+  facing.reserve(count);
+  for (int id = 0; id < count; ++id) {
+    const Eigen::Isometry3d pose_in_world =
+      VM::armorPose<double>(state.data(), id, count, name);
+    facing.emplace_back(
+      facingScore(camera_in_world.inverse() * pose_in_world), id);
+  }
+  if (facing.empty()) {
+    return result;
+  }
+  const auto closest = std::max_element(
+    facing.begin(), facing.end(),
+    [](const auto& left, const auto& right) {
+      return left.first < right.first;
+    });
+  const int closest_id = closest->second;
+
+  using PredictedLight =
+    std::tuple<int, bool, std::pair<cv::Point2f, cv::Point2f>>;
+  std::vector<PredictedLight> visible_lights;
+  visible_lights.reserve(4);
+  const auto addVisible = [&](int id, bool is_left) {
+    visible_lights.emplace_back(
+      id, is_left,
+      predicted.predictLight(id, is_left, state, calibration, camera_in_world));
+  };
+
+  // 最正对板的左右灯条，以及它相邻两块板靠近该板的一根灯条。
+  addVisible((closest_id + count - 1) % count, false);
+  addVisible((closest_id + 1) % count, true);
+  addVisible(closest_id, false);
+  addVisible(closest_id, true);
+
+  constexpr double kMaxCost = 1e9;
+  const int observation_count = static_cast<int>(lights.size());
+  std::vector<std::vector<double>> cost(
+    observation_count,
+    std::vector<double>(visible_lights.size(), kMaxCost + 1.0));
+
+  // 灯条没有数字特征，错配的代价比漏配高得多，所以三道门限都是硬拒绝，
+  // 代价本身只用位置误差排序。
+  const auto lightCost = [&](const L2Perception::Light& light,
+                             const PredictedLight& candidate) -> double {
+    const auto& [top, bottom] = std::get<2>(candidate);
+    const double predicted_length = cv::norm(top - bottom);
+    if (!(predicted_length > 1e-6)) {
+      return kMaxCost + 1.0;
+    }
+
+    const double length_error = std::abs(light.length - predicted_length);
+    if (length_error > predicted_length * config_.light_match_length_ratio_gate) {
+      return kMaxCost + 1.0;
+    }
+
+    // 与 UVL 观测同一个角度约定：atan2(Δx, Δy)，量的是偏离竖直方向的角。
+    const double predicted_angle = std::atan2(top.x - bottom.x, top.y - bottom.y);
+    const double light_angle =
+      std::atan2(light.top.x - light.bottom.x, light.top.y - light.bottom.y);
+    const double angle_error =
+      std::abs(VM::normalizeAngle(light_angle - predicted_angle));
+    if (angle_error > config_.light_match_angle_gate) {
+      return kMaxCost + 1.0;
+    }
+
+    const double position_error =
+      cv::norm(light.top - top) + cv::norm(light.bottom - bottom);
+    if (position_error >
+        predicted_length * config_.light_match_pos_gate_by_length_ratio) {
+      return kMaxCost + 1.0;
+    }
+    return position_error;
+  };
+
+  for (int observation = 0; observation < observation_count; ++observation) {
+    for (std::size_t candidate = 0; candidate < visible_lights.size(); ++candidate) {
+      cost[observation][candidate] =
+        lightCost(lights[observation], visible_lights[candidate]);
+    }
+  }
+
+  for (const auto& [observation, candidate] : greedyMatch(
+         cost, observation_count, static_cast<int>(visible_lights.size()), kMaxCost)) {
+    const auto& [id, is_left, unused] = visible_lights[candidate];
+    result.emplace_back(id, is_left, lights[observation]);
+  }
+  return result;
+}
+
 int EskfTarget::update(
   const std::vector<std::pair<int, Armor>> & matched, TimePoint timestamp,
   const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera_in_world)
+{
+  return update(matched, {}, std::nullopt, timestamp, calibration, camera_in_world);
+}
+
+int EskfTarget::update(
+  const std::vector<std::pair<int, Armor>>& matched,
+  const std::vector<MatchedLight>& matched_lights,
+  const std::optional<double>& armor_lights_depth_difference, TimePoint timestamp,
+  const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Isometry3d& camera_in_world)
 {
   if (matched.empty() || !filter_) {
     return 0;
@@ -284,23 +420,57 @@ int EskfTarget::update(
   std::vector<std::shared_ptr<Filter::ObsBase>> observations;
 
   // 一条灯条 → 一个四维观测。
+  //
+  // isolated=true 表示这根灯条没有构成完整装甲板、只靠几何关联进来。两处
+  // 区别：不做"拆成两条"的 /2 折半（它就是一个测量，不存在信息翻倍），
+  // 并额外放大 sigma（没有编号和颜色证据支撑，本就更不可信）。
   const auto addLight = [&](const cv::Point2f & top, const cv::Point2f & bottom, int id,
-                            bool is_left) {
+                            bool is_left, bool isolated) {
     const UvlMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
     const UvlVector z = uvlMeasurementFrom(top, bottom);
 
-    // R 按灯条像素长度缩放。除以 2 是因为一块板拆成两条灯条、信息量翻倍。
     const double length = cv::norm(top - bottom);
-    const double sigma_pixel = config_.sigma_pixel_by_length * length;
-    const double sigma_length = config_.sigma_length_by_length * length;
-    const double sigma_angle = config_.sigma_angle;
+    const double scale = isolated ? config_.isolated_light_sigma_scale : 1.0;
+    // 一块板拆成两条灯条、信息量翻倍，所以每条方差减半；独立灯条不适用。
+    // 实测独立灯条不折半反而更差（径向 p99 0.110 -> 0.166），保持与
+    // awakening 一致的无条件折半。
+    const double split = 2.0;
+    (void)isolated;
+
+    const double sigma_along = config_.sigma_pixel_by_length * length * scale;
+    const double sigma_length = config_.sigma_length_by_length * length * scale;
+    const double sigma_angle = config_.sigma_angle * scale;
 
     Eigen::Matrix<double, kUvlMeasureSize, kUvlMeasureSize> r_cov;
     r_cov.setZero();
-    r_cov(uvl::ANGLE, uvl::ANGLE) = sigma_angle * sigma_angle / 2.0;
-    r_cov(uvl::CENTER_X, uvl::CENTER_X) = sigma_pixel * sigma_pixel / 2.0;
-    r_cov(uvl::CENTER_Y, uvl::CENTER_Y) = sigma_pixel * sigma_pixel / 2.0;
-    r_cov(uvl::LENGTH, uvl::LENGTH) = sigma_length * sigma_length / 2.0;
+    r_cov(uvl::ANGLE, uvl::ANGLE) = sigma_angle * sigma_angle / split;
+    r_cov(uvl::LENGTH, uvl::LENGTH) = sigma_length * sigma_length / split;
+
+    if (config_.sigma_perp_px > 0.0) {
+      // 中心误差建在**灯条自身坐标系**里再旋到图像系：沿灯条 σ∥ 大、垂直
+      // σ⊥ 小。观测里的角度量的是偏离竖直方向的角（atan2(Δx, Δy)），所以
+      // 灯条方向在图像系里是 (sin α, cos α)。
+      const double sigma_perp = config_.sigma_perp_px * scale;
+      const double angle = z[uvl::ANGLE];
+      const double sin_a = std::sin(angle);
+      const double cos_a = std::cos(angle);
+
+      // 沿灯条单位向量 e∥ = (sin α, cos α)，垂直 e⊥ = (cos α, -sin α)。
+      const double var_along = sigma_along * sigma_along / split;
+      const double var_perp = sigma_perp * sigma_perp / split;
+
+      r_cov(uvl::CENTER_X, uvl::CENTER_X) =
+        var_along * sin_a * sin_a + var_perp * cos_a * cos_a;
+      r_cov(uvl::CENTER_Y, uvl::CENTER_Y) =
+        var_along * cos_a * cos_a + var_perp * sin_a * sin_a;
+      const double covariance = (var_along - var_perp) * sin_a * cos_a;
+      r_cov(uvl::CENTER_X, uvl::CENTER_Y) = covariance;
+      r_cov(uvl::CENTER_Y, uvl::CENTER_X) = covariance;
+    } else {
+      // 退回 awakening 的各向同性写法。
+      r_cov(uvl::CENTER_X, uvl::CENTER_X) = sigma_along * sigma_along / split;
+      r_cov(uvl::CENTER_Y, uvl::CENTER_Y) = sigma_along * sigma_along / split;
+    }
 
     observations.push_back(Filter::makeObs<kUvlMeasureSize>(
       z, measure, [r_cov](const UvlVector &) { return r_cov; },
@@ -316,8 +486,34 @@ int EskfTarget::update(
 
     // 一块完整板拆成左右两条灯条。角点序左上、右上、右下、左下：
     // 左灯条取 [0]、[3]，右灯条取 [1]、[2]。
-    addLight(armor.points[0], armor.points[3], id, true);
-    addLight(armor.points[1], armor.points[2], id, false);
+    addLight(armor.points[0], armor.points[3], id, true, false);
+    addLight(armor.points[1], armor.points[2], id, false, false);
+  }
+
+  // 只有一块完整板时纯重投影观测容易在斜视方向退化。照搬 Awakening：
+  // IPPE 只贡献左右灯条中心的相机深度差这一维，不写入绝对位姿。
+  if (matched.size() == 1 && armor_lights_depth_difference &&
+      std::isfinite(*armor_lights_depth_difference)) {
+    const int id = matched.front().first;
+    const DepthDiffMeasure measure{
+      makeContext(id, true, calibration, camera_in_world)};
+    DepthDiffVector z;
+    z[0] = *armor_lights_depth_difference;
+
+    Eigen::Matrix<double, kDepthDiffMeasureSize, kDepthDiffMeasureSize> r_cov;
+    r_cov.setZero();
+    const double sigma = config_.armor_lights_depth_diff_sigma;
+    r_cov(0, 0) = sigma * sigma / 2.0;
+
+    observations.push_back(Filter::makeObs<kDepthDiffMeasureSize>(
+      z, measure, [r_cov](const DepthDiffVector&) { return r_cov; },
+      [](const DepthDiffVector& z_pred, const DepthDiffVector& z_obs) {
+        return DepthDiffMeasure::residual<double>(z_pred, z_obs);
+      }));
+  }
+
+  for (const auto& [id, is_left, light] : matched_lights) {
+    addLight(light.top, light.bottom, id, is_left, true);
   }
 
   if (observations.empty()) {
@@ -326,6 +522,23 @@ int EskfTarget::update(
 
   x_ = filter_->updateMulti(observations);
   t_ = timestamp;
+
+  // NIS = rᵀ S⁻¹ r，取先验线性化点的创新量。迭代后的残差被压缩过，不再服从
+  // 自由度等于观测维数的卡方分布，用它记账会让门限失配。
+  const Eigen::VectorXd & innovation = filter_->lastResidual();
+  const Eigen::MatrixXd & innovation_covariance = filter_->lastInnovationCovariance();
+  if (innovation.size() > 0 && innovation_covariance.rows() == innovation.size()) {
+    const Eigen::LLT<Eigen::MatrixXd> llt(innovation_covariance);
+    if (llt.info() == Eigen::Success) {
+      last_nis_ = innovation.dot(llt.solve(innovation));
+      last_nis_dof_ = static_cast<int>(innovation.size());
+    }
+  }
+
+  // 用更新后的整车 yaw 投票（前哨站转向）。
+  const Eigen::Matrix3d rotation = VM::vehicleRotation<double>(x_.data(), name);
+  voter_.update(L6Telemetry::rotationToYpr(rotation).x(), timestamp);
+
   update_count_ += static_cast<int>(observations.size());
   if (update_count_ > 20 && !diverged()) {
     converged_ = true;
@@ -409,6 +622,9 @@ EskfTarget EskfTarget::snapshot() const
   copy.initialized_ = initialized_;
   copy.converged_ = converged_;
   copy.update_count_ = update_count_;
+  copy.last_nis_ = last_nis_;
+  copy.last_nis_dof_ = last_nis_dof_;
+  copy.voter_ = voter_;
   // 刻意不复制 filter_：下游拿到的是纯状态副本，外推随便做，不会污染滤波器。
   return copy;
 }

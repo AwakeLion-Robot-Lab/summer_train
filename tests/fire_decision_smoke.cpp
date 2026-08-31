@@ -90,6 +90,25 @@ void testShootEnableGatesOnlyTheOutput()
   std::cout << "  [ok] shoot_enable gates the output, not the judgement\n";
 }
 
+// IESKF 不应为了让 L5 识别目标存在而伪造一个普通 EKF 目标。火控实际只需要
+// 类别来确定板型与后仰角，所以 target_name 是两套估计器的最小公共契约。
+void testTargetNameOnlyInputIsAdmitted()
+{
+  const L5Control::FireDecider decider(makeConfig());
+  auto input = makeInput();
+  input.target_name = input.target->name;
+  input.target.reset();
+
+  const auto decision = decider.decide(input);
+  require(
+    !hasReason(decision, L5Control::RejectReason::NoTarget),
+    "target_name-only input must still count as a tracked target");
+  require(
+    decision.tolerance.valid && decision.fire_feasible,
+    "target_name-only input must use the same physical armor window");
+  std::cout << "  [ok] estimator-independent target identity reaches L5\n";
+}
+
 // 容差来自装甲板在该距离上张开的角度，所以必须随距离收紧，并停在下限上。
 void testToleranceShrinksWithDistance()
 {
@@ -368,6 +387,7 @@ int main()
   testVerticalWindowFollowsPlateTilt();
   testAlignedShotIsAdmitted();
   testShootEnableGatesOnlyTheOutput();
+  testTargetNameOnlyInputIsAdmitted();
   testToleranceShrinksWithDistance();
   testBigArmorGetsWiderYawTolerance();
   testTiltedArmorNarrowsYawTolerance();

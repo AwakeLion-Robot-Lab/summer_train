@@ -92,6 +92,7 @@ struct Armor {
   ArmorName name{ArmorName::Unknown};
   ArmorType type{ArmorType::Small};
   int class_id{-1};
+  L2Perception::ArmorColor color{L2Perception::ArmorColor::Unknown};
 
   // 图像角点顺序固定为左上、右上、右下、左下，单位为 pixel。
   std::array<cv::Point2f, 4> points{};

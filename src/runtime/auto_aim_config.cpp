@@ -72,9 +72,35 @@ void readDegrees(
   radians = degrees * std::numbers::pi / 180.0;
 }
 
+void readVector3(
+  const YAML::Node& section,
+  const char* key,
+  Eigen::Vector3d& value)
+{
+  if (!section || !section[key]) {
+    return;
+  }
+  try {
+    const YAML::Node vector = section[key];
+    if (!vector.IsSequence() || vector.size() != 3) {
+      throw std::runtime_error("expected a three-element sequence");
+    }
+    Eigen::Vector3d parsed;
+    parsed << vector[0].as<double>(), vector[1].as<double>(), vector[2].as<double>();
+    value = parsed;
+  } catch (const std::exception& error) {
+    L6Telemetry::logWarn("auto-aim config invalid field", key, error.what());
+  }
+}
+
 bool positiveFinite(double value) noexcept
 {
   return std::isfinite(value) && value > 0.0;
+}
+
+bool nonNegativeFinite(double value) noexcept
+{
+  return std::isfinite(value) && value >= 0.0;
 }
 
 void normalize(AutoAimConfig& config)
@@ -124,6 +150,93 @@ void normalize(AutoAimConfig& config)
         config.refiner.max_angle_error_deg <= 90.0F)) {
     config.refiner.max_angle_error_deg = refiner_defaults.max_angle_error_deg;
   }
+  if (!(config.refiner.independent_light_binary_threshold > 0.0 &&
+        config.refiner.independent_light_binary_threshold < 255.0)) {
+    config.refiner.independent_light_binary_threshold =
+      refiner_defaults.independent_light_binary_threshold;
+  }
+  if (!nonNegativeFinite(
+        config.refiner.independent_light_threshold_tolerance)) {
+    config.refiner.independent_light_threshold_tolerance =
+      refiner_defaults.independent_light_threshold_tolerance;
+  }
+  if (!nonNegativeFinite(
+        config.refiner.independent_light_color_diff_threshold)) {
+    config.refiner.independent_light_color_diff_threshold =
+      refiner_defaults.independent_light_color_diff_threshold;
+  }
+  if (!positiveFinite(
+        config.refiner.independent_light_min_contour_area_px)) {
+    config.refiner.independent_light_min_contour_area_px =
+      refiner_defaults.independent_light_min_contour_area_px;
+  }
+  if (!(config.refiner.independent_light_min_fill_ratio > 0.0 &&
+        config.refiner.independent_light_min_fill_ratio <= 1.0)) {
+    config.refiner.independent_light_min_fill_ratio =
+      refiner_defaults.independent_light_min_fill_ratio;
+  }
+  if (!positiveFinite(config.refiner.independent_light_min_length_px)) {
+    config.refiner.independent_light_min_length_px =
+      refiner_defaults.independent_light_min_length_px;
+  }
+  if (!(config.refiner.independent_light_min_width_length_ratio > 0.0F &&
+        config.refiner.independent_light_min_width_length_ratio <
+          config.refiner.independent_light_max_width_length_ratio)) {
+    config.refiner.independent_light_min_width_length_ratio =
+      refiner_defaults.independent_light_min_width_length_ratio;
+    config.refiner.independent_light_max_width_length_ratio =
+      refiner_defaults.independent_light_max_width_length_ratio;
+  }
+  if (!(config.refiner.independent_light_max_tilt_angle_deg > 0.0F &&
+        config.refiner.independent_light_max_tilt_angle_deg <= 90.0F)) {
+    config.refiner.independent_light_max_tilt_angle_deg =
+      refiner_defaults.independent_light_max_tilt_angle_deg;
+  }
+  const auto hueRangeValid = [](int low, int high) {
+    return low >= 0 && low <= high && high <= 180;
+  };
+  const auto channelMinimumValid = [](int value) {
+    return value >= 0 && value <= 255;
+  };
+  if (!hueRangeValid(
+        config.refiner.independent_light_red_h_min_low,
+        config.refiner.independent_light_red_h_max_low) ||
+      !hueRangeValid(
+        config.refiner.independent_light_red_h_min_high,
+        config.refiner.independent_light_red_h_max_high) ||
+      !channelMinimumValid(config.refiner.independent_light_red_s_min) ||
+      !channelMinimumValid(config.refiner.independent_light_red_v_min)) {
+    config.refiner.independent_light_red_h_min_low =
+      refiner_defaults.independent_light_red_h_min_low;
+    config.refiner.independent_light_red_h_max_low =
+      refiner_defaults.independent_light_red_h_max_low;
+    config.refiner.independent_light_red_h_min_high =
+      refiner_defaults.independent_light_red_h_min_high;
+    config.refiner.independent_light_red_h_max_high =
+      refiner_defaults.independent_light_red_h_max_high;
+    config.refiner.independent_light_red_s_min =
+      refiner_defaults.independent_light_red_s_min;
+    config.refiner.independent_light_red_v_min =
+      refiner_defaults.independent_light_red_v_min;
+  }
+  if (!hueRangeValid(
+        config.refiner.independent_light_blue_h_min,
+        config.refiner.independent_light_blue_h_max) ||
+      !channelMinimumValid(config.refiner.independent_light_blue_s_min) ||
+      !channelMinimumValid(config.refiner.independent_light_blue_v_min)) {
+    config.refiner.independent_light_blue_h_min =
+      refiner_defaults.independent_light_blue_h_min;
+    config.refiner.independent_light_blue_h_max =
+      refiner_defaults.independent_light_blue_h_max;
+    config.refiner.independent_light_blue_s_min =
+      refiner_defaults.independent_light_blue_s_min;
+    config.refiner.independent_light_blue_v_min =
+      refiner_defaults.independent_light_blue_v_min;
+  }
+  config.refiner.independent_light_morphology_width = std::clamp(
+    config.refiner.independent_light_morphology_width, 1, 31);
+  config.refiner.independent_light_morphology_height = std::clamp(
+    config.refiner.independent_light_morphology_height, 1, 31);
 
   // 噪声为零或负会让 EKF 的增益直接发散，越界一律退回默认。
   const L3Estimation::TargetConfig target_defaults;
@@ -143,6 +256,94 @@ void normalize(AutoAimConfig& config)
       *value = fallback;
     }
   }
+
+  // awakening IESKF：状态机按真实时间计，过程噪声在车体系表达，UVL 的观测
+  // 噪声是 sigma 而非方差。这些量与上面的普通 EKF 参数不可混用。
+  const L3Estimation::EskfTrackerConfig ieskf_tracker_defaults;
+  config.ieskf_tracker.tracking_thres =
+    std::max(config.ieskf_tracker.tracking_thres, 1);
+  if (!positiveFinite(config.ieskf_tracker.lost_time_thres)) {
+    config.ieskf_tracker.lost_time_thres = ieskf_tracker_defaults.lost_time_thres;
+  }
+  if (!positiveFinite(config.ieskf_tracker.lost_time_thres_outpost)) {
+    config.ieskf_tracker.lost_time_thres_outpost =
+      ieskf_tracker_defaults.lost_time_thres_outpost;
+  }
+  config.ieskf_tracker.lost_time_thres_outpost = std::max(
+    config.ieskf_tracker.lost_time_thres_outpost,
+    config.ieskf_tracker.lost_time_thres);
+
+  const L3Estimation::EskfTargetConfig ieskf_target_defaults;
+  config.ieskf_target.iteration_num = std::max(config.ieskf_target.iteration_num, 1);
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!positiveFinite(config.ieskf_target.noise.body_acceleration[axis])) {
+      config.ieskf_target.noise.body_acceleration[axis] =
+        ieskf_target_defaults.noise.body_acceleration[axis];
+    }
+    if (!positiveFinite(config.ieskf_target.noise.outpost_body_acceleration[axis])) {
+      config.ieskf_target.noise.outpost_body_acceleration[axis] =
+        ieskf_target_defaults.noise.outpost_body_acceleration[axis];
+    }
+  }
+  for (const auto& [value, fallback] : {
+         std::pair{&config.ieskf_target.noise.yaw_acceleration,
+                   ieskf_target_defaults.noise.yaw_acceleration},
+         std::pair{&config.ieskf_target.noise.outpost_yaw_acceleration,
+                   ieskf_target_defaults.noise.outpost_yaw_acceleration},
+         std::pair{&config.ieskf_target.noise.radius,
+                   ieskf_target_defaults.noise.radius},
+         std::pair{&config.ieskf_target.noise.height,
+                   ieskf_target_defaults.noise.height},
+         std::pair{&config.ieskf_target.noise.outpost_height,
+                   ieskf_target_defaults.noise.outpost_height},
+         std::pair{&config.ieskf_target.noise.roll_pitch,
+                   ieskf_target_defaults.noise.roll_pitch},
+         std::pair{&config.ieskf_target.sigma_pixel_by_length,
+                   ieskf_target_defaults.sigma_pixel_by_length},
+         std::pair{&config.ieskf_target.sigma_length_by_length,
+                   ieskf_target_defaults.sigma_length_by_length},
+         std::pair{&config.ieskf_target.sigma_angle,
+                   ieskf_target_defaults.sigma_angle},
+         std::pair{&config.ieskf_target.isolated_light_sigma_scale,
+                   ieskf_target_defaults.isolated_light_sigma_scale},
+         std::pair{&config.ieskf_target.armor_lights_depth_diff_sigma,
+                   ieskf_target_defaults.armor_lights_depth_diff_sigma},
+         std::pair{&config.ieskf_target.light_match_length_ratio_gate,
+                   ieskf_target_defaults.light_match_length_ratio_gate},
+         std::pair{&config.ieskf_target.light_match_angle_gate,
+                   ieskf_target_defaults.light_match_angle_gate},
+         std::pair{&config.ieskf_target.light_match_pos_gate_by_length_ratio,
+                   ieskf_target_defaults.light_match_pos_gate_by_length_ratio},
+         std::pair{&config.ieskf_target.match_gate,
+                   ieskf_target_defaults.match_gate},
+         std::pair{&config.ieskf_target.match_gate_not_all_init,
+                   ieskf_target_defaults.match_gate_not_all_init},
+         std::pair{&config.ieskf_target.initial_radius,
+                   ieskf_target_defaults.initial_radius},
+         std::pair{&config.ieskf_target.initial_radius_outpost,
+                   ieskf_target_defaults.initial_radius_outpost},
+         std::pair{&config.ieskf_target.initial_radius_base,
+                   ieskf_target_defaults.initial_radius_base}}) {
+    if (!positiveFinite(*value)) {
+      *value = fallback;
+    }
+  }
+  for (const auto& [value, fallback] : {
+         std::pair{&config.ieskf_target.weight_center_error,
+                   ieskf_target_defaults.weight_center_error},
+         std::pair{&config.ieskf_target.weight_angle_error,
+                   ieskf_target_defaults.weight_angle_error},
+         std::pair{&config.ieskf_target.weight_side_length_error,
+                   ieskf_target_defaults.weight_side_length_error}}) {
+    if (!nonNegativeFinite(*value)) {
+      *value = fallback;
+    }
+  }
+  config.ieskf_target.match_gate_not_all_init = std::max(
+    config.ieskf_target.match_gate_not_all_init,
+    config.ieskf_target.match_gate);
+  // UVL 和 PnP 必须引用同一套物理板尺寸。
+  config.ieskf_target.armor = config.armor;
 
   const L4Planning::ArmorPlanConfig plan_defaults;
   config.plan.impact.max_iterations = std::max(config.plan.impact.max_iterations, 1);
@@ -358,6 +559,77 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(refiner, "max_lightbar_ratio", config.refiner.max_lightbar_ratio);
   readValue(
     refiner, "max_endpoint_distance_px", config.refiner.max_endpoint_distance_px);
+  readValue(
+    refiner, "pca_corner_correction", config.refiner.pca_corner_correction);
+  readValue(
+    refiner, "independent_light_enable",
+    config.refiner.independent_light_enable);
+  readValue(
+    refiner, "independent_light_binary_threshold",
+    config.refiner.independent_light_binary_threshold);
+  readValue(
+    refiner, "independent_light_threshold_tolerance",
+    config.refiner.independent_light_threshold_tolerance);
+  readValue(
+    refiner, "independent_light_color_diff_threshold",
+    config.refiner.independent_light_color_diff_threshold);
+  readValue(
+    refiner, "independent_light_min_contour_area_px",
+    config.refiner.independent_light_min_contour_area_px);
+  readValue(
+    refiner, "independent_light_min_fill_ratio",
+    config.refiner.independent_light_min_fill_ratio);
+  readValue(
+    refiner, "independent_light_min_length_px",
+    config.refiner.independent_light_min_length_px);
+  readValue(
+    refiner, "independent_light_min_width_length_ratio",
+    config.refiner.independent_light_min_width_length_ratio);
+  readValue(
+    refiner, "independent_light_max_width_length_ratio",
+    config.refiner.independent_light_max_width_length_ratio);
+  readValue(
+    refiner, "independent_light_max_tilt_angle_deg",
+    config.refiner.independent_light_max_tilt_angle_deg);
+  readValue(
+    refiner, "independent_light_red_h_min_low",
+    config.refiner.independent_light_red_h_min_low);
+  readValue(
+    refiner, "independent_light_red_h_max_low",
+    config.refiner.independent_light_red_h_max_low);
+  readValue(
+    refiner, "independent_light_red_h_min_high",
+    config.refiner.independent_light_red_h_min_high);
+  readValue(
+    refiner, "independent_light_red_h_max_high",
+    config.refiner.independent_light_red_h_max_high);
+  readValue(
+    refiner, "independent_light_red_s_min",
+    config.refiner.independent_light_red_s_min);
+  readValue(
+    refiner, "independent_light_red_v_min",
+    config.refiner.independent_light_red_v_min);
+  readValue(
+    refiner, "independent_light_blue_h_min",
+    config.refiner.independent_light_blue_h_min);
+  readValue(
+    refiner, "independent_light_blue_h_max",
+    config.refiner.independent_light_blue_h_max);
+  readValue(
+    refiner, "independent_light_blue_s_min",
+    config.refiner.independent_light_blue_s_min);
+  readValue(
+    refiner, "independent_light_blue_v_min",
+    config.refiner.independent_light_blue_v_min);
+  readValue(
+    refiner, "independent_light_use_morphology",
+    config.refiner.independent_light_use_morphology);
+  readValue(
+    refiner, "independent_light_morphology_width",
+    config.refiner.independent_light_morphology_width);
+  readValue(
+    refiner, "independent_light_morphology_height",
+    config.refiner.independent_light_morphology_height);
 
   // EKF 噪声。回放标定的主要旋钮，改这些必须重跑 track_diag 看 NIS。
   const YAML::Node estimator = root["estimator"];
@@ -370,6 +642,67 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(estimator, "armor_yaw_variance_base", config.target.armor_yaw_variance_base);
   readValue(
     estimator, "armor_yaw_distance_divisor", config.target.armor_yaw_distance_divisor);
+
+  const YAML::Node ieskf = root["ieskf"];
+  readValue(ieskf, "tracking_thres", config.ieskf_tracker.tracking_thres);
+  readValue(ieskf, "lost_time_thres", config.ieskf_tracker.lost_time_thres);
+  readValue(
+    ieskf, "lost_time_thres_outpost", config.ieskf_tracker.lost_time_thres_outpost);
+  readValue(ieskf, "iteration_num", config.ieskf_target.iteration_num);
+  readVector3(
+    ieskf, "body_acceleration", config.ieskf_target.noise.body_acceleration);
+  readValue(
+    ieskf, "yaw_acceleration", config.ieskf_target.noise.yaw_acceleration);
+  readVector3(
+    ieskf, "outpost_body_acceleration",
+    config.ieskf_target.noise.outpost_body_acceleration);
+  readValue(
+    ieskf, "outpost_yaw_acceleration",
+    config.ieskf_target.noise.outpost_yaw_acceleration);
+  readValue(ieskf, "radius_noise", config.ieskf_target.noise.radius);
+  readValue(ieskf, "height_noise", config.ieskf_target.noise.height);
+  readValue(
+    ieskf, "outpost_height_noise", config.ieskf_target.noise.outpost_height);
+  readValue(ieskf, "roll_pitch_noise", config.ieskf_target.noise.roll_pitch);
+  readValue(
+    ieskf, "sigma_pixel_by_length", config.ieskf_target.sigma_pixel_by_length);
+  readValue(
+    ieskf, "sigma_length_by_length", config.ieskf_target.sigma_length_by_length);
+  readValue(
+    ieskf, "sigma_perp_px", config.ieskf_target.sigma_perp_px);
+  readValue(
+    ieskf, "isolated_light_sigma_scale",
+    config.ieskf_target.isolated_light_sigma_scale);
+  readValue(ieskf, "sigma_angle", config.ieskf_target.sigma_angle);
+  readValue(
+    ieskf, "armor_lights_depth_diff_sigma",
+    config.ieskf_target.armor_lights_depth_diff_sigma);
+  readValue(
+    ieskf, "enable_lights_measure",
+    config.ieskf_target.enable_lights_measure);
+  readValue(
+    ieskf, "light_match_length_ratio_gate",
+    config.ieskf_target.light_match_length_ratio_gate);
+  readValue(
+    ieskf, "light_match_angle_gate",
+    config.ieskf_target.light_match_angle_gate);
+  readValue(
+    ieskf, "light_match_pos_gate_by_length_ratio",
+    config.ieskf_target.light_match_pos_gate_by_length_ratio);
+  readValue(ieskf, "match_gate", config.ieskf_target.match_gate);
+  readValue(
+    ieskf, "match_gate_not_all_init", config.ieskf_target.match_gate_not_all_init);
+  readValue(
+    ieskf, "weight_center_error", config.ieskf_target.weight_center_error);
+  readValue(
+    ieskf, "weight_angle_error", config.ieskf_target.weight_angle_error);
+  readValue(
+    ieskf, "weight_side_length_error", config.ieskf_target.weight_side_length_error);
+  readValue(ieskf, "initial_radius", config.ieskf_target.initial_radius);
+  readValue(
+    ieskf, "initial_radius_outpost", config.ieskf_target.initial_radius_outpost);
+  readValue(
+    ieskf, "initial_radius_base", config.ieskf_target.initial_radius_base);
 
   const YAML::Node planning = root["planning"];
   readValue(planning, "max_iterations", config.plan.impact.max_iterations);

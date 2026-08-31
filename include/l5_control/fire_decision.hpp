@@ -24,7 +24,10 @@ struct FireConfig {
 };
 
 struct FireInput {
+  // 实机普通 EKF 路径暂时保留完整目标；只需要目标类别的其他估计器可填写
+  // target_name。FireDecider 只读目标是否存在和 name，不依赖任何滤波器状态。
   std::optional<L3Estimation::TrackedTarget> target;
+  std::optional<L3Estimation::ArmorName> target_name;
   L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
   L4Planning::Plan plan;
 

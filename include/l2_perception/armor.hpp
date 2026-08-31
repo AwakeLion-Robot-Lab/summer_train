@@ -3,6 +3,8 @@
 #include <Eigen/Core>
 
 #include <array>
+#include <cstddef>
+#include <vector>
 
 #include <opencv2/core/types.hpp>
 
@@ -67,6 +69,26 @@ struct Armor {
   Eigen::Vector3d ypr_in_barrel{Eigen::Vector3d::Zero()};
   Eigen::Vector3d ypr_in_world{Eigen::Vector3d::Zero()};
   Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};   // 方位角加距离
+};
+
+// 传统视觉独立检出的单根灯条。它不带车辆编号，只保留 UVL 观测需要的上下
+// 端点和几何量；具体属于哪块装甲板、是左灯还是右灯，由 L3 根据整车预测关联。
+struct Light {
+  cv::Point2f center{};
+  cv::Point2f top{};
+  cv::Point2f bottom{};
+  ArmorColor color{ArmorColor::Unknown};
+  double length{0.0};
+  double width{0.0};
+  float tilt_angle_deg{0.0F};
+  std::size_t id{0};
+};
+
+// 一帧装甲感知的完整输出。保留 ArmorDetector::detect() 的旧接口，同时让
+// IESKF 路线能拿到 Awakening 使用的独立灯条观测。
+struct ArmorFrame {
+  std::vector<Armor> armors;
+  std::vector<Light> lights;
 };
 
 // 保留检测层原有接口名称，避免后端和测试因数据结构改名而失效。

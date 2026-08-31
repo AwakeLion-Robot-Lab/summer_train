@@ -31,6 +31,36 @@ constexpr double kYawSearchRangeDegrees = 140.0;
 constexpr double kMinimumPairGap = 0.1;
 constexpr double kMaximumPairGap = 0.75;
 
+// Awakening 对前哨单板 PnP 的固定俯仰 yaw 搜索直接使用黄金分割。保留同一
+// 收缩系数和终止精度，深度差才与其 armor_pnp 分支同口径。
+template <typename Function>
+double goldenSectionSearch(
+  Function function, double left, double right, double epsilon = 1e-4)
+{
+  constexpr double kPhi = 0.6180339887498948482;
+  double x1 = right - kPhi * (right - left);
+  double x2 = left + kPhi * (right - left);
+  double f1 = function(x1);
+  double f2 = function(x2);
+
+  while (right - left > epsilon) {
+    if (f1 > f2) {
+      left = x1;
+      x1 = x2;
+      f1 = f2;
+      x2 = left + kPhi * (right - left);
+      f2 = function(x2);
+    } else {
+      right = x2;
+      x2 = x1;
+      f2 = f1;
+      x1 = right - kPhi * (right - left);
+      f1 = function(x1);
+    }
+  }
+  return f1 < f2 ? x1 : x2;
+}
+
 // 将识别类别映射为实际 PnP 几何尺寸；未知类别不参与求解。映射本身放在
 // types.hpp，与 L5 火控共用同一份，避免两处各写一遍后悄悄分叉。
 constexpr std::optional<ArmorType>
@@ -316,6 +346,121 @@ void PnpSolver::single_pnp(Armor &armor) const {
   }
 
   optimize_yaw(armor);
+}
+
+std::optional<double> PnpSolver::armor_lights_depth_difference(
+  const Armor& armor) const
+{
+  const auto armor_type = armorTypeFromClassId(armor.class_id);
+  const ArmorName name = L2Perception::armorClassFromId(armor.class_id);
+  if (!ready_ || !armor_type || !finiteImagePoints(armor.points)) {
+    return std::nullopt;
+  }
+  // 前哨的固定俯仰修正定义在世界系，缺少曝光时刻枪管姿态时不能悄悄退回
+  // 另一种观测口径。
+  if (name == ArmorName::Outpost && !world_barrel_ready_) {
+    return std::nullopt;
+  }
+
+  const auto& object_points = *armor_type == ArmorType::Big
+    ? big_armor_points_
+    : small_armor_points_;
+  const std::vector<cv::Point2f> image_points(
+    armor.points.begin(), armor.points.end());
+
+  std::vector<cv::Mat> rotation_vectors;
+  std::vector<cv::Mat> translation_vectors;
+  bool solved = false;
+  try {
+    solved = cv::solvePnPGeneric(
+      object_points, image_points, calibration_.camera_matrix,
+      calibration_.distortion_coefficients, rotation_vectors,
+      translation_vectors, false, cv::SOLVEPNP_IPPE, cv::noArray(),
+      cv::noArray());
+  } catch (const cv::Exception& error) {
+    L6Telemetry::logWarn(
+      "PnpSolver depth-difference solvePnP failed", error.what());
+    return std::nullopt;
+  }
+  if (!solved || rotation_vectors.size() != translation_vectors.size()) {
+    return std::nullopt;
+  }
+
+  for (std::size_t index = 0; index < rotation_vectors.size(); ++index) {
+    cv::Mat rotation_cv;
+    Eigen::Matrix3d rotation;
+    Eigen::Vector3d translation;
+    try {
+      cv::Rodrigues(rotation_vectors[index], rotation_cv);
+      cv::cv2eigen(rotation_cv, rotation);
+      cv::cv2eigen(translation_vectors[index], translation);
+    } catch (const cv::Exception&) {
+      continue;
+    }
+    if (!rotation.allFinite() || !translation.allFinite()) {
+      continue;
+    }
+
+    // 板系 +x 指向车心，朝外正面法向为 -x。IPPE 已按重投影误差排序，
+    // 因此与 Awakening 一样取第一个正面朝向相机的候选。
+    const Eigen::Vector3d front_normal = -rotation.col(0);
+    if (front_normal.dot(-translation) <= 0.0) {
+      continue;
+    }
+
+    // Awakening 的 armor_pnp 对前哨会把姿态限制为固定 -15° 俯仰，并在
+    // IPPE 世界系 yaw 左右各 70° 内做黄金分割。普通车辆保留原始 IPPE 姿态。
+    Eigen::Matrix3d depth_rotation = rotation;
+    if (name == ArmorName::Outpost) {
+      const Eigen::Matrix3d rotation_in_world =
+        R_barrel2world_ * R_camera2barrel_ * rotation;
+      const Eigen::Vector3d translation_in_world =
+        R_barrel2world_ *
+        (R_camera2barrel_ * translation + t_camera2barrel_);
+      const double raw_yaw =
+        L6Telemetry::eulers(rotation_in_world, 2, 1, 0)[0];
+      constexpr double kHalfRange =
+        kYawSearchRangeDegrees * 0.5 * CV_PI / 180.0;
+      const cv::Point2f measured_top =
+        (armor.points[0] + armor.points[1]) * 0.5F;
+      const cv::Point2f measured_bottom =
+        (armor.points[3] + armor.points[2]) * 0.5F;
+      const auto yawCost = [&](double yaw) {
+        const auto projected = reproject_armor(
+          translation_in_world, yaw, *armor_type, name);
+        if (projected.size() != armor.points.size()) {
+          return std::numeric_limits<double>::infinity();
+        }
+        const cv::Point2f projected_top =
+          (projected[0] + projected[1]) * 0.5F;
+        const cv::Point2f projected_bottom =
+          (projected[3] + projected[2]) * 0.5F;
+        return cv::norm(projected_top - measured_top) +
+               cv::norm(projected_bottom - measured_bottom);
+      };
+      const double best_yaw = goldenSectionSearch(
+        yawCost, raw_yaw - kHalfRange, raw_yaw + kHalfRange);
+      depth_rotation =
+        R_camera2barrel_.transpose() * R_barrel2world_.transpose() *
+        armorRotationInWorld(best_yaw, name);
+    }
+
+    const auto pointInCamera = [&](std::size_t point_index) {
+      const cv::Point3f& point = object_points[point_index];
+      return (depth_rotation * Eigen::Vector3d(point.x, point.y, point.z) +
+              translation).eval();
+    };
+    // newvision 角点顺序为 TL、TR、BR、BL。
+    const Eigen::Vector3d left_center =
+      (pointInCamera(0) + pointInCamera(3)) * 0.5;
+    const Eigen::Vector3d right_center =
+      (pointInCamera(1) + pointInCamera(2)) * 0.5;
+    const double difference = left_center.z() - right_center.z();
+    if (std::isfinite(difference)) {
+      return difference;
+    }
+  }
+  return std::nullopt;
 }
 
 double PnpSolver::yaw_cost(const Armor &armor, double yaw) const {

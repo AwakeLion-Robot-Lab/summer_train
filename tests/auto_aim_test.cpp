@@ -10,11 +10,11 @@
 #include "l1_sensor/serial/serial_config.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
+#include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/pnp_solver.hpp"
 #include "l3_estimation/armor/tracker.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "l4_planning/armor/planner.hpp"
-#include "l4_planning/armor/predictor.hpp"
 #include "l5_control/controller.hpp"
 #include "l5_control/fire_decision.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
@@ -29,16 +29,22 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <map>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <numbers>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -75,6 +81,7 @@ const std::string kCommandLineKeys =
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
   "{model m | model/armor_model/yolov5.xml | OpenVINO 装甲板模型}"
   "{device d | CPU | OpenVINO 推理设备}"
+  "{estimator | ieskf | 估计器：ieskf（迭代误差状态 EKF + UVL）/ ekf（旧 YPDA EKF）}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
   "{convention | imu | 录像四元数约定：imu / sp}"
   "{serial-config | config/serial_config.yaml | convention=imu 时读 R_imu_barrel}"
@@ -82,11 +89,12 @@ const std::string kCommandLineKeys =
   "{start-index s | 0 | 视频起始帧下标}"
   "{end-index e | 0 | 视频结束帧下标，0 表示到结尾}"
   "{wait w | 30 | 每帧 waitKey 毫秒，0 表示逐帧手动推进}"
-  "{view | sp | 叠加层：sp（只画当前 EKF 整车和瞄准板）/ full（全部调试层）}"
+  "{view | sp | 叠加层：sp（只画当前估计整车和瞄准板）/ full（全部调试层）}"
   "{overlay-offset | 0 | full 视图下整车叠加层上移的像素数；sp 视图恒为 0}"
   "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
   "{bullet-speed | 27.0 | 回放没有裁判系统数据；默认与 SP auto_aim_test 一致（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
+  "{csv | | 逐帧状态导出路径，留空则不导出。用于量化抖动而不是靠肉眼看}"
   "{@input-path | records/3m_high | avi 和 txt 文件的路径（不含后缀）}";
 
 struct PoseSample {
@@ -114,6 +122,369 @@ void require(bool condition, const std::string& message)
     throw std::runtime_error(message);
   }
 }
+
+enum class EstimatorKind
+{
+  Ekf,
+  Ieskf,
+};
+
+EstimatorKind parseEstimator(std::string_view value)
+{
+  if (value == "ekf") {
+    return EstimatorKind::Ekf;
+  }
+  // 类名沿用 ESKF，算法路径是带迭代更新的误差状态 EKF。两个常用拼法都接受，
+  // 命令行和输出统一称 IESKF。
+  if (value == "ieskf" || value == "iesekf" || value == "esekf") {
+    return EstimatorKind::Ieskf;
+  }
+  throw std::runtime_error("estimator 必须是 ieskf、iesekf、esekf 或 ekf");
+}
+
+std::string_view estimatorName(EstimatorKind kind) noexcept
+{
+  return kind == EstimatorKind::Ieskf ? "ieskf+uvl" : "ekf+ypda";
+}
+
+struct FilterEstimate
+{
+  Eigen::Vector3d center{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
+  double yaw{0.0};
+  double yaw_rate{0.0};
+  double radius1{0.0};
+  std::optional<double> radius2;
+  std::optional<double> height_offset;
+  std::optional<double> dz1;
+  std::optional<double> dz2;
+  std::optional<double> roll;
+  std::optional<double> pitch;
+};
+
+// 回放同时支持两套估计器，但后续诊断只应看到同一个整车目标契约。awakening
+// 同样让 Tracker 返回不带滤波器的 ArmorTarget 副本，下游只在副本上外推。
+class ReplayTarget
+{
+public:
+  explicit ReplayTarget(L3Estimation::TrackedTarget target)
+  : value_(std::move(target))
+  {
+    syncIdentity();
+  }
+
+  explicit ReplayTarget(L3Estimation::EskfTarget target)
+  : value_(std::move(target))
+  {
+    syncIdentity();
+  }
+
+  Eigen::VectorXd ekf_x() const
+  {
+    return std::visit([](const auto& target) { return target.ekf_x(); }, value_);
+  }
+
+  FilterEstimate estimate() const
+  {
+    return std::visit(
+      [](const auto& target) {
+        using Target = std::decay_t<decltype(target)>;
+        const Eigen::VectorXd x = target.ekf_x();
+
+        FilterEstimate estimate;
+        estimate.center = {x[0], x[2], x[4]};
+        estimate.velocity = {x[1], x[3], x[5]};
+        estimate.yaw_rate = x[7];
+        estimate.radius1 = x[8];
+
+        const int armor_count = target.armor_num();
+        if constexpr (std::is_same_v<Target, L3Estimation::EskfTarget>) {
+          const Eigen::Vector3d ypr = L6Telemetry::eulers(
+            L3Estimation::VehicleModel::stateRotation(x), 2, 1, 0);
+          estimate.yaw = ypr[0];
+          estimate.pitch = ypr[1];
+          estimate.roll = ypr[2];
+
+          if (target.name == L3Estimation::ArmorName::Outpost) {
+            estimate.dz1 = x[9];
+            estimate.dz2 = x[10];
+          } else if (armor_count == 4) {
+            // ESKF 对外的第 9 维已经由 log(r2) 转回线性半径。
+            estimate.radius2 = x[9];
+            estimate.height_offset = x[10];
+          }
+        } else {
+          estimate.yaw = x[6];
+          if (armor_count == 4) {
+            // 旧 EKF 的第 9 维存 r2-r1，而不是 r2。
+            estimate.radius2 = x[8] + x[9];
+            estimate.height_offset = x[10];
+          } else {
+            estimate.dz1 = x[11];
+            estimate.dz2 = x[12];
+          }
+        }
+        return estimate;
+      },
+      value_);
+  }
+
+  std::vector<Eigen::Vector4d> armor_xyza_list() const
+  {
+    return std::visit(
+      [](const auto& target) { return target.armor_xyza_list(); }, value_);
+  }
+
+  void predict(double dt)
+  {
+    std::visit([dt](auto& target) { target.predict(dt); }, value_);
+  }
+
+  L4Planning::Plan plan(
+    L4Planning::Planner& planner,
+    const L1Sensor::RobotState& robot_state,
+    L3Estimation::TimePoint plan_time,
+    bool to_now) const
+  {
+    return std::visit(
+      [&](const auto& target) {
+        using Target = std::decay_t<decltype(target)>;
+        return planner.plan(
+          std::optional<Target>{target}, robot_state, plan_time, to_now);
+      },
+      value_);
+  }
+
+  double lastNis() const noexcept
+  {
+    return std::visit(
+      [](const auto& target) {
+        using Target = std::decay_t<decltype(target)>;
+        if constexpr (std::is_same_v<Target, L3Estimation::EskfTarget>) {
+          return target.lastNis();
+        } else {
+          return target.ekf().last_nis;
+        }
+      },
+      value_);
+  }
+
+  int lastNisDof() const noexcept
+  {
+    return std::visit(
+      [](const auto& target) {
+        using Target = std::decay_t<decltype(target)>;
+        if constexpr (std::is_same_v<Target, L3Estimation::EskfTarget>) {
+          return target.lastNisDof();
+        } else {
+          return 4;
+        }
+      },
+      value_);
+  }
+
+  // 是否关联到过 0 号以外的板。两条路线语义一致：为 false 时整车 yaw 与
+  // 第二组半径几乎不可观测。
+  bool jumped() const noexcept
+  {
+    return std::visit([](const auto& target) { return target.jumped; }, value_);
+  }
+
+  L3Estimation::ArmorName name{L3Estimation::ArmorName::Unknown};
+  int last_id{-1};
+
+private:
+  void syncIdentity()
+  {
+    std::visit(
+      [this](const auto& target) {
+        name = target.name;
+        last_id = target.last_id;
+      },
+      value_);
+  }
+
+  std::variant<L3Estimation::TrackedTarget, L3Estimation::EskfTarget> value_;
+};
+
+std::string filterKinematicsText(const FilterEstimate& estimate)
+{
+  std::ostringstream text;
+  text << std::fixed << std::setprecision(2)
+       << "center=(" << estimate.center.x() << ',' << estimate.center.y() << ','
+       << estimate.center.z() << ")m v=(" << estimate.velocity.x() << ','
+       << estimate.velocity.y() << ',' << estimate.velocity.z() << ")m/s";
+  return text.str();
+}
+
+std::string filterGeometryText(
+  const FilterEstimate& estimate,
+  int last_id,
+  double nis,
+  int nis_dof)
+{
+  std::ostringstream text;
+  text << std::fixed << std::setprecision(2)
+       << "yaw=" << estimate.yaw * kRadToDeg << "deg omega="
+       << estimate.yaw_rate << "rad/s" << std::setprecision(3)
+       << " r1=" << estimate.radius1 << 'm';
+  if (estimate.radius2) {
+    text << " r2=" << *estimate.radius2 << 'm';
+  }
+  if (estimate.height_offset) {
+    text << " dz=" << *estimate.height_offset << 'm';
+  }
+  if (estimate.dz1 && estimate.dz2) {
+    text << " dz1=" << *estimate.dz1 << "m dz2=" << *estimate.dz2 << 'm';
+  }
+  if (estimate.roll && estimate.pitch) {
+    text << std::setprecision(1) << " roll=" << *estimate.roll * kRadToDeg
+         << "deg pitch=" << *estimate.pitch * kRadToDeg << "deg";
+  }
+  text << std::setprecision(2) << " id=" << last_id << " NIS=" << nis << '/'
+       << nis_dof;
+  return text.str();
+}
+
+class ReplayTracker
+{
+public:
+  ReplayTracker(
+    EstimatorKind kind,
+    const L1Sensor::CameraCalibration& calibration,
+    const L3Estimation::ArmorConfig& armor_config,
+    const L3Estimation::TrackerConfig& tracker_config,
+    const L3Estimation::TargetConfig& target_config,
+    const L3Estimation::EskfTrackerConfig& ieskf_tracker_config,
+    const L3Estimation::EskfTargetConfig& ieskf_target_config)
+  : kind_(kind)
+  {
+    if (kind_ == EstimatorKind::Ieskf) {
+      ieskf_tracker_ = std::make_unique<L3Estimation::EskfTracker>(
+        calibration, armor_config, ieskf_tracker_config,
+        ieskf_target_config);
+    } else {
+      ekf_tracker_ = std::make_unique<L3Estimation::Tracker>(
+        calibration, armor_config, tracker_config, target_config);
+    }
+  }
+
+  bool ready() const noexcept
+  {
+    return kind_ == EstimatorKind::Ieskf ? ieskf_tracker_->ready()
+                                         : ekf_tracker_->ready();
+  }
+
+  std::optional<ReplayTarget> track(
+    const std::vector<L2Perception::Armor>& detections,
+    const std::vector<L2Perception::Light>& lights,
+    const std::optional<Eigen::Quaterniond>& q_world_barrel,
+    L3Estimation::TimePoint timestamp)
+  {
+    if (kind_ == EstimatorKind::Ieskf) {
+      auto target = ieskf_tracker_->track(
+        detections, lights, q_world_barrel, timestamp);
+      if (target) {
+        return ReplayTarget{std::move(*target)};
+      }
+      return std::nullopt;
+    }
+    auto target = ekf_tracker_->track(detections, q_world_barrel, timestamp);
+    if (target) {
+      return ReplayTarget{std::move(*target)};
+    }
+    return std::nullopt;
+  }
+
+  std::optional<cv::Rect> lightDetectionRoi(
+    const std::optional<Eigen::Quaterniond>& q_world_barrel,
+    L3Estimation::TimePoint timestamp, const cv::Size& image_size) const
+  {
+    if (kind_ != EstimatorKind::Ieskf) {
+      return std::nullopt;
+    }
+    return ieskf_tracker_->lightDetectionRoi(
+      q_world_barrel, timestamp, image_size);
+  }
+
+  // 本帧关联到的板数与编号。旧 EKF 路线没有等价概念（它一次只更新一块板），
+  // 用 -1 / 空串表示"不适用"，这样 CSV 里两条路线能并排看而不会误读成 0。
+  int lastMatchCount() const noexcept
+  {
+    return kind_ == EstimatorKind::Ieskf ? ieskf_tracker_->lastMatchCount() : -1;
+  }
+
+  std::string lastMatchedIdsString() const
+  {
+    return kind_ == EstimatorKind::Ieskf ? ieskf_tracker_->lastMatchedIds()
+                                         : std::string{};
+  }
+
+  const std::vector<L3Estimation::UvlUpdateLight>& lastUvlUpdateLights() const noexcept
+  {
+    static const std::vector<L3Estimation::UvlUpdateLight> empty;
+    return kind_ == EstimatorKind::Ieskf
+      ? ieskf_tracker_->lastUvlUpdateLights()
+      : empty;
+  }
+
+  // 送给网络的 ROI。旧 EKF 路线没有整车先验可用，返回整图。
+  cv::Rect netFocusRoi(
+    const std::optional<Eigen::Quaterniond>& q_world_barrel,
+    L3Estimation::TimePoint timestamp, const cv::Size& image_size,
+    double target_wh_ratio) const
+  {
+    const cv::Rect full(0, 0, image_size.width, image_size.height);
+    if (kind_ != EstimatorKind::Ieskf) {
+      return full;
+    }
+    return ieskf_tracker_->netFocusRoi(
+      q_world_barrel, timestamp, image_size, target_wh_ratio);
+  }
+
+  const std::vector<L3Estimation::Armor>& observations() const noexcept
+  {
+    return kind_ == EstimatorKind::Ieskf ? ieskf_tracker_->observations()
+                                         : ekf_tracker_->observations();
+  }
+
+  std::vector<Eigen::Vector4d> targetArmorPoses() const
+  {
+    return kind_ == EstimatorKind::Ieskf ? ieskf_tracker_->targetArmorPoses()
+                                         : ekf_tracker_->targetArmorPoses();
+  }
+
+  L3Estimation::TrackState state() const noexcept
+  {
+    return kind_ == EstimatorKind::Ieskf ? ieskf_tracker_->state()
+                                         : ekf_tracker_->state();
+  }
+
+  L4Planning::Plan plan(
+    L4Planning::Planner& planner,
+    const std::optional<ReplayTarget>& target,
+    const L1Sensor::RobotState& robot_state,
+    L3Estimation::TimePoint plan_time,
+    bool to_now) const
+  {
+    if (target) {
+      return target->plan(planner, robot_state, plan_time, to_now);
+    }
+    if (kind_ == EstimatorKind::Ieskf) {
+      return planner.plan(
+        std::optional<L3Estimation::EskfTarget>{}, robot_state, plan_time,
+        to_now);
+    }
+    return planner.plan(
+      std::optional<L3Estimation::TrackedTarget>{}, robot_state, plan_time,
+      to_now);
+  }
+
+private:
+  EstimatorKind kind_;
+  std::unique_ptr<L3Estimation::Tracker> ekf_tracker_;
+  std::unique_ptr<L3Estimation::EskfTracker> ieskf_tracker_;
+};
 
 std::string_view stateName(L3Estimation::TrackState state) noexcept
 {
@@ -245,6 +616,289 @@ const char* armorClassName(L3Estimation::ArmorName name) noexcept
     break;
   }
   return "?";
+}
+
+const char* armorColorName(L2Perception::ArmorColor color) noexcept
+{
+  switch (color) {
+  case L2Perception::ArmorColor::Red:
+    return "red";
+  case L2Perception::ArmorColor::Blue:
+    return "blue";
+  case L2Perception::ArmorColor::Unknown:
+    break;
+  }
+  return "unknown";
+}
+
+cv::Scalar armorDisplayColor(L2Perception::ArmorColor color) noexcept
+{
+  switch (color) {
+  case L2Perception::ArmorColor::Red:
+    return {0, 0, 255};
+  case L2Perception::ArmorColor::Blue:
+    return {255, 0, 0};
+  case L2Perception::ArmorColor::Unknown:
+    break;
+  }
+  return {0, 255, 255};
+}
+
+std::optional<cv::Rect> armorImageRoi(
+  const L2Perception::Armor& armor, const cv::Size& image_size)
+{
+  std::vector<cv::Point2f> points;
+  points.reserve(armor.corners.size());
+  for (const cv::Point2f& point : armor.corners) {
+    if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+      return std::nullopt;
+    }
+    points.push_back(point);
+  }
+
+  cv::Rect roi = cv::boundingRect(points);
+  roi &= cv::Rect(0, 0, image_size.width, image_size.height);
+  return roi.empty() ? std::nullopt : std::optional<cv::Rect>{roi};
+}
+
+cv::Mat makeRecognitionPanel(
+  const cv::Mat& source, const std::vector<L2Perception::Armor>& armors,
+  L2Perception::ArmorColor enemy_color)
+{
+  constexpr int kTileWidth = 360;
+  constexpr int kTileHeight = 260;
+  constexpr int kColumns = 2;
+  constexpr std::size_t kMaxShown = 4;
+
+  if (armors.empty()) {
+    cv::Mat panel(220, 480, CV_8UC3, cv::Scalar{24, 24, 24});
+    drawOutlinedText(
+      panel, "recognized: none", {28, 62}, {160, 160, 160}, 0.8);
+    drawOutlinedText(
+      panel, "no armor ROI in this frame", {28, 104},
+      {120, 120, 120}, 0.55);
+    return panel;
+  }
+
+  std::vector<std::size_t> order(armors.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(
+    order.begin(), order.end(), [&armors](std::size_t left, std::size_t right) {
+      return armors[left].confidence > armors[right].confidence;
+    });
+
+  const std::size_t shown = std::min(order.size(), kMaxShown);
+  const int columns = shown == 1 ? 1 : kColumns;
+  const int rows = static_cast<int>((shown + columns - 1) / columns);
+  cv::Mat panel(
+    rows * kTileHeight, columns * kTileWidth, CV_8UC3,
+    cv::Scalar{24, 24, 24});
+
+  for (std::size_t tile_index = 0; tile_index < shown; ++tile_index) {
+    const auto& armor = armors[order[tile_index]];
+    const int column = static_cast<int>(tile_index) % columns;
+    const int row = static_cast<int>(tile_index) / columns;
+    const cv::Rect tile_rect(
+      column * kTileWidth, row * kTileHeight, kTileWidth, kTileHeight);
+    cv::rectangle(panel, tile_rect, {70, 70, 70}, 1, cv::LINE_AA);
+
+    const bool filtered =
+      enemy_color != L2Perception::ArmorColor::Unknown &&
+      armor.color != enemy_color;
+    const char* source_name =
+      armor.corner_source == L2Perception::CornerSource::Refined
+      ? "refined"
+      : "net";
+    const std::string label = cv::format(
+      "[%zu] %s %s  conf=%.2f  %s%s",
+      tile_index + 1, armorColorName(armor.color),
+      armorClassName(L2Perception::armorClassFromId(armor.class_id)),
+      armor.confidence, source_name, filtered ? "  ignored" : "");
+    drawOutlinedText(
+      panel, label, tile_rect.tl() + cv::Point{8, 28},
+      armorDisplayColor(armor.color), 0.58);
+
+    const auto roi = armorImageRoi(armor, source.size());
+    if (!roi) {
+      drawOutlinedText(
+        panel, "invalid ROI", tile_rect.tl() + cv::Point{12, 84},
+        {0, 255, 255}, 0.6);
+      continue;
+    }
+
+    const int pad_x = std::max(12, roi->width / 2);
+    const int pad_y = std::max(12, roi->height / 2);
+    cv::Rect crop_roi(
+      roi->x - pad_x, roi->y - pad_y,
+      roi->width + 2 * pad_x, roi->height + 2 * pad_y);
+    crop_roi &= cv::Rect(0, 0, source.cols, source.rows);
+    if (crop_roi.empty()) {
+      continue;
+    }
+
+    cv::Mat crop = source(crop_roi).clone();
+    const cv::Scalar color = armorDisplayColor(armor.color);
+    const cv::Point crop_offset{-crop_roi.x, -crop_roi.y};
+    const cv::Rect local_roi(
+      roi->x - crop_roi.x, roi->y - crop_roi.y,
+      roi->width, roi->height);
+    cv::rectangle(crop, local_roi, color, 2, cv::LINE_AA);
+    for (std::size_t index = 0; index < armor.corners.size(); ++index) {
+      cv::line(
+        crop, toPixel(armor.corners[index]) + crop_offset,
+        toPixel(armor.corners[(index + 1) % armor.corners.size()]) +
+          crop_offset,
+        color, 1, cv::LINE_AA);
+    }
+
+    const cv::Rect content(
+      tile_rect.x + 6, tile_rect.y + 38,
+      tile_rect.width - 12, tile_rect.height - 44);
+    const double scale = std::min(
+      static_cast<double>(content.width) / crop.cols,
+      static_cast<double>(content.height) / crop.rows);
+    const cv::Size resized_size{
+      std::min(
+        content.width,
+        std::max(1, static_cast<int>(std::round(crop.cols * scale)))),
+      std::min(
+        content.height,
+        std::max(1, static_cast<int>(std::round(crop.rows * scale))))};
+    cv::Mat resized;
+    cv::resize(crop, resized, resized_size, 0.0, 0.0, cv::INTER_LINEAR);
+    const cv::Rect destination(
+      content.x + (content.width - resized.cols) / 2,
+      content.y + (content.height - resized.rows) / 2,
+      resized.cols, resized.rows);
+    resized.copyTo(panel(destination));
+  }
+
+  if (armors.size() > shown) {
+    drawOutlinedText(
+      panel, cv::format("+%zu more", armors.size() - shown),
+      {panel.cols - 110, panel.rows - 12}, {180, 180, 180}, 0.5);
+  }
+  return panel;
+}
+
+cv::Mat makeUvlUpdatePanel(
+  const cv::Mat& source,
+  const std::vector<L3Estimation::UvlUpdateLight>& update_lights,
+  std::size_t independent_candidate_count)
+{
+  constexpr int kPanelWidth = 720;
+  constexpr int kPanelHeight = 430;
+  constexpr int kHeaderHeight = 76;
+  cv::Mat panel(
+    kPanelHeight, kPanelWidth, CV_8UC3, cv::Scalar{24, 24, 24});
+
+  const auto isolated_count = static_cast<std::size_t>(std::count_if(
+    update_lights.begin(), update_lights.end(),
+    [](const L3Estimation::UvlUpdateLight& light) {
+      return light.isolated;
+    }));
+  drawOutlinedText(
+    panel,
+    cv::format(
+      "UVL used=%zu  armor=%zu  isolated=%zu  independent candidates=%zu",
+      update_lights.size(), update_lights.size() - isolated_count,
+      isolated_count, independent_candidate_count),
+    {12, 28}, {255, 255, 255}, 0.58);
+  drawOutlinedText(
+    panel,
+    "cyan=armor corners   magenta=matched isolated   filled dot=top",
+    {12, 57}, {180, 180, 180}, 0.50);
+
+  if (update_lights.empty()) {
+    drawOutlinedText(
+      panel, "no light entered the IESKF update in this frame",
+      {28, 150}, {120, 120, 120}, 0.68);
+    return panel;
+  }
+
+  std::vector<cv::Point2f> points;
+  points.reserve(update_lights.size() * 2);
+  double max_length = 0.0;
+  for (const auto& light : update_lights) {
+    if (!std::isfinite(light.top.x) || !std::isfinite(light.top.y) ||
+        !std::isfinite(light.bottom.x) || !std::isfinite(light.bottom.y)) {
+      continue;
+    }
+    points.push_back(light.top);
+    points.push_back(light.bottom);
+    max_length = std::max(max_length, cv::norm(light.top - light.bottom));
+  }
+  if (points.empty()) {
+    drawOutlinedText(
+      panel, "used light coordinates are invalid", {28, 150},
+      {0, 255, 255}, 0.68);
+    return panel;
+  }
+
+  const cv::Rect image_rect(0, 0, source.cols, source.rows);
+  cv::Rect crop_roi = cv::boundingRect(points);
+  const int padding = std::max(
+    24, static_cast<int>(std::round(max_length * 0.8)));
+  crop_roi = cv::Rect(
+    crop_roi.x - padding, crop_roi.y - padding,
+    crop_roi.width + padding * 2, crop_roi.height + padding * 2);
+  crop_roi &= image_rect;
+  if (crop_roi.empty()) {
+    drawOutlinedText(
+      panel, "used lights are outside the image", {28, 150},
+      {0, 255, 255}, 0.68);
+    return panel;
+  }
+
+  const cv::Rect content(
+    12, kHeaderHeight, kPanelWidth - 24,
+    kPanelHeight - kHeaderHeight - 12);
+  const double scale = std::min(
+    static_cast<double>(content.width) / crop_roi.width,
+    static_cast<double>(content.height) / crop_roi.height);
+  const cv::Size resized_size{
+    std::max(1, static_cast<int>(std::round(crop_roi.width * scale))),
+    std::max(1, static_cast<int>(std::round(crop_roi.height * scale)))};
+  cv::Mat resized;
+  cv::resize(
+    source(crop_roi), resized, resized_size, 0.0, 0.0,
+    cv::INTER_LINEAR);
+  const cv::Rect destination(
+    content.x + (content.width - resized.cols) / 2,
+    content.y + (content.height - resized.rows) / 2,
+    resized.cols, resized.rows);
+  resized.copyTo(panel(destination));
+
+  const auto panelPoint = [&](const cv::Point2f& point) {
+    return cv::Point{
+      destination.x + static_cast<int>(
+        std::round((point.x - crop_roi.x) * scale)),
+      destination.y + static_cast<int>(
+        std::round((point.y - crop_roi.y) * scale))};
+  };
+  for (const auto& light : update_lights) {
+    if (!std::isfinite(light.top.x) || !std::isfinite(light.top.y) ||
+        !std::isfinite(light.bottom.x) || !std::isfinite(light.bottom.y)) {
+      continue;
+    }
+    const cv::Scalar color = light.isolated
+      ? cv::Scalar{255, 0, 255}
+      : cv::Scalar{255, 255, 0};
+    const cv::Point top = panelPoint(light.top);
+    const cv::Point bottom = panelPoint(light.bottom);
+    cv::line(panel, top, bottom, color, light.isolated ? 4 : 3, cv::LINE_AA);
+    cv::circle(panel, top, 6, color, cv::FILLED, cv::LINE_AA);
+    cv::circle(panel, bottom, 6, color, 2, cv::LINE_AA);
+    const cv::Point center = (top + bottom) / 2;
+    drawOutlinedText(
+      panel,
+      cv::format(
+        "id=%d %c %s", light.armor_id, light.is_left ? 'L' : 'R',
+        light.isolated ? "isolated" : "armor"),
+      center + cv::Point{8, -8}, color, 0.48);
+  }
+
+  return panel;
 }
 
 // 与 PnpSolver::armor_reprojection_error 定义一致：把装甲板按给定世界系
@@ -405,7 +1059,7 @@ YawCostCurve sampleJointYawCost(
 // 选一块装甲板画代价曲线：优先跟踪器当前关联的那块，其次取图像中心附近的。
 std::optional<std::size_t> selectArmor(
   const std::vector<L3Estimation::Armor>& observations,
-  const std::optional<L3Estimation::TrackedTarget>& target,
+  const std::optional<ReplayTarget>& target,
   const std::vector<Eigen::Vector4d>& target_armor_poses,
   const cv::Size& image_size)
 {
@@ -680,6 +1334,8 @@ int main(int argc, char** argv)
     const std::filesystem::path input_path{cli.get<std::string>(0)};
     const std::string video_path = input_path.string() + ".avi";
     const std::string text_path = input_path.string() + ".txt";
+    const EstimatorKind estimator_kind =
+      parseEstimator(cli.get<std::string>("estimator"));
     const auto enemy_color = parseEnemyColor(cli.get<std::string>("enemy"));
     const std::string convention = cli.get<std::string>("convention");
     require(
@@ -703,7 +1359,7 @@ int main(int argc, char** argv)
     const int wait_ms = cli.get<int>("wait");
 
     // 叠加层口径。sp 视图刻意只保留 sp_vision auto_aim_test 画的那两样东西：
-    // 当前 EKF 展开的全部装甲板（绿），和命中时刻瞄准的那块板（红）。这样
+    // 当前估计器展开的全部装甲板（绿），和命中时刻瞄准的那块板（红）。这样
     // "框贴不贴板"才是可以直接目视判断的——多画一层前瞻框或者整体偏移，
     // 看到的就不再是姿态估计的对错，而是显示口径的差异。
     const std::string view = cli.get<std::string>("view");
@@ -763,14 +1419,16 @@ int main(int argc, char** argv)
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
-    L3Estimation::Tracker tracker(
-      calibration, armor_config, runtime_config.tracker, runtime_config.target);
-    require(tracker.ready(), "Tracker 拒绝了该标定");
+    ReplayTracker tracker(
+      estimator_kind, calibration, armor_config, runtime_config.tracker,
+      runtime_config.target, runtime_config.ieskf_tracker,
+      runtime_config.ieskf_target);
+    require(
+      tracker.ready(),
+      std::string(estimatorName(estimator_kind)) + " Tracker 拒绝了该标定");
     // 与 Tracker 内部同参数的求解器，只用来做重投影和代价曲线，不参与滤波。
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
-    // L4 的整车外推：恒速度 + 恒角速度，中心和整车 yaw 一起推进。
-    const L4Planning::Predictor predictor;
     // 完整的 L4 -> L5 链路。回放与 runtime 现在共用同一组
     // Planner / FireDecider / Controller 语义，这里另外负责离线诊断。
     L4Planning::Planner planner(runtime_config.plan);
@@ -821,6 +1479,20 @@ int main(int argc, char** argv)
     // 触发。把误差量级和容差一起打出来，才能判断是"云台没跟"还是"规划跑偏"。
     std::vector<double> aim_yaw_errors;
     // 上一帧规划命令用于命令跳变检查和 L4 选板连续性诊断。
+    // 逐帧状态导出。抖动是个时间序列问题，肉眼看单帧看不出来源——是观测噪声
+    // 直接透传、还是关联在编号间跳、还是 clamp 在硬复位，只有把每帧的状态和
+    // 关联结果落到文件里逐帧比才能分开。
+    const std::string csv_path = cli.get<std::string>("csv");
+    std::ofstream state_csv;
+    if (!csv_path.empty()) {
+      state_csv.open(csv_path);
+      require(state_csv.is_open(), "无法打开 csv 输出路径: " + csv_path);
+      state_csv << "frame,t,state,ndet,nlight,nmatch,armor_ids,jumped,"
+                   "xc,yc,zc,vx,vy,vz,yaw_deg,vyaw,r1,r2,h,roll_deg,pitch_deg,"
+                   "nis,nis_dof,roi_x,roi_y,roi_w,roi_h,refined,net_kept\n";
+      state_csv << std::fixed << std::setprecision(6);
+    }
+
     int last_plan_armor_id = -1;
     std::optional<double> last_command_yaw;
     std::optional<double> last_same_armor_step;
@@ -862,22 +1534,80 @@ int main(int argc, char** argv)
 
       /// 自瞄核心逻辑
 
-      const auto detect_start = std::chrono::steady_clock::now();
-      auto armors = detector.detect(img);
+      const std::optional<cv::Rect> light_roi = tracker.lightDetectionRoi(
+        q_world_barrel, timestamp, img.size());
+      // 整车先验驱动的显式空间注意力：ROI 已按网络输入宽高比修正并扩成方形，
+      // 远距小目标裁剪后再 resize 相当于局部放大。目标丢失时它自动退化为整图。
+      const cv::Rect net_roi = tracker.netFocusRoi(
+        q_world_barrel, timestamp, img.size(), detector.networkAspectRatio());
+      L2Perception::ArmorFrame detection_frame =
+        detector.detectFrame(img, light_roi, net_roi, enemy_color);
+      const std::vector<L2Perception::Armor> recognized_armors =
+        detection_frame.armors;
+      const cv::Mat recognition_panel =
+        makeRecognitionPanel(img, recognized_armors, enemy_color);
+      auto& armors = detection_frame.armors;
       std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
         return enemy_color != L2Perception::ArmorColor::Unknown &&
           armor.color != enemy_color;
       });
 
-      const auto track_start = std::chrono::steady_clock::now();
       solver.set_R_world_barrel(q_world_barrel);
-      const auto target = tracker.track(armors, q_world_barrel, timestamp);
+      const auto target = tracker.track(
+        armors, detection_frame.lights, q_world_barrel, timestamp);
+      const auto& uvl_update_lights = tracker.lastUvlUpdateLights();
+      const cv::Mat uvl_update_panel = makeUvlUpdatePanel(
+        img, uvl_update_lights, detection_frame.lights.size());
       const auto target_armor_poses = tracker.targetArmorPoses();
-      const auto track_end = std::chrono::steady_clock::now();
+      const std::optional<FilterEstimate> filter_estimate = target
+        ? std::optional<FilterEstimate>{target->estimate()}
+        : std::nullopt;
 
       /// PnP 代价曲线
 
-      const auto& observations = tracker.observations();
+      // IESKF 的正常观测入口刻意不跑 PnP；这份副本仅供 full 视图下既有的
+      // PnP 代价曲线诊断，不进入滤波器。
+      std::vector<L3Estimation::Armor> diagnostic_pnp_observations;
+      if (estimator_kind == EstimatorKind::Ieskf) {
+        diagnostic_pnp_observations.reserve(armors.size());
+        for (const auto& armor : armors) {
+          diagnostic_pnp_observations.push_back(
+            L3Estimation::toArmorObservation(armor, timestamp));
+          solver.single_pnp(diagnostic_pnp_observations.back());
+        }
+        solver.refine_double_armor(diagnostic_pnp_observations);
+      }
+      if (state_csv.is_open()) {
+        state_csv << frame_index << ','
+                  << std::chrono::duration<double>(timestamp.time_since_epoch()).count()
+                  << ',' << static_cast<int>(tracker.state()) << ',' << armors.size()
+                  << ',' << detection_frame.lights.size() << ','
+                  << tracker.lastMatchCount() << ',' << '"'
+                  << tracker.lastMatchedIdsString() << '"' << ','
+                  << (target && target->jumped() ? 1 : 0) << ',';
+        if (filter_estimate) {
+          const auto& e = *filter_estimate;
+          state_csv << e.center.x() << ',' << e.center.y() << ',' << e.center.z() << ','
+                    << e.velocity.x() << ',' << e.velocity.y() << ',' << e.velocity.z()
+                    << ',' << e.yaw * kRadToDeg << ',' << e.yaw_rate << ','
+                    << e.radius1 << ',' << e.radius2.value_or(0.0) << ','
+                    << e.height_offset.value_or(0.0) << ','
+                    << e.roll.value_or(0.0) * kRadToDeg << ','
+                    << e.pitch.value_or(0.0) * kRadToDeg << ',';
+        } else {
+          state_csv << ",,,,,,,,,,,,,";
+        }
+        state_csv << (target ? target->lastNis() : 0.0) << ','
+                  << (target ? target->lastNisDof() : 0) << ','
+                  << net_roi.x << ',' << net_roi.y << ',' << net_roi.width << ','
+                  << net_roi.height << ','
+                  << detector.lastRefineStats().refined << ','
+                  << detector.lastRefineStats().network_kept << '\n';
+      }
+
+      const auto& observations = estimator_kind == EstimatorKind::Ieskf
+        ? diagnostic_pnp_observations
+        : tracker.observations();
       const auto selected = selectArmor(
         observations, target, target_armor_poses, calibration.image_size);
       std::optional<YawCostCurve> curve;
@@ -914,13 +1644,14 @@ int main(int argc, char** argv)
           target_armor_poses[static_cast<std::size_t>(target->last_id)].w();
       }
 
-      /// 整车预测：把当前 EKF 状态外推 predict_time 秒后重新展开所有装甲板
-      std::optional<L3Estimation::TrackedTarget> predicted;
+      /// 整车预测：把当前估计状态外推 predict_time 秒后重新展开所有装甲板
+      std::optional<ReplayTarget> predicted;
       std::vector<Eigen::Vector4d> predicted_armor_poses;
       std::optional<double> predicted_armor_yaw;
       if (target && predict_time > 0.0) {
-        predicted = predictor.predict(*target, predict_time);
-        predicted_armor_poses = predictor.armorPoses(*predicted);
+        predicted = *target;
+        predicted->predict(predict_time);
+        predicted_armor_poses = predicted->armor_xyza_list();
         if (target->last_id >= 0 &&
             static_cast<std::size_t>(target->last_id) <
               predicted_armor_poses.size()) {
@@ -952,12 +1683,15 @@ int main(int argc, char** argv)
       // SP 的离线 auto_aim_test 以 to_now=false 调 Aimer，固定使用
       // 0.005 s 检测耗时，再叠加 Aimer 的高/低速延迟。
       const auto plan_time = timestamp;
-      const auto plan = planner.plan(target, robot_state, plan_time, false);
+      const auto plan =
+        tracker.plan(planner, target, robot_state, plan_time, false);
       const int plan_armor_id =
         plan.fire.has_value() ? plan.fire->armor_id : -1;
 
       L5Control::FireInput fire_input;
-      fire_input.target = target;
+      if (target) {
+        fire_input.target_name = target->name;
+      }
       // 跟踪状态不再挂在目标上，火控要靠它区分 Tracking 和 TempLost。
       fire_input.track_state = tracker.state();
       fire_input.plan = plan;
@@ -1034,20 +1768,27 @@ int main(int argc, char** argv)
 
       /// 调试输出
 
-      L6Telemetry::logDebug(
-        "[", frame_index, "] detect:",
-        L6Telemetry::delta_time(track_start, detect_start) * 1e3,
-        "ms tracker:",
-        L6Telemetry::delta_time(track_end, track_start) * 1e3, "ms");
+      if (target && filter_estimate) {
+        L6Telemetry::logDebugRaw(
+          "[" + std::to_string(frame_index) + "] estimator=" +
+          std::string(estimatorName(estimator_kind)) + " state=" +
+          std::string(stateName(tracker.state())) + ' ' +
+          filterKinematicsText(*filter_estimate) + ' ' +
+          filterGeometryText(
+            *filter_estimate, target->last_id, target->lastNis(),
+            target->lastNisDof()));
+      } else {
+        L6Telemetry::logDebugRaw(
+          "[" + std::to_string(frame_index) + "] estimator=" +
+          std::string(estimatorName(estimator_kind)) + " state=" +
+          std::string(stateName(tracker.state())) + " target=none");
+      }
 
       if (full_view) {
-        // L2 原始识别框：按识别颜色绘制，便于和红色滤波器输入位姿框对比。
+        // full 调试视图仍保留原图四角点；单独的 recognition roi 窗口负责放大
+        // 展示类别、颜色、置信度和外接 ROI。
         for (const auto& armor : armors) {
-          const cv::Scalar color = armor.color == L2Perception::ArmorColor::Blue
-            ? cv::Scalar{0, 0, 255}
-            : armor.color == L2Perception::ArmorColor::Red
-            ? cv::Scalar{255, 0, 0}
-            : cv::Scalar{0, 255, 255};
+          const cv::Scalar color = armorDisplayColor(armor.color);
           for (std::size_t index = 0; index < armor.corners.size(); ++index) {
             cv::line(
               img, toPixel(armor.corners[index]),
@@ -1056,13 +1797,17 @@ int main(int argc, char** argv)
           }
         }
 
-        // 当前帧真正送入滤波器的位姿：绿色重投影框和绿色朝向箭头。
-        drawFilterInputArmors(
-          img, observations, solver,
-          calibration, q_world_barrel);
+        if (estimator_kind == EstimatorKind::Ekf) {
+          // 普通 EKF 消费 PnP 的 YPDA，画绿色位姿框。
+          drawFilterInputArmors(
+            img, observations, solver,
+            calibration, q_world_barrel);
+        }
+        // IESKF 消费的 UVL 就是上面检测框的左右灯条端点，不再把 PnP 位姿框
+        // 冒充成滤波观测；PnP 在这条路径只负责冷启动与候选有效性检查。
       }
 
-      // 绿色是当前 EKF 展开的全部物理装甲板，和 sp_vision 画的是同一个量：
+      // 绿色是当前估计器展开的全部物理装甲板，和 sp_vision 画的是同一个量：
       // 直接压在图像上，不偏移、不前瞻，所以"贴不贴板"可以目视判断。
       // full 视图额外画橙色的 predict_time 外推框，那是延迟补偿的目标位置，
       // 本来就该领先绿框（100 ms 实测约 40 px），不要当成估计误差。
@@ -1117,8 +1862,10 @@ int main(int argc, char** argv)
       drawOutlinedText(
         img,
         cv::format(
-          "frame=%d state=%s det=%zu obs=%zu", frame_index,
-          std::string(stateName(tracker.state())).c_str(), armors.size(),
+          "frame=%d estimator=%s state=%s target=%s det=%zu obs=%zu", frame_index,
+          std::string(estimatorName(estimator_kind)).c_str(),
+          std::string(stateName(tracker.state())).c_str(),
+          target ? armorClassName(target->name) : "-", armors.size(),
           observations.size()),
         {10, 32}, {255, 255, 255});
       drawOutlinedText(
@@ -1132,31 +1879,23 @@ int main(int argc, char** argv)
         const auto& armor = observations[*selected];
         drawOutlinedText(
           img,
-          cv::format("filter input armor yaw=%.1fdeg",
-                     armor.ypr_in_world[0] * kRadToDeg),
+          cv::format(
+            estimator_kind == EstimatorKind::Ieskf
+              ? "PnP diagnostic yaw=%.1fdeg (UVL update)"
+              : "filter input armor yaw=%.1fdeg",
+            armor.ypr_in_world[0] * kRadToDeg),
           {10, 92}, {0, 255, 0});
       }
-      // 内部状态前十一维：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
-      if (full_view && target) {
-        const Eigen::VectorXd tx = target->ekf_x();
+      if (target && filter_estimate) {
+        drawOutlinedText(
+          img, filterKinematicsText(*filter_estimate),
+          {10, full_view ? 122 : 92}, {0, 255, 0}, 0.55);
         drawOutlinedText(
           img,
-          cv::format(
-            "EKF center=(%.2f,%.2f,%.2f)m v=(%.2f,%.2f,%.2f)m/s yaw=%.1fdeg "
-            "v_yaw=%.2frad/s r=%.3fm id=%d",
-            tx[0], tx[2], tx[4], tx[1], tx[3], tx[5],
-            tx[6] * kRadToDeg, tx[7], tx[8], target->last_id),
-          {10, 122}, {0, 255, 0}, 0.55);
-      }
-      if (full_view && predicted) {
-        const Eigen::VectorXd px = predicted->ekf_x();
-        drawOutlinedText(
-          img,
-          cv::format(
-            "pred +%.0fms center=(%.2f,%.2f,%.2f)m yaw=%.1fdeg (delta=%.1fdeg)",
-            predict_time * 1e3, px[0], px[2], px[4], px[6] * kRadToDeg,
-            L6Telemetry::limit_rad(px[6] - target->ekf_x()[6]) * kRadToDeg),
-          {10, 152}, {0, 165, 255}, 0.55);
+          filterGeometryText(
+            *filter_estimate, target->last_id, target->lastNis(),
+            target->lastNisDof()),
+          {10, full_view ? 152 : 122}, {0, 255, 0}, 0.5);
       }
       drawOutlinedText(
         img,
@@ -1169,7 +1908,7 @@ int main(int argc, char** argv)
               L6Telemetry::limit_rad(plan.aim.pitch - gimbal_ypr[1]) * kRadToDeg,
               plan_armor_id, plan_armor_id)
           : cv::format("CMD not sent (plan %s)", planErrorName(plan.reason)),
-        {10, full_view ? 182 : 92},
+        {10, full_view ? 182 : 152},
         plan.valid() ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
       if (full_view) {
         drawOutlinedText(
@@ -1229,19 +1968,36 @@ int main(int argc, char** argv)
       }
 
       // 观测器内部数据
-      if (target) {
-        const Eigen::VectorXd tx = target->ekf_x();
-        data["x"] = tx[0];
-        data["vx"] = tx[1];
-        data["y"] = tx[2];
-        data["vy"] = tx[3];
-        data["z"] = tx[4];
-        data["vz"] = tx[5];
-        data["a"] = tx[6] * kRadToDeg;
-        data["w"] = tx[7];
-        data["r"] = tx[8];
+      if (target && filter_estimate) {
+        data["x"] = filter_estimate->center.x();
+        data["vx"] = filter_estimate->velocity.x();
+        data["y"] = filter_estimate->center.y();
+        data["vy"] = filter_estimate->velocity.y();
+        data["z"] = filter_estimate->center.z();
+        data["vz"] = filter_estimate->velocity.z();
+        data["a"] = filter_estimate->yaw * kRadToDeg;
+        data["w"] = filter_estimate->yaw_rate;
+        data["r"] = filter_estimate->radius1;
+        data["yaw"] = filter_estimate->yaw * kRadToDeg;
+        data["yaw_rate"] = filter_estimate->yaw_rate;
+        data["radius1"] = filter_estimate->radius1;
+        if (filter_estimate->radius2) {
+          data["radius2"] = *filter_estimate->radius2;
+        }
+        if (filter_estimate->height_offset) {
+          data["height_offset"] = *filter_estimate->height_offset;
+        }
+        if (filter_estimate->dz1 && filter_estimate->dz2) {
+          data["dz1"] = *filter_estimate->dz1;
+          data["dz2"] = *filter_estimate->dz2;
+        }
+        if (filter_estimate->roll && filter_estimate->pitch) {
+          data["roll"] = *filter_estimate->roll * kRadToDeg;
+          data["pitch"] = *filter_estimate->pitch * kRadToDeg;
+        }
         data["last_id"] = target->last_id;
-        data["nis"] = target->ekf().last_nis;
+        data["nis"] = target->lastNis();
+        data["nis_dof"] = target->lastNisDof();
         if (ekf_armor_yaw) {
           data["ekf_armor_yaw"] = *ekf_armor_yaw * kRadToDeg;
         }
@@ -1288,12 +2044,12 @@ int main(int argc, char** argv)
 
       // 整车预测数据
       if (predicted) {
-        const Eigen::VectorXd px = predicted->ekf_x();
+        const FilterEstimate predicted_estimate = predicted->estimate();
         data["predict_time"] = predict_time;
-        data["pred_x"] = px[0];
-        data["pred_y"] = px[2];
-        data["pred_z"] = px[4];
-        data["pred_a"] = px[6] * kRadToDeg;
+        data["pred_x"] = predicted_estimate.center.x();
+        data["pred_y"] = predicted_estimate.center.y();
+        data["pred_z"] = predicted_estimate.center.z();
+        data["pred_a"] = predicted_estimate.yaw * kRadToDeg;
         if (predicted_armor_yaw) {
           data["pred_armor_yaw"] = *predicted_armor_yaw * kRadToDeg;
         }
@@ -1309,6 +2065,10 @@ int main(int argc, char** argv)
             selected ? &observations[*selected] : nullptr, solver, ekf_armor_yaw,
             predicted_armor_yaw, frame_index));
       }
+      cv::imshow("recognition roi", recognition_panel);
+      if (estimator_kind == EstimatorKind::Ieskf) {
+        cv::imshow("uvl update lights", uvl_update_panel);
+      }
       cv::resize(img, img, {}, 0.5, 0.5);  // 显示时缩小图片尺寸
       cv::imshow("reprojection", img);
       const int key = cv::waitKey(wait_ms);
@@ -1322,9 +2082,10 @@ int main(int argc, char** argv)
 
     cv::destroyAllWindows();
     std::cout << "\n回放结束\n"
+              << "估计器: " << estimatorName(estimator_kind) << '\n'
               << "帧数: " << frames << '\n'
               << "有 PnP 观测的帧: " << observation_frames << '\n'
-              << "通过 ArmorQuality 全部门限的观测: " << valid_pnp_observations
+              << "PnP 成功的候选数: " << valid_pnp_observations
               << '\n'
               << "Tracking 帧: " << tracking_frames << '\n'
               << "代价曲线出现多个局部极小值的帧: " << multi_minimum_frames
@@ -1348,7 +2109,9 @@ int main(int argc, char** argv)
               << same_armor_direction_reversal_frames << '\n'
               << "最大折返单步: " << largest_reversal_step * kRadToDeg
               << " deg\n"
-              << "观测门限: 仅 PnP 成功\n";
+              << (estimator_kind == EstimatorKind::Ieskf
+                    ? "初始化门限: PnP 成功；逐帧校正: 完整板/独立灯条 UVL + 单板深度差\n"
+                    : "观测门限: PnP 成功；校正观测: YPDA\n");
     if (!aim_yaw_errors.empty()) {
       std::sort(aim_yaw_errors.begin(), aim_yaw_errors.end());
       const double median = aim_yaw_errors[aim_yaw_errors.size() / 2];

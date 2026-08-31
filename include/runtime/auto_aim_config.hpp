@@ -3,6 +3,7 @@
 #include "l2_perception/armor/armor_decoder.hpp"
 #include "l2_perception/armor/armor_refiner.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
+#include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/types.hpp"
 #include "l4_planning/armor/types.hpp"
 #include "l5_control/fire_decision.hpp"
@@ -50,6 +51,10 @@ struct AutoAimConfig {
   L3Estimation::ArmorConfig armor;
   L3Estimation::TrackerConfig tracker;
   L3Estimation::TargetConfig target;
+  // awakening 路线的独立参数。普通 EKF 与 IESKF 的噪声含义不同，不能共用
+  // estimator 节点里那组数值。
+  L3Estimation::EskfTrackerConfig ieskf_tracker;
+  L3Estimation::EskfTargetConfig ieskf_target;
   L4Planning::ArmorPlanConfig plan;
   L5Control::FireConfig fire;
   RuntimeSafetyConfig runtime;

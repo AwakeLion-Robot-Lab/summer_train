@@ -357,6 +357,109 @@ int main()
       "前哨站的角加速度噪声应当远小于常规车");
   }
 
+  // --- 7. 前哨站转向投票 ---------------------------------------------
+  {
+    using Direction = VM::Voter::Direction;
+    const auto base = L3Estimation::TimePoint{} + std::chrono::seconds(10);
+    const auto after = [&](double seconds) {
+      return base + std::chrono::duration_cast<L3Estimation::TimePoint::duration>(
+                      std::chrono::duration<double>(seconds));
+    };
+
+    // 开机 1 秒内不投票：这段时间状态本身还在收敛，yaw 的变化不能当证据。
+    {
+      VM::Voter voter;
+      voter.reset(base);
+      double yaw = 0.0;
+      for (int i = 0; i < 100; ++i) {
+        yaw += 0.2;
+        voter.update(yaw, after(0.009 * i));  // 全部落在 0.9 s 内
+      }
+      expect(voter.direction == Direction::Collecting, "1 秒内不应产生判定");
+      expect(voter.sign() == 0, "未判定时 sign() 应为 0");
+    }
+
+    // 持续正向转动：攒够 10 票后判为顺时针。
+    {
+      VM::Voter voter;
+      voter.reset(base);
+      double yaw = 0.0;
+      int first_decided = -1;
+      for (int i = 0; i < 40; ++i) {
+        yaw += 0.2;  // 远大于 0.05 的死区
+        voter.update(yaw, after(1.1 + 0.01 * i));
+        if (first_decided < 0 && voter.direction != Direction::Collecting) {
+          first_decided = i;
+        }
+      }
+      expect(voter.direction == Direction::Clockwise, "持续正转应判为 Clockwise");
+      expect(voter.sign() == 1, "Clockwise 的 sign() 应为 1");
+      // 第一次 update 只记录参考角不投票，所以至少要 12 次调用才可能判定。
+      expect(first_decided >= 11, "判定过早，票数门限没生效");
+    }
+
+    // 持续反向转动。
+    {
+      VM::Voter voter;
+      voter.reset(base);
+      double yaw = 0.0;
+      for (int i = 0; i < 40; ++i) {
+        yaw -= 0.2;
+        voter.update(yaw, after(1.1 + 0.01 * i));
+      }
+      expect(voter.direction == Direction::Counterclockwise, "持续反转应判为逆时针");
+      expect(voter.sign() == -1, "Counterclockwise 的 sign() 应为 -1");
+    }
+
+    // 死区：小于 0.05 rad 的抖动不投票，也不更新参考角——否则噪声会把参考角
+    // 一点点推着走，永远攒不出证据。
+    {
+      VM::Voter voter;
+      voter.reset(base);
+      double yaw = 0.0;
+      for (int i = 0; i < 200; ++i) {
+        yaw += (i % 2 == 0) ? 0.01 : -0.01;
+        voter.update(yaw, after(1.1 + 0.005 * i));
+      }
+      expect(voter.direction == Direction::Collecting, "死区内的抖动不应产生判定");
+    }
+
+    // 跨 ±π：yaw 缠绕时差值必须走 normalizeAngle，否则会投出反向的票。
+    {
+      VM::Voter voter;
+      voter.reset(base);
+      double yaw = std::numbers::pi - 0.3;
+      for (int i = 0; i < 40; ++i) {
+        yaw = VM::normalizeAngle(yaw + 0.2);  // 会跨过 +π 回到 -π
+        voter.update(yaw, after(1.1 + 0.01 * i));
+      }
+      expect(
+        voter.direction == Direction::Clockwise, "跨 ±π 时投票方向被缠绕带反了");
+    }
+
+    // Motion 拿到判定后，角速度应当被钉死为规则常量。
+    {
+      State outpost = State::Zero();
+      outpost[VM::idx::CZ] = 1.2;
+      outpost[VM::idx::VYAW] = 0.3;  // 与规则值无关的任意初值
+
+      const VM::Motion decided{
+        .dt = 0.01, .name = L3Estimation::ArmorName::Outpost, .outpost_direction = 1};
+      State next;
+      decided(outpost.data(), next.data());
+      expectNear(
+        next[VM::idx::VYAW], VM::kOutpostYawRate, 1e-12,
+        "判明方向后角速度应当被钉死为规则常量");
+
+      const VM::Motion undecided{
+        .dt = 0.01, .name = L3Estimation::ArmorName::Outpost, .outpost_direction = 0};
+      State still;
+      undecided(outpost.data(), still.data());
+      expectNear(
+        still[VM::idx::VYAW], 0.3, 1e-12, "未判明时角速度应当保持状态量");
+    }
+  }
+
   if (failure_count != 0) {
     std::cerr << "vehicle model smoke test failed with " << failure_count << " error(s)\n";
     return 1;

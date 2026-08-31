@@ -13,6 +13,7 @@
 #include <opencv2/core/types.hpp>
 
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,30 @@ struct EskfTargetConfig
   double sigma_length_by_length{0.5};
   double sigma_angle{0.1};
 
+  // 灯条中心误差是强各向异性的：沿灯条方向端点是亮度渐变、定位差（σ∥，正比
+  // 于灯条长度）；垂直方向是陡峭边缘、定位好（σ⊥，由边缘锐度决定，**不随
+  // 灯条长度缩放**）。
+  //
+  // 把两者当成同一个值会同时犯两个错：垂直方向被高估（扔掉本来很准的横向
+  // 信息），沿灯条方向被低估。而横向恰恰承载左右灯条间距——UVL 里深度的主要
+  // 线索。3 m 处实测：各向同性时间距 sigma 4.52 px（深度不确定 8.3%），
+  // 取 σ⊥=1.5 px 后降到 1.50 px（2.8%），深度精度差三倍。
+  //
+  // sigma_perp_px <= 0 时退回各向同性，与 awakening 原始写法一致。
+  double sigma_perp_px{-1.0};
+
+  // 独立灯条（未构成完整装甲板、纯几何关联）的噪声放大系数。它们没有编号和
+  // 颜色证据支撑，理应比从装甲板拆出来的灯条更不可信。
+  double isolated_light_sigma_scale{1.0};
+
+  // 单完整板的左右灯条中心深度差 sigma，以及独立灯条关联参数。数值与
+  // Awakening test.yaml 的 armor_tracker 节点一致。
+  double armor_lights_depth_diff_sigma{0.1};
+  bool enable_lights_measure{true};
+  double light_match_length_ratio_gate{0.2};
+  double light_match_angle_gate{0.2};
+  double light_match_pos_gate_by_length_ratio{5.0};
+
   // 装甲板关联的四边形代价权重与门限。见 matchArmor。
   double match_gate{200.0};
   // 还没见过 0 号以外的板时，整车 yaw、第二组半径、高度差几乎不可观测，
@@ -58,6 +83,7 @@ class EskfTarget
 public:
   using Filter = ErrorStateEkf<VehicleModel::kStateSize, VehicleModel::Motion>;
   using State = Eigen::Matrix<double, VehicleModel::kStateSize, 1>;
+  using MatchedLight = std::tuple<int, bool, L2Perception::Light>;
 
   EskfTarget() = default;
 
@@ -77,10 +103,27 @@ public:
     const L1Sensor::CameraCalibration & calibration,
     const Eigen::Isometry3d & camera_in_world) const;
 
+  // 将 ROI 内独立检出的灯条与当前最可能可见的物理灯条做严格几何关联。
+  // 与 Awakening 一样，只有本帧至少关联到一块完整装甲板时才启用。
+  std::vector<MatchedLight> matchLight(
+    const std::vector<L2Perception::Light>& lights,
+    const std::vector<std::pair<int, Armor>>& matched_armors,
+    TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
+    const Eigen::Isometry3d& camera_in_world) const;
+
   // 把关联好的板拆成灯条 UVL 观测并执行一次多观测更新。返回观测条数。
   int update(
     const std::vector<std::pair<int, Armor>> & matched, TimePoint timestamp,
     const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera_in_world);
+
+  // 完整 Awakening 更新入口：完整板拆成两条 UVL，独立灯条各加一条 UVL；当
+  // matched 只有一块且 PnP 成功时，再加入一维 depth_difference。
+  int update(
+    const std::vector<std::pair<int, Armor>>& matched,
+    const std::vector<MatchedLight>& matched_lights,
+    const std::optional<double>& armor_lights_depth_difference,
+    TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
+    const Eigen::Isometry3d& camera_in_world);
 
   // 由状态预测某块板某条灯条的上下端点像素坐标。关联、ROI 与叠加层都走这个。
   std::pair<cv::Point2f, cv::Point2f> predictLight(
@@ -105,6 +148,18 @@ public:
 
   // 任一候选半径离开物理范围时认为发散。
   bool diverged() const;
+
+  // 最近一次更新的归一化创新平方（NIS）及其自由度。UVL 的观测维数随本帧关联
+  // 到的灯条条数变化（每条 4 维），所以自由度必须一并给出，否则没法和卡方
+  // 门限比。滤波器一致时 NIS 期望值等于自由度。
+  double lastNis() const noexcept { return last_nis_; }
+  int lastNisDof() const noexcept { return last_nis_dof_; }
+
+  // 由相机标定与枪管姿态算出相机光学系在世界系的位姿。
+  // 世界系原点取枪管原点，与 PnpSolver 的约定一致。
+  static Eigen::Isometry3d cameraInWorld(
+    const L1Sensor::CameraCalibration & calibration,
+    const Eigen::Quaterniond & q_world_barrel);
   bool converged() const noexcept { return converged_; }
 
   ArmorName name{ArmorName::Unknown};
@@ -115,6 +170,16 @@ public:
   int last_id{0};
 
   bool initialized() const noexcept { return initialized_; }
+
+  // 前哨站转向投票器的当前判定，供遥测与调试观察。
+  VehicleModel::Voter::Direction outpostDirection() const noexcept
+  {
+    return voter_.direction;
+  }
+  bool lightMeasurementsEnabled() const noexcept
+  {
+    return config_.enable_lights_measure;
+  }
 
   // 下游拿到的是不含滤波器的轻量副本：外推可以随便做，不会污染滤波器状态。
   EskfTarget snapshot() const;
@@ -134,6 +199,10 @@ private:
   bool initialized_{false};
   bool converged_{false};
   int update_count_{0};
+  double last_nis_{0.0};
+  int last_nis_dof_{0};
+  // 前哨站转向投票。非前哨目标上它一直停在 Collecting，不影响推进。
+  VehicleModel::Voter voter_{};
 };
 
 }  // namespace L3Estimation

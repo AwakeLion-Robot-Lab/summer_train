@@ -9,6 +9,7 @@
 
 #include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
+#include "l4_planning/armor/planner.hpp"
 #include "l6_telemetry/math.hpp"
 
 #include <Eigen/Dense>
@@ -16,6 +17,7 @@
 #include <cmath>
 #include <iostream>
 #include <numbers>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -162,6 +164,16 @@ int main()
       "ekf_x 的第 8 维应当是线性半径");
     expect(target.rawState()[VM::idx::LOG_R1] < 0.0, "内部应当仍存对数半径");
 
+    // Tracker 下发的是不带 filter_ 的 snapshot；L4 必须能直接消费这份 IESKF
+    // 目标并在副本上做命中时刻外推。
+    L4Planning::Planner planner;
+    L1Sensor::RobotState robot_state;
+    robot_state.bullet_speed = 23.0;
+    const auto plan = planner.plan(
+      std::optional<L3Estimation::EskfTarget>{target.snapshot()}, robot_state,
+      start, false);
+    expect(plan.valid(), "L4 Planner 未接受 IESKF 目标快照");
+
     // 认错板号只是标签的循环平移：从 2 号板初始化，几何仍自洽，只是整车 yaw
     // 差 π。装甲板集合应当能对上。
     L3Estimation::EskfTarget from_other;
@@ -214,7 +226,60 @@ int main()
     }
   }
 
-  // --- 3. 闭环收敛 ---------------------------------------------------
+  // --- 3. 独立灯条与单板深度差组合观测 -------------------------------
+  {
+    L3Estimation::EskfTarget target;
+    const auto detection =
+      synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
+    target.reset(detection, config, start, calibration, camera);
+
+    const auto matched = target.matchArmor(
+      std::vector<L3Estimation::Armor>{detection}, start, calibration, camera);
+    expect(matched.size() == 1, "单板场景应当关联到一块完整板");
+
+    const int id = matched.empty() ? 0 : matched.front().first;
+    const auto predicted_light = target.predictLight(
+      id, true, target.rawState(), calibration, camera);
+    L2Perception::Light light;
+    light.top = predicted_light.first;
+    light.bottom = predicted_light.second;
+    light.center = (light.top + light.bottom) * 0.5F;
+    light.length = cv::norm(light.top - light.bottom);
+    light.width = light.length * 0.1;
+    light.color = L2Perception::ArmorColor::Blue;
+
+    const auto matched_lights = target.matchLight(
+      std::vector<L2Perception::Light>{light}, matched, start, calibration, camera);
+    expect(matched_lights.size() == 1, "独立灯条没有关联到预测物理灯条");
+    expect(
+      target.matchLight(
+        std::vector<L2Perception::Light>{light}, {}, start, calibration, camera)
+        .empty(),
+      "没有完整板关联时不应启用独立灯条关联");
+
+    L3Estimation::UvlContext depth_context;
+    depth_context.armor_num = target.armor_num();
+    depth_context.id = id;
+    depth_context.name = target.name;
+    depth_context.armor_config = config.armor;
+    depth_context.camera_in_world = camera;
+    depth_context.camera_matrix = calibration.camera_matrix;
+    depth_context.distortion_coefficients = calibration.distortion_coefficients;
+    double depth_difference_data[1]{};
+    L3Estimation::DepthDiffMeasure{depth_context}(
+      target.rawState().data(), depth_difference_data);
+
+    const int observation_blocks = target.update(
+      matched, matched_lights, depth_difference_data[0], start, calibration, camera);
+    expect(
+      observation_blocks == 4,
+      "单完整板 + 独立灯条 + 深度差应产生四个观测块");
+    expect(
+      target.lastNisDof() == 13,
+      "两条板灯 UVL、独立灯条 UVL 和一维深度差应合计 13 维");
+  }
+
+  // --- 4. 闭环收敛 ---------------------------------------------------
   {
     L3Estimation::EskfTarget target;
     const auto detection =
@@ -281,7 +346,7 @@ int main()
       "半径被推到了物理范围之外");
   }
 
-  // --- 4. snapshot 不携带滤波器 --------------------------------------
+  // --- 5. snapshot 不携带滤波器 --------------------------------------
   {
     L3Estimation::EskfTarget target;
     const auto detection =

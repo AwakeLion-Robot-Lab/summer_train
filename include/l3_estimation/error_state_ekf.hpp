@@ -68,6 +68,16 @@ public:
   void setPredictFunc(const PredictFunc & f) { f_ = f; }
   void setIterationNum(int n) { iteration_num_ = std::max(1, n); }
 
+  // 迭代式的两种写法。默认走教科书形式。
+  //
+  //   Awakening:      δ ← δ + K·r          每轮累加高斯牛顿步，不回锚先验
+  //   Bell & Cathey:  δ ← K·(r + H·δ)      每轮重新把 δ 锚回先验
+  //
+  // 两者差 (I − KH)·δ。迭代次数一多，前者的偏差会复利放大——在 3m_run_fast
+  // 上实测 iteration_num 从 1 升到 5，车心帧间跳变的 p99 从 0.126 m 恶化到
+  // 0.326 m，单调变差。详见 docs/iterated_ekf.md。
+  void setTextbookIteration(bool enabled) { textbook_iteration_ = enabled; }
+
   template <class Inject>
   void setInject(const Inject & inject)
   {
@@ -290,8 +300,14 @@ public:
       const Eigen::MatrixXd pht = p_iter * h_matrix.transpose();
       k_matrix = ldlt.solve(pht.transpose()).transpose();  // K = P Hᵀ S⁻¹
 
-      // 照搬上游：累加高斯牛顿步，没有往先验拉的项。
-      delta_iter.noalias() += k_matrix * residual;
+      if (textbook_iteration_) {
+        // Bell & Cathey：每轮都把 δ 重新锚回先验，迭代才真正是在同一个 MAP
+        // 目标上做高斯牛顿，而不是把先验项反复计入。
+        delta_iter = k_matrix * (residual + h_matrix * delta_iter);
+      } else {
+        // 上游 awakening 的写法，保留以便对拍。
+        delta_iter.noalias() += k_matrix * residual;
+      }
     }
 
     inject_state_(delta_iter, x_nominal_);
@@ -338,6 +354,7 @@ private:
   Eigen::MatrixXd last_innovation_covariance_{};
 
   int iteration_num_{1};
+  bool textbook_iteration_{true};
 };
 
 }  // namespace L3Estimation

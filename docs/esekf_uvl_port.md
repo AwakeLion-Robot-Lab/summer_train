@@ -1090,13 +1090,20 @@ TODO 里的"针对现实装甲板特征可见性的投影模型"，以及那个 
 | M0 | `so3_exp/log` + 手写 `Jet<double,N>` | 与中心差分交叉验证 | 否 |
 | M1 | `inject_state` / `box_minus_state` | 互逆性单测（3.3） | 否 |
 | M2 | ESEKF 壳：predict 求 F + 迭代 update_multi | 线性系统退化成标准 KF 对拍 | 否 |
-| M3 | UVL 观测（由装甲板四角导出） | 单板重投影自洽 | 否 |
-| M4 | 接进 `Tracker`，config 选后端 | `auto_aim_test` 同段 records A/B | 否 |
-| M5 | 孤立灯条观测 | 遮挡场景对比 | L2 要输出 Light |
+| M3（已完成） | UVL 观测（由装甲板四角导出） | 单板重投影自洽 | 否 |
+| M4（已完成） | `EskfTracker` 接入 `auto_aim_test`，config 选后端 | 同段 records A/B | 否 |
+| M5（已完成） | 独立灯条检测、关联与 UVL；单完整板 IPPE 深度差 | smoke + 短回放 | L2 输出 `Light` |
 
 M3 之所以不用动 L2：UVL 观测并不依赖独立灯条检测，`add_uva_obs` 就是把一块装甲板的四角
 拆成左右两条灯条。本仓库角点序是 TL,TR,BR,BL，直接对应 `corners[0]+corners[3]` 和
-`corners[1]+corners[2]`。孤立灯条是增量，不是前提。
+`corners[1]+corners[2]`。独立灯条是增量，不是前提。当前实现中，PnP 只用于 Lost 初始化
+以及恰好一块完整板时构造一维左右灯条中心深度差；正常逐帧关联和校正直接消费类别、四角点
+与独立灯条，不再以逐帧 PnP 成功作为入口门限。
+
+M5 的**关联、可见灯条选择和 UVL 更新**保持 Awakening 语义，但 L2 候选提取
+故意没有原样照搬它的“灰度二值化 + 轮廓边界红蓝差”。实测该方法容易收进白色反光和
+背景纹理，因此候选提取改用 dx_vision 路线：按敌方颜色做 HSV 分割，再叠加亮度、
+轮廓面积/填充率、长宽比和倾角门限；端点仍用 Awakening/SP 的 PCA + 亮度下降沿修正。
 
 ### 8.3 自动微分怎么选
 

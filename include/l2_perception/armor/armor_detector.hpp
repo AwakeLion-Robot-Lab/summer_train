@@ -6,6 +6,7 @@
 #include "l2_perception/inference/image_preprocessor.hpp"
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -29,6 +30,17 @@ public:
   bool ready() const noexcept;
   // 一帧同步检测。Backend/Decoder 抛出的异常会被转换为日志和空结果，避免中断主循环。
   [[nodiscard]] std::vector<Armor> detect(const cv::Mat& image) const;
+
+  // IESKF 使用的完整帧入口。light_roi 有值时，除网络装甲板外还在该区域运行
+  // dx_vision 候选提取 + Awakening 端点修正的独立灯条检测；无值时只返回装甲板。
+  [[nodiscard]] ArmorFrame detectFrame(
+    const cv::Mat& image, const std::optional<cv::Rect>& light_roi = std::nullopt,
+    const std::optional<cv::Rect>& net_roi = std::nullopt,
+    ArmorColor light_color = ArmorColor::Unknown) const;
+
+  // 网络输入的宽高比（宽 / 高）。L3 的 netFocusRoi 用它把 ROI 修成同一比例，
+  // 减少 letterbox padding。后端不可用时返回 1.0。
+  [[nodiscard]] double networkAspectRatio() const noexcept;
 
   // 最近一次 detect() 的传统精修统计。
   const RefineStats& lastRefineStats() const noexcept { return last_refine_stats_; }

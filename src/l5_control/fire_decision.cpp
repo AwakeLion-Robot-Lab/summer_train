@@ -17,6 +17,10 @@ FireDecision FireDecider::decide(const FireInput& input) const
 {
   FireDecision decision;
   const auto& plan = input.plan;
+  const bool has_target = input.target.has_value() || input.target_name.has_value();
+  const L3Estimation::ArmorName target_name = input.target.has_value()
+    ? input.target->name
+    : input.target_name.value_or(L3Estimation::ArmorName::Unknown);
 
   const auto reject = [&decision](RejectReason reason) {
     decision.reasons.push_back(reason);
@@ -30,7 +34,7 @@ FireDecision FireDecider::decide(const FireInput& input) const
     reject(RejectReason::CommandJump);
   }
 
-  if (!input.target.has_value()) {
+  if (!has_target) {
     reject(RejectReason::NoTarget);
   } else {
     switch (input.track_state) {
@@ -83,14 +87,11 @@ FireDecision FireDecider::decide(const FireInput& input) const
   }
 
   // 命中判据：实际枪管指向与规划角之差必须落在实体板的角度投影内。
-  const auto armor_type =
-    input.target.has_value() ? L3Estimation::armorTypeOf(input.target->name)
-                             : std::optional<L3Estimation::ArmorType>{};
-  const auto armor_name = input.target.has_value()
-    ? input.target->name
-    : L3Estimation::ArmorName::Unknown;
+  const auto armor_type = has_target
+    ? L3Estimation::armorTypeOf(target_name)
+    : std::optional<L3Estimation::ArmorType>{};
   decision.tolerance = tolerance(
-    plan, armor_type.value_or(L3Estimation::ArmorType::Small), armor_name);
+    plan, armor_type.value_or(L3Estimation::ArmorType::Small), target_name);
   decision.yaw_error =
     std::abs(L6Telemetry::limit_rad(plan.aim.yaw - input.actual_yaw));
   decision.pitch_error =

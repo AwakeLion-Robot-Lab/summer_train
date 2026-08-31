@@ -161,4 +161,46 @@ inline UvlVector uvlMeasurementFrom(const cv::Point2f & top, const cv::Point2f &
   return observation;
 }
 
+// 单块完整装甲板场景下，IPPE 提供的左右灯条中心相机深度差。它只取 PnP
+// 中对斜视姿态最有辨识度的一维，不把抖动很大的绝对深度和完整姿态塞进滤波器。
+constexpr int kDepthDiffMeasureSize = 1;
+using DepthDiffVector = Eigen::Matrix<double, kDepthDiffMeasureSize, 1>;
+
+struct DepthDiffMeasure
+{
+  UvlContext ctx;
+
+  template <typename T>
+  void operator()(const T * x, T * z) const
+  {
+    const auto armor_in_world =
+      VehicleModel::armorPose<T>(x, ctx.id, ctx.armor_num, ctx.name);
+
+    Eigen::Transform<T, 3, Eigen::Isometry> camera_in_world_jet;
+    camera_in_world_jet.matrix() = ctx.camera_in_world.matrix().template cast<T>();
+    const auto armor_in_camera = camera_in_world_jet.inverse() * armor_in_world;
+
+    const auto centerInCamera = [&](bool is_left) {
+      const std::vector<cv::Point3f> points =
+        armorLightPoints3D(ctx.name, is_left, ctx.armor_config);
+      Eigen::Matrix<T, 3, 1> center = Eigen::Matrix<T, 3, 1>::Zero();
+      for (const cv::Point3f& point : points) {
+        center += armor_in_camera * Eigen::Matrix<T, 3, 1>(
+          T(point.x), T(point.y), T(point.z));
+      }
+      return (center / T(static_cast<double>(points.size()))).eval();
+    };
+
+    z[0] = centerInCamera(true).z() - centerInCamera(false).z();
+  }
+
+  template <typename T>
+  static Eigen::Matrix<T, kDepthDiffMeasureSize, 1> residual(
+    const Eigen::Matrix<T, kDepthDiffMeasureSize, 1>& z_pred,
+    const Eigen::Matrix<T, kDepthDiffMeasureSize, 1>& z)
+  {
+    return z - z_pred;
+  }
+};
+
 }  // namespace L3Estimation

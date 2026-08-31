@@ -7,7 +7,7 @@ inference:
   #   model/armor_model/szu-v8n-fp16.onnx-> yolov8_21   （深大 Infantry-v8n）
   # szu-v8n 的 .xml/.bin 需要较新的 OpenVINO 运行时（2023.1 读不了它的
   # MaxPool），旧运行时必须走同名 .onnx。
-  model_path: "model/armor_model/szu-v5n.xml"
+  model_path: "model/armor_model/szu-v8n-fp16.onnx"
   device: "CPU"
 
   # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
@@ -55,7 +55,7 @@ inference:
     # yolov8_21：[1, 21, 6300]，输出名 output0，channels-first，字段为
     #   0~3 颜色 / 4~12 九类 / 13~20 四角点，没有 objectness 通道，
     #   置信度取类别分支最大值且已过 sigmoid。
-    layout: "yolov5_22"
+    layout: "yolov8_21"
     # 下面四项在 layout 预设之上覆盖，缺省则用预设值。
     # yolov5_22 预设：0.7 / 0.8 / 0.3 / 0.7（对齐 SP demo）
     # yolov8_21 预设：0.5 / 0.5 / 0.2 / 0.5（对齐上游部署库）
@@ -84,6 +84,43 @@ refiner:
   # 传统端点到网络角点的距离和上限。放大会让传统解无条件覆盖网络解，
   # 光照不好时反而更差。
   max_endpoint_distance_px: 15.0
+  # 灯条端点用亮度梯度 + PCA 主轴定位，替代 minAreaRect 的二值边界。
+  # minAreaRect 的端点误差沿灯条轴向，正是深度线索最敏感的方向。
+  pca_corner_correction: true
+
+  # 独立灯条通路。只有 IESKF 已进入 Tracking/TempLost 后，才在预测整车
+  # 包围框的 1.6 倍 ROI 内运行，不会全图常开。候选提取参考 dx_vision：
+  # 敌方颜色 HSV 分割 + 亮度门限 + 轮廓填充率 + 灯条几何门限。
+  independent_light_enable: true
+  independent_light_binary_threshold: 120.0
+  independent_light_threshold_tolerance: 50.0
+  independent_light_color_diff_threshold: 20.0
+  independent_light_min_contour_area_px: 5.0
+  independent_light_min_fill_ratio: 0.5
+  independent_light_min_length_px: 6.0
+  # width / length，对应 dx_vision 代码默认的 length / width ∈ (2.4, 17)。
+  # 比其配置样例的 (1.8, 40) 更适合独立灯条：可排除极细背景线和近方形色块。
+  independent_light_min_width_length_ratio: 0.0588
+  independent_light_max_width_length_ratio: 0.4167
+  independent_light_max_tilt_angle_deg: 30.0
+
+  # OpenCV HSV 范围，默认值取自 dx_vision/preprocess_coefficient.yaml。
+  independent_light_red_h_min_low: 0
+  independent_light_red_h_max_low: 35
+  independent_light_red_h_min_high: 156
+  independent_light_red_h_max_high: 180
+  independent_light_red_s_min: 43
+  independent_light_red_v_min: 110
+  independent_light_blue_h_min: 80
+  independent_light_blue_h_max: 120
+  independent_light_blue_s_min: 30
+  independent_light_blue_v_min: 150
+
+  # dx_vision 默认关闭；现场出现碎点时可打开。3x3 对很远、仅 1~2 px 宽的灯条
+  # 可能偏激进，所以不默认启用。
+  independent_light_use_morphology: false
+  independent_light_morphology_width: 3
+  independent_light_morphology_height: 3
 
 # L3 PnP 使用的装甲板几何尺寸。
 armor:
@@ -123,6 +160,58 @@ estimator:
   # 板 yaw 方差 = base + log1p(d) / divisor。
   armor_yaw_variance_base: 0.09
   armor_yaw_distance_divisor: 200.0
+
+# awakening 路线：迭代误差状态 EKF + 灯条 UVL 图像观测。
+# 与上面的普通 EKF 参数独立；auto_aim_test 默认读取这一组，使用
+# `--estimator=ekf` 才切回上面的 YPDA EKF。
+ieskf:
+  # 状态机按录像时间戳计时，不受回放倍速影响。
+  tracking_thres: 5
+  lost_time_thres: 1.5
+  lost_time_thres_outpost: 2.0
+
+  # 每帧 UVL 更新的高斯牛顿迭代次数。
+  iteration_num: 5
+
+  # 车体系过程噪声，数值与 awakening test.yaml 对齐。
+  body_acceleration: [30.0, 30.0, 1.0]
+  yaw_acceleration: 30.0
+  outpost_body_acceleration: [1.0, 1.0, 1.0]
+  outpost_yaw_acceleration: 0.01
+  radius_noise: 1.0e-7
+  height_noise: 1.0e-7
+  outpost_height_noise: 1.0e-7
+  roll_pitch_noise: 0.1
+
+  # 一条灯条的 UVL 噪声；前两项乘以该灯条的像素长度得到 sigma。
+  sigma_pixel_by_length: 0.2
+  sigma_length_by_length: 0.5
+  sigma_angle: 0.1
+  # 灯条中心误差各向异性：沿灯条方向用 sigma_pixel_by_length × 灯条长度，
+  # 垂直方向用下面这个固定像素值（边缘锐度决定，不随灯条长度缩放）。
+  # 设成 <= 0 退回 awakening 的各向同性写法。
+  sigma_perp_px: -1.0
+  # 独立灯条（纯几何关联、无编号颜色证据）的噪声放大系数。
+  isolated_light_sigma_scale: 1.0
+
+  # 单完整板 IPPE 左右灯条中心深度差，以及独立灯条关联；与 Awakening
+  # test.yaml 的 armor_tracker 参数逐项对应。
+  armor_lights_depth_diff_sigma: 0.1
+  enable_lights_measure: true
+  light_match_length_ratio_gate: 0.2
+  light_match_angle_gate: 0.2
+  light_match_pos_gate_by_length_ratio: 5.0
+
+  # 检测四边形与预测装甲板的关联代价。
+  match_gate: 200.0
+  match_gate_not_all_init: 1000.0
+  weight_center_error: 5.0
+  weight_angle_error: 10.0
+  weight_side_length_error: 1.0
+
+  initial_radius: 0.26
+  initial_radius_outpost: 0.2765
+  initial_radius_base: 0.3205
 
 # L4 定点规划。根据整车 yaw 角速度选择高、低速发射延迟。
 planning:

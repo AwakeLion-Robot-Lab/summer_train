@@ -127,6 +127,111 @@ void testDisabledKeepsInput()
   require(armor.corners == before, "a disabled refiner must keep the input unchanged");
 }
 
+void testIndependentLightDetection()
+{
+  cv::Mat image(kImageHeight, kImageWidth, CV_8UC3, cv::Scalar::all(0));
+  // 用细长椭圆模拟真实灯条的圆角光斑。
+  cv::ellipse(
+    image, cv::Point(320, 240), cv::Size(5, 34), 8.0, 0.0, 360.0,
+    cv::Scalar(255, 20, 20), cv::FILLED);
+
+  L2Perception::ArmorRefinerConfig config;
+  config.independent_light_threshold_tolerance = 0.0;
+  config.independent_light_binary_threshold = 30.0;
+  const L2Perception::ArmorRefiner refiner(config);
+  const auto lights = refiner.detectLights(
+    image, cv::Rect(250, 160, 140, 160), {},
+    L2Perception::ArmorColor::Blue);
+
+  require(lights.size() == 1, "independent detector must return the isolated light");
+  require(
+    lights.front().color == L2Perception::ArmorColor::Blue,
+    "independent detector must preserve BGR color classification");
+  require(
+    cv::norm(lights.front().top - lights.front().bottom) > 50.0,
+    "independent light endpoints must span the observed bar");
+  require(
+    std::abs(lights.front().center.x - 320.0F) < 3.0F &&
+      std::abs(lights.front().center.y - 240.0F) < 3.0F,
+    "independent light coordinates must be restored from ROI to the full image");
+}
+
+void testIndependentLightRejectsBackgroundArtifacts()
+{
+  cv::Mat image(kImageHeight, kImageWidth, CV_8UC3, cv::Scalar::all(0));
+  // 白色反光：灰度阈值会接受，但 HSV 饱和度门限必须拒绝。
+  cv::ellipse(
+    image, cv::Point(150, 240), cv::Size(5, 34), 4.0, 0.0, 360.0,
+    cv::Scalar(255, 255, 255), cv::FILLED);
+  // 绿色场地灯：亮度和形状都像灯条，但色相不是敌方蓝色。
+  cv::ellipse(
+    image, cv::Point(260, 240), cv::Size(5, 34), 4.0, 0.0, 360.0,
+    cv::Scalar(20, 255, 20), cv::FILLED);
+  // 蓝色横纹：颜色正确，但与竖直方向夹角应被几何门限拒绝。
+  cv::ellipse(
+    image, cv::Point(370, 240), cv::Size(34, 5), 0.0, 0.0, 360.0,
+    cv::Scalar(255, 20, 20), cv::FILLED);
+  // 稀疏的蓝色 L 形背景纹理：外接框很大、填充率很低。
+  const std::vector<cv::Point> sparse_background{
+    {470, 205}, {474, 205}, {474, 270}, {510, 270}, {510, 274},
+    {470, 274}};
+  cv::fillPoly(
+    image, std::vector<std::vector<cv::Point>>{sparse_background},
+    cv::Scalar(255, 20, 20));
+  // 极细的蓝色背景线：倾角、长度都像灯条，但长宽比超过 dx
+  // 代码默认的上限 17。
+  cv::rectangle(
+    image, cv::Rect(535, 202, 3, 72), cv::Scalar(255, 20, 20), cv::FILLED);
+  // 近方形蓝色色块：填充率高，但长宽比不到 dx 默认的 2.4。
+  cv::rectangle(
+    image, cv::Rect(570, 218, 20, 28), cv::Scalar(255, 20, 20), cv::FILLED);
+
+  L2Perception::ArmorRefinerConfig config;
+  config.independent_light_threshold_tolerance = 0.0;
+  config.independent_light_binary_threshold = 30.0;
+  const L2Perception::ArmorRefiner refiner(config);
+  const auto lights = refiner.detectLights(
+    image, cv::Rect(80, 150, 530, 180), {},
+    L2Perception::ArmorColor::Blue);
+
+  require(
+    lights.empty(),
+    "white glare, wrong hue, horizontal stripe, sparse texture, thin line and "
+    "square patch must be rejected");
+}
+
+void testIndependentLightUsesRequestedEnemyColor()
+{
+  cv::Mat image(kImageHeight, kImageWidth, CV_8UC3, cv::Scalar::all(0));
+  cv::ellipse(
+    image, cv::Point(280, 240), cv::Size(5, 34), 5.0, 0.0, 360.0,
+    cv::Scalar(255, 20, 20), cv::FILLED);
+  cv::ellipse(
+    image, cv::Point(360, 240), cv::Size(5, 34), -5.0, 0.0, 360.0,
+    cv::Scalar(20, 20, 255), cv::FILLED);
+
+  L2Perception::ArmorRefinerConfig config;
+  config.independent_light_threshold_tolerance = 0.0;
+  config.independent_light_binary_threshold = 30.0;
+  const L2Perception::ArmorRefiner refiner(config);
+  const cv::Rect roi(220, 150, 200, 180);
+
+  const auto blue = refiner.detectLights(
+    image, roi, {}, L2Perception::ArmorColor::Blue);
+  const auto red = refiner.detectLights(
+    image, roi, {}, L2Perception::ArmorColor::Red);
+  const auto any = refiner.detectLights(
+    image, roi, {}, L2Perception::ArmorColor::Unknown);
+
+  require(
+    blue.size() == 1 && blue.front().color == L2Perception::ArmorColor::Blue,
+    "blue request must not return the red light");
+  require(
+    red.size() == 1 && red.front().color == L2Perception::ArmorColor::Red,
+    "red request must not return the blue light");
+  require(any.size() == 2, "unknown color request must detect both color bands");
+}
+
 }  // namespace
 
 int main()
@@ -136,6 +241,9 @@ int main()
     testFailureKeepsNetworkResult();
     testBatchCompatibilityInterface();
     testDisabledKeepsInput();
+    testIndependentLightDetection();
+    testIndependentLightRejectsBackgroundArtifacts();
+    testIndependentLightUsesRequestedEnemyColor();
   } catch (const std::exception& error) {
     std::printf("armor refiner smoke failed: %s\n", error.what());
     return 1;

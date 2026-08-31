@@ -1,6 +1,7 @@
 #pragma once
 
 #include "l1_sensor/serial/robot_state.hpp"
+#include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/armor/target_estimator.hpp"
 #include "l4_planning/armor/types.hpp"
 
@@ -39,6 +40,19 @@ public:
     const L1Sensor::RobotState& robot_state,
     TimePoint plan_time,
     bool to_now = true);
+  // IESKF + UVL 路径对外保持与普通 EKF 相同的整车目标契约。回放直接走同一套
+  // 延迟补偿、选板和弹道，避免只对比 L3 叠加层而绕开真正的规划输出。
+  [[nodiscard]] Plan plan(
+    const std::optional<L3Estimation::EskfTarget>& target,
+    const L1Sensor::RobotState& robot_state,
+    TimePoint plan_time,
+    bool to_now = true);
+  // 两种 optional 目标并存后，std::nullopt 需要一个精确匹配，语义仍是 NoTarget。
+  [[nodiscard]] Plan plan(
+    std::nullopt_t,
+    const L1Sensor::RobotState& robot_state,
+    TimePoint plan_time,
+    bool to_now = true);
 
   void reset() noexcept override;
   int lockedArmorId() const noexcept { return locked_id_; }
@@ -50,8 +64,16 @@ private:
     Eigen::Vector4d xyza{Eigen::Vector4d::Zero()};  // [x, y, z, normal_yaw]
   };
 
-  AimPoint chooseAimPoint(
-    const L3Estimation::TrackedTarget& target);
+  template <typename Target>
+  [[nodiscard]] Plan planTarget(
+    const std::optional<Target>& target,
+    const L1Sensor::RobotState& robot_state,
+    TimePoint plan_time,
+    bool to_now,
+    double plan_to_send);
+
+  template <typename Target>
+  AimPoint chooseAimPoint(const Target& target);
 
   ArmorPlanConfig config_;
   int locked_id_{-1};

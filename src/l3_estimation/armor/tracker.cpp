@@ -46,6 +46,7 @@ Armor toArmorObservation(
   // 这里只搬运检测元数据；三维位姿由当前帧的 PnpSolver 计算。
   Armor observation;
   observation.class_id = detection.class_id;
+  observation.color = detection.color;
   observation.points = detection.corners;
   observation.center = detection.center;
   observation.confidence = static_cast<double>(detection.confidence);
