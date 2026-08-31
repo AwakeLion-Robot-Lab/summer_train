@@ -18,6 +18,11 @@
 // 替代品，公共接口刻意与之对齐，便于在同一段回放上做 A/B。
 namespace L3Estimation {
 
+// L2 -> L3 的显式转换入口。这里只复制检测字段，三维位姿由调用方用当帧的
+// PnpSolver 补充——L3 需要的是"哪些像素角点属于哪块板"，位姿是后一步的事。
+Armor toArmorObservation(
+  const L2Perception::Armor& detection, TimePoint timestamp);
+
 struct EskfTrackerConfig
 {
   // Detecting 连续多少帧有效关联才转 Tracking。

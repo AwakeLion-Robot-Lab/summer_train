@@ -1,6 +1,5 @@
 #include "l3_estimation/armor/eskf_tracker.hpp"
 
-#include "l3_estimation/armor/tracker.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 
@@ -23,6 +22,21 @@ bool validTrackerConfig(const EskfTrackerConfig & config) noexcept
 }
 
 }  // namespace
+
+Armor toArmorObservation(
+  const L2Perception::Armor& detection, TimePoint timestamp)
+{
+  // 只搬运检测元数据；三维位姿由当前帧的 PnpSolver 计算。
+  Armor observation;
+  observation.class_id = detection.class_id;
+  observation.color = detection.color;
+  observation.points = detection.corners;
+  observation.center = detection.center;
+  observation.confidence = static_cast<double>(detection.confidence);
+  observation.area = L6Telemetry::polygonArea(detection.corners);
+  observation.timestamp = timestamp;
+  return observation;
+}
 
 EskfTracker::EskfTracker(
   const L1Sensor::CameraCalibration & calibration, ArmorConfig armor_config,

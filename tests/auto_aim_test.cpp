@@ -12,7 +12,6 @@
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/pnp_solver.hpp"
-#include "l3_estimation/armor/tracker.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "l4_planning/armor/planner.hpp"
 #include "l5_control/controller.hpp"
