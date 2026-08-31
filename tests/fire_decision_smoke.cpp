@@ -44,7 +44,7 @@ L5Control::FireInput makeInput()
 
   // 火控只读目标的 name（用来查板型换算角度容差），滤波器状态本身用不到，
   // 所以用确定性构造入口给一个最简目标即可。跟踪状态由 Tracker 单独提供。
-  L3Estimation::TrackedTarget target(
+  L3Estimation::EskfTarget target(
     L3Estimation::ArmorName::Infantry3, 4.0, 0.0, 0.2);
   input.target = target;
   input.track_state = L3Estimation::TrackState::Tracking;

@@ -26,9 +26,9 @@ void require(bool condition, const char * message)
 
 // 旋转中心固定在 (4, 0, 0)，半径 0.2，四板车。jumped 默认置真，否则所有测试
 // 都会被可观测性门禁挡在 0 号板。
-L3Estimation::TrackedTarget makeTarget(double v_yaw, double yaw = 0.0)
+L3Estimation::EskfTarget makeTarget(double v_yaw, double yaw = 0.0)
 {
-  L3Estimation::TrackedTarget target(
+  L3Estimation::EskfTarget target(
     L3Estimation::ArmorName::Infantry3, 4.0, v_yaw, 0.2, yaw);
   target.jumped = true;
   return target;
@@ -77,18 +77,14 @@ void testPredictorTranslates()
   observation.ypr_in_world = {0.0, 0.0, 0.0};
   observation.ypd_in_world = L6Telemetry::xyz2ypd(observation.xyz_in_world);
 
-  Eigen::VectorXd P0(L3Estimation::TrackedTarget::kStateSize);
-  P0 << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0, 0.4, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0;
-  L3Estimation::TrackedTarget target(observation, t0, 0.2, 4, P0);
-
-  // 十帧，每帧 20 ms 沿 +x 前进 2 cm，即 1 m/s。
-  for (int step = 1; step <= 10; ++step) {
-    observation.xyz_in_world.x() = 3.8 + 0.02 * step;
-    observation.ypd_in_world = L6Telemetry::xyz2ypd(observation.xyz_in_world);
-    target.predict(t0 + std::chrono::milliseconds(20 * step));
-    target.update(observation);
-  }
-  require(target.ekf_x()[1] > 0.1, "EKF must pick up a positive x velocity");
+  // 直接构造一个已在运动的目标：旋转中心 (4.0, 0, 0)，沿 +x 以 1 m/s 前进。
+  // 不再靠喂十帧观测把速度攒出来——UVL 观测需要相机标定和投影，那是 L3 自己
+  // 单测的事（tests/eskf_target_smoke.cpp），规划层这里只需要一个会动的目标。
+  L3Estimation::EskfTarget target(
+    L3Estimation::ArmorName::Infantry3, 4.0, 0.0, 0.2, 0.0, 0.0,
+    Eigen::Vector3d{1.0, 0.0, 0.0});
+  target.predict(t0);
+  require(target.ekf_x()[1] > 0.1, "target must carry a positive x velocity");
 
   const Eigen::VectorXd before = target.ekf_x();
   const auto later = predictor.predict(target, 0.5);
@@ -441,7 +437,7 @@ void testPlannerRejectsNoTarget()
   require(!empty.valid(), "missing target must not produce a plan");
   require(empty.reason == L4Planning::PlanError::NoTarget, "NoTarget expected");
 
-  // "滤波器为空的目标"不再是一种可表示的状态：TrackedTarget 没有默认构造，
+  // "滤波器为空的目标"不再是一种可表示的状态：EskfTarget 没有默认构造，
   // 一经存在状态就是完整的，所以这里只剩空值这一条拒绝路径。
   std::cout << "  [ok] planner rejects a missing target\n";
 }

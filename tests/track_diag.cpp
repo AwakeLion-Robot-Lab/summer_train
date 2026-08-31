@@ -9,7 +9,7 @@
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/armor/pnp_solver.hpp"
-#include "l3_estimation/armor/tracker.hpp"
+#include "l3_estimation/armor/eskf_tracker.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "l4_planning/armor/planner.hpp"
 #include "l4_planning/armor/predictor.hpp"
@@ -406,9 +406,10 @@ int main(int argc, char* argv[])
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
-    L3Estimation::Tracker tracker(
-      calibration, armor_config, runtime_config.tracker, runtime_config.target);
-    require(tracker.ready(), "Tracker 拒绝了该标定");
+    L3Estimation::EskfTracker tracker(
+      calibration, armor_config, runtime_config.ieskf_tracker,
+      runtime_config.ieskf_target);
+    require(tracker.ready(), "EskfTracker 拒绝了该标定");
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
     const L4Planning::Predictor predictor;
@@ -436,7 +437,7 @@ int main(int argc, char* argv[])
     std::ofstream frame_csv(out_dir / "frame.csv");
     frame_csv << "frame,t,dt,gimbal_yaw_deg,ndet,nusable,nmatch,state,"
                  "xc,vx,yc,vy,z,vz,yaw_deg,v_yaw,r1,r2,dz,armor_id,jumped,multi,"
-                 "updated,nis,face0,face1,res_az_deg,res_el_deg,res_dist,res_yaw_deg,reset\n";
+                 "updated,nis,nis_dof,nlight,res_angle_deg,res_center_px,res_length_px,res_depth_m,reset\n";
     frame_csv << std::fixed;
 
     std::ofstream aim_csv(out_dir / "aim.csv");
@@ -483,9 +484,9 @@ int main(int argc, char* argv[])
     std::vector<double> raw_yaw_jump_deg;
     std::optional<double> previous_obs_raw_yaw;
     std::vector<double> nis_values;
-    std::vector<double> res_dist;
-    std::vector<double> res_yaw_deg;
-    std::vector<double> res_az_deg;
+    std::vector<double> res_angle_stats;
+    std::vector<double> res_center_stats;
+    std::vector<double> res_length_stats;
     std::vector<double> pred_center_err;
     std::vector<double> pred_obs_err;
     std::vector<double> speeds;
@@ -493,7 +494,7 @@ int main(int argc, char* argv[])
     std::vector<double> radii;
     std::optional<double> previous_obs_yaw;
     std::optional<Eigen::Vector3d> previous_obs_xyz;
-    std::optional<L3Estimation::TrackedTarget> previous_target;
+    std::optional<L3Estimation::EskfTarget> previous_target;
     std::optional<Eigen::Vector3d> last_aim_point;
     int last_aim_armor_id = -1;
     std::vector<double> aim_jumps;
@@ -519,7 +520,14 @@ int main(int argc, char* argv[])
       const double dt = last_time ? L6Telemetry::delta_time(timestamp, *last_time) : 0.0;
       last_time = timestamp;
 
-      auto armors = detector.detect(img);
+      // 与实跑路径一致：网络 ROI + 独立灯条都走一遍，否则诊断出来的
+      // 观测维数和实际滤波器吃到的对不上。
+      const std::optional<cv::Rect> light_roi =
+        tracker.lightDetectionRoi(q_world_barrel, timestamp, img.size());
+      const cv::Rect net_roi = tracker.netFocusRoi(
+        q_world_barrel, timestamp, img.size(), detector.networkAspectRatio());
+      auto detection_frame = detector.detectFrame(img, light_roi, net_roi);
+      auto armors = detection_frame.armors;
       std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
         return enemy_color != L2Perception::ArmorColor::Unknown && armor.color != enemy_color;
       });
@@ -527,7 +535,8 @@ int main(int argc, char* argv[])
       if (!armors.empty()) ++frames_with_det;
 
       solver.set_R_world_barrel(q_world_barrel);
-      const auto target = tracker.track(armors, q_world_barrel, timestamp);
+      const auto target = tracker.track(
+        armors, detection_frame.lights, q_world_barrel, timestamp);
       const auto& observations = tracker.observations();
 
       // 观测明细。usable 的判据必须和 Tracker::observationUsable 一致，
@@ -603,48 +612,31 @@ int main(int argc, char* argv[])
       if (reset) ++resets;
       previous_state = state;
 
-      // 单步创新量：把上一帧的后验按同一套恒速模型推到本帧曝光时刻，再和本帧
-      // 原始 PnP 相减。这就是 EKF 内部 z - h(x_pri)，但只用公开接口重算，
-      // 因此和滤波器内部那份可以互相印证。
-      double res_az = std::numeric_limits<double>::quiet_NaN();
-      double res_el = std::numeric_limits<double>::quiet_NaN();
-      double res_dist_value = std::numeric_limits<double>::quiet_NaN();
-      double res_yaw_value = std::numeric_limits<double>::quiet_NaN();
-      int face_ids[2] = {-1, -1};
+      // UVL 创新量。四个观测分量量纲不同（角度 rad、中心和长度 px），
+      // 混进一个范数没有意义，所以按物理含义分开取：中心残差大说明整车位置
+      // 偏了，长度残差大说明深度偏了，角度残差大说明姿态偏了。
+      //
+      // 与旧 YPDA 路线的区别：那时残差是在外面用 PnP 重算一遍的，可以和滤波器
+      // 内部互相印证；UVL 的残差只有滤波器自己算得出（要投影全部灯条端点），
+      // 所以这里直接取 EskfTarget 暴露的那份。
+      double res_angle_deg = std::numeric_limits<double>::quiet_NaN();
+      double res_center_px = std::numeric_limits<double>::quiet_NaN();
+      double res_length_px = std::numeric_limits<double>::quiet_NaN();
+      double res_depth_m = std::numeric_limits<double>::quiet_NaN();
+      int res_light_count = 0;
       // TempLost 这一帧没有观测进入滤波器，残差无从谈起。
-      if (previous_target && target &&
-          state != L3Estimation::TrackState::TempLost && dt > 1e-6) {
-        const auto prior = predictor.predict(*previous_target, dt);
-        const auto prior_armors = predictor.armorPoses(prior);
-        std::size_t slot = 0;
-        for (const auto& armor : observations) {
-          if (armor.name != target->name || !armor.xyz_in_world.allFinite()) continue;
-          const int id = associateFace(prior_armors, armor);
-          if (id < 0) continue;
-          if (slot < 2) face_ids[slot] = id;
-          ++slot;
-
-          const Eigen::Vector4d& face = prior_armors[static_cast<std::size_t>(id)];
-          const Eigen::Vector3d prior_ypd = L6Telemetry::xyz2ypd(face.head<3>());
-          const double az =
-            L6Telemetry::limit_rad(armor.ypd_in_world.x() - prior_ypd.x()) * kRadToDeg;
-          const double el =
-            L6Telemetry::limit_rad(armor.ypd_in_world.y() - prior_ypd.y()) * kRadToDeg;
-          const double distance = armor.ypd_in_world.z() - prior_ypd.z();
-          const double yaw_error =
-            L6Telemetry::limit_rad(armor.ypr_in_world[0] - face[3]) * kRadToDeg;
-          // 表里只留最后一次更新的残差，统计量收全部更新。
-          res_az = az;
-          res_el = el;
-          res_dist_value = distance;
-          res_yaw_value = yaw_error;
-          res_dist.push_back(std::abs(distance));
-          res_yaw_deg.push_back(std::abs(yaw_error));
-          res_az_deg.push_back(std::abs(az));
+      if (target && state != L3Estimation::TrackState::TempLost) {
+        const auto& residual = target->lastUvlResidual();
+        if (residual.light_count > 0) {
+          res_angle_deg = residual.angle_rms_deg;
+          res_center_px = residual.center_rms_px;
+          res_length_px = residual.length_rms_px;
+          res_depth_m = residual.depth_diff_m;
+          res_light_count = residual.light_count;
+          res_angle_stats.push_back(residual.angle_rms_deg);
+          res_center_stats.push_back(residual.center_rms_px);
+          res_length_stats.push_back(residual.length_rms_px);
         }
-        // 两块可见板关联到同一个物理面，说明整车模型这一帧自相矛盾：
-        // 同一个面被两组互斥的观测各更新一次。
-        if (slot >= 2 && face_ids[0] == face_ids[1]) ++same_face_frames;
       }
 
       frame_csv << frame_index << ',' << pose.seconds << ',' << dt << ','
@@ -653,7 +645,7 @@ int main(int argc, char* argv[])
       if (target) {
         // 内部状态前十一维：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
         const Eigen::VectorXd tx = target->ekf_x();
-        const double nis = target->ekf().last_nis;
+        const double nis = target->lastNis();
         frame_csv << tx[0] << ',' << tx[1] << ','
                   << tx[2] << ',' << tx[3] << ','
                   << tx[4] << ',' << tx[5] << ','
@@ -670,9 +662,9 @@ int main(int argc, char* argv[])
         // 16 个空字段，与上面 target 分支的列数一一对应。
         for (int column = 0; column < 16; ++column) frame_csv << ',';
       }
-      frame_csv << face_ids[0] << ',' << face_ids[1] << ',' << res_az << ',' << res_el
-                << ',' << res_dist_value << ','
-                << res_yaw_value << ',' << (reset ? 1 : 0) << '\n';
+      frame_csv << (target ? target->lastNisDof() : 0) << ',' << res_light_count << ','
+                << res_angle_deg << ',' << res_center_px << ',' << res_length_px << ','
+                << res_depth_m << ',' << (reset ? 1 : 0) << '\n';
       previous_target = target;
 
       // 叠加层像素位置：整车中心 + 四块板的框心，外加当帧检出的板心作参照。
@@ -867,19 +859,22 @@ int main(int argc, char* argv[])
               << percentile(speeds, 0.9) << "  max " << percentile(speeds, 1.0) << '\n'
               << "-- 滤波器 --\n"
               << "NIS  mean " << mean(nis_values) << "  p50 " << percentile(nis_values, 0.5)
-              << "  p90 " << percentile(nis_values, 0.9) << "  (4 自由度门限 9.488)\n"
+              << "  p90 " << percentile(nis_values, 0.9)
+              << "  (UVL 观测维数每帧在变，见 nis_dof 列，固定卡方门限不适用)\n"
               << "v_yaw |mean| " << mean(vyaws) << "  p90 " << percentile(vyaws, 0.9)
               << "  max " << percentile(vyaws, 1.0) << '\n'
               << "r1   mean " << mean(radii) << "  p50 " << percentile(radii, 0.5) << "  max "
               << percentile(radii, 1.0) << '\n'
-              << "-- 单步创新 |z - h(x_pri)| --\n"
-              << "方位角(度) mean " << mean(res_az_deg) << "  p90 "
-              << percentile(res_az_deg, 0.9) << "  max " << percentile(res_az_deg, 1.0) << '\n'
-              << "距离(m)    mean " << mean(res_dist) << "  p90 " << percentile(res_dist, 0.9)
-              << "  max " << percentile(res_dist, 1.0) << '\n'
-              << "板 yaw(度) mean " << mean(res_yaw_deg) << "  p90 "
-              << percentile(res_yaw_deg, 0.9) << "  max " << percentile(res_yaw_deg, 1.0)
-              << '\n'
+              << "-- UVL 创新（按分量，量纲不同不能合并）--\n"
+              << "角度(度)   mean " << mean(res_angle_stats) << "  p90 "
+              << percentile(res_angle_stats, 0.9) << "  max "
+              << percentile(res_angle_stats, 1.0) << '\n'
+              << "中心(px)   mean " << mean(res_center_stats) << "  p90 "
+              << percentile(res_center_stats, 0.9) << "  max "
+              << percentile(res_center_stats, 1.0) << '\n'
+              << "长度(px)   mean " << mean(res_length_stats) << "  p90 "
+              << percentile(res_length_stats, 0.9) << "  max "
+              << percentile(res_length_stats, 1.0) << '\n'
               << "-- 开环预测 " << predict_time * 1e3 << " ms --\n"
               << "中心 vs 后验中心 mean " << mean(pred_center_err) << "  p90 "
               << percentile(pred_center_err, 0.9) << "  max "

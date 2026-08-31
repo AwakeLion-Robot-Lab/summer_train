@@ -3,7 +3,7 @@
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l2_perception/armor.hpp"
 #include "l3_estimation/armor/pnp_solver.hpp"
-#include "l3_estimation/armor/target_estimator.hpp"
+#include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/armor/types.hpp"
 #include "l4_planning/types.hpp"
 #include "l5_control/fire_decision.hpp"
@@ -28,7 +28,7 @@ struct AimOverlayInput
   const std::vector<L2Perception::Armor>& detections;
   // L3 单板 PnP 的结果，即真正送进滤波器的观测。
   const std::vector<L3Estimation::Armor>& observations;
-  const std::optional<L3Estimation::TrackedTarget>& target;
+  const std::optional<L3Estimation::EskfTarget>& target;
   L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
   const L4Planning::Plan& plan;
   const L5Control::FireDecision& fire;

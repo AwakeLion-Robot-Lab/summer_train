@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l3_estimation/armor/target_estimator.hpp"
+#include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/types.hpp"
 #include "l4_planning/types.hpp"
 #include "l5_control/fire_decision.hpp"
@@ -21,7 +21,7 @@ public:
 
   // actual_pose 是 L1 回传的枪管实际姿态；yaw/pitch 分解由 L5 完成。
   [[nodiscard]] std::optional<SerialCommand> update(
-    const std::optional<L3Estimation::TrackedTarget>& target,
+    const std::optional<L3Estimation::EskfTarget>& target,
     L3Estimation::TrackState track_state,
     const L4Planning::Plan& plan,
     const std::optional<Eigen::Quaterniond>& actual_pose);

@@ -5,7 +5,7 @@
 #include "l2_perception/armor.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
-#include "l3_estimation/armor/tracker.hpp"
+#include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l4_planning/armor/planner.hpp"
 #include "l5_control/controller.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
@@ -98,7 +98,7 @@ void AutoAimRuntime::run() {
   }
   // L3 Tracker 持有 PnP 和 EKF。标定缺失时 runtime 继续运行检测和显示，
   // 但后续不得生成有效瞄准/开火命令。
-  std::optional<L3Estimation::Tracker> tracker;
+  std::optional<L3Estimation::EskfTracker> tracker;
   const auto& camera_calibration = camera->calibration();
   if (!camera_calibration) {
     L6Telemetry::logWarn("Tracker disabled: camera calibration is missing");
@@ -106,8 +106,8 @@ void AutoAimRuntime::run() {
     tracker.emplace(
       *camera_calibration,
       auto_aim_config.armor,
-      auto_aim_config.tracker,
-      auto_aim_config.target);
+      auto_aim_config.ieskf_tracker,
+      auto_aim_config.ieskf_target);
     if (tracker->ready()) {
       L6Telemetry::logInfo("L3 tracker configured");
     } else {
@@ -191,7 +191,7 @@ void AutoAimRuntime::run() {
           });
 
           // L3: PnP、状态机与整车 EKF。
-          std::optional<L3Estimation::TrackedTarget> target;
+          std::optional<L3Estimation::EskfTarget> target;
           if (tracker && tracker->ready()) {
             target = tracker->track(armors, image_pose, timestamp);
           }

@@ -5,8 +5,8 @@
 
 namespace L4Planning {
 
-L3Estimation::TrackedTarget Predictor::predict(
-  const L3Estimation::TrackedTarget& target, double dt) const
+L3Estimation::EskfTarget Predictor::predict(
+  const L3Estimation::EskfTarget& target, double dt) const
 {
   auto predicted = target;
   if (!std::isfinite(dt)) {
@@ -21,13 +21,13 @@ L3Estimation::TrackedTarget Predictor::predict(
 }
 
 std::vector<Eigen::Vector4d> Predictor::armorPoses(
-  const L3Estimation::TrackedTarget& target) const
+  const L3Estimation::EskfTarget& target) const
 {
   return target.armor_xyza_list();
 }
 
 std::vector<Eigen::Vector4d> Predictor::armorPosesAt(
-  const L3Estimation::TrackedTarget& target, double dt) const
+  const L3Estimation::EskfTarget& target, double dt) const
 {
   return armorPoses(predict(target, dt));
 }

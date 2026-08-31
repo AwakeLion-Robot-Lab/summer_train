@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l3_estimation/armor/target_estimator.hpp"
+#include "l3_estimation/armor/eskf_target.hpp"
 
 #include <Eigen/Core>
 
@@ -18,17 +18,17 @@ namespace L4Planning {
 class Predictor {
 public:
   // 恒速度 + 恒角速度外推，同时推进滤波器时刻和协方差。
-  L3Estimation::TrackedTarget predict(
-    const L3Estimation::TrackedTarget& target, double dt) const;
+  L3Estimation::EskfTarget predict(
+    const L3Estimation::EskfTarget& target, double dt) const;
 
   // 先外推 dt，再把整车模型展开成全部物理装甲板的 [x, y, z, yaw]。
   // 顺序与 L3 的 armor_xyza_list() 一致，下标即物理装甲板编号。
   std::vector<Eigen::Vector4d> armorPosesAt(
-    const L3Estimation::TrackedTarget& target, double dt) const;
+    const L3Estimation::EskfTarget& target, double dt) const;
 
   // 展开给定状态的装甲板，不做外推。armorPosesAt 的内部实现。
   std::vector<Eigen::Vector4d> armorPoses(
-    const L3Estimation::TrackedTarget& target) const;
+    const L3Estimation::EskfTarget& target) const;
 };
 
 }  // namespace L4Planning

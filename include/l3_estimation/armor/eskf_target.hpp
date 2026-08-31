@@ -85,7 +85,23 @@ public:
   using State = Eigen::Matrix<double, VehicleModel::kStateSize, 1>;
   using MatchedLight = std::tuple<int, bool, L2Perception::Light>;
 
+  // 状态维度。下游遥测与单测按这个数读状态。
+  static constexpr int kStateSize = VehicleModel::kStateSize;
+
   EskfTarget() = default;
+
+  // 构造指定构型的目标，用于无观测的确定性初始化（离线回放和单测）。
+  // 板数由 name 推出，而不是再单独传一个——否则 name 和板数可以各说各话。
+  // 旋转中心落在 (x, 0, 0)，yaw 放开成可选参数，否则测不到"整车转到某个
+  // 角度"的构型。
+  //
+  // 这个入口不建滤波器：它只填名义状态，供 L4/L5/L6 在合成目标上做单测。
+  // 需要真正跑滤波的场景走 reset()。
+  EskfTarget(
+    ArmorName name, double x, double vyaw, double radius, double yaw = 0.0,
+    double height_offset = 0.0,
+    Eigen::Vector3d velocity = Eigen::Vector3d::Zero(),
+    EskfTargetConfig config = {});
 
   // 用首个装甲板观测反推旋转中心并初始化整个状态。
   //
@@ -155,6 +171,23 @@ public:
   double lastNis() const noexcept { return last_nis_; }
   int lastNisDof() const noexcept { return last_nis_dof_; }
 
+  // 最近一次更新的 UVL 残差，按物理含义分组聚合。四个观测分量量纲不同
+  // （角度是 rad、中心和长度是 px），混在一个范数里没有意义，所以分开给。
+  //
+  // 诊断用途：中心残差大说明整车位置估计偏了，长度残差大说明深度偏了，
+  // 角度残差大说明姿态偏了——三者能把"预测被什么带偏"分开。
+  struct UvlResidual
+  {
+    double angle_rms_deg{0.0};
+    double center_rms_px{0.0};
+    double length_rms_px{0.0};
+    // 单板深度差观测的残差，单位米。本帧没有该观测时为 0。
+    double depth_diff_m{0.0};
+    // 参与本次更新的灯条条数（完整板拆出的 + 独立的）。
+    int light_count{0};
+  };
+  const UvlResidual & lastUvlResidual() const noexcept { return last_uvl_residual_; }
+
   // 由相机标定与枪管姿态算出相机光学系在世界系的位姿。
   // 世界系原点取枪管原点，与 PnpSolver 的约定一致。
   static Eigen::Isometry3d cameraInWorld(
@@ -201,6 +234,7 @@ private:
   int update_count_{0};
   double last_nis_{0.0};
   int last_nis_dof_{0};
+  UvlResidual last_uvl_residual_{};
   // 前哨站转向投票。非前哨目标上它一直停在 Collecting，不影响推进。
   VehicleModel::Voter voter_{};
 };

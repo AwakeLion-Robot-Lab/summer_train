@@ -46,6 +46,39 @@ double segmentAngle(const cv::Point2f & from, const cv::Point2f & to)
 
 }  // namespace
 
+EskfTarget::EskfTarget(
+  ArmorName target_name, double x, double vyaw, double radius, double yaw,
+  double height_offset, Eigen::Vector3d velocity, EskfTargetConfig config)
+{
+  config_ = config;
+  armor_config_ = config.armor;
+  name = target_name;
+  armor_type = armorTypeOf(target_name).value_or(ArmorType::Small);
+
+  x_.setZero();
+  x_[VM::idx::CX] = x;
+  x_[VM::idx::VYAW] = vyaw;
+  x_[VM::idx::ROT_Z] = yaw;
+  x_[VM::idx::VCX] = velocity.x();
+  x_[VM::idx::VCY] = velocity.y();
+  x_[VM::idx::VCZ] = velocity.z();
+  const double safe_radius =
+    std::clamp(radius, VM::kMinArmorRadius, VM::kMaxArmorRadius);
+  x_[VM::idx::LOG_R1] = std::log(safe_radius);
+  if (target_name != ArmorName::Outpost) {
+    x_[VM::idx::LOG_R2] = std::log(safe_radius);
+    x_[VM::idx::HEIGHT] = height_offset;
+  }
+
+  t_ = TimePoint{};
+  initialized_ = true;
+  // 合成目标不带滤波器，也就没有"更新过多少次"可言；直接当作已收敛，
+  // 否则下游的 converged() 门限会把单测里的目标挡掉。
+  converged_ = true;
+  jumped = true;
+  voter_.reset(t_);
+}
+
 void EskfTarget::reset(
   const Armor & armor, const EskfTargetConfig & config, TimePoint timestamp,
   const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera_in_world)
@@ -418,6 +451,12 @@ int EskfTarget::update(
   }
 
   std::vector<std::shared_ptr<Filter::ObsBase>> observations;
+  // 记录观测块的排布，更新后用它把扁平的残差向量按物理含义拆开。
+  // 顺序固定：完整板拆出的灯条 → 单板深度差 → 独立灯条。深度差夹在中间，
+  // 所以两类灯条要分开计数，不能合并成一个总数。
+  int armor_light_count = 0;
+  int isolated_light_count = 0;
+  bool has_depth_diff = false;
 
   // 一条灯条 → 一个四维观测。
   //
@@ -477,6 +516,11 @@ int EskfTarget::update(
       [](const UvlVector & z_pred, const UvlVector & z_obs) {
         return UvlMeasure::residual<double>(z_pred, z_obs);
       }));
+    if (isolated) {
+      ++isolated_light_count;
+    } else {
+      ++armor_light_count;
+    }
   };
 
   for (const auto & [id, armor] : matched) {
@@ -510,6 +554,7 @@ int EskfTarget::update(
       [](const DepthDiffVector& z_pred, const DepthDiffVector& z_obs) {
         return DepthDiffMeasure::residual<double>(z_pred, z_obs);
       }));
+    has_depth_diff = true;
   }
 
   for (const auto& [id, is_left, light] : matched_lights) {
@@ -532,6 +577,53 @@ int EskfTarget::update(
     if (llt.info() == Eigen::Success) {
       last_nis_ = innovation.dot(llt.solve(innovation));
       last_nis_dof_ = static_cast<int>(innovation.size());
+    }
+  }
+
+  // 把扁平残差按块拆开。排布是 [装甲板灯条 4×n][深度差 1?][独立灯条 4×m]，
+  // 深度差夹在中间，所以要分段走而不是一路顺推。
+  last_uvl_residual_ = UvlResidual{};
+  {
+    double angle_sq = 0.0;
+    double center_sq = 0.0;
+    double length_sq = 0.0;
+    int counted = 0;
+
+    const auto accumulate = [&](int base) {
+      if (base + kUvlMeasureSize > innovation.size()) {
+        return;
+      }
+      const double angle = innovation[base + uvl::ANGLE];
+      const double center_x = innovation[base + uvl::CENTER_X];
+      const double center_y = innovation[base + uvl::CENTER_Y];
+      const double length = innovation[base + uvl::LENGTH];
+      angle_sq += angle * angle;
+      center_sq += center_x * center_x + center_y * center_y;
+      length_sq += length * length;
+      ++counted;
+    };
+
+    for (int i = 0; i < armor_light_count; ++i) {
+      accumulate(i * kUvlMeasureSize);
+    }
+    int offset = armor_light_count * kUvlMeasureSize;
+    if (has_depth_diff) {
+      if (offset < innovation.size()) {
+        last_uvl_residual_.depth_diff_m = innovation[offset];
+      }
+      offset += kDepthDiffMeasureSize;
+    }
+    for (int i = 0; i < isolated_light_count; ++i) {
+      accumulate(offset + i * kUvlMeasureSize);
+    }
+
+    if (counted > 0) {
+      const double count = static_cast<double>(counted);
+      last_uvl_residual_.angle_rms_deg =
+        std::sqrt(angle_sq / count) * 180.0 / std::numbers::pi;
+      last_uvl_residual_.center_rms_px = std::sqrt(center_sq / count);
+      last_uvl_residual_.length_rms_px = std::sqrt(length_sq / count);
+      last_uvl_residual_.light_count = counted;
     }
   }
 

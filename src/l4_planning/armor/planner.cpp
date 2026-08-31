@@ -200,7 +200,7 @@ Plan Planner::planTarget(
 }
 
 Plan Planner::plan(
-  const std::optional<L3Estimation::TrackedTarget>& target,
+  const std::optional<L3Estimation::EskfTarget>& target,
   const L1Sensor::RobotState& robot_state,
   TimePoint plan_time,
   bool to_now)
@@ -211,15 +211,6 @@ Plan Planner::plan(
   input.plan_time = plan_time;
   input.to_now = to_now;
   return plan(input);
-}
-
-Plan Planner::plan(
-  const std::optional<L3Estimation::EskfTarget>& target,
-  const L1Sensor::RobotState& robot_state,
-  TimePoint plan_time,
-  bool to_now)
-{
-  return planTarget(target, robot_state, plan_time, to_now, 0.0);
 }
 
 Plan Planner::plan(

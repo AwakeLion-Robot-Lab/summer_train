@@ -2,7 +2,7 @@
 
 #include "l1_sensor/serial/robot_state.hpp"
 #include "l3_estimation/armor/eskf_target.hpp"
-#include "l3_estimation/armor/target_estimator.hpp"
+#include "l3_estimation/armor/eskf_target.hpp"
 #include "l4_planning/armor/types.hpp"
 
 #include <Eigen/Core>
@@ -12,7 +12,7 @@
 namespace L4Planning {
 
 struct PlanInput {
-  std::optional<L3Estimation::TrackedTarget> target;
+  std::optional<L3Estimation::EskfTarget> target;
   L1Sensor::RobotState robot_state;
   TimePoint plan_time{};  // 本次规划开始的 steady_clock 时间
   bool to_now{true};      // 是否补偿 target.t() 到 plan_time 的已发生延迟
@@ -36,18 +36,11 @@ public:
 
   [[nodiscard]] Plan plan(const PlanInput& input) override;
   [[nodiscard]] Plan plan(
-    const std::optional<L3Estimation::TrackedTarget>& target,
-    const L1Sensor::RobotState& robot_state,
-    TimePoint plan_time,
-    bool to_now = true);
-  // IESKF + UVL 路径对外保持与普通 EKF 相同的整车目标契约。回放直接走同一套
-  // 延迟补偿、选板和弹道，避免只对比 L3 叠加层而绕开真正的规划输出。
-  [[nodiscard]] Plan plan(
     const std::optional<L3Estimation::EskfTarget>& target,
     const L1Sensor::RobotState& robot_state,
     TimePoint plan_time,
     bool to_now = true);
-  // 两种 optional 目标并存后，std::nullopt 需要一个精确匹配，语义仍是 NoTarget。
+  // std::nullopt 的精确匹配，语义是 NoTarget。
   [[nodiscard]] Plan plan(
     std::nullopt_t,
     const L1Sensor::RobotState& robot_state,
