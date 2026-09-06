@@ -8,12 +8,8 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
-#include <type_traits>
-
 int main()
 {
-  static_assert(std::is_same_v<L4Planning::Plan, L4Planning::AimPlan>);
-
   L4Planning::AimPlan direct_plan;
   if (direct_plan.using_MPC || !direct_plan.samples.empty()
       || direct_plan.tracking || direct_plan.valid

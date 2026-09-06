@@ -20,6 +20,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kOutpostRobotId = 6;
+constexpr double kEnteringWindowLeadAngle = 10.0 * kPi / 180.0;
 
 // 角度差统一归一化，保证跨越 ±pi 时仍取最短角距离。
 [[nodiscard]] double normalizeAngle(double angle) noexcept
@@ -73,6 +74,9 @@ constexpr int kOutpostRobotId = 6;
          && config.angle_tolerance >= 0.0
          && std::isfinite(config.switch_dead_zone)
          && config.switch_dead_zone >= 0.0
+         && std::isfinite(config.score_switch_threshold)
+         && config.score_switch_threshold >= 0.0
+         && config.score_switch_stable_frames > 0
          && std::isfinite(config.rotation_rate_dead_zone)
          && config.rotation_rate_dead_zone >= 0.0
          && config.lock_stable_frames > 0
@@ -143,112 +147,6 @@ constexpr int kOutpostRobotId = 6;
          && context.facing_angle_bad > context.facing_angle_good;
 }
 
-[[nodiscard]] const ArmorCandidate* findCandidate(
-  const std::vector<ArmorCandidate>& candidates,
-  std::optional<int> armor_id,
-  bool require_valid = false) noexcept
-{
-  if (!armor_id.has_value()) {
-    return nullptr;
-  }
-  const auto candidate = std::find_if(
-    candidates.begin(),
-    candidates.end(),
-    [armor_id](const ArmorCandidate& item) {
-      return item.armor.armor_id == *armor_id;
-    });
-  if (candidate == candidates.end() || (require_valid && !candidate->valid)) {
-    return nullptr;
-  }
-  return &*candidate;
-}
-
-[[nodiscard]] const ArmorCandidate* bestValidCandidate(
-  const std::vector<ArmorCandidate>& candidates,
-  std::optional<int> excluded_armor_id,
-  bool prefer_entering) noexcept
-{
-  const auto is_eligible =
-    [excluded_armor_id](const ArmorCandidate& candidate) {
-      return candidate.valid
-             && (!excluded_armor_id.has_value()
-                 || candidate.armor.armor_id != *excluded_armor_id);
-    };
-  const auto choose_best =
-    [&candidates, &is_eligible](bool entering_only) {
-      const ArmorCandidate* best = nullptr;
-      for (const auto& candidate : candidates) {
-        if (!is_eligible(candidate)
-            || (entering_only && !candidate.entering_firing_window)) {
-          continue;
-        }
-        if (best == nullptr || candidate.score.score > best->score.score) {
-          best = &candidate;
-        }
-      }
-      return best;
-    };
-
-  if (prefer_entering) {
-    if (const ArmorCandidate* entering = choose_best(true)) {
-      return entering;
-    }
-  }
-  return choose_best(false);
-}
-
-[[nodiscard]] bool trackableExceptWindow(
-  const ArmorCandidate& candidate) noexcept
-{
-  const auto& hard = candidate.score.hard_conditions;
-  return hard.identity_consistent
-         && hard.stable_tracking
-         && hard.prediction_valid
-         && hard.ballistic_valid
-         && hard.iteration_converged;
-}
-
-[[nodiscard]] const ArmorCandidate* bestUpcomingCandidate(
-  const std::vector<ArmorCandidate>& candidates,
-  std::optional<int> excluded_armor_id,
-  const PlannerConfig& config) noexcept
-{
-  const ArmorCandidate* best = nullptr;
-  for (const auto& candidate : candidates) {
-    if ((excluded_armor_id.has_value()
-         && candidate.armor.armor_id == *excluded_armor_id)
-        || !trackableExceptWindow(candidate)
-        || std::abs(candidate.relative_yaw_rate)
-             <= config.rotation_rate_dead_zone
-        || candidate.phase_angle >= 0.0) {
-      continue;
-    }
-    // 沿旋转方向递增的相位越大，表示越接近进入正面窗口。
-    if (best == nullptr || candidate.phase_angle > best->phase_angle) {
-      best = &candidate;
-    }
-  }
-  return best;
-}
-
-[[nodiscard]] bool aimSettled(
-  const ArmorCandidate& candidate,
-  const PlannerConfig& config) noexcept
-{
-  const double threshold = config.switch_dead_zone * kPi / 180.0;
-  return std::isfinite(candidate.aim_angle_error)
-         && candidate.aim_angle_error <= threshold;
-}
-
-[[nodiscard]] bool turningOut(
-  const ArmorCandidate& candidate,
-  const PlannerConfig& config) noexcept
-{
-  return std::abs(candidate.relative_yaw_rate)
-           > config.rotation_rate_dead_zone
-         && candidate.phase_angle >= 0.0;
-}
-
 }  // namespace
 
 Planner::Planner(PlannerConfig config)
@@ -271,300 +169,13 @@ void Planner::resetTracking() noexcept
 {
   tracking_state_ = {};
   last_target_.reset();
+  last_observation_timestamp_.reset();
   target_lost_frames_ = 0;
 }
 
 const ArmorTrackingState& Planner::trackingState() const noexcept
 {
   return tracking_state_;
-}
-
-SelectionResult Planner::selectArmor(
-  const SelectionRequest& request,
-  TimePoint selection_time,
-  const PlannerConfig& config)
-{
-  const auto set_phase =
-    [this, selection_time](ArmorTrackingPhase phase) {
-      if (tracking_state_.phase != phase) {
-        tracking_state_.phase = phase;
-        tracking_state_.phase_started_at = selection_time;
-      }
-    };
-  const auto finish =
-    [this](const ArmorCandidate* candidate,
-           bool fire_permitted,
-           SelectionReason reason) {
-      SelectionResult result;
-      result.phase = tracking_state_.phase;
-      result.switching =
-        tracking_state_.phase == ArmorTrackingPhase::Switching
-        || tracking_state_.phase == ArmorTrackingPhase::Stabilizing;
-      result.fire_permitted = fire_permitted;
-      result.reason = reason;
-      if (candidate != nullptr) {
-        result.selected = *candidate;
-        result.valid = candidate->valid;
-      }
-      return result;
-    };
-  const auto choose_next =
-    [&request](std::optional<int> excluded_armor_id) {
-      return bestValidCandidate(
-        request.candidates, excluded_armor_id, true);
-    };
-  const auto choose_upcoming =
-    [&request, &config](std::optional<int> excluded_armor_id) {
-      return bestUpcomingCandidate(
-        request.candidates, excluded_armor_id, config);
-    };
-  const auto begin_switch =
-    [this, &set_phase, &finish, &request, &config](
-      const ArmorCandidate* candidate,
-      SelectionReason reason) {
-      if (candidate == nullptr) {
-        return finish(nullptr, false, SelectionReason::NoCandidate);
-      }
-      tracking_state_.next_armor_id = candidate->armor.armor_id;
-      tracking_state_.current_lost_frames = 0;
-      tracking_state_.next_stable_frames = 0;
-      set_phase(ArmorTrackingPhase::Switching);
-      if (aimSettled(*candidate, config)) {
-        set_phase(ArmorTrackingPhase::Stabilizing);
-        tracking_state_.next_stable_frames =
-          request.observation_fresh ? 1 : 0;
-      }
-      return finish(candidate, false, reason);
-    };
-
-  // 一次调用最多连续跨越两个瞬时状态，例如 Switching -> Stabilizing
-  // -> Tracking（lock_stable_frames == 1），循环上限用于防止错误状态自旋。
-  for (int transition = 0; transition < 4; ++transition) {
-    switch (tracking_state_.phase) {
-      case ArmorTrackingPhase::Unlocked: {
-        const ArmorCandidate* selected = findCandidate(
-          request.candidates, request.preferred_armor_id, true);
-        if (selected == nullptr) {
-          selected = choose_next(std::nullopt);
-        }
-        if (selected == nullptr) {
-          return finish(nullptr, false, SelectionReason::NoCandidate);
-        }
-
-        tracking_state_.next_armor_id = selected->armor.armor_id;
-        tracking_state_.next_stable_frames = 0;
-        if (aimSettled(*selected, config)) {
-          set_phase(ArmorTrackingPhase::Stabilizing);
-          tracking_state_.next_stable_frames =
-            request.observation_fresh ? 1 : 0;
-          if (tracking_state_.next_stable_frames
-              >= config.lock_stable_frames) {
-            tracking_state_.current_armor_id =
-              tracking_state_.next_armor_id;
-            tracking_state_.next_armor_id.reset();
-            tracking_state_.current_lost_frames = 0;
-            set_phase(ArmorTrackingPhase::Tracking);
-            return finish(
-              selected,
-              request.observation_fresh,
-              SelectionReason::LockConfirmed);
-          }
-          return finish(
-            selected, false, SelectionReason::Stabilizing);
-        }
-
-        set_phase(ArmorTrackingPhase::Switching);
-        return finish(
-          selected, false, SelectionReason::InitialLock);
-      }
-
-      case ArmorTrackingPhase::Tracking: {
-        const ArmorCandidate* current = findCandidate(
-          request.candidates,
-          tracking_state_.current_armor_id,
-          true);
-        if (current == nullptr) {
-          ++tracking_state_.current_lost_frames;
-          const ArmorCandidate* next =
-            choose_next(tracking_state_.current_armor_id);
-          if (next != nullptr) {
-            return begin_switch(
-              next, SelectionReason::SwitchToCandidate);
-          }
-          if (tracking_state_.current_lost_frames
-              > config.max_lost_frames) {
-            tracking_state_ = {};
-          }
-          return finish(nullptr, false, SelectionReason::NoCandidate);
-        }
-
-        tracking_state_.current_lost_frames = 0;
-        if (turningOut(*current, config)) {
-          if (const ArmorCandidate* next =
-                choose_upcoming(tracking_state_.current_armor_id)) {
-            tracking_state_.next_armor_id = next->armor.armor_id;
-            tracking_state_.next_stable_frames = 0;
-            set_phase(ArmorTrackingPhase::PreSwitch);
-            return finish(
-              current,
-              request.observation_fresh,
-              SelectionReason::PrepareSwitch);
-          }
-        }
-        return finish(
-          current,
-          request.observation_fresh,
-          SelectionReason::KeepCurrent);
-      }
-
-      case ArmorTrackingPhase::PreSwitch: {
-        const ArmorCandidate* current = findCandidate(
-          request.candidates,
-          tracking_state_.current_armor_id,
-          true);
-        const ArmorCandidate* next = findCandidate(
-          request.candidates,
-          tracking_state_.next_armor_id,
-          false);
-        if (next != nullptr && !trackableExceptWindow(*next)) {
-          next = nullptr;
-        }
-        if (next == nullptr) {
-          next = choose_upcoming(tracking_state_.current_armor_id);
-          if (next != nullptr) {
-            tracking_state_.next_armor_id = next->armor.armor_id;
-          } else {
-            tracking_state_.next_armor_id.reset();
-          }
-        }
-
-        if (current != nullptr) {
-          tracking_state_.current_lost_frames = 0;
-          if (!turningOut(*current, config) || next == nullptr) {
-            tracking_state_.next_armor_id.reset();
-            tracking_state_.next_stable_frames = 0;
-            set_phase(ArmorTrackingPhase::Tracking);
-            return finish(
-              current,
-              request.observation_fresh,
-              SelectionReason::KeepCurrent);
-          }
-          return finish(
-            current,
-            request.observation_fresh,
-            SelectionReason::PrepareSwitch);
-        }
-
-        const ArmorCandidate* switch_candidate =
-          next != nullptr && next->valid
-            ? next
-            : choose_next(tracking_state_.current_armor_id);
-        if (switch_candidate != nullptr) {
-          return begin_switch(
-            switch_candidate, SelectionReason::SwitchToCandidate);
-        }
-        // 进入角与离开角之间可能刻意保留一个无火力窗口。下一块装甲板
-        // 已经确定但尚未进入窗口时保持预切换，不把它计作观测丢失。
-        if (next != nullptr) {
-          return finish(nullptr, false, SelectionReason::PrepareSwitch);
-        }
-        ++tracking_state_.current_lost_frames;
-        if (tracking_state_.current_lost_frames
-            > config.max_lost_frames) {
-          tracking_state_ = {};
-        }
-        return finish(nullptr, false, SelectionReason::NoCandidate);
-      }
-
-      case ArmorTrackingPhase::Switching: {
-        const ArmorCandidate* next = findCandidate(
-          request.candidates,
-          tracking_state_.next_armor_id,
-          true);
-        if (next == nullptr) {
-          next = choose_next(tracking_state_.current_armor_id);
-          if (next == nullptr) {
-            ++tracking_state_.current_lost_frames;
-            if (tracking_state_.current_lost_frames
-                > config.max_lost_frames) {
-              tracking_state_ = {};
-            }
-            return finish(nullptr, false, SelectionReason::NoCandidate);
-          }
-          tracking_state_.next_armor_id = next->armor.armor_id;
-          tracking_state_.current_lost_frames = 0;
-          tracking_state_.next_stable_frames = 0;
-        }
-
-        if (!aimSettled(*next, config)) {
-          return finish(
-            next, false, SelectionReason::SwitchToCandidate);
-        }
-        set_phase(ArmorTrackingPhase::Stabilizing);
-        tracking_state_.next_stable_frames =
-          request.observation_fresh ? 1 : 0;
-        if (tracking_state_.next_stable_frames
-            < config.lock_stable_frames) {
-          return finish(
-            next, false, SelectionReason::Stabilizing);
-        }
-        // lock_stable_frames == 1 时在同一周期继续完成锁定。
-        continue;
-      }
-
-      case ArmorTrackingPhase::Stabilizing: {
-        const ArmorCandidate* next = findCandidate(
-          request.candidates,
-          tracking_state_.next_armor_id,
-          true);
-        if (next == nullptr) {
-          next = choose_next(tracking_state_.current_armor_id);
-          if (next == nullptr) {
-            ++tracking_state_.current_lost_frames;
-            if (tracking_state_.current_lost_frames
-                > config.max_lost_frames) {
-              tracking_state_ = {};
-            }
-            return finish(nullptr, false, SelectionReason::NoCandidate);
-          }
-          tracking_state_.next_armor_id = next->armor.armor_id;
-          tracking_state_.next_stable_frames = 0;
-          set_phase(ArmorTrackingPhase::Switching);
-          return finish(
-            next, false, SelectionReason::SwitchToCandidate);
-        }
-
-        if (!aimSettled(*next, config)) {
-          tracking_state_.next_stable_frames = 0;
-          set_phase(ArmorTrackingPhase::Switching);
-          return finish(
-            next, false, SelectionReason::SwitchToCandidate);
-        }
-        if (request.observation_fresh) {
-          ++tracking_state_.next_stable_frames;
-        }
-        if (tracking_state_.next_stable_frames
-            < config.lock_stable_frames) {
-          return finish(
-            next, false, SelectionReason::Stabilizing);
-        }
-
-        tracking_state_.current_armor_id =
-          tracking_state_.next_armor_id;
-        tracking_state_.next_armor_id.reset();
-        tracking_state_.current_lost_frames = 0;
-        tracking_state_.next_stable_frames = 0;
-        set_phase(ArmorTrackingPhase::Tracking);
-        return finish(
-          next,
-          request.observation_fresh,
-          SelectionReason::LockConfirmed);
-      }
-    }
-  }
-
-  tracking_state_ = {};
-  return finish(nullptr, false, SelectionReason::NoCandidate);
 }
 
 AimPlan Planner::plan(
@@ -602,13 +213,17 @@ AimPlan Planner::plan(
     return plan;
   }
 
-  const bool observation_fresh = target.has_value();
+  const bool observation_fresh =
+    target.has_value()
+    && (!last_observation_timestamp_.has_value()
+        || target->timestamp > *last_observation_timestamp_);
   if (observation_fresh) {
     if (tracking_state_.robot_id >= 0
         && tracking_state_.robot_id != target->robot_id) {
       tracking_state_ = {};
     }
     last_target_ = *target;
+    last_observation_timestamp_ = target->timestamp;
     target_lost_frames_ = 0;
   } else {
     if (!last_target_.has_value()
@@ -829,9 +444,11 @@ AimPlan Planner::plan(
         candidate.within_firing_window =
           candidate.phase_angle >= -enter_angle
           && candidate.phase_angle <= leave_angle;
+        // 预进入区位于正式射击窗口之前：从进入角外侧 10 degree
+        // 到进入角边界。它不属于射击窗口，仅用于提前选择下一块板。
         candidate.entering_firing_window =
-          candidate.phase_angle >= -enter_angle
-          && candidate.phase_angle <= 0.0;
+          candidate.phase_angle >= -(enter_angle + kEnteringWindowLeadAngle)
+          && candidate.phase_angle < -enter_angle;
         candidate.remaining_window_time =
           candidate.within_firing_window
             ? std::max(
@@ -899,22 +516,17 @@ AimPlan Planner::plan(
       candidate.score.hard_conditions.iteration_converged =
         candidate.converged;
       const auto& hard = candidate.score.hard_conditions;
-      candidate.score.flag =
+      candidate.valid =
         hard.identity_consistent
         && hard.stable_tracking
         && hard.prediction_valid
-        && hard.within_firing_window
         && hard.ballistic_valid
         && hard.iteration_converged;
-
       const ArmorScoreWeights& weights = context.armor_score_weights;
       candidate.score.quality =
         weights.facing_weight * candidate.score.components.Q_facing
         + weights.window_weight * candidate.score.components.Q_window
         + weights.aim_cost_weight * candidate.score.components.Q_aim_cost;
-      candidate.score.score =
-        candidate.score.flag ? candidate.score.quality : 0.0;
-      candidate.valid = candidate.score.flag;
     }
 
     candidates.push_back(candidate);
@@ -932,7 +544,10 @@ AimPlan Planner::plan(
   const SelectionResult selection =
     selectArmor(selection_request, selection_time, config);
   plan.tracking_phase = selection.phase;
-  plan.armor_switching = selection.switching;
+  if (selection.phase == ArmorTrackingPhase::Unlocked) {
+    plan.tracking = false;
+    plan.target_id = -1;
+  }
   if (!selection.valid || !selection.selected.has_value()) {
     return plan;
   }
@@ -947,15 +562,12 @@ AimPlan Planner::plan(
   plan.yaw = selected.ballistic.yaw;
   plan.pitch = selected.ballistic.pitch;
   plan.fly_time = selected.ballistic.fly_time;
-  plan.ballistic_valid = selected.ballistic.valid;
   plan.fire_permitted =
-    observation_fresh
-    && selection.fire_permitted
-    && selected.converged
+    selection.tracking_ready
     && selected.within_firing_window;
   plan.valid = true;
 
   return plan;
 }
 
-}  // namespace L4Planning
+}

@@ -12,7 +12,7 @@ namespace runtime {
 struct AutoAimConfig {
   L3Estimation::ArmorDimensions armor;
   L3Estimation::EkfTrackerConfig tracker;
-  L4Planning::PlanConfig plan;
+  L4Planning::PlannerConfig plan;
   L4Planning::LatencyConfig latency;
   L5Control::FireConfig fire;
 

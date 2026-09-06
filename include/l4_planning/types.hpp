@@ -25,12 +25,11 @@ enum class AimPlanStatus : std::uint8_t {
   Failed
 };
 
-// 装甲板选择器的跨帧状态。Unlocked 不属于切换过程，其余四项对应
-// 当前锁定、预切换、切换中和新装甲板稳定确认。
+// 装甲板选择器的跨帧状态。Unlocked 不属于切换过程，其余三项对应
+// 当前锁定、切换中和新装甲板稳定确认。
 enum class ArmorTrackingPhase : std::uint8_t {
   Unlocked,
   Tracking,
-  PreSwitch,
   Switching,
   Stabilizing
 };
@@ -116,7 +115,7 @@ struct PlanningDiagnostics {
 };
 
 // AimReference 作为基类，使现有 L5 无需修改即可继续访问 plan.yaw/pitch。
-struct Plan : AimReference {
+struct AimPlan : AimReference {
   TimePoint generated_at{};
 
   // using_MPC=true 时非空，并按 execute_time 排列；首项是当前控制点。
@@ -124,13 +123,11 @@ struct Plan : AimReference {
 
   bool using_MPC{false};       // false：直接参考；true：已生成 MPC samples
   ArmorTrackingPhase tracking_phase{ArmorTrackingPhase::Unlocked};
-  bool armor_switching{false}; // 切换中或等待新装甲板稳定
-  bool ballistic_valid{false}; // 最终装甲板是否存在有效弹道
-  bool fire_permitted{false};  // 规划层是否允许进入射击窗口
+  bool fire_permitted{false};  // 稳定跟踪、位于射击窗口内且弹道有效
   bool valid{false};           // 规划结果是否有效
 };
 
-struct PlanConfig {
+struct PlannerConfig {
   int max_iterations{20}; // 单块装甲板最大固定点迭代次数
   std::chrono::microseconds fly_time_tolerance{200}; // 飞行时间收敛阈值
   double position_tolerance{0.005};  // meter
@@ -143,6 +140,10 @@ struct PlanConfig {
   double linear_drag_coefficient{0.0};
 
   double switch_dead_zone{5.0};  // degree
+  // Tracking 状态下，仅当其他装甲板的评分至少高出该值时才主动切换。
+  double score_switch_threshold{0.10};
+  // 同一候选的评分优势连续满足阈值达到该帧数后才主动切换。
+  int score_switch_stable_frames{3};
   double rotation_rate_dead_zone{0.05}; // rad/s，低于该值按近似静止处理
   int lock_stable_frames{3}; // 新装甲板连续稳定的确认帧数
   // Q_aim_cost 的平滑归一化区间，使用当前云台姿态到候选弹道角的合成角差。
@@ -153,7 +154,7 @@ struct PlanConfig {
   double normal_leave_angle{20.0};   // degree
   double outpost_enter_angle{70.0};  // degree
   double outpost_leave_angle{30.0};  // degree
-  int max_lost_frames{5};
+  int max_lost_frames{3};
 
   double yaw_angle_weight{9000000.0};
   double yaw_velocity_weight{0.0};
@@ -167,13 +168,5 @@ struct PlanConfig {
   double max_pitch_acceleration{100.0};
 
 };
-
-// 兼容当前代码中已经使用的名称。
-using AimPlan = Plan;
-using DelayBreakdown = Delay;
-using BallisticResult = Ballistic;
-using PlannerType = PlanType;
-using PlannerConfig = PlanConfig;
-using PlanRejectReason = PlanError;
 
 }  // namespace L4Planning
