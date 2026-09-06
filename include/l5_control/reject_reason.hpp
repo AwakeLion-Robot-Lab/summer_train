@@ -7,6 +7,8 @@ namespace L5Control {
 enum class RejectReason {
   None,
   ShootDisabled,
+  ParametersNotReady,
+  AutoAimDisabled,
   NoTarget,
   NotTracking,
   TempLost,
@@ -15,8 +17,9 @@ enum class RejectReason {
   RobotStateStale,
   GimbalPoseStale,
   BadBulletSpeed,
-  OutOfRange,
   HeatLimit,
+  OutOfRange,
+  
   OutsideHitWindow,
   ArmorSwitching,
   CommandJump,

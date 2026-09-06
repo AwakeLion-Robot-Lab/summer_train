@@ -9,6 +9,10 @@ std::string toString(RejectReason reason)
       return "none";
     case RejectReason::ShootDisabled:
       return "shoot_disabled";
+    case RejectReason::ParametersNotReady:
+      return "parameters_not_ready";
+    case RejectReason::AutoAimDisabled:
+      return "auto_aim_disabled";
     case RejectReason::NoTarget:
       return "no_target";
     case RejectReason::NotTracking:
@@ -27,8 +31,6 @@ std::string toString(RejectReason reason)
       return "bad_bullet_speed";
     case RejectReason::OutOfRange:
       return "out_of_range";
-    case RejectReason::HeatLimit:
-      return "heat_limit";
     case RejectReason::OutsideHitWindow:
       return "outside_hit_window";
     case RejectReason::ArmorSwitching:
