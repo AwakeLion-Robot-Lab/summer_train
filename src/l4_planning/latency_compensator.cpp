@@ -12,6 +12,17 @@ LatencyCompensator::LatencyCompensator(LatencyConfig config)
 {
 }
 
+LatencyResult LatencyCompensator::calculate(
+  TimePoint camera_timestamp,
+  TimePoint command_timestamp) const noexcept
+{
+  if (!config_.ready()) {
+    return {};
+  }
+  return calculate(
+    Delay{camera_timestamp, command_timestamp, config_.fire_delay});
+}
+
 LatencyResult LatencyCompensator::calculate(const Delay& delay) const noexcept
 {
   LatencyResult result;

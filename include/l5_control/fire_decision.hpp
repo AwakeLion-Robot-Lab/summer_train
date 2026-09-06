@@ -78,7 +78,7 @@ FireConfig loadFireConfig(const std::string& config_path);
 
 struct FireInput {
   std::optional<L3Estimation::TargetState> target;
-  L4Planning::Plan plan;
+  L4Planning::AimPlan plan;
   L1Sensor::RobotState robot_state;
 
   TimePoint now{};

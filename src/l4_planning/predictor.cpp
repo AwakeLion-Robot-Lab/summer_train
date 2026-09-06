@@ -37,7 +37,7 @@ constexpr double kPi = 3.14159265358979323846;
          && target.covariance.allFinite();
 }
 
-// 根据 Fosu 识别类别确定整车使用的大/小装甲板类型。
+// 根据 Fosu 识别类别确定整车使用的大/小装甲板类型。后期考虑大小装甲板走不同的锁定条件，暂时保留
 [[nodiscard]] ArmorType armorTypeForRobot(int robot_id) noexcept
 {
   // Fosu 类别编号中 1 为英雄大装甲，8 为基地大装甲，其余车辆使用小装甲。

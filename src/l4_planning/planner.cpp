@@ -20,6 +20,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kOutpostRobotId = 6;
+constexpr double kEnteringWindowLeadAngle = 10.0 * kPi / 180.0;
 
 // 角度差统一归一化，保证跨越 ±pi 时仍取最短角距离。
 [[nodiscard]] double normalizeAngle(double angle) noexcept
@@ -58,9 +59,8 @@ constexpr int kOutpostRobotId = 6;
 [[nodiscard]] bool validGimbalOrientation(
   const L1Sensor::RobotState& robot_state) noexcept
 {
-  return std::isfinite(robot_state.rpy.roll)
-         && std::isfinite(robot_state.rpy.pitch)
-         && std::isfinite(robot_state.rpy.yaw);
+  return std::isfinite(robot_state.rpy.yaw)
+         && std::isfinite(robot_state.rpy.pitch);
 }
 
 // 配置校验在规划前集中完成，避免零容差进入后续计算。
@@ -72,10 +72,29 @@ constexpr int kOutpostRobotId = 6;
          && config.position_tolerance > 0.0
          && std::isfinite(config.angle_tolerance)
          && config.angle_tolerance >= 0.0
+         && std::isfinite(config.switch_dead_zone)
+         && config.switch_dead_zone >= 0.0
+         && std::isfinite(config.score_switch_threshold)
+         && config.score_switch_threshold >= 0.0
+         && config.score_switch_stable_frames > 0
+         && std::isfinite(config.rotation_rate_dead_zone)
+         && config.rotation_rate_dead_zone >= 0.0
+         && config.lock_stable_frames > 0
+         && std::isfinite(config.aim_cost_good_angle)
+         && config.aim_cost_good_angle >= 0.0
+         && std::isfinite(config.aim_cost_bad_angle)
+         && config.aim_cost_bad_angle > config.aim_cost_good_angle
          && std::isfinite(config.normal_enter_angle)
          && config.normal_enter_angle > 0.0
+         && std::isfinite(config.normal_leave_angle)
+         && config.normal_leave_angle >= 0.0
+         && config.normal_leave_angle <= config.normal_enter_angle
          && std::isfinite(config.outpost_enter_angle)
-         && config.outpost_enter_angle > 0.0;
+         && config.outpost_enter_angle > 0.0
+         && std::isfinite(config.outpost_leave_angle)
+         && config.outpost_leave_angle >= 0.0
+         && config.outpost_leave_angle <= config.outpost_enter_angle
+         && config.max_lost_frames >= 0;
 }
 
 // 重力和阻力系数由 PlannerConfig 统一管理。
@@ -91,19 +110,41 @@ constexpr int kOutpostRobotId = 6;
          && drag_ready;
 }
 
-[[nodiscard]] Eigen::Matrix3d rotationGimbalToWorld(
-  const L1Sensor::Orientation& orientation)
-{
-  return (
-    Eigen::AngleAxisd(orientation.yaw, Eigen::Vector3d::UnitZ())
-    * Eigen::AngleAxisd(orientation.pitch, Eigen::Vector3d::UnitY())
-    * Eigen::AngleAxisd(orientation.roll, Eigen::Vector3d::UnitX()))
-    .toRotationMatrix();
-}
-
 [[nodiscard]] double clampUnit(double value) noexcept
 {
   return std::clamp(value, 0.0, 1.0);
+}
+
+[[nodiscard]] double smoothstep(double value) noexcept
+{
+  const double x = clampUnit(value);
+  return x * x * (3.0 - 2.0 * x);
+}
+
+[[nodiscard]] bool validArmorScoreWeights(
+  const ArmorScoreWeights& weights) noexcept
+{
+  if (!std::isfinite(weights.facing_weight)
+      || !std::isfinite(weights.window_weight)
+      || !std::isfinite(weights.aim_cost_weight)
+      || weights.facing_weight < 0.0
+      || weights.window_weight < 0.0
+      || weights.aim_cost_weight < 0.0) {
+    return false;
+  }
+
+  const double sum =
+    weights.facing_weight + weights.window_weight + weights.aim_cost_weight;
+  return std::abs(sum - 1.0) <= 1e-9;
+}
+
+[[nodiscard]] bool validFacingAngleThresholds(
+  const PlannerContext& context) noexcept
+{
+  return std::isfinite(context.facing_angle_good)
+         && context.facing_angle_good >= 0.0
+         && std::isfinite(context.facing_angle_bad)
+         && context.facing_angle_bad > context.facing_angle_good;
 }
 
 }  // namespace
@@ -116,11 +157,25 @@ Planner::Planner(PlannerConfig config)
 void Planner::setConfig(PlannerConfig config)
 {
   config_ = std::move(config);
+  resetTracking();
 }
 
 const PlannerConfig& Planner::config() const noexcept
 {
   return config_;
+}
+
+void Planner::resetTracking() noexcept
+{
+  tracking_state_ = {};
+  last_target_.reset();
+  last_observation_timestamp_.reset();
+  target_lost_frames_ = 0;
+}
+
+const ArmorTrackingState& Planner::trackingState() const noexcept
+{
+  return tracking_state_;
 }
 
 AimPlan Planner::plan(
@@ -144,30 +199,52 @@ AimPlan Planner::plan(
   plan.generated_at = robot_state.timestamp;
   plan.using_MPC = false;
 
-  if (!target.has_value()) {
+  if (!validBulletSpeed(robot_state)
+      || !validGimbalOrientation(robot_state)) {
+    return plan;
+  }
+  if (!validPlannerConfig(config)
+      || !validBallisticConfig(config)
+      || !validArmorScoreWeights(context.armor_score_weights)
+      || !validFacingAngleThresholds(context)) {
+    return plan;
+  }
+  if (!context.T_barrel_world.translation().allFinite()) {
     return plan;
   }
 
-  plan.target_id = target->robot_id;
+  const bool observation_fresh =
+    target.has_value()
+    && (!last_observation_timestamp_.has_value()
+        || target->timestamp > *last_observation_timestamp_);
+  if (observation_fresh) {
+    if (tracking_state_.robot_id >= 0
+        && tracking_state_.robot_id != target->robot_id) {
+      tracking_state_ = {};
+    }
+    last_target_ = *target;
+    last_observation_timestamp_ = target->timestamp;
+    target_lost_frames_ = 0;
+  } else {
+    if (!last_target_.has_value()
+        || target_lost_frames_ >= config.max_lost_frames) {
+      resetTracking();
+      return plan;
+    }
+    ++target_lost_frames_;
+  }
+
+  const L3Estimation::TargetState& target_state = *last_target_;
+  tracking_state_.robot_id = target_state.robot_id;
+  plan.target_id = target_state.robot_id;
   plan.tracking = true;
-  if (!validBulletSpeed(robot_state)) {
-    return plan;
-  }
-  if (!validGimbalOrientation(robot_state)) {
-    return plan;
-  }
-  if (!validPlannerConfig(config) || !validBallisticConfig(config)) {
-    return plan;
-  }
+  plan.tracking_phase = tracking_state_.phase;
 
-  // 当前接口尚未暴露独立的标定出膛延迟，因此这里先将 fire_delay 置零。
-  // 图像/滤波时刻到本次规划时刻的延迟仍由 LatencyCompensator 统一校验。
-  const Delay requested_delay{
-    target->timestamp,
-    robot_state.timestamp,
-    0.0};
-  const LatencyCompensator latency_compensator;
-  const LatencyResult latency = latency_compensator.calculate(requested_delay);
+  // 图像/滤波时刻到规划时刻的耗时由时间戳计算，标定的出膛延迟由
+  // context.latency 提供，两者均由 LatencyCompensator 统一校验。
+  const LatencyCompensator latency_compensator{context.latency};
+  const LatencyResult latency = latency_compensator.calculate(
+    target_state.timestamp, robot_state.timestamp);
   if (!latency.valid) {
     return plan;
   }
@@ -178,9 +255,12 @@ AimPlan Planner::plan(
     std::chrono::duration<double>(config.fly_time_tolerance).count();
   const double angle_tolerance = config.angle_tolerance;
   const int max_iterations = std::max(1, config.max_iterations);
-  // 将世界系预测点转换到当前枪管坐标系后再进行弹道求解。
-  const Eigen::Matrix3d world_to_barrel =
-    rotationGimbalToWorld(robot_state.rpy).transpose();
+  // 世界系和枪口系轴向始终平行，世界系到枪口系只改变原点。
+  // T_barrel_world 的平移用于将世界系位置转换到枪口系。
+  const auto world_to_barrel =
+    [&context](const Eigen::Vector3d& position_world) {
+      return position_world + context.T_barrel_world.translation();
+    };
 
   Predictor predictor;
   BallisticSolver ballistic_solver;
@@ -216,7 +296,7 @@ AimPlan Planner::plan(
       const TimePoint impact_time =
         addSeconds(fire_time, current_fly_time);
       const PredictionResult prediction =
-        predictor.predict({*target, impact_time});
+        predictor.predict({target_state, impact_time});
       if (!prediction.valid) {
         break;
       }
@@ -226,10 +306,8 @@ AimPlan Planner::plan(
         break;
       }
 
-      // TargetState 的世界系原点位于云台旋转中心；当前 hpp 未提供额外
-      // 平移外参，因此只需用实时云台姿态转到枪管坐标系。
       const Eigen::Vector3d position_barrel =
-        world_to_barrel * armor->position_world;
+        world_to_barrel(armor->position_world);
       const BallisticSolution ballistic = solve_ballistic(position_barrel);
 
       candidate.armor = *armor;
@@ -284,11 +362,11 @@ AimPlan Planner::plan(
       const TimePoint final_impact_time =
         addSeconds(fire_time, candidate.ballistic.fly_time);
       const PredictionResult final_prediction =
-        predictor.predict({*target, final_impact_time});
+        predictor.predict({target_state, final_impact_time});
       const ArmorPose* final_armor = findArmor(final_prediction, armor_id);
       if (final_prediction.valid && final_armor != nullptr && final_armor->valid) {
         const Eigen::Vector3d final_position_barrel =
-          world_to_barrel * final_armor->position_world;
+          world_to_barrel(final_armor->position_world);
         const BallisticSolution final_ballistic =
           solve_ballistic(final_position_barrel);
         if (final_ballistic.valid) {
@@ -325,47 +403,110 @@ AimPlan Planner::plan(
     }
 
     if (candidate.armor.valid) {
+      const double prediction_dt = std::chrono::duration<double>(
+        candidate.impact_time - target_state.timestamp).count();
+      const Eigen::Vector3d predicted_center =
+        target_state.center + target_state.velocity * prediction_dt;
       const double center_yaw = std::atan2(
-        candidate.armor.position_world.y(),
-        candidate.armor.position_world.x());
+        predicted_center.y(), predicted_center.x());
       candidate.delta_angle =
         normalizeAngle(candidate.armor.yaw_world - center_yaw);
 
-      const double firing_angle_degree =
-        target->robot_id == kOutpostRobotId
+      const double enter_angle_degree =
+        target_state.robot_id == kOutpostRobotId
           ? config.outpost_enter_angle
           : config.normal_enter_angle;
-      const double firing_angle = firing_angle_degree * kPi / 180.0;
-      candidate.within_firing_window =
-        std::abs(candidate.delta_angle) <= firing_angle;
-
-      const double facing_quality = firing_angle > 0.0
-        ? clampUnit(1.0 - std::abs(candidate.delta_angle) / firing_angle)
-        : 0.0;
-      const double covariance_quality = clampUnit(
-        1.0 / (1.0
-          + std::max(0.0, target->covariance(L3Estimation::XC, L3Estimation::XC))
-          + std::max(0.0, target->covariance(L3Estimation::YC, L3Estimation::YC))
-          + std::max(0.0, target->covariance(L3Estimation::ZC, L3Estimation::ZC))
-          + std::max(0.0, target->covariance(L3Estimation::YAW, L3Estimation::YAW))));
-      const double ballistic_quality =
-        candidate.converged
-          ? 0.5 * clampUnit(
-              1.0 - candidate.fly_time_error / fly_time_tolerance)
-            + 0.5 * clampUnit(
-              1.0 - candidate.position_error / config.position_tolerance)
+      const double leave_angle_degree =
+        target_state.robot_id == kOutpostRobotId
+          ? config.outpost_leave_angle
+          : config.normal_leave_angle;
+      const double enter_angle = enter_angle_degree * kPi / 180.0;
+      const double leave_angle = leave_angle_degree * kPi / 180.0;
+      const double horizontal_distance_squared =
+        predicted_center.x() * predicted_center.x()
+        + predicted_center.y() * predicted_center.y();
+      const double center_bearing_rate =
+        horizontal_distance_squared > 1e-12
+          ? (predicted_center.x() * target_state.velocity.y()
+             - predicted_center.y() * target_state.velocity.x())
+              / horizontal_distance_squared
           : 0.0;
+      candidate.relative_yaw_rate =
+        target_state.yaw_rate - center_bearing_rate;
+
+      double window_quality = 0.0;
+      if (std::abs(candidate.relative_yaw_rate)
+          > config.rotation_rate_dead_zone) {
+        const double rotation_direction =
+          candidate.relative_yaw_rate > 0.0 ? 1.0 : -1.0;
+        candidate.phase_angle = normalizeAngle(
+          rotation_direction * candidate.delta_angle);
+        candidate.within_firing_window =
+          candidate.phase_angle >= -enter_angle
+          && candidate.phase_angle <= leave_angle;
+        // 预进入区位于正式射击窗口之前：从进入角外侧 10 degree
+        // 到进入角边界。它不属于射击窗口，仅用于提前选择下一块板。
+        candidate.entering_firing_window =
+          candidate.phase_angle >= -(enter_angle + kEnteringWindowLeadAngle)
+          && candidate.phase_angle < -enter_angle;
+        candidate.remaining_window_time =
+          candidate.within_firing_window
+            ? std::max(
+                0.0,
+                (leave_angle - candidate.phase_angle)
+                  / std::abs(candidate.relative_yaw_rate))
+            : 0.0;
+        const double normalized_window_progress =
+          (candidate.phase_angle + enter_angle)
+          / (enter_angle + leave_angle);
+        window_quality =
+          candidate.within_firing_window
+            ? 1.0 - smoothstep(normalized_window_progress)
+            : 0.0;
+      } else {
+        candidate.phase_angle = std::abs(candidate.delta_angle);
+        candidate.within_firing_window =
+          std::abs(candidate.delta_angle) <= enter_angle;
+        candidate.entering_firing_window = false;
+        candidate.remaining_window_time =
+          candidate.within_firing_window
+            ? std::numeric_limits<double>::infinity()
+            : 0.0;
+        window_quality = candidate.within_firing_window ? 1.0 : 0.0;
+      }
+
+      const double facing_angle_good =
+        context.facing_angle_good * kPi / 180.0;
+      const double facing_angle_bad =
+        context.facing_angle_bad * kPi / 180.0;
+      const double normalized_facing_angle =
+        (std::abs(candidate.delta_angle) - facing_angle_good)
+        / (facing_angle_bad - facing_angle_good);
+      const double facing_quality =
+        1.0 - smoothstep(normalized_facing_angle);
+      const double aim_yaw_error = std::abs(normalizeAngle(
+        candidate.ballistic.yaw - robot_state.rpy.yaw));
+      const double aim_pitch_error =
+        std::abs(candidate.ballistic.pitch - robot_state.rpy.pitch);
+      candidate.aim_angle_error =
+        std::hypot(aim_yaw_error, aim_pitch_error);
+      const double aim_cost_good_angle =
+        config.aim_cost_good_angle * kPi / 180.0;
+      const double aim_cost_bad_angle =
+        config.aim_cost_bad_angle * kPi / 180.0;
+      const double normalized_aim_cost =
+        (candidate.aim_angle_error - aim_cost_good_angle)
+        / (aim_cost_bad_angle - aim_cost_good_angle);
+      const double aim_cost_quality =
+        1.0 - smoothstep(normalized_aim_cost);
 
       candidate.score.components.Q_facing = facing_quality;
-      // 第一版用窗口内的角度余量近似剩余射击窗口；后续可再结合
-      // yaw_rate 和窗口穿越时间替换为仿真标定模型。
-      candidate.score.components.Q_window = facing_quality;
-      candidate.score.components.Q_prediction_confidence = covariance_quality;
-      candidate.score.components.Q_ballistic = ballistic_quality;
+      candidate.score.components.Q_window = window_quality;
+      candidate.score.components.Q_aim_cost = aim_cost_quality;
       candidate.score.hard_conditions.identity_consistent =
-        candidate.armor.robot_id == target->robot_id;
+        candidate.armor.robot_id == target_state.robot_id;
       candidate.score.hard_conditions.stable_tracking =
-        target->covariance.allFinite();
+        target_state.covariance.allFinite();
       candidate.score.hard_conditions.prediction_valid =
         candidate.armor.valid;
       candidate.score.hard_conditions.within_firing_window =
@@ -375,53 +516,58 @@ AimPlan Planner::plan(
       candidate.score.hard_conditions.iteration_converged =
         candidate.converged;
       const auto& hard = candidate.score.hard_conditions;
-      candidate.score.flag =
+      candidate.valid =
         hard.identity_consistent
         && hard.stable_tracking
         && hard.prediction_valid
-        && hard.within_firing_window
         && hard.ballistic_valid
         && hard.iteration_converged;
-
-      const ArmorScoreWeights weights;
+      const ArmorScoreWeights& weights = context.armor_score_weights;
       candidate.score.quality =
         weights.facing_weight * candidate.score.components.Q_facing
         + weights.window_weight * candidate.score.components.Q_window
-        + weights.prediction_confidence_weight
-          * candidate.score.components.Q_prediction_confidence
-        + weights.ballistic_weight * candidate.score.components.Q_ballistic;
-      candidate.score.score =
-        candidate.score.flag ? candidate.score.quality : 0.0;
-      candidate.valid = candidate.score.flag;
+        + weights.aim_cost_weight * candidate.score.components.Q_aim_cost;
     }
 
     candidates.push_back(candidate);
   }
 
-  const auto selected = std::max_element(
-    candidates.begin(),
-    candidates.end(),
-    [](const ArmorCandidate& lhs, const ArmorCandidate& rhs) {
-      return lhs.score.score < rhs.score.score;
-    });
-  if (selected == candidates.end() || !selected->valid) {
+  SelectionRequest selection_request;
+  selection_request.candidates = std::move(candidates);
+  selection_request.preferred_armor_id =
+    tracking_state_.current_armor_id;
+  selection_request.observation_fresh = observation_fresh;
+  const TimePoint selection_time =
+    context.planning_time != TimePoint{}
+      ? context.planning_time
+      : robot_state.timestamp;
+  const SelectionResult selection =
+    selectArmor(selection_request, selection_time, config);
+  plan.tracking_phase = selection.phase;
+  if (selection.phase == ArmorTrackingPhase::Unlocked) {
+    plan.tracking = false;
+    plan.target_id = -1;
+  }
+  if (!selection.valid || !selection.selected.has_value()) {
     return plan;
   }
+  const ArmorCandidate& selected = *selection.selected;
 
   const Eigen::Vector3d final_position_barrel =
-    world_to_barrel * selected->armor.position_world;
-  plan.impact_time = selected->impact_time;
+    world_to_barrel(selected.armor.position_world);
+  plan.armor_id = selected.armor.armor_id;
+  plan.impact_time = selected.impact_time;
   plan.aim_point_barrel = final_position_barrel;
-  plan.aim_point_world = selected->armor.position_world;
-  plan.yaw = selected->ballistic.yaw;
-  plan.pitch = selected->ballistic.pitch;
-  plan.fly_time = selected->ballistic.fly_time;
-  plan.ballistic_valid = selected->ballistic.valid;
+  plan.aim_point_world = selected.armor.position_world;
+  plan.yaw = selected.ballistic.yaw;
+  plan.pitch = selected.ballistic.pitch;
+  plan.fly_time = selected.ballistic.fly_time;
   plan.fire_permitted =
-    selected->converged && selected->within_firing_window;
+    selection.tracking_ready
+    && selected.within_firing_window;
   plan.valid = true;
 
   return plan;
 }
 
-}  // namespace L4Planning
+}

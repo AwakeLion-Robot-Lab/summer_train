@@ -21,6 +21,7 @@ enum class WorkMode {
 
 struct Orientation
 {
+  // 云台相对世界系的姿态，单位 rad。
   double roll = 0.0;
   double pitch = 0.0;
   double yaw = 0.0;

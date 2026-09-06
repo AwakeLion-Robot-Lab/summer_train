@@ -20,7 +20,7 @@ struct AimTrace {
   std::vector<L2Perception::Armor> detections;
   std::vector<L3Estimation::ArmorObservation> armors;
   std::optional<L3Estimation::TargetState> target;
-  L4Planning::Plan plan;
+  L4Planning::AimPlan plan;
   L5Control::FireDecision fire;
   L5Control::SerialCommand command;
   LatencyModel latency;

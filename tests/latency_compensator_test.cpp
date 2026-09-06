@@ -13,12 +13,11 @@ int main()
 {
   using namespace std::chrono_literals;
 
-  const auto camera_time = L4Planning::TimePoint{100ms};
-  const auto command_time = camera_time + 6ms;
-  const L4Planning::LatencyCompensator compensator;
+  const auto camera_time = L4Planning::TimePoint{100ms};//相机时间辍
+  const auto command_time = camera_time + 6ms;//命令时间辍
+  const L4Planning::LatencyCompensator compensator{{0.010}};//弹丸出射延迟
 
-  const auto result = compensator.calculate(
-    {camera_time, command_time, 0.010});
+  const auto result = compensator.calculate(camera_time, command_time);
   if (!result.valid ||
       std::abs(result.delay.beforeFire() - 0.006) > 1e-12 ||
       std::abs(result.delay.total() - 0.016) > 1e-12) {
@@ -35,6 +34,11 @@ int main()
         {camera_time, command_time,
          std::numeric_limits<double>::infinity()}).valid) {
     return 2;
+  }
+
+  const L4Planning::LatencyCompensator invalid_config{{-0.001}};
+  if (invalid_config.calculate(camera_time, command_time).valid) {
+    return 3;
   }
 
   return 0;

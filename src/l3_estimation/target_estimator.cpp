@@ -2,197 +2,191 @@
 
 #include <algorithm>
 #include <cmath>
-#include <numbers>
+#include <iterator>
 #include <stdexcept>
 #include <utility>
-
-#include <opencv2/calib3d.hpp>
 
 namespace L3Estimation {
 namespace {
 
-//归一化
-double normalizeAngle(double angle) noexcept
-{
-  constexpr double kTwoPi = 2.0 * std::numbers::pi;
-  angle = std::remainder(angle, kTwoPi);
-  return angle <= -std::numbers::pi ? angle + kTwoPi : angle;
-}
-
-//矩阵是否合规
 bool isRotationMatrix(const Eigen::Matrix3d& rotation) noexcept
 {
   if (!rotation.allFinite()) {
     return false;
   }
-
-  const Eigen::Matrix3d orthogonality_error =
+  const Eigen::Matrix3d error =
     rotation.transpose() * rotation - Eigen::Matrix3d::Identity();
-  return orthogonality_error.norm() < 1e-5
+  return error.norm() < 1e-5
          && std::abs(rotation.determinant() - 1.0) < 1e-5;
 }
 
-//四元数是否合规
 bool isValidQuaternion(const Eigen::Quaterniond& quaternion) noexcept
 {
-  return quaternion.coeffs().allFinite() && quaternion.norm() > 1e-9;
-}
-
-//旋转向量 → 旋转矩阵
-Eigen::Matrix3d rotationMatrixFromRvec(const cv::Vec3d& rvec)
-{
-  cv::Mat rotation_cv;
-  cv::Rodrigues(rvec, rotation_cv);
-
-  Eigen::Matrix3d rotation;
-  for (int row = 0; row < 3; ++row) {
-    for (int col = 0; col < 3; ++col) {
-      rotation(row, col) = rotation_cv.at<double>(row, col);
-    }
-  }
-  return rotation;
+  return quaternion.coeffs().allFinite()
+         && quaternion.norm() > 1e-9;
 }
 
 }  // namespace
 
 TargetEstimator::TargetEstimator(
   L1Sensor::CameraCalibration calibration,
-  Eigen::Matrix3d rotation_camera_to_gimbal,
-  Eigen::Vector3d translation_camera_to_gimbal,
-  GimbalPoseProvider gimbal_pose_provider,
-  EkfTrackerConfig tracker_config)
-  : pnp_solver_(std::move(calibration)),
-    rotation_camera_to_gimbal_(std::move(rotation_camera_to_gimbal)),
-    translation_camera_to_gimbal_(std::move(translation_camera_to_gimbal)),
-    gimbal_pose_provider_(std::move(gimbal_pose_provider)),
-    tracker_config_(std::move(tracker_config))
+  BarrelPoseProvider barrel_pose_provider,
+  L3Config config)
+  : config_(std::move(config)),
+    pnp_solver_(
+      calibration,
+      config_.armor.dimensions,
+      config_.pnp),
+    yaw_optimizer_(
+      calibration,
+      config_.armor.dimensions,
+      config_.yaw_search),
+    calibration_image_size_(calibration.image_size),
+    barrel_pose_provider_(std::move(barrel_pose_provider))
 {
-  if (!isRotationMatrix(rotation_camera_to_gimbal_)) {
+  if (!isValidL3Config(config_)) {
     throw std::invalid_argument(
-      "TargetEstimator requires an orthonormal camera-to-gimbal rotation");
+      "TargetEstimator received an invalid L3 config");
   }
-  if (!translation_camera_to_gimbal_.allFinite()) {
+  if (!calibration.T_barrel_camera) {
     throw std::invalid_argument(
-      "TargetEstimator requires a finite camera-to-gimbal translation");
+      "TargetEstimator requires calibrated T_barrel_camera");
   }
-  if (!gimbal_pose_provider_) {
-    throw std::invalid_argument("TargetEstimator requires a gimbal pose provider");
+  T_barrel_camera_ = *calibration.T_barrel_camera;
+  if (!isRotationMatrix(T_barrel_camera_.linear())
+      || !T_barrel_camera_.translation().allFinite()) {
+    throw std::invalid_argument(
+      "TargetEstimator received an invalid T_barrel_camera");
+  }
+  if (calibration_image_size_.width <= 0
+      || calibration_image_size_.height <= 0) {
+    throw std::invalid_argument(
+      "TargetEstimator requires a positive calibration image size");
+  }
+  if (!barrel_pose_provider_) {
+    throw std::invalid_argument(
+      "TargetEstimator requires a barrel pose provider");
   }
 }
 
-// 装甲板大小判断
 ArmorSize TargetEstimator::armorSizeFromClass(int class_id) const noexcept
 {
   const auto armor_class = L2Perception::armorClassFromId(class_id);
-  const bool is_large =
-    armor_class == L2Perception::ArmorClass::Hero
-    || armor_class == L2Perception::ArmorClass::BaseLarge;
-  return is_large ? ArmorSize::Large : ArmorSize::Small;
+  return armor_class == L2Perception::ArmorClass::Hero
+           || armor_class == L2Perception::ArmorClass::BaseLarge
+         ? ArmorSize::Large
+         : ArmorSize::Small;
 }
 
-// 装甲板ID判断
 int TargetEstimator::robotIdFromClass(int class_id) const noexcept
 {
   const auto armor_class = L2Perception::armorClassFromId(class_id);
-  if (armor_class == L2Perception::ArmorClass::Unknown) {
+  if (armor_class == L2Perception::ArmorClass::Unknown
+      || armor_class == L2Perception::ArmorClass::BaseSmall
+      || armor_class == L2Perception::ArmorClass::BaseLarge) {
     return -1;
-  }
-
-  // 大、小基地装甲板属于同一物理目标，必须进入同一个 tracker。
-  if (armor_class == L2Perception::ArmorClass::BaseLarge) {
-    return static_cast<int>(L2Perception::ArmorClass::BaseSmall);
   }
   return static_cast<int>(armor_class);
 }
 
-// 装甲板局部坐标系到世界坐标系的转换（camera → gimbal → world）
+std::optional<TargetModel> TargetEstimator::targetModelFromClass(
+  int class_id) const noexcept
+{
+  const auto armor_class = L2Perception::armorClassFromId(class_id);
+  if (armor_class == L2Perception::ArmorClass::Outpost) {
+    return TargetModel::ThreeArmorOutpost;
+  }
+  if (armor_class == L2Perception::ArmorClass::Unknown
+      || armor_class == L2Perception::ArmorClass::BaseSmall
+      || armor_class == L2Perception::ArmorClass::BaseLarge) {
+    return std::nullopt;
+  }
+  return TargetModel::FourArmorVehicle;
+}
+
 Eigen::Vector3d TargetEstimator::positionInWorld(
   const ArmorPose& pose,
-  const Eigen::Quaterniond& rotation_gimbal_to_world) const noexcept
+  const Eigen::Quaterniond& R_world_barrel) const noexcept
 {
   const Eigen::Vector3d position_camera{
-    pose.tvec[0], pose.tvec[1], pose.tvec[2]};
-  const Eigen::Vector3d position_gimbal =
-    rotation_camera_to_gimbal_ * position_camera
-    + translation_camera_to_gimbal_;
-  return rotation_gimbal_to_world * position_gimbal;
+    pose.tvec[0],
+    pose.tvec[1],
+    pose.tvec[2]};
+  const Eigen::Vector3d position_barrel =
+    T_barrel_camera_ * position_camera;
+  return R_world_barrel * position_barrel;
 }
 
-// 装甲板朝向的世界坐标系表示（armor → camera → gimbal → world）
-double TargetEstimator::yawInWorld(
-  const ArmorPose& pose,
-  const Eigen::Quaterniond& rotation_gimbal_to_world) const
-{
-  const Eigen::Matrix3d rotation_armor_to_camera =
-    rotationMatrixFromRvec(pose.rvec);
-  const Eigen::Matrix3d rotation_armor_to_world =
-    rotation_gimbal_to_world.toRotationMatrix()
-    * rotation_camera_to_gimbal_
-    * rotation_armor_to_camera;
-
-  // 第一列是装甲板局部 +x 法线在世界系中的方向。
-  return normalizeAngle(std::atan2(
-    rotation_armor_to_world(1, 0),
-    rotation_armor_to_world(0, 0)));
-}
-
-  //   单块装甲板 → PnP → 世界观测
 std::optional<ArmorObservation> TargetEstimator::makeObservation(
   const L2Perception::ArmorDetection& armor,
   TimePoint timestamp,
-  const Eigen::Quaterniond& rotation_gimbal_to_world) const
+  const Eigen::Quaterniond& R_world_barrel) const
 {
-  const ArmorSize armor_size = armorSizeFromClass(armor.class_id);
   const int robot_id = robotIdFromClass(armor.class_id);
-  if (robot_id < 0 || !std::isfinite(armor.confidence)) {
+  const auto model = targetModelFromClass(armor.class_id);
+  if (robot_id < 0 || !model || !std::isfinite(armor.confidence)) {
     return std::nullopt;
   }
 
+  // 第一版每块检测只求一个 IPPE 位姿。
+  const ArmorSize armor_size = armorSizeFromClass(armor.class_id);
   const auto pose = pnp_solver_.solve(armor, armor_size);
   if (!pose) {
     return std::nullopt;
   }
 
+  // 固定 PnP 位置和模型 pitch，以 1°步长遍历世界系 yaw。
+  const auto yaw = yaw_optimizer_.optimize(
+    armor,
+    armor_size,
+    *pose,
+    R_world_barrel,
+    config_.armor.parameters(*model).pitch_rad);
+  if (!yaw) {
+    return std::nullopt;
+  }
+
   const Eigen::Vector3d position_world =
-    positionInWorld(*pose, rotation_gimbal_to_world);
-  const double yaw_raw_world =
-    yawInWorld(*pose, rotation_gimbal_to_world);
-  if (!position_world.allFinite() || !std::isfinite(yaw_raw_world)) {
+    positionInWorld(*pose, R_world_barrel);
+  if (!position_world.allFinite()) {
     return std::nullopt;
   }
 
   return ArmorObservation{
     .robot_id = robot_id,
     .armor_class = L2Perception::armorClassFromId(armor.class_id),
+    .model = *model,
     .position_world = position_world,
-    .yaw_raw_world = yaw_raw_world,
-    // 第一版先使用 PnP 原始世界 yaw；后续重投影优化只替换这个字段。
-    .yaw_world = yaw_raw_world,
+    .yaw_raw_world = yaw->yaw_raw_world,
+    .yaw_world = yaw->yaw_optimized_world,
     .confidence = armor.confidence,
-    // 0 表示当前阶段尚未计算重投影误差。
-    .reprojection_error_px = 0.0,
+    .pnp_reprojection_error_px =
+      yaw->pnp_reprojection_error_px,
+    .raw_yaw_reprojection_error_px =
+      yaw->raw_yaw_reprojection_error_px,
+    .optimized_reprojection_error_px =
+      yaw->optimized_reprojection_error_px,
     .timestamp = timestamp};
 }
 
-// 遍历本帧装甲板
 std::vector<ArmorObservation> TargetEstimator::buildObservations(
   const std::vector<L2Perception::ArmorDetection>& armors,
   TimePoint timestamp,
-  const Eigen::Quaterniond& rotation_gimbal_to_world) const
+  const Eigen::Quaterniond& R_world_barrel) const
 {
   std::vector<ArmorObservation> observations;
   observations.reserve(armors.size());
-
   for (const auto& armor : armors) {
     if (auto observation = makeObservation(
-          armor, timestamp, rotation_gimbal_to_world)) {
+          armor,
+          timestamp,
+          R_world_barrel)) {
       observations.push_back(std::move(*observation));
     }
   }
   return observations;
 }
 
-//   所有车辆每帧预测一次
 void TargetEstimator::predictTrackers(TimePoint timestamp)
 {
   for (auto& [robot_id, tracker] : trackers_) {
@@ -201,94 +195,124 @@ void TargetEstimator::predictTrackers(TimePoint timestamp)
   }
 }
 
-//   按robot_id分组并更新对应Tracker
 void TargetEstimator::updateTrackers(
   const std::vector<ArmorObservation>& observations)
 {
-  std::unordered_map<int, std::vector<ArmorObservation>> observations_by_robot;
+  std::unordered_map<int, std::vector<ArmorObservation>>
+    observations_by_robot;
   for (const auto& observation : observations) {
     observations_by_robot[observation.robot_id].push_back(observation);
   }
 
-  for (auto& [robot_id, robot_observations] : observations_by_robot) {
-    auto [tracker, inserted] = trackers_.try_emplace(
-      robot_id, robot_id, tracker_config_);
+  // 已有 Tracker 即使本帧没有观测也必须完成一次生命周期判断。
+  for (auto& [robot_id, tracker] : trackers_) {
+    const auto group = observations_by_robot.find(robot_id);
+    const std::vector<ArmorObservation> empty;
+    const auto& robot_observations =
+      group == observations_by_robot.end() ? empty : group->second;
+    auto diagnostics = tracker.update(robot_observations);
+    last_association_diagnostics_.insert(
+      last_association_diagnostics_.end(),
+      std::make_move_iterator(diagnostics.begin()),
+      std::make_move_iterator(diagnostics.end()));
+    if (group != observations_by_robot.end()) {
+      observations_by_robot.erase(group);
+    }
+  }
+
+  // 每个新 robot_id 只建立一个整车假设。
+  for (auto& [robot_id, robot_observations] :
+       observations_by_robot) {
+    if (robot_observations.empty()) {
+      continue;
+    }
+    const TargetModel model = robot_observations.front().model;
+    auto [iterator, inserted] = trackers_.try_emplace(
+      robot_id,
+      robot_id,
+      model,
+      config_.trackerConfig(model));
     (void)inserted;
-    tracker->second.update(robot_observations);
+    auto diagnostics = iterator->second.update(robot_observations);
+    last_association_diagnostics_.insert(
+      last_association_diagnostics_.end(),
+      std::make_move_iterator(diagnostics.begin()),
+      std::make_move_iterator(diagnostics.end()));
   }
 }
 
-//   删除过期车辆
 void TargetEstimator::removeExpiredTrackers(TimePoint timestamp)
 {
-  std::erase_if(trackers_, [timestamp](const auto& item) {
-    return item.second.expired(timestamp);
-  });
+  std::erase_if(
+    trackers_,
+    [timestamp](const auto& item) {
+      return item.second.expired(timestamp);
+    });
 }
 
-//
 std::vector<TargetState> TargetEstimator::collectTargets() const
 {
   std::vector<TargetState> targets;
   targets.reserve(trackers_.size());
-
   for (const auto& [robot_id, tracker] : trackers_) {
     (void)robot_id;
     if (tracker.state().timestamp != TimePoint{}) {
       targets.push_back(tracker.state());
     }
   }
-
-  std::sort(targets.begin(), targets.end(), [](const auto& lhs, const auto& rhs) {
-    return lhs.robot_id < rhs.robot_id;
-  });
+  std::sort(
+    targets.begin(),
+    targets.end(),
+    [](const auto& lhs, const auto& rhs) {
+      return lhs.robot_id < rhs.robot_id;
+    });
   return targets;
 }
 
 std::vector<TargetState> TargetEstimator::update(
   const std::vector<L2Perception::ArmorDetection>& armors,
-  TimePoint timestamp)
+  const FrameContext& frame_context)
 {
-  // 预测所有 tracker 到当前帧时刻，保证后续更新使用一致的时间戳。
-  predictTrackers(timestamp);
-
-  const auto gimbal_pose = gimbal_pose_provider_(timestamp);
-  if (gimbal_pose && isValidQuaternion(*gimbal_pose)) {
-
-    const Eigen::Quaterniond rotation_gimbal_to_world = gimbal_pose->normalized();
-    const auto observations =
-      buildObservations(armors, timestamp, rotation_gimbal_to_world);
-    
-    updateTrackers(observations);
+  if (frame_context.image_size.width <= 0
+      || frame_context.image_size.height <= 0) {
+    throw std::invalid_argument(
+      "TargetEstimator requires a positive frame image size");
+  }
+  if (config_.require_matching_image_size
+      && frame_context.image_size != calibration_image_size_) {
+    throw std::invalid_argument(
+      "TargetEstimator frame image size does not match calibration");
   }
 
-  removeExpiredTrackers(timestamp);
+  last_observations_.clear();
+  last_association_diagnostics_.clear();
+  predictTrackers(frame_context.timestamp);
+
+  const auto barrel_pose =
+    barrel_pose_provider_(frame_context.timestamp);
+  if (barrel_pose && isValidQuaternion(*barrel_pose)) {
+    const Eigen::Quaterniond R_world_barrel =
+      barrel_pose->normalized();
+    last_observations_ = buildObservations(
+      armors,
+      frame_context.timestamp,
+      R_world_barrel);
+  }
+  updateTrackers(last_observations_);
+  removeExpiredTrackers(frame_context.timestamp);
   return collectTargets();
 }
 
+const std::vector<ArmorObservation>&
+TargetEstimator::lastObservations() const noexcept
+{
+  return last_observations_;
+}
+
+const std::vector<AssociationDiagnostic>&
+TargetEstimator::lastAssociationDiagnostics() const noexcept
+{
+  return last_association_diagnostics_;
+}
+
 }  // namespace L3Estimation
-
-///////////////////////////////
-  // buildObservations()
-  // 遍历本帧装甲板
-
-  // makeObservation()
-  //   单块装甲板 → PnP → 世界观测
-
-  // positionInWorld()
-  //   camera → gimbal → world位置转换
-
-  // yawInWorld()
-  //   armor → camera → gimbal → world朝向转换
-
-  // predictTrackers()
-  //   所有车辆每帧预测一次
-
-  // updateTrackers()
-  //   按robot_id分组并更新对应Tracker
-
-  // removeExpiredTrackers()
-  //   删除过期车辆
-
-  // collectTargets()
-  //   收集并排序TargetState
