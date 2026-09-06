@@ -4,7 +4,7 @@ namespace L5Control {
 
 SerialCommand Controller::makeCommand(const L4Planning::AimPlan& plan) const
 {
-  return SerialCommand{plan.yaw, plan.pitch, plan.valid};
+  return SerialCommand{plan.yaw, plan.pitch, plan.fire_permitted};
 }
 
 }  // namespace L5Control

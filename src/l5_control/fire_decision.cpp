@@ -4,7 +4,7 @@ namespace L5Control {
 
 bool shouldFire(const L4Planning::AimPlan& plan)
 {
-  return plan.valid;
+  return plan.fire_permitted;
 }
 
 }  // namespace L5Control
