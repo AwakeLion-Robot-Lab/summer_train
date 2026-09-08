@@ -158,11 +158,19 @@ void HikRobot::capture_start() {
       cv::Mat dst_image;
       // L1 对上层统一输出 OpenCV 的 BGR。MindVision 同样配置为 BGR，L2 因此不需要
       // 根据相机品牌猜测通道顺序，也不会把红蓝装甲板识别反。
+      //
+      // 这张表**不是**同名对应，改成同名会让红蓝整个对调：
+      // GenICam/海康的 BayerRG8 按传感器左上角 2x2 命名，即 RGGB；而 OpenCV 的
+      // COLOR_BayerXY2BGR 按**第二行的第二、三列**命名，两套命名整整错开一位。
+      // RGGB 的第二行是 G B G B，取下标 1、2 得 "BG"，所以 BayerRG8 必须配
+      // COLOR_BayerBG2BGR。合成图实测：RGGB 传感器拍纯红时，同名的
+      // COLOR_BayerRG2BGR 输出 BGR=(255,0,0) 也就是蓝色，四种格式全部如此。
+      // 红蓝对调会直接反转敌我过滤，属于静默的致命错误，改这里前先跑合成图验证。
       const static std::unordered_map<MvGvspPixelType, cv::ColorConversionCodes>
-          type_map = {{PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGR2BGR},
-                      {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRG2BGR},
-                      {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGB2BGR},
-                      {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBG2BGR}};
+          type_map = {{PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGB2BGR},
+                      {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerBG2BGR},
+                      {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGR2BGR},
+                      {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerRG2BGR}};
       const auto conversion = type_map.find(pixel_type);
       if (conversion == type_map.end()) {
         L6Telemetry::logWarn("Unsupported HikRobot pixel type",
