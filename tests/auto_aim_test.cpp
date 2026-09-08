@@ -87,6 +87,7 @@ const std::string kCommandLineKeys =
   "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
   "{bullet-speed | 27.0 | 回放没有裁判系统数据；默认与 SP auto_aim_test 一致（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
+  "{conf | 0 | 覆盖检测分数门（confidence/minimum/nms_score 三者同时设为该值），<=0 保持 layout 预设}"
   "{@input-path | records/3m_high | avi 和 txt 文件的路径（不含后缀）}";
 
 struct PoseSample {
@@ -755,8 +756,19 @@ int main(int argc, char** argv)
     backend->load(model_config);
     require(backend->ready(), "OpenVINO 后端未就绪");
     // 模型来自 --model，没有 auto_aim.yaml 的 layout 可依，按输出形状探契约。
-    const auto decoder_config =
+    auto decoder_config =
       L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
+    // --conf 只为扫阈值实验存在：<=0 时保持 layout 预设，行为与不加这个参数完全一致。
+    // 三道分数门要一起动——minimum_confidence 是 NMS 之后的门，单独降前两个不起作用。
+    // 注意本文件的 decoder 配置来自输出形状探测，不读 auto_aim.yaml 的 decoder 覆盖项，
+    // 因此改 yaml 对回放无效，只能走这里。
+    const float conf_override = cli.get<float>("conf");
+    if (conf_override > 0.0F) {
+      decoder_config.confidence_threshold = conf_override;
+      decoder_config.minimum_confidence = conf_override;
+      decoder_config.nms_score_threshold = conf_override;
+      std::cout << "检测分数门被 --conf 覆盖为 " << conf_override << '\n';
+    }
     L2Perception::ArmorDetector detector(
       std::move(backend), decoder_config, L2Perception::ImagePreprocessConfig{},
       runtime_config.refiner);
