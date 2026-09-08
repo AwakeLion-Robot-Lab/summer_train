@@ -65,7 +65,7 @@ constexpr int kRotationIndex[3] = {idx::ROT_X, idx::ROT_Y, idx::ROT_Z};
 
 // 半径的物理范围，用于防发散。这类物理常量留在代码里，不出到配置。
 constexpr double kMinArmorRadius = 0.05;
-constexpr double kMaxArmorRadius = 1.0;
+constexpr double kMaxArmorRadius = 0.8;
 // 前哨站半径与转速由规则固定，不参与估计。
 constexpr double kOutpostRadius = 0.55 / 2.0;
 constexpr double kOutpostYawRate = 2.51;
@@ -104,27 +104,9 @@ Eigen::Matrix<T, 3, 3> rotationZY(const T & yaw, const T & pitch)
   return result;
 }
 
-// 目标是否退化为"只绕竖直轴转"。前哨站是固定装置绕竖直轴匀速转，基地不转，
-// 给它们估 roll/pitch 只会引入不可观测自由度让滤波器漂。
-constexpr bool yawOnlyTarget(ArmorName name) noexcept
-{
-  return name == ArmorName::Outpost || name == ArmorName::BaseSmall ||
-         name == ArmorName::BaseLarge || !kEstimateFullAttitude;
-}
-
 constexpr bool isBase(ArmorName name) noexcept
 {
   return name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
-}
-
-// 整车姿态。
-template <typename T>
-Eigen::Matrix<T, 3, 3> vehicleRotation(const T * x, ArmorName name)
-{
-  if (yawOnlyTarget(name)) {
-    return so3Exp<T>(Eigen::Matrix<T, 3, 1>(T(0.0), T(0.0), x[idx::ROT_Z]));
-  }
-  return so3Exp<T>(Eigen::Matrix<T, 3, 1>(x[idx::ROT_X], x[idx::ROT_Y], x[idx::ROT_Z]));
 }
 
 // 第 id 块板用哪一组半径。
@@ -142,6 +124,25 @@ T armorRadius(const T * x, int id, int armor_num, ArmorName name)
   }
   const bool is_r2 = (armor_num == 4) && ((id & 1) != 0);
   return ceres::exp(is_r2 ? x[idx::LOG_R2] : x[idx::LOG_R1]);
+}
+
+// 目标是否退化为"只绕竖直轴转"。前哨站是固定装置绕竖直轴匀速转，基地不转，
+// 给它们估 roll/pitch 只会引入不可观测自由度让滤波器漂。
+constexpr bool yawOnlyTarget(ArmorName name) noexcept
+{
+  return name == ArmorName::Outpost || name == ArmorName::BaseSmall ||
+         name == ArmorName::BaseLarge || !kEstimateFullAttitude;
+}
+
+
+// 整车姿态。
+template <typename T>
+Eigen::Matrix<T, 3, 3> vehicleRotation(const T * x, ArmorName name)
+{
+  if (yawOnlyTarget(name)) {
+    return so3Exp<T>(Eigen::Matrix<T, 3, 1>(T(0.0), T(0.0), x[idx::ROT_Z]));
+  }
+  return so3Exp<T>(Eigen::Matrix<T, 3, 1>(x[idx::ROT_X], x[idx::ROT_Y], x[idx::ROT_Z]));
 }
 
 // 整车在世界系的位姿：状态的前六维取位置，姿态三维取朝向。

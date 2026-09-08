@@ -190,7 +190,7 @@ struct DepthDiffMeasure
       }
       return (center / T(static_cast<double>(points.size()))).eval();
     };
-
+    // 左右灯条中心在相机系下的深度差。
     z[0] = centerInCamera(true).z() - centerInCamera(false).z();
   }
 

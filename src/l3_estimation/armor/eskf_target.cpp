@@ -163,6 +163,7 @@ void EskfTarget::reset(
   update_count_ = 0;
 }
 
+//相机系在世界系下的位姿
 Eigen::Isometry3d EskfTarget::cameraInWorld(
   const L1Sensor::CameraCalibration & calibration, const Eigen::Quaterniond & q_world_barrel)
 {
