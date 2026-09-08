@@ -108,7 +108,15 @@ Plan Planner::plan(const PlanInput& input)
   const TimePoint future = target.t() + secondsToDuration(before_fire);
   target.predict(future);
 
-  AimPoint final_aim = chooseAimPoint(target);
+  // 迟滞锁在整个迭代期间只读。迭代是在猜同一帧的落点，中间轮次的构型都是
+  // 假想的，不该改变跨帧的迟滞状态；锁的新值先留在局部量里，收敛后一次性提交。
+  // sp_vision 与 Climber 在这里都是让 choose_aim_point 直接写成员，awakening
+  // 则把 select_armor 提到循环外只调一次（very_aimer.cpp:231 roughly_select，
+  // 循环内那次调用被显式注释掉了）。这里取 awakening 的语义，但保留逐轮重选
+  // ——落点变了可击打的板也会变，选板本身仍该跟着迭代走，只是不落锁。
+  int lock = locked_id_;
+  int probe_lock = lock;
+  AimPoint final_aim = chooseAimPoint(target, probe_lock);
   if (!final_aim.valid) {
     return rejected(PlanError::OutOfWindow);
   }
@@ -121,6 +129,7 @@ Plan Planner::plan(const PlanInput& input)
     return rejected(PlanError::BallisticFailed);
   }
 
+  int converged_lock = lock;
   double previous_fly_time = current_trajectory.fly_time;
   const double tolerance =
     std::chrono::duration<double>(config_.impact.fly_time_tolerance).count();
@@ -132,7 +141,8 @@ Plan Planner::plan(const PlanInput& input)
     const TimePoint predict_time = future + secondsToDuration(previous_fly_time);
     iteration_target.predict(predict_time);
 
-    final_aim = chooseAimPoint(iteration_target);
+    int iteration_lock = lock;
+    final_aim = chooseAimPoint(iteration_target, iteration_lock);
     if (!final_aim.valid) {
       return rejected(PlanError::OutOfWindow);
     }
@@ -145,11 +155,16 @@ Plan Planner::plan(const PlanInput& input)
       return rejected(PlanError::BallisticFailed);
     }
 
+    converged_lock = iteration_lock;
     if (std::abs(current_trajectory.fly_time - previous_fly_time) < tolerance) {
       break;
     }
     previous_fly_time = current_trajectory.fly_time;
   }
+
+  // 只有走到这里才说明本帧真的解出了瞄准点；中途 return 的分支一律不动锁，
+  // 与"短暂中断不清锁"的既有语义一致。
+  locked_id_ = converged_lock;
 
   const Eigen::Vector3d point = final_aim.xyza.head<3>();
   delay.fire_to_hit = current_trajectory.fly_time;
@@ -207,7 +222,7 @@ void Planner::reset() noexcept
 // ---- 以下为私有实现 ----
 
 Planner::AimPoint Planner::chooseAimPoint(
-  const L3Estimation::TrackedTarget& target)
+  const L3Estimation::TrackedTarget& target, int& lock) const
 {
   const Eigen::VectorXd ekf_x = target.ekf_x();
   const std::vector<Eigen::Vector4d> armors = target.armor_xyza_list();
@@ -258,18 +273,18 @@ Planner::AimPoint Planner::chooseAimPoint(
     if (ids.size() > 1) {
       const int id0 = ids[0];
       const int id1 = ids[1];
-      if (locked_id_ != id0 && locked_id_ != id1) {
-        locked_id_ =
+      if (lock != id0 && lock != id1) {
+        lock =
           std::abs(delta_angles[static_cast<std::size_t>(id0)]) <
               std::abs(delta_angles[static_cast<std::size_t>(id1)])
             ? id0
             : id1;
       }
-      return pointAt(locked_id_);
+      return pointAt(lock);
     }
 
     // 只剩一块候选时无需迟滞，退出双板锁定。
-    locked_id_ = -1;
+    lock = -1;
     return pointAt(ids[0]);
   }
 
