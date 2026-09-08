@@ -19,6 +19,12 @@ struct DebugConfig {
   bool overlay{false};
   // 每 N 帧画一次。画面只是用来目视对齐，不必每帧都画。
   int overlay_every{1};
+
+  // PlotJuggler 遥测。与叠加层分开开关：曲线是上车标定 send_to_control_ms
+  // 唯一的证据来源，而那台机器上没有显示器，overlay 必须是关的。
+  bool plot{false};
+  std::string plot_host{"127.0.0.1"};
+  int plot_port{9870};
 };
 
 // 只负责 runtime 胶水层的相邻命令检查，不重复 L3/L4/L5 的业务参数。

@@ -187,6 +187,15 @@ runtime:
 # 绿色整车=EKF 展开的全部物理板，红框=Plan 选中的命中时刻板，
 # 顶部一行=跟踪状态 / 计划状态 / 第一条开火拒绝原因。
 debug:
-  overlay: false
+  overlay: true
   # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
-  overlay_every: 1
+  overlay_every: 30
+
+  # PlotJuggler 曲线遥测，UDP 发到 plot_host:plot_port。与 overlay 分开开关：
+  # 上车标定 planning.send_to_control_ms 时机器上没有显示器，要的正好是曲线。
+  # 节点分成 gimbal / track / obs / ekf / aim / delay / fire 七支，其中
+  # gimbal 是实测云台姿态、aim 是规划出的云台姿态，两者同图即跟随误差。
+  # 角度一律 degree，时间一律 ms。
+  plot: false
+  plot_host: "127.0.0.1"
+  plot_port: 9870

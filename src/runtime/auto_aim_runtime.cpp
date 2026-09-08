@@ -10,16 +10,21 @@
 #include "l5_control/controller.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/logger.hpp"
+#include "l6_telemetry/math.hpp"
+#include "l6_telemetry/udp_json_sender.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <numbers>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -68,6 +73,20 @@ L2Perception::ArmorDetector makeArmorDetector(
     return {};
   }
 }
+
+/********************************** debug **********************************/
+// 调试遥测的前向声明，定义在本文件末尾的 debug 段。放在那里是为了让 run()
+// 的主流程从上往下读不被打断——遥测不参与瞄准链路，整段删掉也不影响自瞄。
+nlohmann::json telemetryFrame(
+  const std::optional<Eigen::Quaterniond>& q_world_barrel,
+  const L1Sensor::RobotState& state,
+  const std::vector<L3Estimation::Armor>& observations,
+  const std::optional<L3Estimation::TrackedTarget>& target,
+  L3Estimation::TrackState track_state,
+  const L4Planning::Plan& plan,
+  const L5Control::FireDecision& fire,
+  bool command_sent);
+/********************************** debug **********************************/
 
 } // namespace
 
@@ -139,6 +158,7 @@ void AutoAimRuntime::run() {
     sendSafeHold();
   };
 
+  /******************************** debug *********************************/
   // 叠加层默认关闭：imshow 的耗时会计进 image_to_plan，而且比赛用的机器
   // 没有显示器，无条件 namedWindow 会直接抛。
   const bool overlay_enabled = auto_aim_config.debug.overlay;
@@ -152,6 +172,18 @@ void AutoAimRuntime::run() {
   if (overlay_enabled && camera_calibration) {
     overlay_solver.emplace(*camera_calibration, auto_aim_config.armor);
   }
+
+  // 曲线遥测与叠加层各自独立开关：实车上标定延迟链时没有显示器，需要的
+  // 恰好是曲线而不是画面。UDP 是无连接的，没人接收也不会阻塞或报错。
+  std::optional<L6Telemetry::UdpJsonSender> plotter;
+  if (auto_aim_config.debug.plot) {
+    plotter.emplace(
+      auto_aim_config.debug.plot_host,
+      static_cast<std::uint16_t>(auto_aim_config.debug.plot_port));
+    L6Telemetry::logInfo(
+      "telemetry enabled", plotter->host(), std::to_string(plotter->port()));
+  }
+  /******************************** debug *********************************/
 
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
@@ -225,7 +257,24 @@ void AutoAimRuntime::run() {
             serial.updateCommand(*command);
           }
 
-          // 叠加层画在命令下发之后，不占用瞄准链路的时间预算。
+          // 规划到发送的实测耗时必须在 updateCommand 之后**立刻**取。
+          // 放到叠加层之后的话，画图的几毫秒会被算进 plan_to_send，而恰恰
+          // 只有开着叠加层调试时才会去看这个数。
+          measured_plan_to_send = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - plan_time).count();
+
+          /*************************** debug ****************************/
+          // 全部排在命令下发和延迟测量之后，不占用瞄准链路的时间预算。
+          if (plotter) {
+            // 三目里直接放 observations() 会按值合成公共类型，等于每帧拷一份
+            // 整个 vector；用一个空的静态量接住 tracker 为空的分支。
+            static const std::vector<L3Estimation::Armor> kNoObservations;
+            const auto& observations =
+              tracker ? tracker->observations() : kNoObservations;
+            (void)plotter->send(telemetryFrame(
+              image_pose, *state, observations, target, track_state, plan,
+              controller.lastDecision(), command.has_value()));
+          }
           if (overlay_solver && tracker &&
               frame_index % auto_aim_config.debug.overlay_every == 0) {
             overlay_solver->set_R_world_barrel(image_pose);
@@ -240,8 +289,7 @@ void AutoAimRuntime::run() {
                .q_world_barrel = image_pose},
               *overlay_solver, *camera_calibration);
           }
-          measured_plan_to_send = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - plan_time).count();
+          /*************************** debug ****************************/
           break;
         }
 
@@ -263,6 +311,7 @@ void AutoAimRuntime::run() {
     }
 
     ++frame_index;
+    /******************************* debug ********************************/
     if (overlay_enabled) {
       cv::imshow("auto_aim", frame);
       const int key = cv::waitKey(1);
@@ -270,6 +319,7 @@ void AutoAimRuntime::run() {
         running_ = false;
       }
     }
+    /******************************* debug ********************************/
   }
 
   stopAimSession();
@@ -299,3 +349,125 @@ void AutoAimRuntime::stop() {
 }
 
 } // namespace runtime
+
+/********************************** debug **********************************/
+// 以下只服务调试，不参与瞄准链路。debug.plot 关闭时一次都不会被调用。
+namespace {
+
+// PlotJuggler 遥测。**分节点是硬要求**：实测云台姿态 gimbal/ 和规划出的云台
+// 姿态 aim/ 必须落在曲线树的不同分支上，否则"跟随误差"这类靠两条曲线相减
+// 看出来的量根本没法读；同理观测 obs/ 与滤波结果 ekf/ 也不能混在一层。
+// 角度统一转成 degree、时间统一转成 ms——曲线是给人看的，不是给代码读的。
+nlohmann::json telemetryFrame(
+  const std::optional<Eigen::Quaterniond>& q_world_barrel,
+  const L1Sensor::RobotState& state,
+  const std::vector<L3Estimation::Armor>& observations,
+  const std::optional<L3Estimation::TrackedTarget>& target,
+  L3Estimation::TrackState track_state,
+  const L4Planning::Plan& plan,
+  const L5Control::FireDecision& fire,
+  bool command_sent)
+{
+  constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+  nlohmann::json data;
+
+  // gimbal: L1 实测的云台姿态与弹速。
+  if (q_world_barrel) {
+    const Eigen::Vector3d ypr =
+      L6Telemetry::eulers(q_world_barrel->toRotationMatrix(), 2, 1, 0);
+    data["gimbal"]["yaw"] = ypr[0] * kRadToDeg;
+    data["gimbal"]["pitch"] = ypr[1] * kRadToDeg;
+  }
+  data["gimbal"]["bullet_speed"] = state.bullet_speed;
+
+  // track: 状态机与本帧真正进滤波器的观测数量。
+  data["track"]["state"] = static_cast<int>(track_state);
+  data["track"]["n_obs"] = static_cast<int>(observations.size());
+
+  // obs: 单板 PnP 的原始观测。固定取图像最左的一块——多板时若按检测顺序取，
+  // 曲线会在两块板之间来回跳，看不出任何趋势。
+  const auto leftmost = std::min_element(
+    observations.begin(), observations.end(),
+    [](const L3Estimation::Armor& a, const L3Estimation::Armor& b) {
+      return a.center.x < b.center.x;
+    });
+  if (leftmost != observations.end()) {
+    data["obs"]["x"] = leftmost->xyz_in_world[0];
+    data["obs"]["y"] = leftmost->xyz_in_world[1];
+    data["obs"]["z"] = leftmost->xyz_in_world[2];
+    data["obs"]["distance"] = leftmost->xyz_in_world.norm();
+    // yaw 是选解后的、yaw_raw 是单次 PnP 的原始解。两条一起画才看得出
+    // optimize_yaw 在哪些帧救了场、哪些帧把解带偏了。
+    data["obs"]["yaw"] = leftmost->ypr_in_world[0] * kRadToDeg;
+    data["obs"]["yaw_raw"] = leftmost->yaw_raw * kRadToDeg;
+    data["obs"]["reproj_err"] = leftmost->reprojection_error;
+  }
+
+  // ekf: 整车状态全 13 维，加一致性统计。下标顺序见 TrackedTarget::kStateSize
+  // 的注释，前十一维不可改。
+  if (target) {
+    const Eigen::VectorXd x = target->ekf_x();
+    data["ekf"]["x"] = x[0];
+    data["ekf"]["vx"] = x[1];
+    data["ekf"]["y"] = x[2];
+    data["ekf"]["vy"] = x[3];
+    data["ekf"]["z"] = x[4];
+    data["ekf"]["vz"] = x[5];
+    data["ekf"]["a"] = x[6] * kRadToDeg;
+    data["ekf"]["w"] = x[7];
+    data["ekf"]["r"] = x[8];
+    data["ekf"]["dr"] = x[9];
+    data["ekf"]["dz"] = x[10];
+    data["ekf"]["dz1"] = x[11];
+    data["ekf"]["dz2"] = x[12];
+    data["ekf"]["last_id"] = target->last_id;
+    data["ekf"]["jumped"] = target->jumped ? 1 : 0;
+
+    // 残差按分量发。只发一个 NIS 标量的话，超标时无法定位是哪一维在超。
+    const auto& ekf_data = target->ekf().data;
+    data["ekf"]["res_yaw"] = ekf_data.at("residual_yaw");
+    data["ekf"]["res_pitch"] = ekf_data.at("residual_pitch");
+    data["ekf"]["res_distance"] = ekf_data.at("residual_distance");
+    data["ekf"]["res_angle"] = ekf_data.at("residual_angle");
+    data["ekf"]["nis"] = ekf_data.at("nis");
+    data["ekf"]["nees"] = ekf_data.at("nees");
+    data["ekf"]["nis_fail"] = ekf_data.at("nis_fail");
+    data["ekf"]["nis_fail_rate"] = ekf_data.at("recent_nis_failures");
+  }
+
+  // aim: L4 规划出的云台目标姿态。**与 gimbal/ 分开**，两者同图即跟随误差。
+  data["aim"]["status"] = static_cast<int>(plan.status);
+  data["aim"]["reason"] = static_cast<int>(plan.reason);
+  if (plan.valid()) {
+    data["aim"]["yaw"] = plan.aim.yaw * kRadToDeg;
+    data["aim"]["pitch"] = plan.aim.pitch * kRadToDeg;
+  }
+  data["aim"]["armor_id"] = plan.fire ? plan.fire->armor_id : -1;
+
+  // delay: 五段延迟链。绝不合并成一个标量——上车标定 send_to_control 时
+  // 要能看出是哪一段在变。
+  const L4Planning::Delay& delay = plan.timing.delay;
+  data["delay"]["image_to_plan"] = delay.image_to_plan * 1e3;
+  data["delay"]["plan_to_send"] = delay.plan_to_send * 1e3;
+  data["delay"]["send_to_control"] = delay.send_to_control * 1e3;
+  data["delay"]["control_to_fire"] = delay.control_to_fire * 1e3;
+  data["delay"]["fire_to_hit"] = delay.fire_to_hit * 1e3;
+  data["delay"]["before_fire"] = delay.beforeFire() * 1e3;
+
+  // fire: 可行性与实际下发分开。feasible=1 而 shoot=0 就是被 shoot_enable
+  // 或跳变检查拦下来了，reason 给出第一条原因（-1 表示无拒绝）。
+  data["fire"]["feasible"] = fire.fire_feasible ? 1 : 0;
+  data["fire"]["shoot"] = fire.shoot ? 1 : 0;
+  data["fire"]["sent"] = command_sent ? 1 : 0;
+  data["fire"]["yaw_err"] = fire.yaw_error * kRadToDeg;
+  data["fire"]["pitch_err"] = fire.pitch_error * kRadToDeg;
+  data["fire"]["tol_yaw"] = fire.tolerance.yaw * kRadToDeg;
+  data["fire"]["tol_pitch"] = fire.tolerance.pitch * kRadToDeg;
+  data["fire"]["reason"] =
+    fire.reasons.empty() ? -1 : static_cast<int>(fire.reasons.front());
+
+  return data;
+}
+
+}  // namespace
+/********************************** debug **********************************/

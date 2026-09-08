@@ -426,6 +426,9 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   const YAML::Node debug = root["debug"];
   readValue(debug, "overlay", config.debug.overlay);
   readValue(debug, "overlay_every", config.debug.overlay_every);
+  readValue(debug, "plot", config.debug.plot);
+  readValue(debug, "plot_host", config.debug.plot_host);
+  readValue(debug, "plot_port", config.debug.plot_port);
 
   normalize(config);
 
