@@ -224,6 +224,12 @@ local standalone_tests = {
         includes = {"include", "tools/logger/include/3rdparty"},
         syslinks = {"pthread"},
     },
+    daedalus_client_smoke = {
+        files    = {"src/l1_sensor/simulator/daedalus_client.cpp"},
+        includes = {"include"},
+        opencv   = {"opencv_core", "opencv_imgproc"},
+        syslinks = {"pthread"},
+    },
     serial_protocol_smoke = {
         files    = {"src/l1_sensor/serial/serial_protocol.cpp", "src/l6_telemetry/logger.cpp"},
         includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
@@ -262,6 +268,7 @@ local gated_tests = {
     auto_aim_test            = "use_openvino",
     track_diag               = "use_openvino",
     armor_refiner_video_test = "use_openvino",
+    light_model_test         = "use_openvino",
     serial_worker_smoke      = "linux",
 }
 
@@ -322,3 +329,29 @@ for _, source in ipairs(os.files("tests/*.cpp")) do
         target_end()
     end
 end
+
+target("daedalus_client")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("examples/daedalus_client.cpp")
+    add_files("src/l1_sensor/simulator/daedalus_client.cpp")
+    add_includedirs("include")
+    add_syslinks("pthread")
+    if has_config("use_xrepo_deps") then
+        add_packages("opencv")
+    elseif has_config("use_system_deps") then
+        add_includedirs("/usr/include/opencv4")
+        add_links("opencv_core", "opencv_imgproc", "opencv_highgui")
+    end
+target_end()
+
+-- Daedalus 实时整车预测可视化。复用完整 newvision 的 L2~L6 链路；
+-- OpenVINO/TensorRT 后端由 auto_aim.yaml 与对应 xmake 开关选择。
+target("daedalus_vehicle_prediction")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("examples/daedalus_vehicle_prediction.cpp")
+    add_deps("newvision")
+target_end()

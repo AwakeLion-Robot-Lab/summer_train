@@ -43,7 +43,18 @@ Thumbs.db
 
 # 离线回放录像：单个 avi 数百 MB，records/ 整体 3 GB，不进仓库
 /records/
-/tests/
+/tests/*
+!/tests/daedalus_client_smoke.cpp
+
+# 灯条数据集的准备与清洗脚本。它们是一次性的数据加工工具，依赖 roboflow 导出
+# 的本地目录结构，换台机器就跑不了，不属于视觉程序本身。
+/tools/clean_lightbar_dataset.py
+/tools/prepare_lightbar_dataset.py
+/tools/build_final_lightbar_dataset.py
+/tools/prepare_yolo_armor_lightbar_dataset.py
+/tools/test_light_model.py
+/tools/test_light_pipeline.py
+__pycache__/
 
 # OpenVINO GPU 编译时吐出的 kernel 诊断文件
 /kernel.errors.txt
