@@ -20,27 +20,19 @@ struct PlanInput {
   double plan_to_send{0.0};
 };
 
-class IPlanner {
-public:
-  virtual ~IPlanner() = default;
-
-  [[nodiscard]] virtual Plan plan(const PlanInput& input) = 0;
-  virtual void reset() noexcept = 0;
-};
-
 // 定点规划器：预测命中时刻、选择实体装甲板并解算 yaw/pitch。
-class Planner final : public IPlanner {
+class Planner final {
 public:
   explicit Planner(ArmorPlanConfig config = {});
 
-  [[nodiscard]] Plan plan(const PlanInput& input) override;
+  [[nodiscard]] Plan plan(const PlanInput& input);
   [[nodiscard]] Plan plan(
     const std::optional<L3Estimation::TrackedTarget>& target,
     const L1Sensor::RobotState& robot_state,
     TimePoint plan_time,
     bool to_now = true);
 
-  void reset() noexcept override;
+  void reset() noexcept;
   int lockedArmorId() const noexcept { return locked_id_; }
 
 private:
@@ -50,8 +42,11 @@ private:
     Eigen::Vector4d xyza{Eigen::Vector4d::Zero()};  // [x, y, z, normal_yaw]
   };
 
+  // 纯函数：迟滞锁只经 lock 进出，不写成员。弹道迭代要在同一帧里反复调用
+  // 它去试探不同的假想构型，一旦它自己改成员，跨帧的迟滞状态就会被中间轮次
+  // 覆盖，最终锁值取决于迭代恰好在第几轮收敛。
   AimPoint chooseAimPoint(
-    const L3Estimation::TrackedTarget& target);
+    const L3Estimation::TrackedTarget& target, int& lock) const;
 
   ArmorPlanConfig config_;
   int locked_id_{-1};
