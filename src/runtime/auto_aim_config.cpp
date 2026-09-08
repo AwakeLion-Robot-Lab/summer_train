@@ -204,10 +204,23 @@ void normalize(AutoAimConfig& config)
     config.plan.ballistic.max_pitch = ballistic_defaults.max_pitch;
   }
 
+  // 这一段**允许为负**。它名义上是"串口发出 -> 电控执行"的传输耗时，但实际
+  // 标出来的是把下位机自身的前馈也算进去之后的净值：电控如果自己做了预测，
+  // 净值就会是负的。rm.cv.fans 的实测配置就是 send-to-control = -18e-3。
+  // 早先这里强制非负，会把这类合法的标定结果静默丢回"未标定"，然后 L5 一直
+  // 以 delay_not_calibrated 拒绝开火，而标定的人看不出是被这行拒的。
+  //
+  // 仍然要挡的是量纲写错（本项是 ms，写成 s 会大 1000 倍）和非有限值，所以
+  // 保留 ±100 ms 的范围检查——真实的传输耗时不可能有这个量级。
+  // 注意范围检查只管这一段：五段加起来的 beforeFire() 若为负，说明标定本身
+  // 有问题，那是要在曲线上看出来的事，不该由加载器悄悄改掉。
+  constexpr double kMaxAbsSendToControl = 0.1;
   if (config.plan.impact.send_to_control &&
       !(std::isfinite(*config.plan.impact.send_to_control) &&
-        *config.plan.impact.send_to_control >= 0.0)) {
-    L6Telemetry::logWarn("planning.send_to_control_ms is invalid, treated as uncalibrated");
+        std::abs(*config.plan.impact.send_to_control) <= kMaxAbsSendToControl)) {
+    L6Telemetry::logWarn(
+      "planning.send_to_control_ms out of range, treated as uncalibrated:",
+      *config.plan.impact.send_to_control * 1e3, "ms");
     config.plan.impact.send_to_control.reset();
   }
 

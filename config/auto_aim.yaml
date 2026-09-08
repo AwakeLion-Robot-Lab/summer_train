@@ -162,6 +162,15 @@ planning:
   #
   # 不写这一项 = 还没标定：Planner 把计划降级成 TrackOnly，云台照常跟随，
   # 但 L5 会以 delay_not_calibrated 拒绝开火。验收标完再取消注释。
+  #
+  # 允许为负。名义上是传输耗时，实际标出来的是扣掉下位机自身前馈之后的净值：
+  # 电控如果自己做了预测，净值就是负的（rm.cv.fans 的实测配置是 -18 ms）。
+  # 只有非有限值和超出 ±100 ms 才会被判为无效并退回未标定——那个范围是用来
+  # 挡量纲写错的（本项单位是 ms，写成 s 会大 1000 倍）。
+  #
+  # 标法：曲线上看 aim/yaw 的阶跃到 gimbal/yaw 开始响应之间的延迟，减掉
+  # delay/plan_to_send。填对之后 fire/reason 应该从 7(DelayNotCalibrated)
+  # 变成 0(ShootDisabled)。
   # send_to_control_ms: 5.0
 
 # 弹道模型。drag_coefficient = 0 即真空，与不写这一节的行为逐位相同。
