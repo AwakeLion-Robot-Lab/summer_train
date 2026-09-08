@@ -49,6 +49,9 @@ private:
     const L3Estimation::TrackedTarget& target, int& lock) const;
 
   ArmorPlanConfig config_;
+  // 弹道求解器在构造时按 ballistic.drag_coefficient 选定模型：0 走真空闭式
+  // 解，非 0 走等效距离的二次阻力闭式解。每帧解算不再重建模型。
+  BallisticSolver ballistic_;
   int locked_id_{-1};
 };
 

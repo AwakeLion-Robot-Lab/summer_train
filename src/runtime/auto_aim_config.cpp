@@ -187,6 +187,23 @@ void normalize(AutoAimConfig& config)
       plan_defaults.selector.outpost_leaving_angle;
   }
   // 标定值必须是正的有限数，否则当作没标定。
+  // 弹道参数越界都是静默失效：重力为负会解出朝天的仰角，阻力系数为负会让
+  // 等效距离随距离指数缩短（越远打得越准，明显是错的），max_pitch 超过 90°
+  // 则失去保护意义。三者任一非法就退回结构体默认值。
+  const L4Planning::BallisticConfig ballistic_defaults;
+  if (!positiveFinite(config.plan.ballistic.gravity)) {
+    config.plan.ballistic.gravity = ballistic_defaults.gravity;
+  }
+  if (!(std::isfinite(config.plan.ballistic.drag_coefficient) &&
+        config.plan.ballistic.drag_coefficient >= 0.0)) {
+    L6Telemetry::logWarn("ballistic.drag_coefficient is invalid, using vacuum");
+    config.plan.ballistic.drag_coefficient = ballistic_defaults.drag_coefficient;
+  }
+  if (!(config.plan.ballistic.max_pitch > 0.0 &&
+        config.plan.ballistic.max_pitch < std::numbers::pi / 2.0)) {
+    config.plan.ballistic.max_pitch = ballistic_defaults.max_pitch;
+  }
+
   if (config.plan.impact.send_to_control &&
       !(std::isfinite(*config.plan.impact.send_to_control) &&
         *config.plan.impact.send_to_control >= 0.0)) {
@@ -422,6 +439,12 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     runtime,
     "command_jump_deg",
     config.runtime.command_jump_threshold);
+
+  const YAML::Node ballistic = root["ballistic"];
+  readValue(ballistic, "gravity", config.plan.ballistic.gravity);
+  readValue(
+    ballistic, "drag_coefficient", config.plan.ballistic.drag_coefficient);
+  readDegrees(ballistic, "max_pitch_deg", config.plan.ballistic.max_pitch);
 
   const YAML::Node debug = root["debug"];
   readValue(debug, "overlay", config.debug.overlay);

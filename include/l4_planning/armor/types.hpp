@@ -1,5 +1,6 @@
 #pragma once
 
+#include "l4_planning/ballistic.hpp"
 #include "l4_planning/types.hpp"
 
 namespace L4Planning {
@@ -16,6 +17,7 @@ struct SelectorConfig {
 struct ArmorPlanConfig {
   PlanConfig impact;
   SelectorConfig selector;
+  BallisticConfig ballistic;
 };
 
 }  // namespace L4Planning

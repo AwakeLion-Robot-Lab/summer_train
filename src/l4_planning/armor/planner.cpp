@@ -10,41 +10,6 @@
 namespace L4Planning {
 namespace {
 
-constexpr double kGravity = 9.7833;
-
-struct TrajectorySolution {
-  bool unsolvable{true};
-  double fly_time{0.0};
-  double pitch{0.0};
-};
-
-// 真空弹道存在高、低两条解析解；选择飞行时间更短的一条。
-TrajectorySolution solveTrajectory(
-  double bullet_speed, double distance, double height)
-{
-  TrajectorySolution result;
-  const double a =
-    kGravity * distance * distance / (2.0 * bullet_speed * bullet_speed);
-  const double b = -distance;
-  const double c = a + height;
-  const double delta = b * b - 4.0 * a * c;
-  if (delta < 0.0) {
-    return result;
-  }
-
-  const double tan_pitch_1 = (-b + std::sqrt(delta)) / (2.0 * a);
-  const double tan_pitch_2 = (-b - std::sqrt(delta)) / (2.0 * a);
-  const double pitch_1 = std::atan(tan_pitch_1);
-  const double pitch_2 = std::atan(tan_pitch_2);
-  const double time_1 = distance / (bullet_speed * std::cos(pitch_1));
-  const double time_2 = distance / (bullet_speed * std::cos(pitch_2));
-
-  result.unsolvable = false;
-  result.pitch = time_1 < time_2 ? pitch_1 : pitch_2;
-  result.fly_time = time_1 < time_2 ? time_1 : time_2;
-  return result;
-}
-
 // 规划时间统一量化到微秒，保证每轮迭代使用相同的时间精度。
 std::chrono::microseconds secondsToDuration(double seconds)
 {
@@ -67,7 +32,7 @@ double centerYaw(const L3Estimation::TrackedTarget& target)
 }  // namespace
 
 Planner::Planner(ArmorPlanConfig config)
-: config_(std::move(config))
+: config_(config), ballistic_(config.ballistic)
 {
 }
 
@@ -123,9 +88,8 @@ Plan Planner::plan(const PlanInput& input)
 
   const Eigen::Vector3d xyz0 = final_aim.xyza.head<3>();
   const double distance0 = std::hypot(xyz0.x(), xyz0.y());
-  TrajectorySolution current_trajectory =
-    solveTrajectory(bullet_speed, distance0, xyz0.z());
-  if (current_trajectory.unsolvable) {
+  Ballistic current_trajectory = ballistic_.solve(distance0, xyz0.z(), bullet_speed);
+  if (!current_trajectory.valid) {
     return rejected(PlanError::BallisticFailed);
   }
 
@@ -149,9 +113,8 @@ Plan Planner::plan(const PlanInput& input)
 
     const Eigen::Vector3d xyz = final_aim.xyza.head<3>();
     const double distance = std::hypot(xyz.x(), xyz.y());
-    current_trajectory =
-      solveTrajectory(bullet_speed, distance, xyz.z());
-    if (current_trajectory.unsolvable) {
+    current_trajectory = ballistic_.solve(distance, xyz.z(), bullet_speed);
+    if (!current_trajectory.valid) {
       return rejected(PlanError::BallisticFailed);
     }
 
