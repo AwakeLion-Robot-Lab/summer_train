@@ -149,7 +149,23 @@ void HikRobot::capture_start() {
         break;
       }
 
-      auto timestamp = std::chrono::steady_clock::now();
+      // 曝光中点而不是到达时刻。CLAUDE.md 的跨层契约写的是"A frame's
+      // timestamp is its exposure instant"，而 MV_CC_GetImageBuffer 返回时
+      // 整帧已经传完了，直接 now() 会把整个曝光段算进时间戳，下游
+      // SerialWorker::gimbalPoseAt() 就会在 IMU 历史里查到偏晚的姿态。
+      //
+      // 调研过的 12 份开源里只有 awakening 做了这件事
+      // （src/utils/drivers/{hik,mv,daheng}_camera 三个驱动都是
+      // `frame.timestamp = current_time - half_exposure`）；sp_vision、
+      // Climber、jlu、rmcs 全部直接取到达时刻。这里照 awakening 的做法。
+      //
+      // 仍未补偿的是读出和 USB 传输耗时，它们同样让时间戳偏晚，但既不是常量
+      // 也无法从 SDK 问出来。海康的 stFrameInfo.nHostTimeStamp 本来是更好的
+      // 来源，jlu 试过又退回去了（hikrobot.cpp:194 "硬件时间戳似乎两帧才更新
+      // 一次，有点怪"），所以这里不用它。
+      const auto half_exposure = std::chrono::microseconds(
+          static_cast<long long>(exposure_us_ / 2.0));
+      auto timestamp = std::chrono::steady_clock::now() - half_exposure;
       cv::Mat img(cv::Size(raw.stFrameInfo.nWidth, raw.stFrameInfo.nHeight),
                   CV_8U, raw.pBufAddr);
 

@@ -137,7 +137,11 @@ void MindVision::open()
       auto img = cv::Mat(height_, width_, CV_8UC3);
 
       auto status = CameraGetImageBuffer(handle_, &head, &raw, 100);
-      auto timestamp = std::chrono::steady_clock::now();
+      // 曝光中点而不是到达时刻，理由见 hikrobot.cpp 同名注释。两个驱动必须
+      // 用同一个约定，否则换相机会静默改变整条延迟链的零点。
+      const auto half_exposure = std::chrono::microseconds(
+        static_cast<long long>(exposure_ms_ * 1e3 / 2.0));
+      auto timestamp = std::chrono::steady_clock::now() - half_exposure;
 
       if (status != CAMERA_STATUS_SUCCESS) {
         if (!stop_requested_.load()) {
