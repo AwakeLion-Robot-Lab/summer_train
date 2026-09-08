@@ -195,7 +195,7 @@ void AutoAimRuntime::run() {
   // 帧率，异步流水线换来吞吐、代价是结果多滞后一帧，那一帧会进
   // Delay::image_to_plan 再被 v_yaw 放大成瞄准偏差。真正降低单帧延迟的并行
   // 在推理内部（num_threads / scheduling_core_type），那层已经开着。
-  // tools/LatesBuffer 是给将来的取图线程预留的，当前管线不用。
+  // tools/LatestBuffer 是给将来的取图线程预留的，当前管线不用。
   while (running_) {
     //获取相机帧和时间辍
     if (!camera->read(frame, timestamp)) {

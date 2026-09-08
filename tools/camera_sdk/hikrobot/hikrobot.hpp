@@ -8,7 +8,7 @@
 #include <thread>
 
 #include "MvCameraControl.h"
-#include "latesbuffer.hpp"
+#include "latest_buffer.hpp"
 #include "l1_sensor/camera/camera.hpp"
 
 

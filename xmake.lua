@@ -64,7 +64,7 @@ target("newvision")
     add_includedirs("/usr/include/eigen3", {public = true})
     add_includedirs("tools/serial/include", {public = true})
     add_includedirs("tools/config_set/include", {public = true})
-    add_includedirs("tools/LatesBuffer/include", {public = true})
+    add_includedirs("tools/LatestBuffer/include", {public = true})
     add_includedirs("tools/camera_sdk", {public = true})
     add_includedirs("tools/camera_sdk/hikrobot", {public = true})
     add_includedirs("tools/camera_sdk/hikrobot/include", {public = true})
@@ -213,7 +213,7 @@ local standalone_tests = {
         includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
     latest_buffer_smoke = {
-        includes = {"tools/LatesBuffer/include"},
+        includes = {"tools/LatestBuffer/include"},
     },
     fps_counter_smoke = {
         files    = {"src/l6_telemetry/fps_counter.cpp"},
