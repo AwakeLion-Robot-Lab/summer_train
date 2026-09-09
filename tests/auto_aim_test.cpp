@@ -87,6 +87,8 @@ const std::string kCommandLineKeys =
   "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
   "{bullet-speed | 27.0 | 回放没有裁判系统数据；默认与 SP auto_aim_test 一致（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
+  "{plot-host | 127.0.0.1 | PlotJuggler 的 UDP 目标地址}"
+  "{plot-port | 9870 | PlotJuggler 的 UDP 端口，0 表示不发}"
   "{conf | 0 | 覆盖检测分数门（confidence/minimum/nms_score 三者同时设为该值），<=0 保持 layout 预设}"
   "{@input-path | records/3m_high | avi 和 txt 文件的路径（不含后缀）}";
 
@@ -797,7 +799,15 @@ int main(int argc, char** argv)
     std::ifstream text(text_path);
     require(text.is_open(), "无法打开四元数文本：" + text_path);
 
-    L6Telemetry::UdpJsonSender plotter;
+    // 端口填 0 就不发。runtime 和本入口用的是同一个默认端口，两边同时开着
+    // 会在 PlotJuggler 里混流，采集时只留一个发送源。
+    const int plot_port = cli.get<int>("plot-port");
+    std::optional<L6Telemetry::UdpJsonSender> plotter;
+    if (plot_port > 0 && plot_port <= 65535) {
+      plotter.emplace(
+        cli.get<std::string>("plot-host"),
+        static_cast<std::uint16_t>(plot_port));
+    }
 
     // 跳过 start-index 之前的帧，视频和文本必须同步前进。
     video.set(cv::CAP_PROP_POS_FRAMES, start_index);
@@ -1203,6 +1213,14 @@ int main(int argc, char** argv)
           0.5);
       }
       nlohmann::json data;
+      // 录像自身的时间戳，单位 s。**必须发**：不发的话 PlotJuggler 只能按
+      // UDP 到达时刻排点，而回放的到达节奏由 --wait 和检测耗时决定，和录像
+      // 真实的帧率毫无关系（--wait=0 逐帧推进时干脆就是按键速度）。平滑的
+      // 斜坡会被画成忽快忽慢的折线，看起来像台阶——那是坐标轴的假象。
+      // 切板过渡段整段才一百毫秒左右，横轴错了就完全没法判读。
+      // 用录像自己的时间基而不是进程时间，这样同一段录像跑两遍能逐点重叠。
+      // 在 UDP/JSON 插件里把它选成 timestamp 字段。
+      data["t"] = pose.seconds;
       data["gimbal_yaw"] =
         L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
         kRadToDeg;
@@ -1333,7 +1351,9 @@ int main(int argc, char** argv)
           data["pred_armor_yaw"] = *predicted_armor_yaw * kRadToDeg;
         }
       }
-      (void)plotter.send(data);
+      if (plotter) {
+        (void)plotter->send(data);
+      }
 
       if (show_plot) {
         cv::imshow(
