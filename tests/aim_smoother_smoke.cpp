@@ -172,7 +172,7 @@ void testSolveBlendMinimality()
   limits.max_pitch_acceleration = 100.0;
 
   const auto solution =
-    L4Planning::solveBlend(samplerFor(before), samplerFor(after), limits);
+    L4Planning::solveBlend(samplerFor(before)(0.0), samplerFor(after), limits);
 
   check(solution.valid, "solveBlend returned a solution");
   check(!solution.acceleration_limited, "solved blend respects the accel limit");
@@ -188,7 +188,7 @@ void testSolveBlendMinimality()
     (limits.max_duration - limits.min_duration) /
     static_cast<double>(1 << limits.search_iterations);
   const auto shorter = L4Planning::fitBlend(
-    samplerFor(before), samplerFor(after), solution.duration - 2.0 * resolution,
+    samplerFor(before)(0.0), samplerFor(after), solution.duration - 2.0 * resolution,
     limits);
   check(shorter.valid, "shorter fit is well formed");
   check(shorter.acceleration_limited, "a shorter blend would exceed the limit");
@@ -211,7 +211,7 @@ void testAccelerationLimitedIsReported()
   limits.max_pitch_acceleration = 2.0;
 
   const auto solution =
-    L4Planning::solveBlend(samplerFor(before), samplerFor(after), limits);
+    L4Planning::solveBlend(samplerFor(before)(0.0), samplerFor(after), limits);
   check(solution.valid, "limited case still returns a solution");
   check(solution.acceleration_limited, "limited case is flagged");
   checkNear(solution.duration, limits.max_duration, 1e-12, "limited case uses max duration");
@@ -263,7 +263,7 @@ void testSmootherEndToEnd()
       Plate shifted_after = after;
       shifted_before.phase = before.phase + before.omega * t;
       shifted_after.phase = after.phase + after.omega * t;
-      f.before = samplerFor(shifted_before);
+      f.before = samplerFor(shifted_before)(0.0);
       f.after = samplerFor(shifted_after);
       forecast = std::move(f);
     }
@@ -353,7 +353,7 @@ void testReset()
   L4Planning::AimSmoother smoother;
   L4Planning::AimSmoother::Forecast forecast;
   forecast.switch_time = 0.05;
-  forecast.before = samplerFor(before);
+  forecast.before = samplerFor(before)(0.0);
   forecast.after = samplerFor(after);
 
   const auto now = Clock::now();

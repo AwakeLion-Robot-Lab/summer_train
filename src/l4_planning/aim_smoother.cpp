@@ -136,17 +136,16 @@ double Quintic::peakAbsAcceleration() const
 }
 
 BlendSolution fitBlend(
-  const TrajectorySampler& before,
+  const AimState& start,
   const TrajectorySampler& after,
   double duration,
   const BlendLimits& limits)
 {
   BlendSolution solution;
-  if (!before || !after || !(duration > 0.0) || !std::isfinite(duration)) {
+  if (!after || !(duration > 0.0) || !std::isfinite(duration)) {
     return solution;
   }
 
-  const AimState start = before(0.0);
   const AimState end = after(duration);
   if (!allFinite(start) || !allFinite(end)) {
     return solution;
@@ -174,7 +173,7 @@ BlendSolution fitBlend(
 }
 
 BlendSolution solveBlend(
-  const TrajectorySampler& before,
+  const AimState& start,
   const TrajectorySampler& after,
   const BlendLimits& limits)
 {
@@ -182,14 +181,14 @@ BlendSolution solveBlend(
   const double longest = std::max(shortest, limits.max_duration);
 
   // 最短过渡就不超限：没有必要减速，直接用它，重合度损失最小。
-  BlendSolution best = fitBlend(before, after, shortest, limits);
+  BlendSolution best = fitBlend(start, after, shortest, limits);
   if (!best.valid || !best.acceleration_limited) {
     return best;
   }
 
   // 拉到上限仍然超限：云台能力真的不够。如实返回，让上层把标志送进遥测，
   // 而不是继续加长过渡去掩盖——加长只会把重合度也一起赔进去。
-  BlendSolution feasible = fitBlend(before, after, longest, limits);
+  BlendSolution feasible = fitBlend(start, after, longest, limits);
   if (!feasible.valid || feasible.acceleration_limited) {
     return feasible.valid ? feasible : best;
   }
@@ -198,7 +197,7 @@ BlendSolution solveBlend(
   double feasible_duration = longest;
   for (int iteration = 0; iteration < limits.search_iterations; ++iteration) {
     const double middle = 0.5 * (infeasible_duration + feasible_duration);
-    const BlendSolution candidate = fitBlend(before, after, middle, limits);
+    const BlendSolution candidate = fitBlend(start, after, middle, limits);
     if (!candidate.valid) {
       break;
     }

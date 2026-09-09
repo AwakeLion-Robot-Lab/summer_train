@@ -24,6 +24,10 @@ struct AimState {
 // 用回调而不是预采样表，是因为搜索过渡时长时要在任意 t 处取值，而表只能
 // 插值——位置插一次、速度加速度还要再差分一次，糊掉的恰好是加速度约束的
 // 输入本身。回调只在提交过渡段的那一帧被调用十几次，不在每帧的热路径上。
+//
+// 只有切板后那条轨迹需要采样器：过渡起点恒为"本帧"，是一个定点，由调用方
+// 直接给出。二分会反复改变时长，如果起点也用采样器表示，同一个 t = 0 会被
+// 重复求值十几次，而每次求值在真实链路上是一次整车外推。
 using TrajectorySampler = std::function<AimState(double t)>;
 
 // [0, duration] 上的一条五次多项式。
@@ -80,15 +84,15 @@ struct BlendSolution {
   bool acceleration_limited{false};
 };
 
-// 在给定过渡时长下拟合过渡段。起点取切板前轨迹的当前状态（t = 0），终点取
-// 切板后轨迹在 duration 之后的状态。
+// 在给定过渡时长下拟合过渡段。start 是切板前轨迹在本帧（t = 0）的状态，
+// 终点取切板后轨迹在 duration 之后的状态。
 //
 // 起点固定在 t = 0 而不是"切板时刻减去时长"，有两个好处：过渡段起点必然与
 // 本帧正在下发的角三阶连续，不需要额外对接；而且永远不会去采样过去的时刻。
 // "提前减速"体现在**提交时机**上——切板还有 duration 秒时才提交，过渡正好
 // 在切板时刻结束。
 BlendSolution fitBlend(
-  const TrajectorySampler& before,
+  const AimState& start,
   const TrajectorySampler& after,
   double duration,
   const BlendLimits& limits);
@@ -99,7 +103,7 @@ BlendSolution fitBlend(
 // 二分依赖 peak(T) 随 T 下降；即便在某些构型下不严格单调，返回的解也始终
 // 带着自己实算的 acceleration_limited，不会谎报可行。
 BlendSolution solveBlend(
-  const TrajectorySampler& before,
+  const AimState& start,
   const TrajectorySampler& after,
   const BlendLimits& limits);
 
@@ -116,7 +120,7 @@ public:
 
   struct Forecast {
     double switch_time{0.0};  // 相对本帧的切板时刻，s
-    TrajectorySampler before;  // 切板前那块板的射击轨迹
+    AimState before;           // 切板前那块板的射击轨迹在本帧的状态
     TrajectorySampler after;   // 切板后那块板的射击轨迹
   };
 
