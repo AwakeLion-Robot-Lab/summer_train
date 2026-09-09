@@ -835,6 +835,8 @@ int main(int argc, char** argv)
     // 上一帧规划命令用于命令跳变检查和 L4 选板连续性诊断。
     int last_plan_armor_id = -1;
     std::optional<double> last_command_yaw;
+    // 射击轨迹原值。过渡段期间它与下发命令不同，选板连续性只能用它来判。
+    std::optional<double> last_shoot_yaw;
     std::optional<double> last_same_armor_step;
     bool paused = false;
 
@@ -986,10 +988,14 @@ int main(int argc, char** argv)
 
       // 三角/锯齿波验收：换板帧允许一次跳变，同一物理板内不允许
       // 出现“下降 -> 回升 -> 继续下降”。这里不预设旋转方向，正反转录像都适用。
-      if (plan.valid() && last_command_yaw &&
+      //
+      // 比的必须是**射击轨迹**原值，不是下发命令。切板过渡段就是在同一块板
+      // 内故意反向减速（armor_id 要到真正切板才变），拿命令角来比的话，一开
+      // 过渡段这里就会满屏报折返——那是规划在按设计工作，不是估计在抖。
+      if (plan.valid() && last_shoot_yaw &&
           plan_armor_id == last_plan_armor_id) {
         const double step =
-          L6Telemetry::limit_rad(plan.aim.yaw - *last_command_yaw);
+          L6Telemetry::limit_rad(plan.aim.shootYaw() - *last_shoot_yaw);
         if (std::abs(step) >= kDirectionStepThreshold) {
           if (last_same_armor_step && step * *last_same_armor_step < 0.0) {
             ++same_armor_direction_reversal_frames;
@@ -1009,9 +1015,11 @@ int main(int argc, char** argv)
         ++plan_valid_frames;
         last_plan_armor_id = plan_armor_id;
         last_command_yaw = plan.aim.yaw;
+        last_shoot_yaw = plan.aim.shootYaw();
       } else {
         last_plan_armor_id = -1;
         last_command_yaw.reset();
+        last_shoot_yaw.reset();
       }
       if (command) {
         ++command_frames;
@@ -1179,7 +1187,8 @@ int main(int argc, char** argv)
               plan.aim.yaw * kRadToDeg, plan.aim.pitch * kRadToDeg,
               L6Telemetry::limit_rad(plan.aim.yaw - gimbal_ypr[0]) * kRadToDeg,
               L6Telemetry::limit_rad(plan.aim.pitch - gimbal_ypr[1]) * kRadToDeg,
-              plan_armor_id, plan_armor_id)
+              plan_armor_id, plan_armor_id) +
+              (plan.aim.blending ? std::string(" | BLEND") : std::string())
           : cv::format("CMD not sent (plan %s)", planErrorName(plan.reason)),
         {10, full_view ? 182 : 92},
         plan.valid() ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
@@ -1273,6 +1282,20 @@ int main(int argc, char** argv)
       if (plan.valid()) {
         data["cmd_yaw"] = plan.aim.yaw * kRadToDeg;
         data["cmd_pitch"] = plan.aim.pitch * kRadToDeg;
+        // 射击轨迹原值。**必须和 cmd_yaw 画在同一张图上**：切板过渡段调的
+        // 就是这两条线怎么分开又怎么合上，只画一条完全看不出过渡做没做、
+        // 有没有做过头。跟随段两者重合是正常的，不是数据重复。
+        data["shoot_yaw"] = plan.aim.shootYaw() * kRadToDeg;
+        data["shoot_pitch"] = plan.aim.shootPitch() * kRadToDeg;
+        data["blending"] = plan.aim.blending ? 1 : 0;
+        // 过渡段规划出的峰值角加速度，对着 planning.blend 里配的上限看。
+        // acc_limited 置 1 说明拉到最长时长仍然超限——重合度上不去是云台
+        // 能力的物理限制，不是参数没调好。
+        data["blend_peak_acc"] = plan.blend.peak_yaw_acceleration;
+        data["blend_acc_limited"] = plan.blend.acceleration_limited ? 1 : 0;
+        // 过渡终点比切板时刻晚了多少毫秒。稳定在一个帧周期附近是正常量化
+        // 误差；明显更大说明 blend.horizon_ms 不够长，切板发现得太晚。
+        data["blend_late_ms"] = plan.blend.late * 1e3;
         // 云台要闭合的跟随误差。单看 cmd_yaw 是条平滑斜坡，抖动只在差值里看得见。
         data["cmd_yaw_error"] =
           L6Telemetry::limit_rad(plan.aim.yaw - gimbal_ypr[0]) * kRadToDeg;
