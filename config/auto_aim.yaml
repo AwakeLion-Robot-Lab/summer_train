@@ -7,7 +7,7 @@ inference:
   #   model/armor_model/szu-v8n-fp16.onnx-> yolov8_21   （深大 Infantry-v8n）
   # szu-v8n 的 .xml/.bin 需要较新的 OpenVINO 运行时（2023.1 读不了它的
   # MaxPool），旧运行时必须走同名 .onnx。
-  model_path: "model/armor_model/szu-v5n.xml"
+  model_path: "model/armor_model/yolov5.xml"
   device: "CPU"
 
   # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
