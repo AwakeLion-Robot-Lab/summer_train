@@ -105,8 +105,18 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       continue;
     }
 
-    L6Telemetry::logDebug("serial protocol ignored unsupported frame",
-                          static_cast<int>(header.cmd_id));
+    // 能走到这里说明 SOF、帧头 CRC8 和整帧 CRC16 全部通过，也就是下位机的
+    // 帧结构和两套 CRC 都与本实现一致，只是这一帧的 cmd_id 或 payload 长度
+    // 对不上。只打 cmd_id 的话看不出是"帧类型不认识"还是"类型对但结构体
+    // 长度不一致"，而后者才是最常见的失配，所以把期望值一起打出来。
+    L6Telemetry::logDebug(
+        "serial protocol ignored unsupported frame: cmd_id",
+        static_cast<int>(header.cmd_id), "data_length",
+        static_cast<int>(header.data_length), "frame_size",
+        static_cast<int>(frame_size), "| expected cmd_id",
+        static_cast<int>(kRxCmdId), "data_length",
+        static_cast<int>(sizeof(RxPayload)), "frame_size",
+        static_cast<int>(sizeof(RxPacket)));
     rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
   }
 
