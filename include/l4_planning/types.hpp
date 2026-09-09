@@ -124,6 +124,11 @@ struct PlanConfig {
 
   double fallback_bullet_speed{23.0};
   double min_valid_bullet_speed{14.0};
+  // 下位机暂时上报不了弹速时，把 fallback_bullet_speed 当作实测值使用，
+  // 不再因此把计划降级成 TrackOnly。**默认必须是 false**：打开之后弹道用的
+  // 是一个猜的弹速，落点误差随距离放大，且弹速一旦恢复上报也不会有任何提示。
+  // 这是权宜之计，拿到真实弹速后必须关掉。
+  bool trust_fallback_bullet_speed{false};
 
   // 串口发出到电控执行的耗时，只能在实车上标定，未标定时保持空值。
   // 其余四段都是可算或可测的：image_to_plan 和 plan_to_send 由 runtime 实测，

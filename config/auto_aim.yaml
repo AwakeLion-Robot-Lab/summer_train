@@ -146,6 +146,12 @@ planning:
   fallback_bullet_speed_mps: 23.0
   # 实测弹速低于该值时使用回退弹速，并把 Plan 降级为 TrackOnly，禁止开火。
   min_valid_bullet_speed_mps: 14.0
+  # 把上面的回退弹速当作实测值，不再因缺弹速降级。
+  # 现场下位机还没上报弹速（都在未解析的 0x21 帧里），先按 23 m/s 走，
+  # 否则 aim/reason 永远停在 BadBulletSpeed，盖住后面真正该看的降级原因。
+  # !! 拿到真实弹速后必须改回 false !! 打开期间弹道用的是猜测值，
+  # 落点误差随距离放大，而且弹速恢复上报也不会有任何提示。
+  trust_fallback_bullet_speed: true
   # 候选板进入角：板面相对视线的误差需小于该值，单位 degree。
   # 常规车和旋转目标两条选板分支都用它。
   coming_angle_deg: 60.0

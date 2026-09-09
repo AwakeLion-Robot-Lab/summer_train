@@ -51,11 +51,15 @@ Plan Planner::plan(const PlanInput& input)
     : config_.impact.low_speed_delay_time;
 
   double bullet_speed = input.robot_state.bullet_speed;
-  const bool bullet_speed_ok = config_.impact.bulletSpeedValid(bullet_speed);
-  if (!bullet_speed_ok) {
-    // 弹速异常时仍用回退值生成跟随角，但最终状态降级为 TrackOnly。
+  const bool bullet_speed_measured =
+    config_.impact.bulletSpeedValid(bullet_speed);
+  if (!bullet_speed_measured) {
+    // 弹速异常时用回退值生成跟随角。默认仍降级为 TrackOnly；只有显式打开
+    // trust_fallback_bullet_speed 才把这个猜测值当实测值放行。
     bullet_speed = config_.impact.fallback_bullet_speed;
   }
+  const bool bullet_speed_ok =
+    bullet_speed_measured || config_.impact.trust_fallback_bullet_speed;
 
   Delay delay;
   // 实时运行直接测量曝光到规划的耗时；离线入口使用固定 5 ms。

@@ -421,6 +421,10 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     planning,
     "min_valid_bullet_speed_mps",
     config.plan.impact.min_valid_bullet_speed);
+  readValue(
+    planning,
+    "trust_fallback_bullet_speed",
+    config.plan.impact.trust_fallback_bullet_speed);
   readDegrees(
     planning, "coming_angle_deg", config.plan.selector.coming_angle);
   readDegrees(
