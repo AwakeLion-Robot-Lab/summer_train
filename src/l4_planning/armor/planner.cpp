@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -32,13 +33,15 @@ double centerYaw(const L3Estimation::TrackedTarget& target)
 }  // namespace
 
 Planner::Planner(ArmorPlanConfig config)
-: config_(config), ballistic_(config.ballistic)
+: config_(config), ballistic_(config.ballistic), smoother_(config.blend.limits)
 {
 }
 
 Plan Planner::plan(const PlanInput& input)
 {
   if (!input.target.has_value()) {
+    // 目标没了，正在进行的过渡段所依据的切板预测随之失效，不能继续按它走。
+    smoother_.reset();
     return rejected(PlanError::NoTarget);
   }
 
@@ -87,6 +90,9 @@ Plan Planner::plan(const PlanInput& input)
   int probe_lock = lock;
   AimPoint final_aim = chooseAimPoint(target, probe_lock);
   if (!final_aim.valid) {
+    if (auto blended = blendOnlyPlan(input.plan_time, delay)) {
+      return *blended;
+    }
     return rejected(PlanError::OutOfWindow);
   }
 
@@ -112,6 +118,9 @@ Plan Planner::plan(const PlanInput& input)
     int iteration_lock = lock;
     final_aim = chooseAimPoint(iteration_target, iteration_lock);
     if (!final_aim.valid) {
+      if (auto blended = blendOnlyPlan(input.plan_time, delay)) {
+        return *blended;
+      }
       return rejected(PlanError::OutOfWindow);
     }
 
@@ -149,11 +158,49 @@ Plan Planner::plan(const PlanInput& input)
     plan.status = PlanStatus::FireReady;
     plan.reason = PlanError::None;
   }
-  plan.aim = AimReference{
-    point,
-    std::atan2(point.y(), point.x()) + config_.impact.yaw_offset,
-    // 世界系约定 pitch 向下为正，因此弹道仰角在此取反。
-    -(current_trajectory.pitch + config_.impact.pitch_offset)};
+  const double shoot_yaw =
+    std::atan2(point.y(), point.x()) + config_.impact.yaw_offset;
+  // 世界系约定 pitch 向下为正，因此弹道仰角在此取反。
+  const double shoot_pitch =
+    -(current_trajectory.pitch + config_.impact.pitch_offset);
+  last_shoot_yaw_ = shoot_yaw;
+  last_shoot_pitch_ = shoot_pitch;
+  has_last_shoot_ = true;
+
+  plan.aim.point = point;
+  plan.aim.shoot_yaw = shoot_yaw;
+  plan.aim.shoot_pitch = shoot_pitch;
+  // 默认下发射击轨迹原值；开了过渡段才可能被多项式改写。
+  plan.aim.yaw = shoot_yaw;
+  plan.aim.pitch = shoot_pitch;
+
+  if (config_.blend.enable) {
+    std::optional<AimSmoother::Forecast> forecast;
+    int next_id = -1;
+    const auto switch_time = nextSwitchTime(
+      target, current_trajectory.fly_time, final_aim.armor_id, next_id);
+    if (switch_time) {
+      AimSmoother::Forecast candidate;
+      candidate.switch_time = *switch_time;
+      candidate.before = sampleTrajectory(
+        target, current_trajectory.fly_time, bullet_speed, 0.0,
+        final_aim.armor_id);
+      // 终点钉在切板后那一块上，不重新选板：过渡的意义就是"提前奔向下一块"。
+      candidate.after =
+        [this, target, fly_time = current_trajectory.fly_time, bullet_speed,
+         next_id](double offset) {
+          return sampleTrajectory(target, fly_time, bullet_speed, offset, next_id);
+        };
+      forecast = std::move(candidate);
+    }
+
+    const auto smoothed =
+      smoother_.update(input.plan_time, shoot_yaw, shoot_pitch, forecast);
+    plan.aim.yaw = smoothed.yaw;
+    plan.aim.pitch = smoothed.pitch;
+    plan.aim.blending = smoothed.blending;
+  }
+
   plan.fire = FireReference{final_aim.armor_id, final_aim.xyza};
   plan.timing = PlanTiming{
     future + secondsToDuration(current_trajectory.fly_time),
@@ -184,9 +231,136 @@ Plan Planner::plan(
 void Planner::reset() noexcept
 {
   // locked_id_ 由候选板变化时更新。短暂中断不清锁，避免恢复后立即切板。
+  // 过渡段则必须清：它锁死的系数来自一次已经作废的切板预测。
+  smoother_.reset();
+  has_last_shoot_ = false;
 }
 
 // ---- 以下为私有实现 ----
+
+AimState Planner::sampleTrajectory(
+  const L3Estimation::TrackedTarget& target_at_fire,
+  double fly_time,
+  double bullet_speed,
+  double offset,
+  int armor_id) const
+{
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  const AxisState invalid_axis{kNaN, kNaN, kNaN};
+  const AimState invalid{invalid_axis, invalid_axis};
+
+  const double step = config_.blend.derivative_step;
+  if (!(step > 0.0) || !std::isfinite(offset)) {
+    return invalid;
+  }
+
+  // 三点中心差分：[offset - step, offset, offset + step]。
+  double yaw[3];
+  double pitch[3];
+  for (int i = 0; i < 3; ++i) {
+    L3Estimation::TrackedTarget probe = target_at_fire;
+    probe.predict(fly_time + offset + (i - 1) * step);
+
+    const std::vector<Eigen::Vector4d> armors = probe.armor_xyza_list();
+    if (armor_id < 0 ||
+        static_cast<std::size_t>(armor_id) >= armors.size()) {
+      return invalid;
+    }
+
+    const Eigen::Vector3d position = armors[static_cast<std::size_t>(armor_id)].head<3>();
+    const double distance = std::hypot(position.x(), position.y());
+    const Ballistic trajectory =
+      ballistic_.solve(distance, position.z(), bullet_speed);
+    if (!trajectory.valid) {
+      return invalid;
+    }
+
+    yaw[i] = std::atan2(position.y(), position.x()) + config_.impact.yaw_offset;
+    pitch[i] = -(trajectory.pitch + config_.impact.pitch_offset);
+  }
+
+  // 差分一律走归一化差。yaw 出自 atan2，天然落在 (-pi, pi]，跨 ±pi 时直接
+  // 相减会得到一个 2pi/step 的假尖峰，被当成"需要无穷大加速度"，过渡段就
+  // 会在那一帧被判成不可行。
+  const auto axis = [step](const double* value) {
+    AxisState state;
+    state.position = value[1];
+    state.velocity = L6Telemetry::limit_rad(value[2] - value[0]) / (2.0 * step);
+    state.acceleration =
+      (L6Telemetry::limit_rad(value[2] - value[1]) -
+       L6Telemetry::limit_rad(value[1] - value[0])) /
+      (step * step);
+    return state;
+  };
+
+  AimState state;
+  state.yaw = axis(yaw);
+  state.pitch = axis(pitch);
+  return state;
+}
+
+std::optional<double> Planner::nextSwitchTime(
+  const L3Estimation::TrackedTarget& target_at_fire,
+  double fly_time,
+  int current_id,
+  int& next_id) const
+{
+  const double grid = config_.blend.grid;
+  const double horizon = config_.blend.horizon;
+  if (!(grid > 0.0) || !(horizon > grid)) {
+    return std::nullopt;
+  }
+  const int steps = static_cast<int>(horizon / grid);
+
+  // 迟滞锁沿扫描逐步推进，模拟它逐帧真实的演化；但它是局部副本，前视绝不
+  // 写回 locked_id_——否则"看一眼未来"就把当前帧的锁改掉了。
+  int lock = locked_id_;
+  for (int step = 1; step <= steps; ++step) {
+    const double offset = grid * step;
+    L3Estimation::TrackedTarget probe = target_at_fire;
+    probe.predict(fly_time + offset);
+
+    const AimPoint point = chooseAimPoint(probe, lock);
+    // 空窗不算切板。前哨站两块板之间就有这么一段（进入角 70 度、离开角
+    // 30 度，三板 120 度间隔，中间约 20 度谁都不满足），过渡段应当盖过它。
+    if (!point.valid) {
+      continue;
+    }
+    if (point.armor_id != current_id) {
+      next_id = point.armor_id;
+      return offset;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<Plan> Planner::blendOnlyPlan(TimePoint now, const Delay& delay)
+{
+  if (!config_.blend.enable || !smoother_.blending() || !has_last_shoot_) {
+    return std::nullopt;
+  }
+
+  // 过渡段已锁死系数，这里只是求值；传上一次的射击轨迹原值只是为了在过渡
+  // 恰好结束的那一帧有个合理的回落值。
+  const auto smoothed =
+    smoother_.update(now, last_shoot_yaw_, last_shoot_pitch_, std::nullopt);
+  if (!smoothed.blending) {
+    return std::nullopt;
+  }
+
+  Plan plan;
+  // 没有实体装甲板可判，所以只能 TrackOnly：云台继续沿过渡段走，L5 会因为
+  // plan.fire 为空而拒绝开火。原因仍记 OutOfWindow——本帧确实没有可击打板。
+  plan.status = PlanStatus::TrackOnly;
+  plan.reason = PlanError::OutOfWindow;
+  plan.aim.yaw = smoothed.yaw;
+  plan.aim.pitch = smoothed.pitch;
+  plan.aim.shoot_yaw = last_shoot_yaw_;
+  plan.aim.shoot_pitch = last_shoot_pitch_;
+  plan.aim.blending = true;
+  plan.timing.delay = delay;
+  return plan;
+}
 
 Planner::AimPoint Planner::chooseAimPoint(
   const L3Estimation::TrackedTarget& target, int& lock) const

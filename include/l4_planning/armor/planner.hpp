@@ -34,6 +34,7 @@ public:
 
   void reset() noexcept;
   int lockedArmorId() const noexcept { return locked_id_; }
+  bool blending() const noexcept { return smoother_.blending(); }
 
 private:
   struct AimPoint {
@@ -48,11 +49,49 @@ private:
   AimPoint chooseAimPoint(
     const L3Estimation::TrackedTarget& target, int& lock) const;
 
+  // 射击轨迹在"本帧之后 offset 秒"的取值：把发射时刻的状态再推
+  // fly_time + offset，展开出**指定**物理板（不是重新选板——过渡段的终点
+  // 必须钉在切板后那一块上），解一次弹道得到 yaw/pitch。
+  //
+  // 飞行时间沿用本帧收敛值、不再逐样本迭代：前视窗口只有两百毫秒，这期间
+  // 飞行时间的变化远小于整车 yaw 转过的角度，而迭代会把采样成本乘上
+  // max_iterations。
+  //
+  // 求导走中心差分，且差分必须先归一化：aim yaw 出自 atan2，天然落在
+  // (-pi, pi]，直接相减会在 ±pi 处得到一个 2pi/dt 的假尖峰，那正好会被
+  // 当成"需要无穷大加速度"。失败时返回全 NaN，由 fitBlend 的有限性检查挡下。
+  AimState sampleTrajectory(
+    const L3Estimation::TrackedTarget& target_at_fire,
+    double fly_time,
+    double bullet_speed,
+    double offset,
+    int armor_id) const;
+
+  // 前视扫描，找选板结果首次改变的时刻。空窗（本帧没有任何可击打板）不算
+  // 切板：前哨站两块板之间就有这么一段，过渡段应当盖住它，而不是在那里
+  // 重新起跑。
+  std::optional<double> nextSwitchTime(
+    const L3Estimation::TrackedTarget& target_at_fire,
+    double fly_time,
+    int current_id,
+    int& next_id) const;
+
+  // 过渡段进行中、但本帧选不出可击打板时的降级计划：继续把过渡段发下去，
+  // 而不是让 L5 走 safeHold 把云台角冻住。没有实体板可判，所以只能 TrackOnly。
+  std::optional<Plan> blendOnlyPlan(TimePoint now, const Delay& delay);
+
   ArmorPlanConfig config_;
   // 弹道求解器在构造时按 ballistic.drag_coefficient 选定模型：0 走真空闭式
   // 解，非 0 走等效距离的二次阻力闭式解。每帧解算不再重建模型。
   BallisticSolver ballistic_;
   int locked_id_{-1};
+
+  AimSmoother smoother_;
+  // 最近一次解出的射击轨迹角。空窗帧里过渡段还要继续求值，但那一帧没有
+  // 新的射击轨迹可算，只能沿用上一次的原值去填 shoot_yaw/shoot_pitch。
+  double last_shoot_yaw_{0.0};
+  double last_shoot_pitch_{0.0};
+  bool has_last_shoot_{false};
 };
 
 }  // namespace L4Planning

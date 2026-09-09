@@ -20,7 +20,11 @@ enum class RejectReason {
   // 与 OutsideHitWindow 分开记，前者是目标的问题，后者是云台的问题。
   AimError,
   CommandJump,
-  NonFinite
+  NonFinite,
+  // 切板过渡段进行中：命令是五次多项式上的值，**故意**偏离射击轨迹，此时
+  // 云台跟得再好也打不中。新枚举一律追加在末尾——遥测按整数值画曲线，
+  // 中间插一个会让历史记录整体错位。
+  Blending
 };
 
 std::string toString(RejectReason reason);

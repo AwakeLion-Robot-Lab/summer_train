@@ -57,8 +57,22 @@ enum class PlanStatus : std::uint8_t {
 // 命中点及其对应的世界系枪管角命令。
 struct AimReference {
   Eigen::Vector3d point{Eigen::Vector3d::Zero()};
+  // 实际下发的角。切板过渡段进行中时，这是五次多项式上的值，**故意**偏离
+  // 射击轨迹。
   double yaw{0.0};
   double pitch{0.0};
+
+  // 射击轨迹原值，即不做过渡就该下发的角。只有 blending 为真时才与上面不同。
+  double shoot_yaw{0.0};
+  double shoot_pitch{0.0};
+  bool blending{false};
+
+  // 开火判据要比的角。跟随段两者相同；过渡段期间拿 yaw/pitch 去比，等于在
+  // 一段刻意偏开的轨迹上判定"实际角贴合命令角、可以开火"，子弹会全部打飞。
+  // 走访问器而不是直接读 shoot_yaw，是为了让手工构造的 Plan（测试、离线
+  // 回放）不必知道这两个字段的存在。
+  double shootYaw() const noexcept { return blending ? shoot_yaw : yaw; }
+  double shootPitch() const noexcept { return blending ? shoot_pitch : pitch; }
 };
 
 // L5 判定始终落在一块实体装甲板上；armor_pose = [x, y, z, normal_yaw]。

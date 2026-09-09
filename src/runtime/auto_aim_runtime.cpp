@@ -524,7 +524,13 @@ nlohmann::json telemetryFrame(
   if (plan.valid()) {
     data["aim"]["yaw"] = plan.aim.yaw * kRadToDeg;
     data["aim"]["pitch"] = plan.aim.pitch * kRadToDeg;
+    // 射击轨迹原值。**必须和 aim/yaw 画在同一张图上**：过渡段调的就是这
+    // 两条线怎么分开又怎么合上，只画一条完全看不出过渡做没做、做过头没有。
+    // 跟随段两者重合是正常的，不是数据重复。
+    data["aim"]["shoot_yaw"] = plan.aim.shoot_yaw * kRadToDeg;
+    data["aim"]["shoot_pitch"] = plan.aim.shoot_pitch * kRadToDeg;
   }
+  data["aim"]["blending"] = plan.aim.blending ? 1 : 0;
   data["aim"]["armor_id"] = plan.fire ? plan.fire->armor_id : -1;
 
   // delay: 五段延迟链。绝不合并成一个标量——上车标定 send_to_control 时

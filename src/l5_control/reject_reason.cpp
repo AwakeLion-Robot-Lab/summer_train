@@ -29,6 +29,8 @@ std::string toString(RejectReason reason)
       return "command_jump";
     case RejectReason::NonFinite:
       return "non_finite";
+    case RejectReason::Blending:
+      return "blending";
     default:
       return "unknown";
   }

@@ -29,6 +29,12 @@ FireDecision FireDecider::decide(const FireInput& input) const
   if (input.command_jump) {
     reject(RejectReason::CommandJump);
   }
+  // 过渡段期间命令刻意偏离射击轨迹，云台贴合命令角恰恰意味着打不中。下面
+  // 的误差判据已经改比射击轨迹原值、本来就会拒绝，这一条是为了让遥测直接
+  // 看出"这一帧不开火是因为在过渡"，而不是混在 aim_error 里。
+  if (plan.aim.blending) {
+    reject(RejectReason::Blending);
+  }
 
   if (!input.target.has_value()) {
     reject(RejectReason::NoTarget);
@@ -91,10 +97,13 @@ FireDecision FireDecider::decide(const FireInput& input) const
     : L3Estimation::ArmorName::Unknown;
   decision.tolerance = tolerance(
     plan, armor_type.value_or(L3Estimation::ArmorType::Small), armor_name);
+  // 比的是**射击轨迹**原值，不是下发的命令角。跟随段两者相同；过渡段期间
+  // 下发角是故意偏开的，拿它去比等于问"云台跟得准不准"，而这里要问的是
+  // "现在打出去能不能命中"。
   decision.yaw_error =
-    std::abs(L6Telemetry::limit_rad(plan.aim.yaw - input.actual_yaw));
+    std::abs(L6Telemetry::limit_rad(plan.aim.shootYaw() - input.actual_yaw));
   decision.pitch_error =
-    std::abs(L6Telemetry::limit_rad(plan.aim.pitch - input.actual_pitch));
+    std::abs(L6Telemetry::limit_rad(plan.aim.shootPitch() - input.actual_pitch));
 
   if (!decision.tolerance.valid) {
     // 没有实体装甲板可判——中心档下这意味着这一帧本来就不该开火。

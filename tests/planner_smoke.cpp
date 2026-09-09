@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <numbers>
+#include <vector>
 
 namespace {
 
@@ -583,6 +584,124 @@ void testSharedIterationProducesFiniteCommands()
   std::cout << "  [ok] shared predict/choose iteration is finite on 480 configurations\n";
 }
 
+// 小陀螺切板：过渡段必须真的介入，跟随段必须逐位不变，下发命令的二阶差分
+// 必须比不做过渡时小一个量级。同一条目标序列同时喂给开/关两个规划器。
+void testBlendSmoothsArmorSwitch()
+{
+  auto blended_config = calibratedConfig();
+  blended_config.blend.enable = true;
+  blended_config.blend.limits.max_yaw_acceleration = 50.0;
+  blended_config.blend.limits.max_pitch_acceleration = 100.0;
+
+  L4Planning::Planner blended(blended_config);
+  L4Planning::Planner plain(calibratedConfig());
+
+  L1Sensor::RobotState robot_state;
+  robot_state.bullet_speed = 23.0;
+
+  const auto base = makeTarget(10.0);
+  constexpr double kStep = 0.005;
+  constexpr int kFrames = 160;
+
+  std::vector<double> blended_yaw;
+  std::vector<double> plain_yaw;
+  int blending_frames = 0;
+  bool follow_segment_untouched = true;
+  bool lock_untouched = true;
+  bool deviated = false;
+
+  for (int frame = 0; frame < kFrames; ++frame) {
+    L3Estimation::TrackedTarget state = base;
+    // 必须走绝对时间入口：predict(double) 只推状态、不推 t_，用它造帧序列
+    // 会让 Planner 看到的 plan_time 永远停在第 0 帧，过渡段的时钟就冻住了。
+    state.predict(
+      base.t() + std::chrono::microseconds(static_cast<int>(kStep * frame * 1e6)));
+
+    const auto with = blended.plan(state, robot_state, state.t());
+    const auto without = plain.plan(state, robot_state, state.t());
+
+    // 前视扫描用的是迟滞锁的副本，绝不能写回。锁的演化必须和不做过渡时一致。
+    if (blended.lockedArmorId() != plain.lockedArmorId()) {
+      lock_untouched = false;
+    }
+    if (!with.valid() || !without.valid()) {
+      continue;
+    }
+
+    if (with.aim.blending) {
+      ++blending_frames;
+      if (std::abs(L6Telemetry::limit_rad(with.aim.yaw - with.aim.shoot_yaw)) > 1e-6) {
+        deviated = true;
+      }
+    } else {
+      // 跟随段：开不开过渡都必须给出同一条命令，且原值与下发值相同。
+      if (with.aim.yaw != without.aim.yaw || with.aim.pitch != without.aim.pitch) {
+        follow_segment_untouched = false;
+      }
+      if (with.aim.yaw != with.aim.shoot_yaw ||
+          with.aim.pitch != with.aim.shoot_pitch) {
+        follow_segment_untouched = false;
+      }
+    }
+
+    blended_yaw.push_back(with.aim.yaw);
+    plain_yaw.push_back(without.aim.yaw);
+  }
+
+  require(blending_frames > 0, "a blend must actually engage on a spinning target");
+  require(deviated, "the blend must deviate from the shooting trajectory");
+  require(follow_segment_untouched, "the follow segment must be bit-identical");
+  require(lock_untouched, "the forward scan must not disturb the hysteresis lock");
+
+  const auto peakSecondDifference = [](const std::vector<double>& series) {
+    double peak = 0.0;
+    for (std::size_t i = 1; i + 1 < series.size(); ++i) {
+      const double second =
+        (L6Telemetry::limit_rad(series[i + 1] - series[i]) -
+         L6Telemetry::limit_rad(series[i] - series[i - 1])) /
+        (kStep * kStep);
+      peak = std::max(peak, std::abs(second));
+    }
+    return peak;
+  };
+
+  const double smoothed_peak = peakSecondDifference(blended_yaw);
+  const double raw_peak = peakSecondDifference(plain_yaw);
+  require(raw_peak > 50.0, "the unsmoothed command really does exceed the gimbal limit");
+  require(
+    smoothed_peak < raw_peak * 0.5,
+    "the blend must cut the command acceleration substantially");
+
+  std::cout << "  [ok] blend engaged on " << blending_frames << "/" << kFrames
+            << " frames, command peak accel " << raw_peak << " -> " << smoothed_peak
+            << " rad/s^2\n";
+}
+
+// 关掉过渡段时，Plan 必须与这个特性引入之前逐位相同：shoot_* 等于 yaw/pitch，
+// blending 恒假。开火判据的访问器就靠这个前提回落。
+void testBlendDisabledIsBitIdentical()
+{
+  L4Planning::Planner planner(calibratedConfig());
+  L1Sensor::RobotState robot_state;
+  robot_state.bullet_speed = 23.0;
+
+  const auto base = makeTarget(10.0);
+  for (int frame = 0; frame < 60; ++frame) {
+    L3Estimation::TrackedTarget state = base;
+    state.predict(base.t() + std::chrono::milliseconds(5 * frame));
+    const auto plan = planner.plan(state, robot_state, state.t());
+    if (!plan.valid()) {
+      continue;
+    }
+    require(!plan.aim.blending, "blend must stay off when disabled");
+    require(plan.aim.shoot_yaw == plan.aim.yaw, "shoot_yaw mirrors yaw when not blending");
+    require(
+      plan.aim.shoot_pitch == plan.aim.pitch, "shoot_pitch mirrors pitch when not blending");
+    require(plan.aim.shootYaw() == plan.aim.yaw, "accessor falls back to the command angle");
+  }
+  std::cout << "  [ok] blend disabled leaves Plan bit-identical\n";
+}
+
 }  // namespace
 
 int main()
@@ -606,6 +725,8 @@ int main()
   testPlannerAlwaysAimsAtPhysicalArmor();
   testSignedSpeedDelaySelection();
   testSharedIterationProducesFiniteCommands();
+  testBlendSmoothsArmorSwitch();
+  testBlendDisabledIsBitIdentical();
   std::cout << "planner smoke test passed\n";
   return 0;
 }

@@ -186,6 +186,57 @@ void normalize(AutoAimConfig& config)
     config.plan.selector.outpost_leaving_angle =
       plan_defaults.selector.outpost_leaving_angle;
   }
+  // 过渡段的参数只在启用时校验，关掉时留着写错的值不影响任何行为。
+  if (config.plan.blend.enable) {
+    const L4Planning::BlendConfig blend_defaults;
+    L4Planning::BlendConfig& blend_cfg = config.plan.blend;
+
+    if (!positiveFinite(blend_cfg.limits.max_yaw_acceleration) ||
+        !positiveFinite(blend_cfg.limits.max_pitch_acceleration)) {
+      L6Telemetry::logWarn(
+        "planning.blend acceleration limit is invalid, using defaults");
+      blend_cfg.limits.max_yaw_acceleration =
+        blend_defaults.limits.max_yaw_acceleration;
+      blend_cfg.limits.max_pitch_acceleration =
+        blend_defaults.limits.max_pitch_acceleration;
+    }
+    if (!positiveFinite(blend_cfg.limits.min_duration) ||
+        !positiveFinite(blend_cfg.limits.max_duration) ||
+        blend_cfg.limits.min_duration >= blend_cfg.limits.max_duration) {
+      L6Telemetry::logWarn(
+        "planning.blend duration range is invalid, using defaults");
+      blend_cfg.limits.min_duration = blend_defaults.limits.min_duration;
+      blend_cfg.limits.max_duration = blend_defaults.limits.max_duration;
+    }
+    if (!(std::isfinite(blend_cfg.limits.commit_margin) &&
+          blend_cfg.limits.commit_margin >= 0.0)) {
+      blend_cfg.limits.commit_margin = blend_defaults.limits.commit_margin;
+    }
+    if (blend_cfg.limits.search_iterations < 1 ||
+        blend_cfg.limits.search_iterations > 32) {
+      blend_cfg.limits.search_iterations = blend_defaults.limits.search_iterations;
+    }
+    if (!positiveFinite(blend_cfg.derivative_step)) {
+      blend_cfg.derivative_step = blend_defaults.derivative_step;
+    }
+    if (!positiveFinite(blend_cfg.grid)) {
+      blend_cfg.grid = blend_defaults.grid;
+    }
+    // 前视窗口短于最长过渡时长的话，切板每次都是"发现时已经来不及"，过渡
+    // 段全部走 late 分支，提前减速这件事就等于没做——而且不会报错，只会
+    // 表现为效果不明显。宁可强行抬上去并且吼一声。
+    if (!(blend_cfg.horizon > blend_cfg.limits.max_duration)) {
+      const double raised = blend_cfg.limits.max_duration * 1.2;
+      L6Telemetry::logWarn(
+        "planning.blend.horizon_ms must exceed max_duration_ms, raised to",
+        raised * 1e3, "ms");
+      blend_cfg.horizon = raised;
+    }
+    if (blend_cfg.grid >= blend_cfg.horizon) {
+      blend_cfg.grid = blend_defaults.grid;
+    }
+  }
+
   // 标定值必须是正的有限数，否则当作没标定。
   // 弹道参数越界都是静默失效：重力为负会解出朝天的仰角，阻力系数为负会让
   // 等效距离随距离指数缩短（越远打得越准，明显是错的），max_pitch 超过 90°
@@ -433,6 +484,29 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     planning, "outpost_coming_angle_deg", config.plan.selector.outpost_coming_angle);
   readDegrees(
     planning, "outpost_leaving_angle_deg", config.plan.selector.outpost_leaving_angle);
+
+  // 切板过渡段。整块可以不写：不写就是不启用，行为与这一节出现之前逐位相同。
+  YAML::Node blend;
+  if (planning) {
+    blend = planning["blend"];
+  }
+  L4Planning::BlendConfig& blend_config = config.plan.blend;
+  readValue(blend, "enable", blend_config.enable);
+  readValue(
+    blend, "max_yaw_acc_rad_s2", blend_config.limits.max_yaw_acceleration);
+  readValue(
+    blend, "max_pitch_acc_rad_s2", blend_config.limits.max_pitch_acceleration);
+  readMillisecondsAsSeconds(
+    blend, "min_duration_ms", blend_config.limits.min_duration);
+  readMillisecondsAsSeconds(
+    blend, "max_duration_ms", blend_config.limits.max_duration);
+  readMillisecondsAsSeconds(
+    blend, "commit_margin_ms", blend_config.limits.commit_margin);
+  readValue(blend, "search_iterations", blend_config.limits.search_iterations);
+  readMillisecondsAsSeconds(blend, "horizon_ms", blend_config.horizon);
+  readMillisecondsAsSeconds(blend, "grid_ms", blend_config.grid);
+  readMillisecondsAsSeconds(
+    blend, "derivative_step_ms", blend_config.derivative_step);
   // 不写这一项就表示还没在实车上标定：Planner 会把计划降级成 TrackOnly，
   // 云台照常跟随但不允许开火。写了才算标定完成。
   if (planning && planning["send_to_control_ms"]) {
