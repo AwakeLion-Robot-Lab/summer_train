@@ -234,6 +234,12 @@ local standalone_tests = {
         includes = {"include", "/usr/include/eigen3"},
         opencv   = {"opencv_core", "opencv_imgproc"},
     },
+    -- 五次多项式过渡段全是标量，刻意不碰 Eigen/OpenCV，这样数值部分
+    -- （六系数、三次极值、二分）能在没有相机没有串口的机器上单独验完。
+    aim_smoother_smoke = {
+        files    = {"src/l4_planning/aim_smoother.cpp"},
+        includes = {"include"},
+    },
 }
 
 -- 需要开关或平台才存在的目标。openvino 这几个都要模型；
