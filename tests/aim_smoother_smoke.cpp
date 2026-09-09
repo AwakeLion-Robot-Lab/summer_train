@@ -284,8 +284,11 @@ void testSmootherEndToEnd()
           wrapToPi(out.pitch - raw_pitch), 0.0, 1e-9, "blend starts continuous in pitch");
       }
       blend_end_t = t;
-      // late 现在是"晚出 commit_margin 以上"，帧量化那一两毫秒不算。
-      check(!out.late, "blend committed with enough lead time");
+      // 提交条件是"距切板已不足最小可行时长"，一帧就能跨过等号，所以终点
+      // 总会晚一点点。晚的量只该是帧量化级别。
+      check(
+        out.late_by >= 0.0 && out.late_by <= 4.0 * kStep,
+        "blend overshoot past the switch stays within frame quantisation");
     } else if (!blend_started) {
       // 过渡开始之前：跟随段必须逐位等于原值。
       check(out.yaw == raw_yaw, "pre-blend yaw is untouched");

@@ -208,12 +208,6 @@ target("newvision")
 -- ---------------------------------------------------------------------------
 
 local standalone_tests = {
-    daedalus_client_smoke = {
-        files    = {"src/l1_sensor/simulator/daedalus_client.cpp"},
-        includes = {"include"},
-        opencv   = {"opencv_core", "opencv_imgproc"},
-        syslinks = {"pthread"},
-    },
     logger_smoke = {
         files    = {"src/l6_telemetry/logger.cpp"},
         includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
@@ -315,11 +309,3 @@ for _, source in ipairs(os.files("tests/*.cpp")) do
         target_end()
     end
 end
-
-target("daedalus_quintic_probe")
-    set_kind("binary")
-    set_default(false)
-    set_rundir("$(projectdir)")
-    add_files("examples/daedalus_quintic_probe.cpp")
-    add_deps("newvision")
-target_end()

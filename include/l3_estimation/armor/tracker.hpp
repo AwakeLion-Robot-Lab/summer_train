@@ -34,10 +34,6 @@ public:
   bool ready() const noexcept;
   TrackState state() const noexcept;
 
-  // 更新相机模型；坐标原点和世界系约定必须保持一致。仿真相机的安装位置
-  // 可能随视角切换变化，不能一直使用启动时的外参。有效更新保留跟踪历史。
-  bool setCalibration(const L1Sensor::CameraCalibration& calibration);
-
   // 连续确认计数，达到 min_detect_count 才从 Detecting 升到 Tracking。
   int detectCount() const noexcept { return detect_count_; }
 

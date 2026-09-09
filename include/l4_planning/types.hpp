@@ -97,6 +97,20 @@ struct FireReference {
   }
 };
 
+// 切板过渡段的状态，只供遥测和现场判读，不参与任何判定。跟随段全为零值。
+struct BlendStatus {
+  // 本段规划出的峰值角加速度，rad/s^2。对着 planning.blend 里配的上限看：
+  // 贴着上限走是正常的，说明云台能力被用满了。
+  double peak_yaw_acceleration{0.0};
+  double peak_pitch_acceleration{0.0};
+  // 拉到最长时长仍然超限。这时重合度上不去是云台能力的物理限制，不是参数
+  // 没调好——不发出来的话，现场只能看到"跟不上"，看不出为什么。
+  bool acceleration_limited{false};
+  // 过渡终点比切板时刻晚了多少秒。稳定在一个图像帧周期附近是正常的量化
+  // 误差；明显更大说明前视窗口不够长，切板发现得太晚。
+  double late{0.0};
+};
+
 struct PlanTiming {
   // 最终瞄准点所对应的目标时刻，当前即预计命中时刻。
   TimePoint prediction_time{};
@@ -110,6 +124,7 @@ struct Plan {
   AimReference aim;
   std::optional<FireReference> fire;
   PlanTiming timing;
+  BlendStatus blend;
 
   bool valid() const noexcept
   {

@@ -39,7 +39,6 @@ Planner::Planner(ArmorPlanConfig config)
 
 Plan Planner::plan(const PlanInput& input)
 {
-  diagnostics_ = {};
   if (!input.target.has_value()) {
     // 目标没了，正在进行的过渡段所依据的切板预测随之失效，不能继续按它走。
     smoother_.reset();
@@ -175,16 +174,6 @@ Plan Planner::plan(const PlanInput& input)
   plan.aim.yaw = shoot_yaw;
   plan.aim.pitch = shoot_pitch;
 
-  if (diagnostics_enabled_) {
-    diagnostics_.raw_valid = true;
-    diagnostics_.raw_trajectory =
-      [this, target, fly_time = current_trajectory.fly_time, bullet_speed,
-       id = final_aim.armor_id](double offset) {
-        return sampleTrajectory(target, fly_time, bullet_speed, offset, id);
-      };
-    diagnostics_.raw = diagnostics_.raw_trajectory(0.0);
-  }
-
   if (config_.blend.enable) {
     std::optional<AimSmoother::Forecast> forecast;
     int next_id = -1;
@@ -207,16 +196,14 @@ Plan Planner::plan(const PlanInput& input)
 
     const auto smoothed =
       smoother_.update(input.plan_time, shoot_yaw, shoot_pitch, forecast);
-    if (diagnostics_enabled_) {
-      diagnostics_.forecast = forecast;
-      diagnostics_.next_armor_id = next_id;
-      diagnostics_.smoother = smoothed;
-      diagnostics_.segment = smoother_.solution();
-      diagnostics_.segment_start = smoother_.startTime();
-    }
     plan.aim.yaw = smoothed.yaw;
     plan.aim.pitch = smoothed.pitch;
     plan.aim.blending = smoothed.blending;
+    plan.blend = BlendStatus{
+      smoothed.peak_yaw_acceleration,
+      smoothed.peak_pitch_acceleration,
+      smoothed.acceleration_limited,
+      smoothed.late_by};
   }
 
   plan.fire = FireReference{final_aim.armor_id, final_aim.xyza};
@@ -248,7 +235,6 @@ Plan Planner::plan(
 
 void Planner::reset() noexcept
 {
-  diagnostics_ = {};
   // locked_id_ 由候选板变化时更新。短暂中断不清锁，避免恢复后立即切板。
   // 过渡段则必须清：它锁死的系数来自一次已经作废的切板预测。
   smoother_.reset();
@@ -363,11 +349,6 @@ std::optional<Plan> Planner::blendOnlyPlan(TimePoint now, const Delay& delay)
   // 恰好结束的那一帧有个合理的回落值。
   const auto smoothed =
     smoother_.update(now, last_shoot_yaw_, last_shoot_pitch_, std::nullopt);
-  if (diagnostics_enabled_) {
-    diagnostics_.smoother = smoothed;
-    diagnostics_.segment = smoother_.solution();
-    diagnostics_.segment_start = smoother_.startTime();
-  }
   if (!smoothed.blending) {
     return std::nullopt;
   }
@@ -382,6 +363,11 @@ std::optional<Plan> Planner::blendOnlyPlan(TimePoint now, const Delay& delay)
   plan.aim.shoot_yaw = last_shoot_yaw_;
   plan.aim.shoot_pitch = last_shoot_pitch_;
   plan.aim.blending = true;
+  plan.blend = BlendStatus{
+    smoothed.peak_yaw_acceleration,
+    smoothed.peak_pitch_acceleration,
+    smoothed.acceleration_limited,
+    smoothed.late_by};
   plan.timing.delay = delay;
   return plan;
 }

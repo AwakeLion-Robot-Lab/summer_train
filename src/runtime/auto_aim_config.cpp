@@ -208,10 +208,6 @@ void normalize(AutoAimConfig& config)
       blend_cfg.limits.min_duration = blend_defaults.limits.min_duration;
       blend_cfg.limits.max_duration = blend_defaults.limits.max_duration;
     }
-    if (!(std::isfinite(blend_cfg.limits.commit_margin) &&
-          blend_cfg.limits.commit_margin >= 0.0)) {
-      blend_cfg.limits.commit_margin = blend_defaults.limits.commit_margin;
-    }
     if (blend_cfg.limits.search_iterations < 1 ||
         blend_cfg.limits.search_iterations > 32) {
       blend_cfg.limits.search_iterations = blend_defaults.limits.search_iterations;
@@ -500,8 +496,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     blend, "min_duration_ms", blend_config.limits.min_duration);
   readMillisecondsAsSeconds(
     blend, "max_duration_ms", blend_config.limits.max_duration);
-  readMillisecondsAsSeconds(
-    blend, "commit_margin_ms", blend_config.limits.commit_margin);
   readValue(blend, "search_iterations", blend_config.limits.search_iterations);
   readMillisecondsAsSeconds(blend, "horizon_ms", blend_config.horizon);
   readMillisecondsAsSeconds(blend, "grid_ms", blend_config.grid);

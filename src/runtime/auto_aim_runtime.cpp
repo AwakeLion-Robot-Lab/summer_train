@@ -531,6 +531,14 @@ nlohmann::json telemetryFrame(
     data["aim"]["shoot_pitch"] = plan.aim.shoot_pitch * kRadToDeg;
   }
   data["aim"]["blending"] = plan.aim.blending ? 1 : 0;
+  // 过渡段规划出的峰值角加速度，对着 planning.blend 里配的上限看。贴着上限
+  // 走是正常的；acc_limited 置 1 才是问题——那说明拉到最长时长仍然超限，
+  // 重合度上不去是云台能力的物理限制，不是参数没调好。
+  data["aim"]["blend_peak_acc"] = plan.blend.peak_yaw_acceleration;
+  data["aim"]["blend_acc_limited"] = plan.blend.acceleration_limited ? 1 : 0;
+  // 过渡终点比切板时刻晚了多少毫秒。稳定在一个图像帧周期附近是正常的量化
+  // 误差；明显更大说明 blend.horizon_ms 不够长，切板发现得太晚。
+  data["aim"]["blend_late_ms"] = plan.blend.late * 1e3;
   data["aim"]["armor_id"] = plan.fire ? plan.fire->armor_id : -1;
 
   // delay: 五段延迟链。绝不合并成一个标量——上车标定 send_to_control 时

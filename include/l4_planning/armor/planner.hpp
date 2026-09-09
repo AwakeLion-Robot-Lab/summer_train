@@ -20,18 +20,6 @@ struct PlanInput {
   double plan_to_send{0.0};
 };
 
-// 仅由测试入口显式启用；不改变选板、拟合或开火行为。
-struct PlannerDiagnostics {
-  bool raw_valid{false};
-  AimState raw;
-  TrajectorySampler raw_trajectory;
-  std::optional<AimSmoother::Forecast> forecast;
-  int next_armor_id{-1};
-  AimSmoother::Output smoother;
-  BlendSolution segment;
-  TimePoint segment_start{};
-};
-
 // 定点规划器：预测命中时刻、选择实体装甲板并解算 yaw/pitch。
 class Planner final {
 public:
@@ -47,8 +35,6 @@ public:
   void reset() noexcept;
   int lockedArmorId() const noexcept { return locked_id_; }
   bool blending() const noexcept { return smoother_.blending(); }
-  void enableDiagnostics(bool enabled) noexcept { diagnostics_enabled_ = enabled; }
-  const PlannerDiagnostics& diagnostics() const noexcept { return diagnostics_; }
 
 private:
   struct AimPoint {
@@ -106,8 +92,6 @@ private:
   double last_shoot_yaw_{0.0};
   double last_shoot_pitch_{0.0};
   bool has_last_shoot_{false};
-  bool diagnostics_enabled_{false};
-  PlannerDiagnostics diagnostics_;
 };
 
 }  // namespace L4Planning
