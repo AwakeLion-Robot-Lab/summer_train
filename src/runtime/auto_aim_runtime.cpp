@@ -233,7 +233,9 @@ void AutoAimRuntime::run() {
 
           // 规划与开火判定使用推理结束时刻。
           const auto plan_time = std::chrono::steady_clock::now();
-          const auto actual_pose = serial.gimbalPoseAt(plan_time);
+          // 这里要的是“现在”的云台角，不是过去某一时刻的插值。“现在”之后不可能
+          // 有采样，走 gimbalPoseAt(now()) 只会每帧都撞越界分支、白白计一次数。
+          const auto actual_pose = serial.latestGimbalPose();
 
           // L4: 预测命中时刻、选板并解算弹道。
           L4Planning::PlanInput plan_input;
