@@ -85,7 +85,12 @@ nlohmann::json telemetryFrame(
   L3Estimation::TrackState track_state,
   const L4Planning::Plan& plan,
   const L5Control::FireDecision& fire,
-  bool command_sent);
+  bool command_sent,
+  const L1Sensor::SerialWorker& serial,
+  std::chrono::steady_clock::time_point timestamp,
+  int detect_count,
+  std::uint64_t tracker_resets,
+  std::uint64_t plan_rejects);
 /********************************** debug **********************************/
 
 } // namespace
@@ -190,6 +195,9 @@ void AutoAimRuntime::run() {
   // "规划结束 -> 串口发出"的实测耗时。本帧的值要等规划做完才知道，所以
   // 用上一帧的量代入本帧的延迟链；这一段帧间基本恒定。
   double measured_plan_to_send = 0.0;
+  // L4 拒绝出计划的累计帧数。拒绝时 L5 会原样重发上一条命令（safeHold），
+  // 云台角就此冻结一帧，所以这个数直接对应"命令被冻住了几帧"。
+  std::uint64_t plan_reject_count = 0;
 
   // 单线程同步是设计选择不是待办：自瞄的代价是开火那一刻的位置误差而不是
   // 帧率，异步流水线换来吞吐、代价是结果多滞后一帧，那一帧会进
@@ -245,6 +253,9 @@ void AutoAimRuntime::run() {
           plan_input.to_now = true;
           plan_input.plan_to_send = measured_plan_to_send;
           const auto plan = planner.plan(plan_input);
+          if (!plan.valid()) {
+            ++plan_reject_count;
+          }
 
           // L5: 开火判定、命令跳变检查和安全保持。
           const auto command = controller.update(
@@ -275,7 +286,9 @@ void AutoAimRuntime::run() {
               tracker ? tracker->observations() : kNoObservations;
             (void)plotter->send(telemetryFrame(
               image_pose, *state, observations, target, track_state, plan,
-              controller.lastDecision(), command.has_value()));
+              controller.lastDecision(), command.has_value(), serial,
+              timestamp, tracker ? tracker->detectCount() : 0,
+              tracker ? tracker->resetCount() : 0, plan_reject_count));
           }
           if (overlay_solver && tracker &&
               frame_index % auto_aim_config.debug.overlay_every == 0) {
@@ -368,10 +381,21 @@ nlohmann::json telemetryFrame(
   L3Estimation::TrackState track_state,
   const L4Planning::Plan& plan,
   const L5Control::FireDecision& fire,
-  bool command_sent)
+  bool command_sent,
+  const L1Sensor::SerialWorker& serial,
+  std::chrono::steady_clock::time_point timestamp,
+  int detect_count,
+  std::uint64_t tracker_resets,
+  std::uint64_t plan_rejects)
 {
   constexpr double kRadToDeg = 180.0 / std::numbers::pi;
   nlohmann::json data;
+
+  // 帧曝光时刻，单位 s。**必须发**：不发的话 PlotJuggler 只能按 UDP 到达时刻
+  // 排点，而本循环的周期本身就抖（实测帧间 10~28 ms），平滑的斜坡会被画成
+  // 忽快忽慢的折线，看起来像台阶——那是坐标轴的假象，不是信号的。这次现场
+  // 就先被它误导过一轮。在 UDP/JSON 插件里把它选成 timestamp 字段。
+  data["t"] = std::chrono::duration<double>(timestamp.time_since_epoch()).count();
 
   // gimbal: L1 实测的云台姿态与弹速。
   if (q_world_barrel) {
@@ -381,10 +405,31 @@ nlohmann::json telemetryFrame(
     data["gimbal"]["pitch"] = ypr[1] * kRadToDeg;
   }
   data["gimbal"]["bullet_speed"] = state.bullet_speed;
+  data["gimbal"]["heat"] = state.heat;
+
+  // serial: 串口健康度。丢包和姿态越界都只累加计数、不打日志，只能从这里看。
+  // pose_after 高说明图像时间戳比最新 IMU 采样还新——曝光中点补偿之外，读出
+  // 与 USB 传输耗时仍未补；pose_before 高则是图像太老或姿态历史太短，成因相反。
+  // rx_skipped_bytes 恒为 0 说明下位机只是空转 seq，跟着 rx_dropped 一起涨才
+  // 说明有第三种 SOF 的帧被静默吃掉了。
+  data["serial"]["rx"] = serial.receivedStateCount();
+  data["serial"]["rx_dropped"] = serial.droppedPacketCount();
+  data["serial"]["rx_skipped_bytes"] = serial.skippedByteCount();
+  data["serial"]["tx"] = serial.sentCommandCount();
+  data["serial"]["tx_failed"] = serial.failedCommandCount();
+  data["serial"]["pose_before_history"] = serial.poseBeforeHistoryCount();
+  data["serial"]["pose_after_history"] = serial.poseAfterHistoryCount();
 
   // track: 状态机与本帧真正进滤波器的观测数量。
   data["track"]["state"] = static_cast<int>(track_state);
   data["track"]["n_obs"] = static_cast<int>(observations.size());
+  // 瞬时枚举看不出"每隔几帧重建一次 EKF"——那在状态图上只是一个单帧尖峰，
+  // 跟采样率一撞就完全看不见。这三个是单调计数器：只要发生过就一定留下台阶。
+  // aim/rejects 是 L4 拒绝出计划的累计帧数，拒绝时 L5 原样重发上一条命令、
+  // 云台角冻结一帧，所以它直接对应"命令被冻住了几帧"。
+  data["track"]["detect_count"] = detect_count;
+  data["track"]["resets"] = tracker_resets;
+  data["aim"]["rejects"] = plan_rejects;
 
   // obs: 单板 PnP 的原始观测。固定取图像最左的一块——多板时若按检测顺序取，
   // 曲线会在两块板之间来回跳，看不出任何趋势。
