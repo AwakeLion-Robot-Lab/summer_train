@@ -80,6 +80,18 @@ TrackState Tracker::state() const noexcept
   return state_;
 }
 
+bool Tracker::setCalibration(const L1Sensor::CameraCalibration& calibration)
+{
+  ready_ = pnp_solver_.setCalibration(calibration) && validTrackerConfig(tracker_config_);
+  if (!ready_) {
+    reset();
+    return false;
+  }
+  image_center_ = {static_cast<float>(calibration.image_size.width) * 0.5F,
+                   static_cast<float>(calibration.image_size.height) * 0.5F};
+  return true;
+}
+
 std::optional<TrackedTarget> Tracker::track(
   const std::vector<L2Perception::Armor>& detections,
   const std::optional<Eigen::Quaterniond>& q_world_barrel,

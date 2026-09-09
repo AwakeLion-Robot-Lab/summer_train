@@ -284,6 +284,7 @@ void testSmootherEndToEnd()
           wrapToPi(out.pitch - raw_pitch), 0.0, 1e-9, "blend starts continuous in pitch");
       }
       blend_end_t = t;
+      // late 现在是"晚出 commit_margin 以上"，帧量化那一两毫秒不算。
       check(!out.late, "blend committed with enough lead time");
     } else if (!blend_started) {
       // 过渡开始之前：跟随段必须逐位等于原值。
@@ -300,9 +301,16 @@ void testSmootherEndToEnd()
   }
 
   check(ever_blended, "a blend actually happened");
+  // 终点必须落在切板时刻**或其之后**：提前结束的话，那时真正的切板还没
+  // 发生，输出会先从新板轨迹掉回旧板、到切板时再跳一次，一个阶跃变成两个。
+  // 晚的量只该是帧量化，触发条件是 switch_time <= 最小可行时长，一帧就能
+  // 跨过等号。
   check(
-    blend_end_t <= kSwitchTime + 1e-9,
-    "blend finishes no later than the switch instant");
+    blend_end_t >= kSwitchTime - kStep,
+    "blend must not finish before the switch instant");
+  check(
+    blend_end_t <= kSwitchTime + 4.0 * kStep,
+    "blend overshoot past the switch must stay within frame quantisation");
   check(
     blend_start_t < kSwitchTime - 0.02,
     "blend starts meaningfully before the switch (anticipatory)");

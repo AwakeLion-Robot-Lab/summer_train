@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <vector>
 
 namespace L4Planning {
 namespace {
@@ -135,6 +136,72 @@ double Quintic::peakAbsAcceleration() const
   return peak;
 }
 
+double Quintic::peakAbsVelocity() const
+{
+  if (!(duration > 0.0)) {
+    return std::abs(velocity(0.0));
+  }
+  // 在 u=t/T 上求 jerk 的根，将三次加速度分成单调区间，
+  // 每个变号区间至多一个根；重根也在这些区间的端点。
+  std::vector<double> knots{0.0, 1.0};
+  const double scale = std::max({
+    std::abs(60.0 * coefficient[5] * duration * duration),
+    std::abs(24.0 * coefficient[4] * duration), std::abs(6.0 * coefficient[3])});
+  const auto add = [&](double u) {
+    if (std::isfinite(u) && u > 0.0 && u < 1.0) {
+      knots.push_back(u);
+    }
+  };
+  if (scale > 0.0 && std::isfinite(scale)) {
+    const double a = 60.0 * coefficient[5] * duration * duration / scale;
+    const double b = 24.0 * coefficient[4] * duration / scale;
+    const double c = 6.0 * coefficient[3] / scale;
+    if (a == 0.0) {
+      if (b != 0.0) {
+        add(-c / b);
+      }
+    } else {
+      const double discriminant = b * b - 4.0 * a * c;
+      if (discriminant >= 0.0) {
+        const double q = -0.5 * (b + std::copysign(std::sqrt(discriminant), b));
+        add(q / a);
+        if (q != 0.0) {
+          add(c / q);
+        }
+      }
+    }
+  }
+  std::sort(knots.begin(), knots.end());
+  double peak = 0.0;
+  const auto consider = [&](double u) {
+    peak = std::max(peak, std::abs(velocity(u * duration)));
+  };
+  for (double u : knots) {
+    consider(u);
+  }
+  for (std::size_t i = 1; i < knots.size(); ++i) {
+    double lo = knots[i - 1];
+    double hi = knots[i];
+    double flo = acceleration(lo * duration);
+    const double fhi = acceleration(hi * duration);
+    if (flo == 0.0 || fhi == 0.0 || std::signbit(flo) == std::signbit(fhi)) {
+      continue;
+    }
+    for (int iteration = 0; iteration < 64; ++iteration) {
+      const double mid = 0.5 * (lo + hi);
+      const double fm = acceleration(mid * duration);
+      if (std::signbit(fm) == std::signbit(flo)) {
+        lo = mid;
+        flo = fm;
+      } else {
+        hi = mid;
+      }
+    }
+    consider(0.5 * (lo + hi));
+  }
+  return peak;
+}
+
 BlendSolution fitBlend(
   const AimState& start,
   const TrajectorySampler& after,
@@ -161,6 +228,8 @@ BlendSolution fitBlend(
     start.pitch.position + wrapToPi(end.pitch.position - start.pitch.position);
 
   solution.duration = duration;
+  solution.start = start;
+  solution.end = {yaw_end, pitch_end};
   solution.yaw = Quintic::fit(start.yaw, yaw_end, duration);
   solution.pitch = Quintic::fit(start.pitch, pitch_end, duration);
   solution.peak_yaw_acceleration = solution.yaw.peakAbsAcceleration();
@@ -220,6 +289,7 @@ void AimSmoother::reset() noexcept
 {
   active_ = false;
   late_ = false;
+  late_by_ = 0.0;
   solution_ = BlendSolution{};
 }
 
@@ -247,6 +317,7 @@ AimSmoother::Output AimSmoother::update(
       output.peak_pitch_acceleration = solution_.peak_pitch_acceleration;
       output.acceleration_limited = solution_.acceleration_limited;
       output.late = late_;
+      output.late_by = late_by_;
       return output;
     }
     // 过渡结束，回到射击轨迹。本帧起立刻可以重新提交下一段。
@@ -259,19 +330,30 @@ AimSmoother::Output AimSmoother::update(
 
   const BlendSolution minimal =
     solveBlend(forecast->before, forecast->after, limits_);
+  output.search_attempted = true;
+  output.candidate = minimal;
   if (!minimal.valid) {
     return output;
   }
 
-  // 切板还远，先不提交，下一帧再看。
-  if (forecast->switch_time > minimal.duration + limits_.commit_margin) {
+  // 切板还远，先不提交，下一帧再看。触发点就是最小可行时长本身，不加余量。
+  //
+  // 这里原来是 switch_time <= minimal.duration + commit_margin，本意是"晚一
+  // 帧就得压缩过渡段"，但压缩根本不会发生——下面取时长时的下界就是
+  // minimal.duration。余量唯一的实际作用是让时长取到偏大的 switch_time，
+  // 把**每一段**过渡都拉长最多一个余量。实测 omega=6 rad/s、a_max=50 时
+  // T 从 108 ms 涨到 124 ms，占空比白白多花 6 个点；a_max 越大越离谱——
+  // a_max=400 时最小时长只有 36 ms，20 ms 的余量就是 +56%。
+  if (forecast->switch_time > minimal.duration) {
     return output;
   }
 
-  // 提前量够的时候就用满：峰值加速度随时长下降，过渡只会更平缓，而且终点
-  // 正好落在切板时刻。夹在 [最小可行, 上限] 内。
-  const double duration = std::clamp(
-    forecast->switch_time, minimal.duration, limits_.max_duration);
+  // 时长恒取最小可行值：过渡越短，偏离射击轨迹的时间越短，重合度越高。
+  //
+  // 终点因此落在切板时刻**或其之后**，绝不会落在之前。提前结束是不行的：
+  // 那时真正的切板还没发生，输出会先从新板轨迹掉回旧板，到切板时再跳一次,
+  // 一个阶跃变成两个，比不做过渡还糟。
+  const double duration = minimal.duration;
   const BlendSolution committed =
     fitBlend(forecast->before, forecast->after, duration, limits_);
   if (!committed.valid) {
@@ -280,8 +362,13 @@ AimSmoother::Output AimSmoother::update(
 
   solution_ = committed;
   start_time_ = now;
-  late_ = forecast->switch_time < minimal.duration;
+  // 过渡终点晚于切板时刻的量。晚一点是帧量化的必然：切板时刻按前视网格离散，
+  // 帧周期本身还在抖，触发条件几乎不可能正好卡在等号上。只有超过
+  // commit_margin 才算真的没赶上提前减速。
+  late_by_ = duration - forecast->switch_time;
+  late_ = late_by_ > limits_.commit_margin;
   active_ = true;
+  output.committed = true;
 
   // tau = 0 处多项式等于 before(0)，与本帧射击轨迹三阶连续，所以这里直接
   // 求值不会产生跳变。
@@ -293,6 +380,7 @@ AimSmoother::Output AimSmoother::update(
   output.peak_pitch_acceleration = solution_.peak_pitch_acceleration;
   output.acceleration_limited = solution_.acceleration_limited;
   output.late = late_;
+  output.late_by = late_by_;
   return output;
 }
 

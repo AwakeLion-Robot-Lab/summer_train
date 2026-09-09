@@ -43,7 +43,11 @@ Thumbs.db
 
 # 离线回放录像：单个 avi 数百 MB，records/ 整体 3 GB，不进仓库
 /records/
-/tests/
+/tests/*
+!/tests/daedalus_client_smoke.cpp
+!/tests/quintic_trace_smoke.cpp
+!/tests/quintic_udp_smoke.py
+!/tests/daedalus_probe_camera_smoke.cpp
 
 # OpenVINO GPU 编译时吐出的 kernel 诊断文件
 /kernel.errors.txt
