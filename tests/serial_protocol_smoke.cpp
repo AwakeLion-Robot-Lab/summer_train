@@ -84,7 +84,9 @@ std::uint8_t txSequence(std::span<const std::uint8_t> bytes)
 
 int main()
 {
-  static_assert(sizeof(Protocol::RxPayload) == 18);
+  // 线格式守卫：改这个数之前先确认下位机的结构体真的变了。现场实测下位机
+  // 的 0x02 payload 是 22 字节（四个姿态/弹速 float + heat float + 两个 uint8）。
+  static_assert(sizeof(Protocol::RxPayload) == 22);
 
   const auto first = makeStatePacket(10, 1.0F, 2.0F);
   const auto second = makeStatePacket(11, 3.0F, 4.0F);

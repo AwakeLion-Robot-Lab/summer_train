@@ -93,30 +93,29 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       continue;
     }
 
+    // seq 由下位机**逐帧**自增，与帧类型无关。所以丢包判断必须对所有通过
+    // CRC 的帧做，不能只对本实现认识的那一种——否则下位机每插一帧别的类型
+    // （现场是 0x21），序号就跳一格，会被当成丢包。实测这样会让 rx_dropped
+    // 反过来比 rx 还大，明显不合理。
+    if (packet_loss_check_enable_) {
+      checkPacketLoss(header.seq);
+    }
+
     if (header.cmd_id == kRxCmdId && header.data_length == sizeof(RxPayload) &&
         frame_size == sizeof(RxPacket)) {
       RxPacket packet;
       std::memcpy(&packet, packet_bytes.data(), sizeof(packet));
-      if (packet_loss_check_enable_) {
-        checkPacketLoss(header.seq);
-      }
       rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
       states.push_back(toRobotState(packet));
       continue;
     }
 
-    // 能走到这里说明 SOF、帧头 CRC8 和整帧 CRC16 全部通过，也就是下位机的
-    // 帧结构和两套 CRC 都与本实现一致，只是这一帧的 cmd_id 或 payload 长度
-    // 对不上。只打 cmd_id 的话看不出是"帧类型不认识"还是"类型对但结构体
-    // 长度不一致"，而后者才是最常见的失配，所以把期望值一起打出来。
-    L6Telemetry::logDebug(
-        "serial protocol ignored unsupported frame: cmd_id",
-        static_cast<int>(header.cmd_id), "data_length",
-        static_cast<int>(header.data_length), "frame_size",
-        static_cast<int>(frame_size), "| expected cmd_id",
-        static_cast<int>(kRxCmdId), "data_length",
-        static_cast<int>(sizeof(RxPayload)), "frame_size",
-        static_cast<int>(sizeof(RxPacket)));
+    // 静默丢弃本实现不认识的帧。现场下位机稳定在发一种 0x21 帧（28 字节，
+    // 约 90 Hz），这是协议尚未对齐、不是运行故障，每帧打一条只会把真正的
+    // 告警冲掉——上一版在这里打 cmd_id/data_length/frame_size 与期望值的对照，
+    // 正是靠它认出 0x02 的 payload 是 22 字节而不是 18；原因查明之后它就只剩
+    // 噪声了。要再排一次结构体失配，从 b438f6e 把那段捡回来即可。
+    // 帧数本身不会丢：seq 检查在上面对所有帧做，落在 rx_dropped 里。
     rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
   }
 
@@ -249,6 +248,7 @@ RobotState SerialProtocol::toRobotState(const RxPacket &packet) {
   state.rpy.yaw = packet.data.yaw;
   state.rpy.pitch = packet.data.pitch;
   state.bullet_speed = packet.data.bullet_speed;
+  state.heat = packet.data.heat;
   state.timestamp = std::chrono::steady_clock::now();
 
   switch (packet.data.enemy_color) {
