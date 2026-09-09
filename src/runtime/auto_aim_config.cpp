@@ -469,6 +469,7 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(debug, "plot", config.debug.plot);
   readValue(debug, "plot_host", config.debug.plot_host);
   readValue(debug, "plot_port", config.debug.plot_port);
+  readValue(debug, "force_work_mode", config.debug.force_work_mode);
 
   normalize(config);
 

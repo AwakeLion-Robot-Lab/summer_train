@@ -236,3 +236,13 @@ debug:
   plot: false
   plot_host: "127.0.0.1"
   plot_port: 9870
+
+  # 无视下位机上报的 WorkMode，强制按指定模式跑。留空 = 不覆盖（正常行为）。
+  # 取值：auto_aim / outpost / small_buff / big_buff / idle
+  #
+  # 只用于电控还没接好模式切换、视觉侧要先把链路跑通的场合。**比赛前必须清空**，
+  # 否则下位机说 Idle 时视觉仍然在动云台。启用时启动日志会打一条 WARN。
+  #
+  # 它不解除任何开火闸门：shoot_enable 和 planning.send_to_control_ms 的标定
+  # 状态仍然各自独立生效，所以强制自瞄不会导致意外开火。
+  force_work_mode: "auto_aim"

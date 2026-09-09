@@ -44,6 +44,24 @@ bool isEnemyArmor(L2Perception::ArmorColor observed,
   return false;
 }
 
+// 把配置里的字符串解析成 WorkMode。空串或无法识别都返回空，表示不覆盖——
+// 拼错模式名不该悄悄退化成 Idle 或 AutoAim，那两种误判的后果完全不同。
+std::optional<L1Sensor::WorkMode> parseWorkMode(const std::string& name)
+{
+  if (name.empty()) {
+    return std::nullopt;
+  }
+  if (name == "auto_aim") return L1Sensor::WorkMode::AutoAim;
+  if (name == "outpost") return L1Sensor::WorkMode::Outpost;
+  if (name == "small_buff") return L1Sensor::WorkMode::SmallBuff;
+  if (name == "big_buff") return L1Sensor::WorkMode::BigBuff;
+  if (name == "idle") return L1Sensor::WorkMode::Idle;
+  L6Telemetry::logError(
+    "debug.force_work_mode is not a known mode, ignored:", name,
+    "| valid: auto_aim outpost small_buff big_buff idle");
+  return std::nullopt;
+}
+
 L2Perception::ArmorDetector makeArmorDetector(
   const runtime::AutoAimConfig& config)
 {
@@ -190,6 +208,21 @@ void AutoAimRuntime::run() {
   }
   /******************************** debug *********************************/
 
+  // 调试旁路：强制 WorkMode。启动时解析一次，循环里只做覆盖。
+  const auto forced_mode = parseWorkMode(auto_aim_config.debug.force_work_mode);
+  if (forced_mode) {
+    L6Telemetry::logWarn(
+      "!!! debug.force_work_mode is ACTIVE:", L1Sensor::toString(*forced_mode),
+      "- the MCU's WorkMode is being IGNORED. Clear this key before a match.");
+  }
+  if (auto_aim_config.plan.impact.trust_fallback_bullet_speed) {
+    L6Telemetry::logWarn(
+      "!!! planning.trust_fallback_bullet_speed is ACTIVE: ballistics assume",
+      auto_aim_config.plan.impact.fallback_bullet_speed,
+      "m/s regardless of what the MCU reports. Set it back to false once the"
+      " MCU sends a real bullet speed.");
+  }
+
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
   // "规划结束 -> 串口发出"的实测耗时。本帧的值要等规划做完才知道，所以
@@ -219,7 +252,10 @@ void AutoAimRuntime::run() {
     if (!serial_started || !state) {
       stopAimSession();
     } else {
-      switch (state->mode) {
+      // 覆盖只改分派用的模式，state 本身不动——遥测和日志仍然反映下位机
+      // 真正上报的值，否则排查时会看不出电控到底给没给对模式。
+      const L1Sensor::WorkMode mode = forced_mode.value_or(state->mode);
+      switch (mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
           const auto image_pose = serial.gimbalPoseAt(timestamp);
