@@ -750,11 +750,15 @@ int main(int argc, char** argv)
     const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
 
     auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
-    L2Perception::InferenceModelConfig model_config;
+    // 以 auto_aim.yaml 的 inference 段为底，只让 --model / --device 覆盖路径和
+    // 设备。这里原来是全新构造一个 InferenceModelConfig，于是 num_threads 和
+    // scheduling_core_type 都停在结构体默认值（0 = 铺满全部 32 线程，Any =
+    // P/E 混用），而实车配的是 8 线程 + 只用 P 核。推理是单帧同步链路，每层
+    // 结束都有同步点，混用大小核时整层被 4.0 GHz 的 E 核拖住、P 核在同步点
+    // 空等——回放于是量出一个比实车慢得多、而且和延迟链对不上的 detect 耗时。
+    L2Perception::InferenceModelConfig model_config = runtime_config.inference;
     model_config.model_path = cli.get<std::string>("model");
     model_config.device = cli.get<std::string>("device");
-    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
-    model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
     require(backend->ready(), "OpenVINO 后端未就绪");
     // 模型来自 --model，没有 auto_aim.yaml 的 layout 可依，按输出形状探契约。
