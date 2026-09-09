@@ -51,6 +51,9 @@ public:
   // 返回累计检测到的丢包数量。
   std::uint64_t droppedPacketCount() const;
 
+  // 返回累计被 SOF 搜索丢弃的字节数，含义见 SerialProtocol::skippedByteCount()。
+  std::uint64_t skippedByteCount() const;
+
   // 返回本 worker 生命周期内成功完整写入串口的控制帧数量。
   std::uint64_t sentCommandCount() const;
 
@@ -65,8 +68,23 @@ public:
 
   // 根据图像时间戳查询云台姿态；内部会在历史 RPY 中找前后两帧并 slerp。
   // 返回的姿态已经是 barrel -> world，可直接交给 L3，无需再补轴向转换。
+  //
+  // 时间戳落在历史区间外时会夹到边界并**只累加计数器**，不打日志：这一路每帧
+  // 都会走到，逐帧打印会把真正的告警冲掉。频次用 poseBeforeHistoryCount() /
+  // poseAfterHistoryCount() 看。
   std::optional<Eigen::Quaterniond> gimbalPoseAt(
     std::chrono::steady_clock::time_point timestamp) const;
+
+  // 最新一次云台姿态，不做插值。"现在"之后不可能有采样，所以想要当前姿态时
+  // 用这个而不是 gimbalPoseAt(now())——后者会无谓地走一遍越界分支并计数，
+  // 把统计污染成"每帧都越界"，真正该关注的图像时刻越界反而看不出来。
+  std::optional<Eigen::Quaterniond> latestGimbalPose() const;
+
+  // gimbalPoseAt() 因时间戳越界而退化为边界姿态的累计次数。分早于/晚于历史
+  // 两种：前者说明图像比姿态历史还老（丢帧或历史太短），后者说明图像时间戳
+  // 比最新姿态还新（相机时间戳未补曝光与传输耗时，或 rx 停顿）。
+  std::uint64_t poseBeforeHistoryCount() const;
+  std::uint64_t poseAfterHistoryCount() const;
 
 private:
   // 把下位机 IMU 约定下的姿态按 config_.R_imu_barrel 转换到 barrel 约定。
@@ -98,6 +116,8 @@ private:
   std::atomic<std::uint64_t> sent_command_count_{0};
   std::atomic<std::uint64_t> received_state_count_{0};
   std::atomic<std::uint64_t> failed_command_count_{0};
+  mutable std::atomic<std::uint64_t> pose_before_history_count_{0};
+  mutable std::atomic<std::uint64_t> pose_after_history_count_{0};
 
   mutable std::mutex command_mutex_;
   L5Control::SerialCommand latest_command_;

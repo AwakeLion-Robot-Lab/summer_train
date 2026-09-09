@@ -105,6 +105,10 @@ std::uint64_t SerialWorker::droppedPacketCount() const {
   return protocol_.droppedPacketCount();
 }
 
+std::uint64_t SerialWorker::skippedByteCount() const {
+  return protocol_.skippedByteCount();
+}
+
 // 返回成功完整写入底层串口的控制帧数量；不代表下位机已经执行该命令。
 std::uint64_t SerialWorker::sentCommandCount() const {
   return sent_command_count_.load();
@@ -265,6 +269,25 @@ Eigen::Quaterniond SerialWorker::toBarrelPose(
 }
 
 // 按时间戳查询云台姿态；找到前后两帧 RPY 后再转四元数并 slerp。
+std::optional<Eigen::Quaterniond> SerialWorker::latestGimbalPose() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (gimbal_history_.empty()) {
+    return std::nullopt;
+  }
+  const auto &state = gimbal_history_.back();
+  return toBarrelPose(L6Telemetry::rpyToQuaternion(state.rpy.roll,
+                                                   state.rpy.pitch,
+                                                   state.rpy.yaw));
+}
+
+std::uint64_t SerialWorker::poseBeforeHistoryCount() const {
+  return pose_before_history_count_.load();
+}
+
+std::uint64_t SerialWorker::poseAfterHistoryCount() const {
+  return pose_after_history_count_.load();
+}
+
 std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
     std::chrono::steady_clock::time_point timestamp) const {
   std::lock_guard<std::mutex> lock(state_mutex_);
@@ -282,13 +305,17 @@ std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
                                         state.rpy.yaw);
   };
 
+  // 两个越界分支都退化为边界姿态。这一路每帧都会走到（相机时间戳没有补
+  // 曝光与传输耗时，约等于"现在"，而最新姿态采样平均已有半个采样周期的年龄），
+  // 所以逐帧打印会把真正的告警冲掉——这里只累加计数器，频次用
+  // poseAfterHistoryCount() 观察，遥测里也发了出去。
   if (timestamp <= gimbal_history_.front().timestamp) {
-    L6Telemetry::logDebug("gimbal pose before history");
+    pose_before_history_count_.fetch_add(1, std::memory_order_relaxed);
     return toBarrelPose(to_quaternion(gimbal_history_.front()));
   }
 
   if (timestamp >= gimbal_history_.back().timestamp) {
-    L6Telemetry::logDebug("gimbal pose after history");
+    pose_after_history_count_.fetch_add(1, std::memory_order_relaxed);
     return toBarrelPose(to_quaternion(gimbal_history_.back()));
   }
 

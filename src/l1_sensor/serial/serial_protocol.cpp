@@ -54,7 +54,10 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       rx_buffer_.clear();
       break;
     }
-    // 删除 sof 前面的干扰字节。
+    // 删除 sof 前面的干扰字节。计数是为了让"被吃掉的字节"可见——不计的话，
+    // 下位机若发了别的 SOF 的帧，这里会一声不响地删掉整帧。
+    skipped_byte_count_ +=
+        static_cast<std::uint64_t>(std::distance(rx_buffer_.begin(), head_pos));
     rx_buffer_.erase(rx_buffer_.begin(), head_pos);
 
     if (rx_buffer_.size() < sizeof(HeaderFrame)) {
@@ -131,6 +134,7 @@ void SerialProtocol::reset() {
   last_rx_seq_ = 0;
   next_tx_seq_ = 0;
   dropped_packet_count_ = 0;
+  skipped_byte_count_ = 0;
 }
 
 // 开关 seq 丢包检测；切换后重新建立 seq 基准，避免误报。
@@ -152,6 +156,12 @@ bool SerialProtocol::packetLossCheckEnable() const {
 std::uint64_t SerialProtocol::droppedPacketCount() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return dropped_packet_count_;
+}
+
+// 返回累计被 SOF 搜索丢弃的字节数。
+std::uint64_t SerialProtocol::skippedByteCount() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return skipped_byte_count_;
 }
 
 // 按当前协议的 CRC8 参数计算校验值。
@@ -234,9 +244,14 @@ bool SerialProtocol::checkPacketLoss(std::uint8_t seq) {
 
   const auto dropped = static_cast<std::uint8_t>(seq - expected);
   dropped_packet_count_ += dropped;
-  L6Telemetry::logWarn("serial rx packet lost", static_cast<int>(dropped),
-                       "last", static_cast<int>(last_rx_seq_), "current",
-                       static_cast<int>(seq));
+  // 只在跳号超过 1 时告警。现场实测下位机每 21 个 seq 会稳定空转一个号，
+  // 逐条打印就是每秒十几行、几分钟上万条，会把真正的告警冲掉；单号跳空只
+  // 进计数器，从遥测的 serial/rx_dropped 曲线看。连跳多号才是异常。
+  if (dropped > 1) {
+    L6Telemetry::logWarn("serial rx packet lost", static_cast<int>(dropped),
+                         "last", static_cast<int>(last_rx_seq_), "current",
+                         static_cast<int>(seq));
+  }
   last_rx_seq_ = seq;
   return true;
 }

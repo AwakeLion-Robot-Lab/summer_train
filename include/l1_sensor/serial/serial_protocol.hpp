@@ -73,6 +73,12 @@ public:
   // 返回累计检测到的丢包数量。
   std::uint64_t droppedPacketCount() const;
 
+  // 累计被 SOF 搜索丢弃的字节数。SOF 之前的字节会被静默删掉，若下位机发了
+  // 一种以别的 SOF 开头的帧，现象就只有 seq 跳号，看不出字节被吃掉。这个
+  // 计数把"seq 跳了但字节没来"（真丢帧/下位机空转 seq）和"字节来了但不以
+  // 0xA0 开头"（另一种帧格式）区分开——前者恒为 0，后者会同步增长。
+  std::uint64_t skippedByteCount() const;
+
 private:
   static constexpr std::uint8_t kSof = 0xA0;
   static constexpr std::uint16_t kTxCmdId = 0x0001;
@@ -104,6 +110,7 @@ private:
   std::uint8_t last_rx_seq_ = 0;
   std::uint8_t next_tx_seq_ = 0;
   std::uint64_t dropped_packet_count_ = 0;
+  std::uint64_t skipped_byte_count_ = 0;
 };
 
 }  // namespace L1Sensor
