@@ -24,6 +24,17 @@ constexpr double kMinimumCornerDepth = 1e-6;
 // 和 1 度步长，两条代价曲线才能逐点对照。
 constexpr double kYawSearchRangeDegrees = 140.0;
 
+// 枚举点数。步长恒为 1 度，所以点数与度数同值；单独取名是因为亚度细化要用它
+// 在栈上开一个代价数组，那里必须是整型。
+constexpr int kYawSearchSteps = 140;
+static_assert(
+  kYawSearchSteps == static_cast<int>(kYawSearchRangeDegrees),
+  "枚举点数必须与 1 度步长下的窗口宽度一致");
+
+// 抛物线细化的曲率下限，单位为像素。低于它说明三点近乎共线或平底，顶点无定义。
+// 真正兜底的是后面的 ±0.5 格判定，这里只防除零。
+constexpr double kMinimumYawCurvaturePixels = 1e-9;
+
 // 双板配对的世界系间距范围，单位为米。相邻两板间距为 2*r*sin(π/n)：四板车是
 // r*sqrt(2)，三板车是 r*sqrt(3)，配合 TrackedTarget::diverged() 认可的半径范围
 // [0.1, 0.4] 给出这两个边界。低于下限只可能是同一块板被检出两次，高于上限则不是
@@ -54,6 +65,35 @@ double spLimitRad(double angle) noexcept {
   while (angle > CV_PI) angle -= 2.0 * CV_PI;
   while (angle <= -CV_PI) angle += 2.0 * CV_PI;
   return angle;
+}
+
+// 三点抛物线细化：把 1 度整步的量化误差补回来。
+//
+// 整步枚举给出的是栅格上的最小点，真正的极小点几乎不会正好落在整数度上，
+// 所以输出天然带一个 ±0.5 度的量化误差。而且搜索栅格锚在 barrel_yaw - 70 度、
+// 跟着云台走，这个误差在帧间是 (barrel_yaw mod 1 度) 的确定性锯齿而不是白噪声，
+// EKF 的白噪声 R 平均不掉它。
+//
+// 用胜者与左右邻居的代价过一条抛物线求顶点即可。三个代价都是扫描时已经算过的，
+// 不产生任何额外的重投影——这是它值得做的全部理由，绝对量只有零点几度。
+//
+// 返回相对胜者的偏移，单位为格（即度）。以下情况返回 0，保持整步结果：
+//   - 任一代价非有限：该采样点重投影失败；
+//   - 分母接近 0：三点共线或平底，顶点无定义；
+//   - 顶点跑出 ±0.5 格：抛物线只在赢下来的这一格内部有意义，越界说明局部不是
+//     二次的（某个角点残差穿过零点，代价在那里有折角），此时不可信。
+// 这三条合起来保证细化只在格内移动，动不了 argmin，因此引入不了整步枚举没有的
+// 失效模式：最坏情况就是退回整步本身的那 ±0.5 度。
+double parabolicYawOffset(double left, double center, double right) noexcept {
+  if (!std::isfinite(left) || !std::isfinite(center) || !std::isfinite(right)) {
+    return 0.0;
+  }
+  const double curvature = left - 2.0 * center + right;
+  if (std::abs(curvature) < kMinimumYawCurvaturePixels) {
+    return 0.0;
+  }
+  const double offset = 0.5 * (left - right) / curvature;
+  return std::abs(offset) <= 0.5 ? offset : 0.0;
 }
 
 // 世界系 yaw 到 armor -> world 旋转。装甲板按车辆类别使用固定安装倾角，
@@ -340,15 +380,28 @@ void PnpSolver::optimize_yaw(Armor &armor) const {
   const double yaw0 = spLimitRad(
     barrel_yaw - kYawSearchRangeDegrees / 2.0 * CV_PI / 180.0);
 
+  // 整步的代价全部留下，细化要用胜者左右两格——它们已经算过，不必重算。
+  std::array<double, kYawSearchSteps> costs{};
   double min_error = 1e10;
+  int best_index = -1;
   double best_yaw = armor.ypr_in_world[0];
-  for (int index = 0; index < kYawSearchRangeDegrees; ++index) {
+  for (int index = 0; index < kYawSearchSteps; ++index) {
     const double yaw = spLimitRad(yaw0 + index * CV_PI / 180.0);
-    const double error = yaw_cost(armor, yaw);
-    if (error < min_error) {
-      min_error = error;
+    costs[index] = yaw_cost(armor, yaw);
+    if (costs[index] < min_error) {
+      min_error = costs[index];
       best_yaw = yaw;
+      best_index = index;
     }
+  }
+
+  // 胜者落在窗口两端时缺一侧邻居，不细化。那本来就是真解在 140 度窗口之外、
+  // 输出被截断在边界上的情形，细化没有意义。best_index 为 -1 表示整窗代价
+  // 全部非有限，同样跳过。
+  if (best_index > 0 && best_index + 1 < kYawSearchSteps) {
+    const double offset = parabolicYawOffset(
+      costs[best_index - 1], costs[best_index], costs[best_index + 1]);
+    best_yaw = spLimitRad(best_yaw + offset * CV_PI / 180.0);
   }
 
   armor.yaw_raw = armor.ypr_in_world[0];
@@ -372,19 +425,30 @@ bool PnpSolver::optimize_yaw_pair(Armor &left, Armor &right) const {
   const double yaw0 = spLimitRad(
     barrel_yaw - kYawSearchRangeDegrees / 2.0 * CV_PI / 180.0);
 
+  std::array<double, kYawSearchSteps> costs{};
   double min_error = std::numeric_limits<double>::infinity();
+  int best_index = -1;
   double best_left_yaw = left.ypr_in_world[0];
-  for (int index = 0; index < kYawSearchRangeDegrees; ++index) {
+  for (int index = 0; index < kYawSearchSteps; ++index) {
     const double yaw = spLimitRad(yaw0 + index * CV_PI / 180.0);
-    const double error =
+    costs[index] =
       yaw_cost(left, yaw) + yaw_cost(right, spLimitRad(yaw + offset));
-    if (error < min_error) {
-      min_error = error;
+    if (costs[index] < min_error) {
+      min_error = costs[index];
       best_left_yaw = yaw;
+      best_index = index;
     }
   }
   if (!std::isfinite(min_error)) {
     return false;
+  }
+
+  // 联合代价是两块板代价之和，两项在极小点附近都光滑，和仍然局部二次，
+  // 细化的前提与单板一样成立。右板 yaw 由 2π/n 的约束跟着走。
+  if (best_index > 0 && best_index + 1 < kYawSearchSteps) {
+    const double refinement = parabolicYawOffset(
+      costs[best_index - 1], costs[best_index], costs[best_index + 1]);
+    best_left_yaw = spLimitRad(best_left_yaw + refinement * CV_PI / 180.0);
   }
 
   // rm.cv.fans 和 QD 在这里都不设代价门限：配对一旦成立就无条件采用联合解，
