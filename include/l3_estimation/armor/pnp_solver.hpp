@@ -50,14 +50,18 @@ public:
 private:
   // 复刻 sp_vision：以枪管 yaw 为中心，在左右各 70 度内按 1 度步长枚举，
   // 用四角点重投影距离之和选择装甲板世界系 yaw。
+  //
+  // 在 sp_vision 之上多做一步亚度细化：拿整步胜者与左右邻居的代价过一条抛物线，
+  // 把 ±0.5 度的量化误差补回来。三个代价都是枚举时算过的，不产生额外重投影，
+  // 且细化只在胜出的那一格内部移动，选中哪一格与 sp_vision 完全一致。
   void optimize_yaw(Armor& armor) const;
 
   // 单板在给定世界系 yaw 下的四角点重投影代价，与 optimize_yaw 共用同一支：
   // 重投影不可用时返回无穷，使调用方的比较自然跳过该采样点。
   double yaw_cost(const Armor& armor, double yaw) const;
 
-  // 双板联合搜索。窗口、步长与单板完全一致，只把代价换成两块板之和，右板 yaw
-  // 恒为左板 + 2π/n；成功时改写两块板的 ypr_in_world[0] 并返回 true。
+  // 双板联合搜索。窗口、步长、亚度细化与单板完全一致，只把代价换成两块板之和，
+  // 右板 yaw 恒为左板 + 2π/n；成功时改写两块板的 ypr_in_world[0] 并返回 true。
   bool optimize_yaw_pair(Armor& left, Armor& right) const;
 
   // 静态 camera -> barrel 外参，以及逐帧更新的 barrel -> world 旋转。
