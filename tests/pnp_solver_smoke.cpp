@@ -137,6 +137,71 @@ bool poseCommitted(const L3Estimation::Armor& armor)
   return armor.name != L3Estimation::ArmorName::Unknown;
 }
 
+// PnpSolver 内部的角度归一化。必须照抄而不是用 limit_rad：后者走 std::remainder，
+// 与这里的循环相差一个 ulp，做逐位对照时会变成噪声。
+double spLimitRadReference(double angle)
+{
+  while (angle > std::numbers::pi) angle -= 2.0 * std::numbers::pi;
+  while (angle <= -std::numbers::pi) angle += 2.0 * std::numbers::pi;
+  return angle;
+}
+
+// 只用公开的 reproject_armor 独立复刻整个 yaw 搜索：140 点整步枚举加三点抛物线
+// 细化。求解器内部走的是绕开 cv::Mat 与 Rodrigues 的快路，两条路必须给出同一个
+// 答案——这是那条快路唯一能从外部验证的方式。
+double referenceYawSearch(
+  const L3Estimation::PnpSolver& solver,
+  const L3Estimation::Armor& armor,
+  double barrel_yaw)
+{
+  constexpr double kDegree = std::numbers::pi / 180.0;
+  constexpr int kSteps = 140;
+  const double yaw0 = spLimitRadReference(barrel_yaw - 70.0 * kDegree);
+
+  std::array<double, kSteps> costs{};
+  double best_cost = std::numeric_limits<double>::infinity();
+  int best_index = -1;
+  double best_yaw = armor.ypr_in_world[0];
+  for (int index = 0; index < kSteps; ++index) {
+    const double yaw = spLimitRadReference(yaw0 + index * kDegree);
+    const std::vector<cv::Point2f> projected =
+      solver.reproject_armor(armor.xyz_in_world, yaw, armor.type, armor.name);
+    if (projected.size() != armor.points.size()) {
+      costs[index] = std::numeric_limits<double>::infinity();
+      continue;
+    }
+    double cost = 0.0;
+    for (std::size_t point = 0; point < projected.size(); ++point) {
+      cost += cv::norm(armor.points[point] - projected[point]);
+    }
+    costs[index] = cost;
+    if (cost < best_cost) {
+      best_cost = cost;
+      best_yaw = yaw;
+      best_index = index;
+    }
+  }
+  if (best_index <= 0 || best_index + 1 >= kSteps) {
+    return best_yaw;
+  }
+
+  const double left = costs[best_index - 1];
+  const double center = costs[best_index];
+  const double right = costs[best_index + 1];
+  if (!std::isfinite(left) || !std::isfinite(center) || !std::isfinite(right)) {
+    return best_yaw;
+  }
+  const double curvature = left - 2.0 * center + right;
+  if (std::abs(curvature) < 1e-9) {
+    return best_yaw;
+  }
+  const double offset = 0.5 * (left - right) / curvature;
+  if (std::abs(offset) > 0.5) {
+    return best_yaw;
+  }
+  return spLimitRadReference(best_yaw + offset * kDegree);
+}
+
 // 在指定的世界系 yaw 和世界系位置上合成一块无噪声的板：按参考旋转造出
 // armor -> camera 位姿，再投影出四个角点。真值 yaw 已知，因此可以直接量
 // 搜索输出离真值差多少——这是亚度细化唯一能被验证的方式。
@@ -375,6 +440,17 @@ int main()
       expect(
         error < 0.15 * kDegree,
         "parabolic refinement is worse than the piecewise-linear bound");
+
+      // 四、快路交叉核对。求解器内部不再走 cv::projectPoints，这里用公开的
+      //     reproject_armor 把整个搜索独立算一遍，两者必须落在同一个答案上。
+      //     两条路唯一的系统性差异是投影点收窄成 float 的那一步（约 1e-4 px
+      //     的代价差），传到角度上远小于 1e-3 度。
+      const double reference =
+        referenceYawSearch(physical_solver, refined, barrel_yaw);
+      expect(
+        std::abs(L6Telemetry::limit_rad(
+          refined.ypr_in_world[0] - reference)) < 1e-3 * kDegree,
+        "fast yaw-cost path disagrees with the cv::projectPoints reference");
     }
   }
 

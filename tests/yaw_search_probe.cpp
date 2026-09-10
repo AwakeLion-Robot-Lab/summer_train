@@ -193,6 +193,7 @@ int main(int argc, char* argv[])
     double search_time_us_sum = 0.0;
     double fast_time_us_sum = 0.0;
     double fast_max_cost_gap = 0.0;
+    double single_pnp_us_sum = 0.0;
     std::size_t fast_grid_disagree = 0;
     double fast_grid_disagree_deg = 0.0;
     std::size_t parabola_at_edge = 0;
@@ -230,7 +231,14 @@ int main(int argc, char* argv[])
         armor.center = detection.center;
         armor.area = L6Telemetry::polygonArea(detection.corners);
         armor.points = detection.corners;
-        solver.single_pnp(armor);
+        {
+          // 生产路径的真实耗时：solvePnP + 140 次 yaw 搜索，全在 single_pnp 里。
+          const auto start = std::chrono::steady_clock::now();
+          solver.single_pnp(armor);
+          const auto stop = std::chrono::steady_clock::now();
+          single_pnp_us_sum +=
+            std::chrono::duration<double, std::micro>(stop - start).count();
+        }
         if (armor.name == L3Estimation::ArmorName::Unknown) continue;
 
         const double barrel_yaw =
@@ -413,7 +421,9 @@ int main(int argc, char* argv[])
 
     std::printf("\n===== yaw 搜索初筛/细筛测量：%s，%zu 块提交的板 =====\n",
                 input.c_str(), samples.size());
-    std::printf("现行 140 次整度枚举耗时：均值 %.1f us（%zu 次调用），"
+    std::printf("生产路径 single_pnp 耗时：均值 %.1f us/块\n",
+                single_pnp_us_sum / static_cast<double>(samples.size()));
+    std::printf("参考：独立的 140 次整度枚举耗时：均值 %.1f us（%zu 次调用），"
                 "单次重投影 %.3f us\n",
                 search_time_us_sum / static_cast<double>(search_calls), search_calls,
                 search_time_us_sum / static_cast<double>(search_calls) / kWindowDegrees);

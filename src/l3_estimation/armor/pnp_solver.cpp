@@ -111,6 +111,148 @@ Eigen::Matrix3d armorRotationInWorld(double yaw, ArmorName name) {
       {-sin_pitch, 0, cos_pitch}};
 }
 
+// 一块板在一帧内的重投影常量。yaw 搜索的 140 次评估里只有 sin/cos(yaw) 会变，
+// 其余全是这一帧固定的量。yaw_cost 那条路每次都要重算这些常量，还要走
+// eigen2cv -> Rodrigues -> projectPoints（内部再 Rodrigues 回矩阵）一整趟
+// cv::Mat 往返：sp demo 上实测单次 1.381 us，140 次就是 193 us 一块板。
+//
+// 这里把常量提出循环，并按 armorPoints 的结构直接算四个角点——板的局部 x 恒为
+// 零，所以只需要 armor -> world 旋转的第二、三列，连矩阵都不必构造。实测单次
+// 0.055 us、整块板 7.7 us，25 倍，而且不再有任何堆分配。
+//
+// 代价的定义（四角像素距离之和）一字未改，yaw_cost 与 reproject_armor 也原样
+// 保留：后者是 public 的，auto_aim_test 和 track_diag 画代价曲线都在用。
+// pnp_solver_smoke 逐点交叉核对两条路，任一条写错都会被另一条抓住。
+class YawCostCache {
+public:
+  YawCostCache(const L1Sensor::CameraCalibration &calibration,
+               const Eigen::Matrix3d &R_camera_barrel,
+               const Eigen::Vector3d &t_camera_barrel,
+               const Eigen::Matrix3d &R_barrel_world,
+               const std::vector<cv::Point3f> &object_points,
+               const Armor &armor) noexcept;
+
+  // false 表示这份标定走不了快路，调用方必须退回 yaw_cost。
+  bool usable() const noexcept { return usable_; }
+
+  double cost(double yaw) const noexcept;
+
+private:
+  bool usable_{false};
+  // world -> camera 旋转的三列。角点只用到板面的横向与竖向，这三列足够合成。
+  Eigen::Vector3d axis_x_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d axis_y_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d axis_z_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d center_{Eigen::Vector3d::Zero()};
+  double half_width_{0.0};
+  double half_height_{0.0};
+  double sin_pitch_{0.0};
+  double cos_pitch_{1.0};
+  double fx_{0.0};
+  double fy_{0.0};
+  double cx_{0.0};
+  double cy_{0.0};
+  double k1_{0.0};
+  double k2_{0.0};
+  double p1_{0.0};
+  double p2_{0.0};
+  double k3_{0.0};
+  std::array<cv::Point2f, 4> observed_{};
+};
+
+YawCostCache::YawCostCache(const L1Sensor::CameraCalibration &calibration,
+                           const Eigen::Matrix3d &R_camera_barrel,
+                           const Eigen::Vector3d &t_camera_barrel,
+                           const Eigen::Matrix3d &R_barrel_world,
+                           const std::vector<cv::Point3f> &object_points,
+                           const Armor &armor) noexcept {
+  const cv::Mat &matrix = calibration.camera_matrix;
+  const cv::Mat &distortion = calibration.distortion_coefficients;
+  // validCalibration 允许 4/5/8/12/14 个畸变系数，这里只实现最常用的
+  // k1,k2,p1,p2,k3。更长的（rational / thin-prism / tilted sensor）快路不成立。
+  // cvProjectPoints2 忽略内参矩阵的斜切项，所以一并要求它为零，免得两条路在
+  // 带斜切的标定上悄悄分叉——宁可慢，不可不一致。
+  if (distortion.total() > 5 || matrix.at<double>(0, 1) != 0.0 ||
+      object_points.size() != armor.points.size()) {
+    return;
+  }
+
+  fx_ = matrix.at<double>(0, 0);
+  fy_ = matrix.at<double>(1, 1);
+  cx_ = matrix.at<double>(0, 2);
+  cy_ = matrix.at<double>(1, 2);
+  const auto coefficient = [&distortion](int index) {
+    return index < static_cast<int>(distortion.total())
+               ? distortion.at<double>(index)
+               : 0.0;
+  };
+  k1_ = coefficient(0);
+  k2_ = coefficient(1);
+  p1_ = coefficient(2);
+  p2_ = coefficient(3);
+  k3_ = coefficient(4);
+
+  // 半宽半高直接取自 object_points，连 armorPoints 收窄到 float 的那一步一起
+  // 继承——慢路喂给 cv::projectPoints 的就是这几个数。
+  half_width_ = object_points[0].y;
+  half_height_ = object_points[0].z;
+
+  const Eigen::Matrix3d R_camera_world =
+      R_camera_barrel.transpose() * R_barrel_world.transpose();
+  axis_x_ = R_camera_world.col(0);
+  axis_y_ = R_camera_world.col(1);
+  axis_z_ = R_camera_world.col(2);
+  // 括号分组与 reproject_armor 保持一致，少一处无谓的浮点差异。
+  center_ = R_camera_barrel.transpose() *
+            (R_barrel_world.transpose() * armor.xyz_in_world - t_camera_barrel);
+
+  const double pitch = armorPitchOf(armor.name);
+  sin_pitch_ = std::sin(pitch);
+  cos_pitch_ = std::cos(pitch);
+  observed_ = armor.points;
+
+  usable_ = R_camera_world.allFinite() && center_.allFinite() &&
+            std::isfinite(fx_) && std::isfinite(fy_) && fx_ != 0.0 &&
+            fy_ != 0.0;
+}
+
+double YawCostCache::cost(double yaw) const noexcept {
+  const double sin_yaw = std::sin(yaw);
+  const double cos_yaw = std::cos(yaw);
+  // armor -> world 的第二列是板面横向（与安装倾角无关），第三列是板面竖向。
+  // 两者都已左乘过 world -> camera，所以直接就是相机系下的方向。
+  const Eigen::Vector3d lateral = cos_yaw * axis_y_ - sin_yaw * axis_x_;
+  const Eigen::Vector3d vertical =
+      sin_pitch_ * (cos_yaw * axis_x_ + sin_yaw * axis_y_) +
+      cos_pitch_ * axis_z_;
+  const Eigen::Vector3d half_lateral = half_width_ * lateral;
+  const Eigen::Vector3d half_vertical = half_height_ * vertical;
+
+  // 顺序必须与 armorPoints 一致：左上、右上、右下、左下。
+  const std::array<Eigen::Vector3d, 4> corners{
+      center_ + half_lateral + half_vertical,
+      center_ - half_lateral + half_vertical,
+      center_ - half_lateral - half_vertical,
+      center_ + half_lateral - half_vertical};
+
+  double error = 0.0;
+  for (std::size_t index = 0; index < corners.size(); ++index) {
+    const Eigen::Vector3d &point = corners[index];
+    const double a = point.x() / point.z();
+    const double b = point.y() / point.z();
+    const double r2 = a * a + b * b;
+    const double radial = 1.0 + r2 * (k1_ + r2 * (k2_ + r2 * k3_));
+    const double xd = a * radial + 2.0 * p1_ * a * b + p2_ * (r2 + 2.0 * a * a);
+    const double yd = b * radial + p1_ * (r2 + 2.0 * b * b) + 2.0 * p2_ * a * b;
+    // 收窄成 float 再作差：慢路把投影点存进 std::vector<cv::Point2f>，那一步的
+    // 舍入是两条路唯一的系统性差异来源，不复刻的话代价会差出 1e-4 px。
+    const cv::Point2f projected{static_cast<float>(xd * fx_ + cx_),
+                                static_cast<float>(yd * fy_ + cy_)};
+    error += cv::norm(observed_[index] - projected);
+  }
+  return error;
+}
+
 bool
 validCalibration(const L1Sensor::CameraCalibration &calibration) {
   // OpenCV 支持的常用畸变参数长度；拒绝形状虽合法但模型含义未知的数组。
@@ -358,6 +500,11 @@ void PnpSolver::single_pnp(Armor &armor) const {
   optimize_yaw(armor);
 }
 
+const std::vector<cv::Point3f> &
+PnpSolver::objectPointsFor(ArmorType type) const noexcept {
+  return type == ArmorType::Big ? big_armor_points_ : small_armor_points_;
+}
+
 double PnpSolver::yaw_cost(const Armor &armor, double yaw) const {
   const std::vector<cv::Point2f> projected =
     reproject_armor(armor.xyz_in_world, yaw, armor.type, armor.name);
@@ -380,6 +527,13 @@ void PnpSolver::optimize_yaw(Armor &armor) const {
   const double yaw0 = spLimitRad(
     barrel_yaw - kYawSearchRangeDegrees / 2.0 * CV_PI / 180.0);
 
+  // 这一帧这块板的重投影常量只算一次。标定不受支持时 usable() 为 false，
+  // 整个搜索原样退回 yaw_cost，行为与快路不存在时完全一致。
+  const YawCostCache cache{calibration_,     R_camera2barrel_,
+                           t_camera2barrel_, R_barrel2world_,
+                           objectPointsFor(armor.type), armor};
+  const bool fast = cache.usable();
+
   // 整步的代价全部留下，细化要用胜者左右两格——它们已经算过，不必重算。
   std::array<double, kYawSearchSteps> costs{};
   double min_error = 1e10;
@@ -387,7 +541,7 @@ void PnpSolver::optimize_yaw(Armor &armor) const {
   double best_yaw = armor.ypr_in_world[0];
   for (int index = 0; index < kYawSearchSteps; ++index) {
     const double yaw = spLimitRad(yaw0 + index * CV_PI / 180.0);
-    costs[index] = yaw_cost(armor, yaw);
+    costs[index] = fast ? cache.cost(yaw) : yaw_cost(armor, yaw);
     if (costs[index] < min_error) {
       min_error = costs[index];
       best_yaw = yaw;
@@ -425,14 +579,24 @@ bool PnpSolver::optimize_yaw_pair(Armor &left, Armor &right) const {
   const double yaw0 = spLimitRad(
     barrel_yaw - kYawSearchRangeDegrees / 2.0 * CV_PI / 180.0);
 
+  const YawCostCache left_cache{calibration_,     R_camera2barrel_,
+                                t_camera2barrel_, R_barrel2world_,
+                                objectPointsFor(left.type), left};
+  const YawCostCache right_cache{calibration_,     R_camera2barrel_,
+                                 t_camera2barrel_, R_barrel2world_,
+                                 objectPointsFor(right.type), right};
+  const bool fast = left_cache.usable() && right_cache.usable();
+
   std::array<double, kYawSearchSteps> costs{};
   double min_error = std::numeric_limits<double>::infinity();
   int best_index = -1;
   double best_left_yaw = left.ypr_in_world[0];
   for (int index = 0; index < kYawSearchSteps; ++index) {
     const double yaw = spLimitRad(yaw0 + index * CV_PI / 180.0);
-    costs[index] =
-      yaw_cost(left, yaw) + yaw_cost(right, spLimitRad(yaw + offset));
+    const double right_yaw = spLimitRad(yaw + offset);
+    costs[index] = fast
+      ? left_cache.cost(yaw) + right_cache.cost(right_yaw)
+      : yaw_cost(left, yaw) + yaw_cost(right, right_yaw);
     if (costs[index] < min_error) {
       min_error = costs[index];
       best_left_yaw = yaw;
@@ -536,11 +700,8 @@ PnpSolver::reproject_armor(const Eigen::Vector3d &xyz_in_world, double yaw,
   std::vector<cv::Point2f> image_points;
   try {
     cv::Rodrigues(R_armor2camera_cv, rvec);
-    const auto &object_points = type == ArmorType::Big
-      ? big_armor_points_
-      : small_armor_points_;
     cv::projectPoints(
-      object_points, rvec, tvec, calibration_.camera_matrix,
+      objectPointsFor(type), rvec, tvec, calibration_.camera_matrix,
       calibration_.distortion_coefficients, image_points);
   } catch (const cv::Exception &error) {
     L6Telemetry::logWarn("PnpSolver armor reprojection failed", error.what());
