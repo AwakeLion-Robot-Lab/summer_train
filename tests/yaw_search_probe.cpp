@@ -26,6 +26,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -113,6 +114,20 @@ struct FastProjector {
   }
 };
 
+// 灯条在图像平面的平均倾角，弧度。角点顺序固定 TL,TR,BR,BL，所以左灯条是
+// TL->BL、右灯条是 TR->BR。图像 y 轴朝下，取"从竖直方向偏了多少"。
+// 观测与重投影用同一个函数算，相机自身 roll 的影响在相减时自然抵消，
+// 不必像原文那样单独补一个 phi_camera。
+double lightbarTilt(const std::array<cv::Point2f, 4>& corners) noexcept
+{
+  const auto tilt = [](const cv::Point2f& top, const cv::Point2f& bottom) {
+    return std::atan2(
+      static_cast<double>(bottom.x - top.x),
+      static_cast<double>(bottom.y - top.y));
+  };
+  return 0.5 * (tilt(corners[0], corners[3]) + tilt(corners[1], corners[2]));
+}
+
 double percentile(std::vector<double> values, double ratio)
 {
   if (values.empty()) return std::numeric_limits<double>::quiet_NaN();
@@ -140,6 +155,20 @@ struct Sample {
   std::size_t minima_quarter{0};       // 0.25 度分辨率下窗口内的极小值个数
   double basin_deg{0.0};               // 真解所在坑的宽度（代价回升到 1.02 倍之前）
   double distance{0.0};
+
+  // ---- 灯条倾角选解（对照图里那套 IMU 补偿 + 2D/3D 一致性约束）----
+  bool has_second{false};       // 窗口内是否存在一个足够远的次极小（伪解候选）
+  double best_offset_deg{0.0};  // 全局极小相对枪管 yaw 的偏角
+  double second_offset_deg{0.0};
+  double best_cost{0.0};
+  double second_cost{0.0};
+  double tilt_observed{0.0};    // 检测角点量出来的灯条倾角
+  double tilt_at_best{0.0};     // 在全局极小处重投影，再量一次
+  double tilt_at_second{0.0};
+  double tilt_theory_best{0.0}; // atan(tan(pitch)*sin(psi-phi))，验证机理用
+  int frame{0};
+  int name{-1};
+  double second_yaw{0.0};       // 次极小对应的绝对 yaw
 };
 
 }  // namespace
@@ -331,6 +360,8 @@ int main(int argc, char* argv[])
         };
 
         Sample sample;
+        sample.frame = frame_index;
+        sample.name = static_cast<int>(armor.name);
         sample.distance = armor.xyz_in_world.norm();
         const double truth_offset = truth_index * kTruthStepDegrees;
         sample.truth_yaw = yaw_at(truth_offset);
@@ -345,11 +376,51 @@ int main(int argc, char* argv[])
         sample.basin_deg = right - left;
 
         // 0.25 度分辨率下的极小值个数：比 0.02 度粗，滤掉像素量化的毛刺。
+        // 顺便把"离全局极小足够远的那个最深的坑"记下来——它就是伪解候选，
+        // 灯条倾角选解要判的正是这两个坑之间的取舍。
+        double second_cost = std::numeric_limits<double>::infinity();
+        double second_offset = 0.0;
         for (double offset = 0.25; offset < kWindowDegrees - 0.25; offset += 0.25) {
           const double here = cost_at(offset);
           if (here < cost_at(offset - 0.25) && here <= cost_at(offset + 0.25)) {
             ++sample.minima_quarter;
+            if (std::abs(offset - truth_offset) >= 20.0 && here < second_cost) {
+              second_cost = here;
+              second_offset = offset;
+            }
           }
+        }
+
+        // ---- 灯条倾角选解：把观测倾角与两个候选解处的重投影倾角对比 ----
+        // 机理是装甲板 15 度的固定安装倾角：板面"竖直方向"在世界系里带一个
+        // 水平分量 sin(pitch)，绕视线方向投影到图像上就成了灯条的倾斜，
+        // 幅度 atan(tan(pitch)*sin(psi-phi))，符号直接给出 psi 在视线的哪一侧。
+        // 两个二义解大致关于视线镜像，所以倾角符号相反——这正是原文那条判据。
+        const auto reprojectedTilt = [&](double yaw) {
+          const std::vector<cv::Point2f> projected = solver.reproject_armor(
+            armor.xyz_in_world, yaw, armor.type, armor.name);
+          if (projected.size() != 4) {
+            return std::numeric_limits<double>::quiet_NaN();
+          }
+          return lightbarTilt(
+            {projected[0], projected[1], projected[2], projected[3]});
+        };
+        sample.tilt_observed = lightbarTilt(armor.points);
+        sample.best_offset_deg = truth_offset - kWindowDegrees / 2.0;
+        sample.best_cost = truth_cost;
+        sample.tilt_at_best = reprojectedTilt(sample.truth_yaw);
+        {
+          const double pitch = L3Estimation::armorPitchOf(armor.name);
+          sample.tilt_theory_best =
+            std::atan(std::tan(pitch) *
+                      std::sin(sample.best_offset_deg * kDegToRad));
+        }
+        if (std::isfinite(second_cost)) {
+          sample.has_second = true;
+          sample.second_offset_deg = second_offset - kWindowDegrees / 2.0;
+          sample.second_cost = second_cost;
+          sample.second_yaw = yaw_at(second_offset);
+          sample.tilt_at_second = reprojectedTilt(yaw_at(second_offset));
         }
 
         // 现行 1 度整步。
@@ -474,6 +545,132 @@ int main(int argc, char* argv[])
                 percentile(parabola_regression, 0.5),
                 percentile(parabola_regression, 0.95),
                 percentile(parabola_regression, 1.0));
+
+    // ================= 灯条倾角选解 =================
+    {
+      std::vector<double> residual_best, theory_error, separation, margin_deg;
+      std::size_t with_second = 0, tilt_agrees = 0, tilt_undecided = 0;
+      std::size_t sign_flip = 0;
+      for (const auto& s : samples) {
+        if (!std::isfinite(s.tilt_at_best)) continue;
+        residual_best.push_back(
+          std::abs(s.tilt_observed - s.tilt_at_best) * kRadToDeg);
+        theory_error.push_back(
+          std::abs(s.tilt_at_best - s.tilt_theory_best) * kRadToDeg);
+        if (!s.has_second || !std::isfinite(s.tilt_at_second)) continue;
+        ++with_second;
+        const double to_best = std::abs(s.tilt_observed - s.tilt_at_best);
+        const double to_second = std::abs(s.tilt_observed - s.tilt_at_second);
+        if (to_best < to_second) ++tilt_agrees;
+        separation.push_back(
+          std::abs(s.tilt_at_best - s.tilt_at_second) * kRadToDeg);
+        margin_deg.push_back((to_second - to_best) * kRadToDeg);
+        // 两个候选的倾角是否异号——原文的判据只看符号，同号就判不了。
+        if (s.tilt_at_best * s.tilt_at_second >= 0.0) ++tilt_undecided;
+        if (s.tilt_observed * s.tilt_at_best < 0.0) ++sign_flip;
+      }
+      std::printf("\n灯条倾角选解（图里那套 IMU 补偿 + 2D/3D 一致性约束）\n");
+      std::printf("  倾角模型残差 |观测 - 全局极小处重投影|\n");
+      std::printf("    中位 %.3f 度   p90 %.3f 度   p99 %.3f 度\n",
+                  percentile(residual_best, 0.5), percentile(residual_best, 0.9),
+                  percentile(residual_best, 0.99));
+      std::printf("  解析式 atan(tan(pitch)*sin(psi-phi)) 与实际重投影之差\n");
+      std::printf("    中位 %.3f 度   p90 %.3f 度   最大 %.3f 度\n",
+                  percentile(theory_error, 0.5), percentile(theory_error, 0.9),
+                  percentile(theory_error, 1.0));
+      std::printf("  存在远处次极小（伪解候选）的板：%zu / %zu\n",
+                  with_second, samples.size());
+      if (with_second > 0) {
+        std::printf("    两候选的倾角差   中位 %.3f 度   p10 %.3f 度   最小 %.3f 度\n",
+                    percentile(separation, 0.5), percentile(separation, 0.1),
+                    percentile(separation, 0.0));
+        std::printf("    倾角判据与代价全局极小一致：%zu / %zu (%.1f%%)\n",
+                    tilt_agrees, with_second,
+                    100.0 * static_cast<double>(tilt_agrees) /
+                      static_cast<double>(with_second));
+        std::printf("    两候选倾角同号、纯看符号判不了的：%zu (%.1f%%)\n",
+                    tilt_undecided,
+                    100.0 * static_cast<double>(tilt_undecided) /
+                      static_cast<double>(with_second));
+        std::printf("    判别余量（到伪解 - 到真解）中位 %.3f 度   p10 %.3f 度\n",
+                    percentile(margin_deg, 0.5), percentile(margin_deg, 0.1));
+      }
+      std::printf("  观测倾角与全局极小处倾角异号的板：%zu / %zu\n",
+                  sign_flip, residual_best.size());
+
+      // 两个判据谁更"敢说话"：各自的分离度除以各自的噪声。
+      std::vector<double> cost_gap;
+      for (const auto& s : samples) {
+        if (!s.has_second || s.best_cost <= 0.0) continue;
+        cost_gap.push_back((s.second_cost - s.best_cost) / s.best_cost);
+      }
+      std::printf("  代价的相对分离 (c2-c1)/c1  中位 %.3f   p10 %.3f   最小 %.3f\n",
+                  percentile(cost_gap, 0.5), percentile(cost_gap, 0.1),
+                  percentile(cost_gap, 0.0));
+      std::printf("  倾角信噪比 = 中位分离 / 中位残差 = %.2f\n",
+                  percentile(separation, 0.5) / percentile(residual_best, 0.5));
+
+      // 仲裁：分歧帧上，哪一个与上一帧更连续？真解随时间连续，伪解会跳。
+      // 这是唯一不需要真值的独立判据。
+      std::map<int, std::vector<const Sample*>> by_name;
+      for (const auto& s : samples) by_name[s.name].push_back(&s);
+      std::size_t disputes = 0, cost_more_continuous = 0, tilt_more_continuous = 0;
+      std::vector<std::array<double, 3>> dispute_gap;
+      std::vector<double> cost_jump, tilt_jump;
+      for (auto& [name, list] : by_name) {
+        std::sort(list.begin(), list.end(),
+                  [](const Sample* a, const Sample* b) { return a->frame < b->frame; });
+        for (std::size_t index = 1; index < list.size(); ++index) {
+          const Sample& previous = *list[index - 1];
+          const Sample& current = *list[index];
+          if (current.frame - previous.frame != 1) continue;
+          const double reference = previous.truth_yaw;
+          const double to_cost = std::abs(
+            L6Telemetry::limit_rad(current.truth_yaw - reference)) * kRadToDeg;
+          cost_jump.push_back(to_cost);
+          if (!current.has_second || !std::isfinite(current.tilt_at_second)) {
+            tilt_jump.push_back(to_cost);
+            continue;
+          }
+          const bool tilt_picks_second =
+            std::abs(current.tilt_observed - current.tilt_at_second) <
+            std::abs(current.tilt_observed - current.tilt_at_best);
+          const double tilt_yaw =
+            tilt_picks_second ? current.second_yaw : current.truth_yaw;
+          const double to_tilt =
+            std::abs(L6Telemetry::limit_rad(tilt_yaw - reference)) * kRadToDeg;
+          tilt_jump.push_back(to_tilt);
+          if (!tilt_picks_second) continue;
+          ++disputes;
+          if (to_cost < to_tilt) ++cost_more_continuous;
+          else if (to_tilt < to_cost) ++tilt_more_continuous;
+          const double gap = current.best_cost > 0.0
+            ? (current.second_cost - current.best_cost) / current.best_cost
+            : std::numeric_limits<double>::infinity();
+          dispute_gap.push_back({gap, to_cost, to_tilt});
+        }
+      }
+      std::printf("\n  仲裁：相邻帧连续性（不需要真值的独立判据）\n");
+      std::printf("    两判据分歧的帧 %zu 个：代价解更连续 %zu，倾角解更连续 %zu\n",
+                  disputes, cost_more_continuous, tilt_more_continuous);
+      std::printf("    整段相邻帧 |dyaw|：代价选解 中位 %.3f 度  p90 %.3f 度\n",
+                  percentile(cost_jump, 0.5), percentile(cost_jump, 0.9));
+      std::printf("                       倾角选解 中位 %.3f 度  p90 %.3f 度\n",
+                  percentile(tilt_jump, 0.5), percentile(tilt_jump, 0.9));
+      // 最有利于倾角判据的用法：只在代价自己拿不定主意（分离度小）时才让它表决。
+      std::printf("\n  只在代价分离度低于阈值时才用倾角表决：\n");
+      for (double threshold : {0.05, 0.10, 0.20, 0.50}) {
+        std::size_t n = 0, cost_wins = 0, tilt_wins = 0;
+        for (const auto& row : dispute_gap) {
+          if (row[0] > threshold) continue;
+          ++n;
+          if (row[1] < row[2]) ++cost_wins;
+          else if (row[2] < row[1]) ++tilt_wins;
+        }
+        std::printf("    分离度 <= %.2f：分歧 %zu 帧，代价更连续 %zu，倾角更连续 %zu\n",
+                    threshold, n, cost_wins, tilt_wins);
+      }
+    }
 
     std::printf("\n初筛 + 细筛（细筛已用真解级稠密扫描，属最乐观估计）\n");
     std::printf("  粗步长  代价次数  误差中位  误差p95   >2度    >10度\n");
