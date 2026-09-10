@@ -137,6 +137,33 @@ bool poseCommitted(const L3Estimation::Armor& armor)
   return armor.name != L3Estimation::ArmorName::Unknown;
 }
 
+// 在指定的世界系 yaw 和世界系位置上合成一块无噪声的板：按参考旋转造出
+// armor -> camera 位姿，再投影出四个角点。真值 yaw 已知，因此可以直接量
+// 搜索输出离真值差多少——这是亚度细化唯一能被验证的方式。
+L3Estimation::Armor synthesizeArmorAtWorldYaw(
+  const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Matrix3d& R_world_barrel,
+  const Eigen::Vector3d& xyz_in_world,
+  double yaw)
+{
+  const Eigen::Matrix3d R_camera_barrel = calibration.T_barrel_camera->linear();
+  const Eigen::Vector3d t_camera_barrel =
+    calibration.T_barrel_camera->translation();
+  const Eigen::Matrix3d R_armor_world = armorRotationInWorldReference(yaw);
+  const Eigen::Matrix3d R_armor_camera = R_camera_barrel.transpose() *
+    R_world_barrel.transpose() * R_armor_world;
+  const Eigen::Vector3d t_armor_camera = R_camera_barrel.transpose() *
+    (R_world_barrel.transpose() * xyz_in_world - t_camera_barrel);
+
+  L3Estimation::Armor armor;
+  armor.class_id = static_cast<int>(L2Perception::ArmorClass::Infantry3);
+  armor.points = projectArmor(
+    calibration, kSmallWidth, L6Telemetry::toCv(R_armor_camera),
+    cv::Vec3d{
+      t_armor_camera.x(), t_armor_camera.y(), t_armor_camera.z()});
+  return armor;
+}
+
 L1Sensor::CameraCalibration cloneCalibration(
   const L1Sensor::CameraCalibration& calibration)
 {
@@ -277,6 +304,78 @@ int main()
       optimized_offset >= -70.0 * std::numbers::pi / 180.0 - 1e-12 &&
         optimized_offset <= 69.0 * std::numbers::pi / 180.0 + 1e-12,
       "yaw optimizer escaped SP's barrel-centered search window");
+  }
+
+  // 亚度细化。1 度整步只能给出栅格上的点，栅格锚在 barrel_yaw - 70 度，所以
+  // 相对枪管 yaw 的栅格点恰好是整数度——把真值故意放在两个整数度之间，那个
+  // 小数就是整步必然吃下的量化误差，细化要做的就是把它收回来。
+  //
+  // 这里不复用上面那份合成标定：它的 T_barrel_camera 是绕 z 的 90 度，相机
+  // 光轴落在 barrel +z 上，而搜索窗口锚在 barrel yaw，两者对不上，板子摆在
+  // 光轴正前方时 yaw 根本不在窗口里。换成 CLAUDE.md 记录的那份真实轴置换
+  // （光学系 z 前/x 右/y 下 -> barrel x 前/y 左/z 上），几何才自洽。
+  {
+    auto physical = cloneCalibration(calibration);
+    Eigen::Isometry3d T_barrel_camera = Eigen::Isometry3d::Identity();
+    T_barrel_camera.linear() = (Eigen::Matrix3d{} <<
+      0.0, 0.0, 1.0,
+      -1.0, 0.0, 0.0,
+      0.0, -1.0, 0.0).finished();
+    T_barrel_camera.translation() = Eigen::Vector3d{0.02, 0.0, 0.05};
+    physical.T_barrel_camera = T_barrel_camera;
+
+    L3Estimation::PnpSolver physical_solver(physical);
+    expect(
+      physical_solver.ready(),
+      "PnpSolver rejected the physically consistent calibration");
+    physical_solver.set_R_world_barrel(
+      std::optional<Eigen::Quaterniond>{q_world_barrel});
+
+    constexpr double kDegree = std::numbers::pi / 180.0;
+    const double barrel_yaw =
+      L6Telemetry::eulers(R_world_barrel, 2, 1, 0)[0];
+    // 板心摆在枪口正前方 3 米，四个角点都在相机前方。
+    const Eigen::Vector3d plate_world =
+      R_world_barrel * Eigen::Vector3d{3.0, 0.0, 0.0};
+
+    // 覆盖靠近格心与靠近格边、两个方向。刻意不取正负 0.5：那是相邻两格代价
+    // 相等的简并点，胜者由浮点比较的先后决定，本来就没有确定答案。
+    for (double fraction : {0.15, 0.37, -0.28, 0.45}) {
+      const double true_yaw = L6Telemetry::limit_rad(
+        barrel_yaw + (12.0 + fraction) * kDegree);
+      const double grid_yaw =
+        L6Telemetry::limit_rad(barrel_yaw + 12.0 * kDegree);
+
+      L3Estimation::Armor refined = synthesizeArmorAtWorldYaw(
+        physical, R_world_barrel, plate_world, true_yaw);
+      physical_solver.single_pnp(refined);
+      expect(
+        poseCommitted(refined),
+        "sub-degree synthetic armor did not produce a PnP pose");
+
+      const double error =
+        std::abs(L6Telemetry::limit_rad(refined.ypr_in_world[0] - true_yaw));
+      const double quantized = std::abs(fraction) * kDegree;
+      const double moved =
+        std::abs(L6Telemetry::limit_rad(refined.ypr_in_world[0] - grid_yaw));
+
+      // 一、必须比整步的量化误差更接近真值，否则细化没有意义。
+      expect(
+        error < quantized,
+        "parabolic refinement did not beat the 1-degree grid");
+      // 二、绝不许离开赢下来的那一格。这条保证细化动不了 argmin，
+      //     引入不了整步枚举本来没有的失效模式。
+      expect(
+        moved <= 0.5 * kDegree + 1e-12,
+        "parabolic refinement left the winning grid cell");
+      // 三、无噪声合成板在真解处代价恰好为零，四个角点残差同时归零，底部
+      //     是折线而不是抛物线，细化只能收回一部分。0.15 度是这种最不利
+      //     形状下的上界；真实录像里残差不会同时归零，底部光滑得多，
+      //     sp demo 的 526 块板上实测中位 0.025 度、p95 0.197 度。
+      expect(
+        error < 0.15 * kDegree,
+        "parabolic refinement is worse than the piecewise-linear bound");
+    }
   }
 
   // Hero 独占大装甲尺寸；包括 BaseLarge 在内的其余合法 class_id 都用小装甲。
