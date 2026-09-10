@@ -56,6 +56,10 @@ private:
   // 且细化只在胜出的那一格内部移动，选中哪一格与 sp_vision 完全一致。
   void optimize_yaw(Armor& armor) const;
 
+  // 按板型取出 PnP 与重投影共用的那份物体点。构造时生成一次，
+  // 搜索循环里反复取用，不重复分配。
+  const std::vector<cv::Point3f>& objectPointsFor(ArmorType type) const noexcept;
+
   // 单板在给定世界系 yaw 下的四角点重投影代价，与 optimize_yaw 共用同一支：
   // 重投影不可用时返回无穷，使调用方的比较自然跳过该采样点。
   double yaw_cost(const Armor& armor, double yaw) const;
