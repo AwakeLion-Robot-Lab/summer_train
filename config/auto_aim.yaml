@@ -205,7 +205,7 @@ planning:
     # 每次都走 late 分支。校验会强行抬到 1.2 倍并告警。
     horizon_ms: 240
     # 前视扫描步长。切板时刻的分辨率就是它，同时决定每帧多做几次整车外推。
-    grid_ms: 4
+    grid_ms: 20
     # 数值求导步长。太小会被 EKF 外推自身的数值噪声吃掉，太大则把加速度抹平
     # ——而加速度正是约束的输入。
     derivative_step_ms: 2
@@ -275,7 +275,7 @@ runtime:
 # 绿色整车=EKF 展开的全部物理板，红框=Plan 选中的命中时刻板，
 # 顶部一行=跟踪状态 / 计划状态 / 第一条开火拒绝原因。
 debug:
-  overlay: true
+  overlay: false
   # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
   overlay_every: 1
 
@@ -284,7 +284,7 @@ debug:
   # 节点分成 gimbal / serial / track / obs / ekf / aim / delay / fire 八支，其中
   # gimbal 是实测云台姿态、aim 是规划出的云台姿态，两者同图即跟随误差。
   # 角度一律 degree，时间一律 ms。
-  plot: false
+  plot: true
   plot_host: "127.0.0.1"
   plot_port: 9870
 
