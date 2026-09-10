@@ -70,8 +70,14 @@ struct BlendLimits {
 struct BlendSolution {
   bool valid{false};
   double duration{0.0};
+  // 两条多项式给的是**相对切板后轨迹的偏差**，不是下发角本身：起点等于
+  // 两条轨迹之差，终点连同一、二阶导恒为零。下发角 = 本帧的切板后轨迹 + 偏差，
+  // 所以过渡终点恒等于真实轨迹，不会因为预测漂移而在收尾处甩一下。
   Quintic yaw;
   Quintic pitch;
+  // 提交那一帧的切板后轨迹状态。只在拿不到本帧采样器时用来外推，正常帧上
+  // 基准每帧现取。
+  AimState base;
   double peak_yaw_acceleration{0.0};
   double peak_pitch_acceleration{0.0};
   // 到 max_duration 仍然超加速度限。过渡段照发，但要让遥测看得见：这时
@@ -80,7 +86,8 @@ struct BlendSolution {
 };
 
 // 在给定过渡时长下拟合过渡段。start 是切板前轨迹在本帧（t = 0）的状态，
-// 终点取切板后轨迹在 duration 之后的状态。
+// after 只在 t = 0 处取一次，用来算偏差的初值——终点不需要预测，因为求值时
+// 基准每帧现取。
 //
 // 起点固定在 t = 0 而不是"切板时刻减去时长"，有两个好处：过渡段起点必然与
 // 本帧正在下发的角三阶连续，不需要额外对接；而且永远不会去采样过去的时刻。
@@ -114,9 +121,17 @@ public:
   using TimePoint = std::chrono::steady_clock::time_point;
 
   struct Forecast {
-    double switch_time{0.0};  // 相对本帧的切板时刻，s
+    // 相对本帧的切板时刻，s。**非有限值表示这份预报只用来续供 after 基准
+    // 轨迹，不作为提交依据**——过渡进行中调用方必须这样传，否则过渡走完的
+    // 那一帧会立刻拿它再提交一段，永远结束不了。
+    double switch_time{0.0};
     AimState before;           // 切板前那块板的射击轨迹在本帧的状态
     TrajectorySampler after;   // 切板后那块板的射击轨迹
+    // 射击轨迹是否已经真的切到 after 那块板上。过渡进行中由调用方每帧告知：
+    // 为假时不能交还控制权——那时把输出交回 shoot_yaw 等于把云台从已经奔到的
+    // 新板拽回旧板，一个阶跃变成两个。切板时刻是预测出来的，预测偏晚就会撞上
+    // 这种情况，回放里 417-420 和 593-596 两段正是如此。
+    bool destination_selected{false};
   };
 
   struct Output {
@@ -136,6 +151,11 @@ public:
 
   // shoot_yaw / shoot_pitch 是本帧射击轨迹的原值，即不做平滑就该下发的角。
   // forecast 为空表示前视窗口内没有可预见的切板。
+  //
+  // **过渡进行中调用方必须继续提供 forecast.after，且必须指向提交时选定的
+  // 同一块板。** 过渡输出 = 该轨迹本帧的值 + 衰减到零的偏差，基准每帧现取，
+  // 终点因此恒等于真实轨迹。切板真的发生之后"当前板"就是它，若改用"下一块"
+  // 重新采样，基准会整块跳掉。缺席时退化成从上一次基准匀加速外推。
   Output update(
     TimePoint now,
     double shoot_yaw,
@@ -150,6 +170,9 @@ public:
   const BlendLimits& limits() const noexcept { return limits_; }
 
 private:
+  // 过渡进行中的基准轨迹，见 .cpp 的说明。
+  AimState liveBase(const std::optional<Forecast>& forecast, double tau);
+
   // 把当前过渡段的遥测量填进 Output。过渡开始那一帧和过渡进行中的帧都要填，
   // 抽出来避免两处各写一遍、改一处漏一处。
   void fillStatus(Output& output) const noexcept;
@@ -157,8 +180,14 @@ private:
   BlendLimits limits_;
   bool active_{false};
   double late_by_{0.0};
+  // 时长走完但射击轨迹还没切过来时，停在基准轨迹上多等的秒数。
+  double held_for_{0.0};
   TimePoint start_time_{};
   BlendSolution solution_;
+  // 最近一次拿到的基准轨迹及其对应的 tau。采样器缺席的那些帧从这里外推，
+  // 保证退化路径也不引入阶跃。
+  AimState last_base_{};
+  double last_base_tau_{0.0};
 };
 
 }  // namespace L4Planning

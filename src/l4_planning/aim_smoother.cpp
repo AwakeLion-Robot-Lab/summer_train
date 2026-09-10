@@ -146,25 +146,35 @@ BlendSolution fitBlend(
     return solution;
   }
 
-  const AimState end = after(duration);
-  if (!allFinite(start) || !allFinite(end)) {
+  // 基准取"新板轨迹在本帧的状态"，不是它在 duration 之后的状态。多项式拟的
+  // 是**偏差**，基准由调用方每帧重新提供，所以这里只需要偏差的初值。
+  const AimState base = after(0.0);
+  if (!allFinite(start) || !allFinite(base)) {
     return solution;
   }
 
-  // 位置差先归一化再加回起点，把两端拉到同一支连续角度上。直接把两个绝对
-  // 角丢给 fit()，目标扫过 ±pi 时会解出绕整整一圈的过渡段，云台朝反方向甩。
-  AxisState yaw_end = end.yaw;
-  yaw_end.position =
-    start.yaw.position + wrapToPi(end.yaw.position - start.yaw.position);
-  AxisState pitch_end = end.pitch;
-  pitch_end.position =
-    start.pitch.position + wrapToPi(end.pitch.position - start.pitch.position);
+  // 偏差的起点 = 旧板轨迹 - 新板轨迹，终点恒为零。位置差先归一化：直接相减
+  // 会在目标扫过 ±pi 时解出绕整整一圈的过渡段，云台朝反方向甩。
+  const AxisState yaw_start{
+    wrapToPi(start.yaw.position - base.yaw.position),
+    start.yaw.velocity - base.yaw.velocity,
+    start.yaw.acceleration - base.yaw.acceleration};
+  const AxisState pitch_start{
+    wrapToPi(start.pitch.position - base.pitch.position),
+    start.pitch.velocity - base.pitch.velocity,
+    start.pitch.acceleration - base.pitch.acceleration};
 
   solution.duration = duration;
-  solution.yaw = Quintic::fit(start.yaw, yaw_end, duration);
-  solution.pitch = Quintic::fit(start.pitch, pitch_end, duration);
-  solution.peak_yaw_acceleration = solution.yaw.peakAbsAcceleration();
-  solution.peak_pitch_acceleration = solution.pitch.peakAbsAcceleration();
+  solution.base = base;
+  solution.yaw = Quintic::fit(yaw_start, AxisState{}, duration);
+  solution.pitch = Quintic::fit(pitch_start, AxisState{}, duration);
+  // 下发角 = 基准 + 偏差，加速度也是两者之和。偏差多项式的峰值不是全部，
+  // 还要加上新板轨迹自身的加速度——按三角不等式取上界，宁可把时长解长一点，
+  // 也不能谎报"满足加速度限"。
+  solution.peak_yaw_acceleration =
+    solution.yaw.peakAbsAcceleration() + std::abs(base.yaw.acceleration);
+  solution.peak_pitch_acceleration =
+    solution.pitch.peakAbsAcceleration() + std::abs(base.pitch.acceleration);
   solution.acceleration_limited =
     solution.peak_yaw_acceleration > limits.max_yaw_acceleration ||
     solution.peak_pitch_acceleration > limits.max_pitch_acceleration;
@@ -229,7 +239,35 @@ void AimSmoother::reset() noexcept
 {
   active_ = false;
   late_by_ = 0.0;
+  held_for_ = 0.0;
   solution_ = BlendSolution{};
+}
+
+// 过渡进行中的基准轨迹：优先用本帧最新的采样器，拿不到才退回提交时刻那份
+// 状态做匀加速外推。拿不到只发生在规划本身失败、只靠 blendOnlyPlan 续着走的
+// 帧上；过渡最长 200 ms，这段外推的误差远小于一次切板的阶跃。
+AimState AimSmoother::liveBase(
+  const std::optional<Forecast>& forecast, double tau)
+{
+  if (forecast && forecast->after) {
+    const AimState sampled = forecast->after(0.0);
+    if (allFinite(sampled)) {
+      last_base_ = sampled;
+      last_base_tau_ = tau;
+      return sampled;
+    }
+  }
+  // 拿不到本帧采样器时从**上一次拿到的**基准匀加速外推，而不是从提交时刻的
+  // 那份。从提交时刻推会在退化的那一帧甩出一个与已推进时间成正比的阶跃，
+  // 恰恰是这次重写要消掉的东西。
+  const double dt = tau - last_base_tau_;
+  const auto extrapolate = [dt](const AxisState& state) {
+    return AxisState{
+      state.position + state.velocity * dt + 0.5 * state.acceleration * dt * dt,
+      state.velocity + state.acceleration * dt,
+      state.acceleration};
+  };
+  return AimState{extrapolate(last_base_.yaw), extrapolate(last_base_.pitch)};
 }
 
 AimSmoother::Output AimSmoother::update(
@@ -245,15 +283,39 @@ AimSmoother::Output AimSmoother::update(
   if (active_) {
     const double tau = std::chrono::duration<double>(now - start_time_).count();
     if (tau < solution_.duration) {
-      // 过渡进行中：只求值，不重新规划。每帧按剩余时间重拟的话，剩余时间
-      // 趋零时加速度按 1/T^2 发散；确定性正是显式搜索相对 MPC 的优势。
+      // 过渡进行中：**系数不重拟**。每帧按剩余时间重拟的话，剩余时间趋零时
+      // 加速度按 1/T^2 发散；确定性正是显式搜索相对 MPC 的优势。
+      //
+      // 但基准轨迹必须取本帧最新的。多项式表示的是"相对新板轨迹的偏差"，
+      // 偏差按固定系数衰减到零，基准跟着 EKF 每帧更新——于是过渡结束时输出
+      // 恒等于新板轨迹本身，结构上不可能再有收尾阶跃。
+      //
+      // 早先的写法把终点 after(duration) 在提交那一刻就冻结，多项式对着一个
+      // 越来越旧的预测走完全程，收尾交回真实轨迹时必然甩一下：sp demo 回放上
+      // 实测收尾阶跃中位 1.29 度、最大 7.44 度，整段命令跳变反而比不做过渡还差。
       const double clamped = std::max(0.0, tau);
-      output.yaw = wrapToPi(solution_.yaw.position(clamped));
-      output.pitch = wrapToPi(solution_.pitch.position(clamped));
+      const AimState base = liveBase(forecast, clamped);
+      output.yaw = wrapToPi(base.yaw.position + solution_.yaw.position(clamped));
+      output.pitch =
+        wrapToPi(base.pitch.position + solution_.pitch.position(clamped));
       fillStatus(output);
       return output;
     }
-    // 过渡结束，回到射击轨迹。本帧起立刻可以重新提交下一段。
+    // 时长走完了，但射击轨迹未必已经切到目标板上——切板时刻是预测出来的，
+    // 预测偏晚就会出现"过渡先跑完、切板还没发生"。这时交还控制权等于把云台
+    // 从已经奔到的新板拽回旧板，一个阶跃变成两个。停在基准轨迹上继续等。
+    //
+    // 等待有上限：预测彻底落空时不能永远不交还，多等一个 max_duration 就走。
+    held_for_ = tau - solution_.duration;
+    const bool arrived = forecast && forecast->destination_selected;
+    if (!arrived && held_for_ < limits_.max_duration) {
+      const AimState base = liveBase(forecast, tau);
+      output.yaw = wrapToPi(base.yaw.position);
+      output.pitch = wrapToPi(base.pitch.position);
+      fillStatus(output);
+      return output;
+    }
+    // 射击轨迹已经是目标板，或者等够了。交还控制权，本帧起可以提交下一段。
     reset();
   }
 
@@ -292,16 +354,21 @@ AimSmoother::Output AimSmoother::update(
   }
 
   solution_ = committed;
+  last_base_ = committed.base;
+  last_base_tau_ = 0.0;
   start_time_ = now;
   // 过渡终点晚于切板时刻的量。晚一点是帧量化的必然：切板时刻按前视网格离散、
   // 帧周期本身还在抖，触发条件几乎不可能正好卡在等号上。
   late_by_ = duration - forecast->switch_time;
+  held_for_ = 0.0;
   active_ = true;
 
-  // tau = 0 处多项式等于 before(0)，与本帧射击轨迹三阶连续，所以这里直接
-  // 求值不会产生跳变。
-  output.yaw = wrapToPi(solution_.yaw.position(0.0));
-  output.pitch = wrapToPi(solution_.pitch.position(0.0));
+  // tau = 0 处偏差恰好等于 before - after(0)，加回基准就是 before 本身，
+  // 与本帧射击轨迹三阶连续，所以这里直接求值不会产生跳变。
+  output.yaw =
+    wrapToPi(solution_.base.yaw.position + solution_.yaw.position(0.0));
+  output.pitch =
+    wrapToPi(solution_.base.pitch.position + solution_.pitch.position(0.0));
   fillStatus(output);
   return output;
 }

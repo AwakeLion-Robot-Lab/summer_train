@@ -24,7 +24,8 @@ void testRepositoryConfigLoads()
   const auto config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
   const auto& blend = config.plan.blend;
 
-  require(blend.enable, "config/auto_aim.yaml should enable the switch blend");
+  // enable 是调参开关，不是不变量——上车时会被反复开关，不该由 smoke 钉死。
+  // 这里只验证这一节确实被解析到了结构体上，值本身交给使用者。
   require(
     blend.limits.max_yaw_acceleration > 0.0 &&
       blend.limits.max_pitch_acceleration > 0.0,

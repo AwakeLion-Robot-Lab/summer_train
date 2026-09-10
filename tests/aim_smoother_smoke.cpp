@@ -244,6 +244,8 @@ void testSmootherEndToEnd()
   bool blend_started = false;
   double blend_start_t = 0.0;
   double blend_end_t = 0.0;
+  double last_blend_yaw = 0.0;
+  bool handover_checked = false;
 
   for (int i = 0; i < kSteps; ++i) {
     const double t = i * kStep;
@@ -254,17 +256,27 @@ void testSmootherEndToEnd()
     const double raw_yaw = plateYaw(current, t);
     const double raw_pitch = platePitch(current, t);
 
+    // 采样器的时间原点是"本帧"，所以要把两块板的相位推到当前时刻。
+    Plate shifted_before = before;
+    Plate shifted_after = after;
+    shifted_before.phase = before.phase + before.omega * t;
+    shifted_after.phase = after.phase + after.omega * t;
+
     std::optional<L4Planning::AimSmoother::Forecast> forecast;
     if (!switched) {
       L4Planning::AimSmoother::Forecast f;
       f.switch_time = kSwitchTime - t;
-      // 采样器的时间原点是"本帧"，所以要把两块板的相位推到当前时刻。
-      Plate shifted_before = before;
-      Plate shifted_after = after;
-      shifted_before.phase = before.phase + before.omega * t;
-      shifted_after.phase = after.phase + after.omega * t;
       f.before = samplerFor(shifted_before)(0.0);
       f.after = samplerFor(shifted_after);
+      forecast = std::move(f);
+    } else if (smoother.blending()) {
+      // 切板已经发生，但过渡还没走完。契约要求继续提供**同一块**目标板的
+      // 采样器——Planner 靠 blend_target_id_ 钉住它。这里复刻同一条路径。
+      L4Planning::AimSmoother::Forecast f;
+      // switch_time 非有限 = 只续供基准轨迹，不作为提交依据。
+      f.switch_time = std::numeric_limits<double>::quiet_NaN();
+      f.after = samplerFor(shifted_after);
+      f.destination_selected = true;  // switched 为真，射击轨迹已经是 after
       forecast = std::move(f);
     }
 
@@ -297,8 +309,21 @@ void testSmootherEndToEnd()
       // 过渡结束之后同理。
       check(out.yaw == raw_yaw, "post-blend yaw is untouched");
       check(out.pitch == raw_pitch, "post-blend pitch is untouched");
+      // 回归用例：收尾不许有阶跃。过渡的最后一帧输出 = 基准 + 衰减到零的偏差
+      // = 真实射击轨迹本身，所以交回原值时两者必须已经重合。早先的实现把终点
+      // 在提交那一刻冻结，预测漂多少这里就甩多少（回放实测中位 1.29 度、
+      // 最大 7.44 度）。
+      if (blend_started && !handover_checked) {
+        handover_checked = true;
+        checkNear(
+          wrapToPi(out.yaw - last_blend_yaw), 0.0, 2e-3,
+          "handing back to the shooting trajectory introduces no step");
+      }
     }
 
+    if (out.blending) {
+      last_blend_yaw = out.yaw;
+    }
     times.push_back(t);
     yaws.push_back(out.yaw);
   }

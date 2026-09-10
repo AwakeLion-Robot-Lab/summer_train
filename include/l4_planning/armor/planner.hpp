@@ -87,6 +87,12 @@ private:
   int locked_id_{-1};
 
   AimSmoother smoother_;
+
+  // 当前过渡段奔向的那一块板。提交时定死，过渡结束置 -1。基准轨迹每帧要按
+
+  // 它重采——切板真的发生后 final_aim 就成了新板，跟着它走会让基准整块跳掉。
+
+  int blend_target_id_{-1};
   // 最近一次解出的射击轨迹角。空窗帧里过渡段还要继续求值，但那一帧没有
   // 新的射击轨迹可算，只能沿用上一次的原值去填 shoot_yaw/shoot_pitch。
   double last_shoot_yaw_{0.0};

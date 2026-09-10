@@ -175,27 +175,51 @@ Plan Planner::plan(const PlanInput& input)
   plan.aim.pitch = shoot_pitch;
 
   if (config_.blend.enable) {
+    const auto samplerFor = [this, &target, fly_time = current_trajectory.fly_time,
+                             bullet_speed](int armor_id) {
+      return [this, target, fly_time, bullet_speed, armor_id](double offset) {
+        return sampleTrajectory(target, fly_time, bullet_speed, offset, armor_id);
+      };
+    };
+
     std::optional<AimSmoother::Forecast> forecast;
     int next_id = -1;
-    const auto switch_time = nextSwitchTime(
-      target, current_trajectory.fly_time, final_aim.armor_id, next_id);
-    if (switch_time) {
+    if (smoother_.blending() && blend_target_id_ >= 0) {
+      // 过渡进行中：目标板在提交那一刻就定死了，不能跟着 final_aim 漂。切板
+      // 一旦真的发生，final_aim.armor_id 就成了新板，nextSwitchTime 给出的是
+      // 再下一块，基准轨迹会整块跳到别处去。switch_time 与 before 此时都用不
+      // 上，AimSmoother 在 active 分支里只取 after。
+      AimSmoother::Forecast candidate;
+      // switch_time 置非有限：这份预报只负责续供基准轨迹，不能被当成一次新的
+      // 切板预测。过渡走完的那一帧 update() 会先 reset 再看提交条件，
+      // 拿一个 switch_time = 0 的续供去判，会每帧都重新提交，过渡永远结束不了。
+      candidate.switch_time = std::numeric_limits<double>::quiet_NaN();
+      candidate.after = samplerFor(blend_target_id_);
+      // 射击轨迹这一帧是不是已经就是目标板了。是的话过渡可以安全交还，
+      // 不是的话 AimSmoother 会停在目标板轨迹上继续等。
+      candidate.destination_selected = final_aim.armor_id == blend_target_id_;
+      forecast = std::move(candidate);
+    } else if (const auto switch_time = nextSwitchTime(
+                 target, current_trajectory.fly_time, final_aim.armor_id,
+                 next_id)) {
       AimSmoother::Forecast candidate;
       candidate.switch_time = *switch_time;
       candidate.before = sampleTrajectory(
         target, current_trajectory.fly_time, bullet_speed, 0.0,
         final_aim.armor_id);
       // 终点钉在切板后那一块上，不重新选板：过渡的意义就是"提前奔向下一块"。
-      candidate.after =
-        [this, target, fly_time = current_trajectory.fly_time, bullet_speed,
-         next_id](double offset) {
-          return sampleTrajectory(target, fly_time, bullet_speed, offset, next_id);
-        };
+      candidate.after = samplerFor(next_id);
       forecast = std::move(candidate);
     }
 
     const auto smoothed =
       smoother_.update(input.plan_time, shoot_yaw, shoot_pitch, forecast);
+    // 记住这一段过渡奔向的是哪一块板，后续帧据此重采基准轨迹。
+    if (!smoothed.blending) {
+      blend_target_id_ = -1;
+    } else if (blend_target_id_ < 0) {
+      blend_target_id_ = next_id;
+    }
     plan.aim.yaw = smoothed.yaw;
     plan.aim.pitch = smoothed.pitch;
     plan.aim.blending = smoothed.blending;
@@ -238,6 +262,7 @@ void Planner::reset() noexcept
   // locked_id_ 由候选板变化时更新。短暂中断不清锁，避免恢复后立即切板。
   // 过渡段则必须清：它锁死的系数来自一次已经作废的切板预测。
   smoother_.reset();
+  blend_target_id_ = -1;
   has_last_shoot_ = false;
 }
 
@@ -350,6 +375,7 @@ std::optional<Plan> Planner::blendOnlyPlan(TimePoint now, const Delay& delay)
   const auto smoothed =
     smoother_.update(now, last_shoot_yaw_, last_shoot_pitch_, std::nullopt);
   if (!smoothed.blending) {
+    blend_target_id_ = -1;
     return std::nullopt;
   }
 
