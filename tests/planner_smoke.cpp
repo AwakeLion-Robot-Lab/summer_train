@@ -509,6 +509,24 @@ void testSelectorHoldsUntilArmorLeavesWindow()
     makeTarget(0.0, degrees(59.0)), robot_state, {});
   require(overlap_again.valid() && overlap_again.fire, "returning overlap must stay valid");
   require(overlap_again.fire->armor_id == 3, "new lock was not retained in overlap");
+
+  // 再回到只剩 3 号板的单候选帧。探针必须紧跟在单候选帧之后：中间只要夹一个
+  // 双候选帧，锁就会被重新选举出来，旧实现的缺陷会被掩盖。
+  const auto single_again = planner.plan(
+    makeTarget(0.0, degrees(61.0)), robot_state, {});
+  require(
+    single_again.valid() && single_again.fire && single_again.fire->armor_id == 3,
+    "single-candidate frame must still aim at armor 3");
+
+  // 回到 44°：0 号板（44°）比在任的 3 号板（-46°）更正对。若锁在上一帧被清成
+  // -1，这里就会因为无锁可沿用而改选 0——正是实测里"换完板又甩回去"。锁被正确
+  // 保留时应继续压在 3 号板上，直到它自己转出窗口。
+  const auto swing_back = planner.plan(
+    makeTarget(0.0, degrees(44.0)), robot_state, {});
+  require(swing_back.valid() && swing_back.fire, "swing-back probe must stay valid");
+  require(
+    swing_back.fire->armor_id == 3,
+    "lock swung back to the more face-on plate after a single-candidate frame");
   std::cout << "  [ok] selector holds a plate until it leaves the 60 deg window\n";
 }
 

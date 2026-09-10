@@ -435,7 +435,7 @@ int main(int argc, char* argv[])
 
     std::ofstream frame_csv(out_dir / "frame.csv");
     frame_csv << "frame,t,dt,gimbal_yaw_deg,ndet,nusable,nmatch,state,"
-                 "xc,vx,yc,vy,z,vz,yaw_deg,v_yaw,r1,r2,dz,armor_id,jumped,multi,"
+                 "xc,vx,yc,vy,z,vz,yaw_deg,v_yaw,r1,r2,dz,armor_id,multi,jumped,"
                  "updated,nis,face0,face1,res_az_deg,res_el_deg,res_dist,res_yaw_deg,reset\n";
     frame_csv << std::fixed;
 

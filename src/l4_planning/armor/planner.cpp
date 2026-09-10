@@ -445,23 +445,29 @@ Planner::AimPoint Planner::chooseAimPoint(
       return {};
     }
 
-    // 两块板同时可见时锁定其中朝向更正的一块，后续帧沿用锁定结果，
-    // 避免在角度接近时来回切换。
+    // 两块板同时可见时锁定其中一块，后续帧沿用锁定结果，避免角度接近时来回切换。
     if (ids.size() > 1) {
       const int id0 = ids[0];
       const int id1 = ids[1];
+      const auto facing = [&](int id) {
+        return std::abs(delta_angles[static_cast<std::size_t>(id)]);
+      };
+      const int challenger = facing(id0) < facing(id1) ? id0 : id1;
+
+      // 锁不在候选里（刚跟上目标，或在任板已经转出窗口）时无从沿用，取更正的那块。
+      // 锁还在候选里就无条件保持：在任板是否该让位，只由它自己转出窗口来回答，
+      // 不由"谁更正对"这种可以来回翻转的比较来回答。
       if (lock != id0 && lock != id1) {
-        lock =
-          std::abs(delta_angles[static_cast<std::size_t>(id0)]) <
-              std::abs(delta_angles[static_cast<std::size_t>(id1)])
-            ? id0
-            : id1;
+        lock = challenger;
       }
       return pointAt(lock);
     }
 
-    // 只剩一块候选时无需迟滞，退出双板锁定。
-    lock = -1;
+    // 只剩一块候选：它就是新的在任板，锁要写成它而不是清空。清空的话下一帧
+    // 第二块板进窗口时锁是空的，会走上面"无从沿用"的分支立刻改选更正的那块；
+    // 那块一旦被噪声挤出窗口就又切回来，这正是实测里"换完板又甩回去"的来源。
+    // 写成 ids[0] 之后，切板只由"在任板离开窗口"这个单调事件触发。
+    lock = ids[0];
     return pointAt(ids[0]);
   }
 
