@@ -7,7 +7,7 @@ inference:
   #   model/armor_model/szu-v8n-fp16.onnx-> yolov8_21   （深大 Infantry-v8n）
   # szu-v8n 的 .xml/.bin 需要较新的 OpenVINO 运行时（2023.1 读不了它的
   # MaxPool），旧运行时必须走同名 .onnx。
-  model_path: "model/armor_model/yolov5.xml"
+  model_path: "model/armor_model/szu-v8n-fp16.onnx"
   device: "CPU"
 
   # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
@@ -73,7 +73,7 @@ inference:
     # yolov8_21：[1, 21, 6300]，输出名 output0，channels-first，字段为
     #   0~3 颜色 / 4~12 九类 / 13~20 四角点，没有 objectness 通道，
     #   置信度取类别分支最大值且已过 sigmoid。
-    layout: "yolov5_22"
+    layout: "yolov8_21"
     # 下面四项在 layout 预设之上覆盖，缺省则用预设值。
     # yolov5_22 预设：0.7 / 0.8 / 0.3 / 0.7（对齐 SP demo）
     # yolov8_21 预设：0.5 / 0.5 / 0.2 / 0.5（对齐上游部署库）
@@ -186,7 +186,7 @@ planning:
   #
   # 整块删掉 = 不启用，行为与这一节出现之前逐位相同。
   blend:
-    enable: true
+    enable: false
 
     # !! 这两个数现在是抄 sp_vision 的，是**他们**云台的参数，不是本车的 !!
     # 正确来源是 云台电机最大扭矩 / 云台惯量，要向机械和电控要这两个数。
@@ -277,7 +277,7 @@ runtime:
 debug:
   overlay: true
   # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
-  overlay_every: 30
+  overlay_every: 1
 
   # PlotJuggler 曲线遥测，UDP 发到 plot_host:plot_port。与 overlay 分开开关：
   # 上车标定 planning.send_to_control_ms 时机器上没有显示器，要的正好是曲线。
