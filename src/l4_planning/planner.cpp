@@ -5,6 +5,7 @@
 #include "l4_planning/ballistic_solver.hpp"
 #include "l4_planning/latency_compensator.hpp"
 #include "l4_planning/predictor.hpp"
+#include "l4_planning/tiny_mpc.hpp"
 #include "l4_planning/types.hpp"
 
 #include <algorithm>
@@ -66,6 +67,33 @@ constexpr double kEnteringWindowLeadAngle = 10.0 * kPi / 180.0;
 // 配置校验在规划前集中完成，避免零容差进入后续计算。
 [[nodiscard]] bool validPlannerConfig(const PlannerConfig& config) noexcept
 {
+  const bool mpc_valid =
+    !config.enable_mpc
+    || (std::isfinite(config.yaw_angle_weight)
+        && config.yaw_angle_weight >= 0.0
+        && std::isfinite(config.yaw_velocity_weight)
+        && config.yaw_velocity_weight >= 0.0
+        && std::isfinite(config.yaw_acceleration_weight)
+        && config.yaw_acceleration_weight > 0.0
+        && std::isfinite(config.pitch_angle_weight)
+        && config.pitch_angle_weight >= 0.0
+        && std::isfinite(config.pitch_velocity_weight)
+        && config.pitch_velocity_weight >= 0.0
+        && std::isfinite(config.pitch_acceleration_weight)
+        && config.pitch_acceleration_weight > 0.0
+        && std::isfinite(config.min_yaw_acceleration)
+        && std::isfinite(config.max_yaw_acceleration)
+        && config.min_yaw_acceleration <= config.max_yaw_acceleration
+        && std::isfinite(config.min_pitch_acceleration)
+        && std::isfinite(config.max_pitch_acceleration)
+        && config.min_pitch_acceleration <= config.max_pitch_acceleration
+        && config.mpc_max_iterations > 0
+        && std::isfinite(config.mpc_admm_rho)
+        && config.mpc_admm_rho >= 0.0
+        && std::isfinite(config.mpc_primal_tolerance)
+        && config.mpc_primal_tolerance > 0.0
+        && std::isfinite(config.mpc_dual_tolerance)
+        && config.mpc_dual_tolerance > 0.0);
   return config.max_iterations > 0
          && config.fly_time_tolerance.count() > 0
          && std::isfinite(config.position_tolerance)
@@ -94,7 +122,8 @@ constexpr double kEnteringWindowLeadAngle = 10.0 * kPi / 180.0;
          && std::isfinite(config.outpost_leave_angle)
          && config.outpost_leave_angle >= 0.0
          && config.outpost_leave_angle <= config.outpost_enter_angle
-         && config.max_lost_frames >= 0;
+         && config.max_lost_frames >= 0
+         && mpc_valid;
 }
 
 // 重力和阻力系数由 PlannerConfig 统一管理。
@@ -226,12 +255,15 @@ AimPlan Planner::plan(
     last_observation_timestamp_ = target->timestamp;
     target_lost_frames_ = 0;
   } else {
-    if (!last_target_.has_value()
-        || target_lost_frames_ >= config.max_lost_frames) {
+    if (!last_target_.has_value()) {
       resetTracking();
       return plan;
     }
     ++target_lost_frames_;
+    if (target_lost_frames_ >= config.max_lost_frames) {
+      resetTracking();
+      return plan;
+    }
   }
 
   const L3Estimation::TargetState& target_state = *last_target_;
@@ -567,7 +599,8 @@ AimPlan Planner::plan(
     && selected.within_firing_window;
   plan.valid = true;
 
-  return plan;
+  return applyTinyMpc(
+    plan, target_state, robot_state, context.T_barrel_world, config);
 }
 
 }

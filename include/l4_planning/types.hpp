@@ -167,6 +167,14 @@ struct PlannerConfig {
   double min_pitch_acceleration{-100.0};
   double max_pitch_acceleration{100.0};
 
+  // TinyMPC 使用 README 中的二阶模型和 100 点、10 ms 的固定窗口。
+  // 关闭时 Planner 保持原有的单点直瞄输出。
+  bool enable_mpc{true};
+  int mpc_max_iterations{10};
+  double mpc_admm_rho{0.0}; // 0 表示使用 README 的 rho=1
+  double mpc_primal_tolerance{1e-3};
+  double mpc_dual_tolerance{1e-3};
+
 };
 
 }  // namespace L4Planning
