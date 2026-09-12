@@ -228,6 +228,11 @@ local standalone_tests = {
         files    = {"src/l1_sensor/serial/serial_protocol.cpp", "src/l6_telemetry/logger.cpp"},
         includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
+    -- 单轴 MPC 只依赖 Eigen，不牵扯相机/串口 SDK。
+    mpc_smoke = {
+        files    = {"src/l4_planning/mpc.cpp"},
+        includes = {"include", "/usr/include/eigen3"},
+    },
     -- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK。
     armor_refiner_smoke = {
         files    = {"src/l2_perception/armor/armor_refiner.cpp"},
