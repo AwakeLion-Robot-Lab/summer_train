@@ -96,7 +96,16 @@ std::optional<SerialCommand> Controller::makeCommand(
   }
 
   // yaw/pitch 来自 L4，shoot 只能来自完整的 FireDecision，规划成功本身不代表开火。
-  return SerialCommand{plan.aim.yaw, plan.aim.pitch, decision.shoot};
+  // 前馈量一并带上：帧里发不发由 L1 的 command_format 决定，这里只负责如实转达。
+  SerialCommand command;
+  command.yaw = plan.aim.yaw;
+  command.pitch = plan.aim.pitch;
+  command.shoot = decision.shoot;
+  command.yaw_velocity = plan.aim.yaw_velocity;
+  command.yaw_acceleration = plan.aim.yaw_acceleration;
+  command.pitch_velocity = plan.aim.pitch_velocity;
+  command.pitch_acceleration = plan.aim.pitch_acceleration;
+  return command;
 }
 
 }  // namespace L5Control

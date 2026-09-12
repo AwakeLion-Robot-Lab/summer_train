@@ -34,6 +34,20 @@ rx_buffer_size: 256
 # 使用 HeaderFrame.seq 检测接收帧是否丢包；下位机未维护 seq 时可关闭。
 packet_loss_check_enable: true
 
+# 下行帧是否携带速度/加速度前馈，供电控做 LQR 解算。
+#
+#   false -> cmd_id 0x0001，9 字节：yaw, pitch, shoot         （现场下位机现在认的）
+#   true  -> cmd_id 0x0003，25 字节：yaw, yaw_vel, yaw_acc,
+#                                    pitch, pitch_vel, pitch_acc, shoot
+#
+# 字段顺序按轴分组，和 sp_vision 的 VisionToGimbal 一致。两种格式用不同的
+# cmd_id，所以打开之前不会干扰现有链路；**必须等电控固件认了 0x0003 再打开**，
+# 否则下位机会把整帧当未知帧丢掉，云台直接失去指令。
+#
+# 前馈值本身只有在 auto_aim.yaml 的 planning.mpc.enable 打开时才非零；
+# 这一项为 true 而规划没开时，发出去的速度和加速度恒为 0。
+command_feedforward: false
+
 # 坐标系约定
 # ---------------------------------------------------------------------------
 # world  : 直接采用下位机 IMU 的绝对系 imu_abs，轴向与 IMU 一致。

@@ -33,10 +33,26 @@ public:
     std::uint8_t mode = 0;
   };
 
-  // 视觉发给下位机的控制数据。
+  // 视觉发给下位机的控制数据（只有角度）。
   struct __attribute__((packed)) TxPayload {
     float yaw = 0.0F;
     float pitch = 0.0F;
+    std::uint8_t shoot = 0;
+  };
+
+  // 带前馈的控制数据。字段顺序按轴分组，和 sp_vision 的 VisionToGimbal 一致，
+  // 电控那边照着抄结构体不容易出错。
+  //
+  // 独立 cmd_id 而不是直接把 TxPayload 撑大：现场下位机认的是 9 字节的旧格式，
+  // 直接改会在电控更新固件之前就把车打瘫。两种格式长期并存，由 serial_config
+  // 的 command_format 选，默认仍是旧格式。
+  struct __attribute__((packed)) TxFeedforwardPayload {
+    float yaw = 0.0F;
+    float yaw_velocity = 0.0F;
+    float yaw_acceleration = 0.0F;
+    float pitch = 0.0F;
+    float pitch_velocity = 0.0F;
+    float pitch_acceleration = 0.0F;
     std::uint8_t shoot = 0;
   };
 
@@ -54,8 +70,22 @@ public:
     std::uint16_t crc16 = 0;
   };
 
+  struct __attribute__((packed)) TxFeedforwardPacket {
+    HeaderFrame frame_header;
+    TxFeedforwardPayload data;
+    std::uint16_t crc16 = 0;
+  };
+
+  // 下行帧格式。Angle 是现场下位机现在认的 9 字节格式；Feedforward 额外带
+  // 速度和加速度，电控固件支持之后才能切。
+  enum class CommandFormat : std::uint8_t { Angle, Feedforward };
+
   // 把控制命令打包成可以直接写入串口的字节流，并分配循环递增的发送 seq。
   std::vector<std::uint8_t> encodeCommand(const L5Control::SerialCommand& command);
+
+  // 选择下行帧格式。默认 Angle，即现场下位机现在认的 9 字节格式。
+  void setCommandFormat(CommandFormat format);
+  [[nodiscard]] CommandFormat commandFormat() const;
 
   // 输入串口原始字节流，解析并返回其中全部完整合法状态帧。
   // 不完整的尾部会保留到下一次调用继续解析。
@@ -80,8 +110,11 @@ public:
   std::uint64_t skippedByteCount() const;
 
 private:
+  CommandFormat command_format_ = CommandFormat::Angle;
+
   static constexpr std::uint8_t kSof = 0xA0;
   static constexpr std::uint16_t kTxCmdId = 0x0001;
+  static constexpr std::uint16_t kTxFeedforwardCmdId = 0x0003;
   static constexpr std::uint16_t kRxCmdId = 0x0002;
   static constexpr std::uint16_t kMaxPayloadLength = 256;
 

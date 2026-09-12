@@ -19,6 +19,11 @@ struct SerialConfig {
   std::size_t rx_buffer_size = 256;
   bool packet_loss_check_enable = true;
 
+  // 下行帧是否携带速度/加速度前馈（电控用它做 LQR 解算）。
+  // 默认 false，即现场下位机现在认的 9 字节格式；电控固件支持之后再打开。
+  // 两种格式用不同的 cmd_id，打开之前不会影响现有链路。
+  bool command_feedforward = false;
+
   // 外参命名沿用 T_A_B：R_imu_barrel 把 barrel 系中的向量转到下位机 IMU 系。
   // world 取 imu_abs（IMU 轴向），barrel 是独立定义的右手系，两者链式复合：
   //   R_world_barrel = R_world_imu * R_imu_barrel
