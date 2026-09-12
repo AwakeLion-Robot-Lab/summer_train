@@ -171,7 +171,7 @@ struct PlannerConfig {
   // 关闭时 Planner 保持原有的单点直瞄输出。
   bool enable_mpc{true};
   int mpc_max_iterations{10};
-  double mpc_admm_rho{0.0}; // 0 表示使用 README 的 rho=1
+  double mpc_admm_rho{1.0}; // README 指定的 ADMM 罚参数
   double mpc_primal_tolerance{1e-3};
   double mpc_dual_tolerance{1e-3};
 

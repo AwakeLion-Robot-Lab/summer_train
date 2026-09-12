@@ -52,6 +52,20 @@ xmake f --use_system_deps=n --use_xrepo_deps=y -m debug -y
 xmake
 ```
 
+## L4 规划参数
+
+需要现场人工调节的延迟补偿、预测、弹道、装甲板选择和 TinyMPC 参数统一放在
+`config/planner_config.yaml`。字段名带有单位后缀（例如 `_deg`、`_rad_s2`），
+程序启动时读取并校验该文件；参数缺失时使用代码默认值，参数非法时拒绝启动
+自瞄运行时。修改配置后需要重启程序才能生效。
+
+可以用下面的冒烟测试检查配置是否能够正常加载：
+
+```bash
+xmake build planner_config_smoke
+xmake run planner_config_smoke
+```
+
 ## 可选 OpenVINO
 
 OpenVINO 不属于基础依赖。先按 Intel OpenVINO 的安装方式配置环境，并确认：

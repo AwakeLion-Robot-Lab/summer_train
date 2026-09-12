@@ -1,0 +1,138 @@
+# L4 Planning 人工调节参数。
+# 字段名中的单位：s=秒，us=微秒，m=米，deg=度，rad=弧度。
+# 修改后需要重启程序；配置缺失时使用代码默认值，配置非法时程序拒绝启动。
+
+latency:
+  # 控制命令发布到弹丸实际离开枪口的延迟，单位 s。
+  # 应通过实测标定；增大后会把预计命中时刻推得更远。
+  fire_delay_s: 0.0
+
+prediction:
+  # 单块装甲板的最大固定点迭代次数，必须大于 0。
+  # 增大可提高困难工况下的收敛机会，但会增加计算量。
+  max_iterations: 20
+
+  # 相邻两次弹丸飞行时间的收敛阈值，单位 us，必须大于 0。
+  fly_time_tolerance_us: 200
+
+  # 相邻两次装甲板预测位置的收敛阈值，单位 m，必须大于 0。
+  position_tolerance_m: 0.005
+
+  # 相邻两次瞄准角的合成误差阈值，单位 rad。
+  # 0 表示禁用角度收敛条件，仅使用位置收敛条件。
+  angle_tolerance_rad: 0.0
+
+ballistic:
+  # 重力加速度绝对值，单位 m/s^2，必须大于 0。
+  gravity_mps2: 9.80665
+
+  # false 使用真空抛物线模型；true 使用线性空气阻力模型。
+  enable_air_resistance: false
+
+  # 线性阻力模型 a_drag=-k*v 的系数 k，单位 s^-1。
+  # 开启空气阻力后必须大于 0，需要根据实弹落点标定。
+  linear_drag_coefficient_per_s: 0.0
+
+selection:
+  # 切换或首次锁定装甲板后，允许进入稳定计数的最大瞄准角误差。
+  # 单位 deg；越大越快确认锁定，但枪口可能尚未完全对准。
+  switch_dead_zone_deg: 5.0
+
+  # 新候选评分至少比当前装甲板高出该值，才允许主动切换。
+  # 越大越不容易换板，可抑制评分接近时的来回跳变。
+  score_switch_threshold: 0.10
+
+  # 评分优势需要连续保持的观测帧数，必须大于 0。
+  score_switch_stable_frames: 3
+
+  # 目标相对旋转角速度低于该值时按近似静止目标处理，单位 rad/s。
+  rotation_rate_dead_zone_rad_s: 0.05
+
+  # 枪口到达切换死区后，还需连续稳定多少帧才正式进入 Tracking。
+  lock_stable_frames: 3
+
+  # 目标或当前装甲板临时丢失时允许保持状态的帧数，必须不小于 0。
+  # 宽限期内不会开火；超过该值后重新选板或解锁。
+  max_lost_frames: 3
+
+  # 云台到候选弹道角的误差不大于 good 时，转向代价评分为 1。
+  aim_cost_good_angle_deg: 5.0
+
+  # 云台到候选弹道角的误差不小于 bad 时，转向代价评分为 0。
+  # 必须大于 aim_cost_good_angle_deg。
+  aim_cost_bad_angle_deg: 30.0
+
+  # 装甲板法线偏角不大于 good 时，正对程度评分为 1。
+  facing_angle_good_deg: 5.0
+
+  # 装甲板法线偏角不小于 bad 时，正对程度评分为 0。
+  # 必须大于 facing_angle_good_deg。
+  facing_angle_bad_deg: 25.0
+
+  # 普通车辆装甲板沿旋转方向进入射击窗口前侧的角度，单位 deg。
+  normal_enter_angle_deg: 60.0
+
+  # 普通车辆装甲板离开射击窗口后侧的角度，单位 deg。
+  # 必须不大于 normal_enter_angle_deg。
+  normal_leave_angle_deg: 20.0
+
+  # 前哨站装甲板射击窗口的进入角，单位 deg。
+  outpost_enter_angle_deg: 70.0
+
+  # 前哨站装甲板射击窗口的离开角，单位 deg。
+  # 必须不大于 outpost_enter_angle_deg。
+  outpost_leave_angle_deg: 30.0
+
+  # 候选装甲板总评分的三项权重，均须非负且总和必须为 1。
+  score_weights:
+    # 装甲板朝向相机/枪口的正对程度权重。
+    facing: 0.40
+    # 装甲板在射击窗口中的剩余质量权重。
+    window: 0.50
+    # 当前云台转到候选弹道角所需角度的权重。
+    aim_cost: 0.10
+
+mpc:
+  # 以下数值以 src/l4_planning/tiny_MPC/README.md 为基准。
+  # 模型固定为二阶状态 [角度, 角速度]，控制量为角加速度；yaw/pitch 独立求解。
+  # 固定采样周期为 0.01 s，轨迹共 100 点，输出中心索引为 50。
+  # 这三个量属于当前实现的矩阵/数组尺寸，不作为现场调参项开放。
+
+  # 是否启用 TinyMPC。false 时直接输出弹道求解得到的单点瞄准量。
+  enable: true
+
+  # ADMM 最大迭代次数，必须大于 0；增大可能改善收敛但增加耗时。
+  max_iterations: 10
+
+  # ADMM 罚参数 rho；README 指定为 1.0，必须大于 0。
+  admm_rho: 1.0
+
+  # ADMM 原始残差收敛阈值，必须大于 0；越小要求越严格。
+  primal_tolerance: 0.001
+
+  # ADMM 对偶残差收敛阈值，必须大于 0；越小要求越严格。
+  dual_tolerance: 0.001
+
+  yaw:
+    # Q_yaw[0]：yaw 角度跟踪误差权重；README 值为 9e6。
+    angle_weight: 9000000.0
+    # Q_yaw[1]：yaw 角速度跟踪误差权重；README 值为 0。
+    velocity_weight: 0.0
+    # R_yaw[0]：yaw 加速度使用代价；README 值为 1，必须大于 0。
+    acceleration_weight: 1.0
+    # yaw 最小允许角加速度；由 README 的绝对上限 50 取负值，单位 rad/s^2。
+    min_acceleration_rad_s2: -50.0
+    # yaw 最大允许角加速度；README 值为 50 rad/s^2。
+    max_acceleration_rad_s2: 50.0
+
+  pitch:
+    # Q_pitch[0]：pitch 角度跟踪误差权重；README 值为 9e6。
+    angle_weight: 9000000.0
+    # Q_pitch[1]：pitch 角速度跟踪误差权重；README 值为 0。
+    velocity_weight: 0.0
+    # R_pitch[0]：pitch 加速度使用代价；README 值为 1，必须大于 0。
+    acceleration_weight: 1.0
+    # pitch 最小允许角加速度；由 README 的绝对上限 100 取负值，单位 rad/s^2。
+    min_acceleration_rad_s2: -100.0
+    # pitch 最大允许角加速度；README 值为 100 rad/s^2。
+    max_acceleration_rad_s2: 100.0

@@ -114,10 +114,18 @@ int main(int argc, char* argv[])
       // 已完整写入视觉端串口的命令。二者不同可帮助定位发送线程或串口的问题。
       std::cout << "[TX queued] yaw=" << test_command.yaw
                 << " pitch=" << test_command.pitch
+                << " yaw_rate=" << test_command.yaw_rate
+                << " pitch_rate=" << test_command.pitch_rate
+                << " yaw_acc=" << test_command.yaw_acceleration
+                << " pitch_acc=" << test_command.pitch_acceleration
                 << " shoot=" << std::boolalpha << test_command.shoot << std::noboolalpha;
       if (const auto sent_command = serial.latestSentCommand()) {
         std::cout << " | [TX written] yaw=" << sent_command->yaw
                   << " pitch=" << sent_command->pitch
+                  << " yaw_rate=" << sent_command->yaw_rate
+                  << " pitch_rate=" << sent_command->pitch_rate
+                  << " yaw_acc=" << sent_command->yaw_acceleration
+                  << " pitch_acc=" << sent_command->pitch_acceleration
                   << " shoot=" << std::boolalpha << sent_command->shoot << std::noboolalpha;
       } else {
         std::cout << " | [TX written] none";

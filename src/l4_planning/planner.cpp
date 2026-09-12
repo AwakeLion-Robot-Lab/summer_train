@@ -89,7 +89,7 @@ constexpr double kEnteringWindowLeadAngle = 10.0 * kPi / 180.0;
         && config.min_pitch_acceleration <= config.max_pitch_acceleration
         && config.mpc_max_iterations > 0
         && std::isfinite(config.mpc_admm_rho)
-        && config.mpc_admm_rho >= 0.0
+        && config.mpc_admm_rho > 0.0
         && std::isfinite(config.mpc_primal_tolerance)
         && config.mpc_primal_tolerance > 0.0
         && std::isfinite(config.mpc_dual_tolerance)

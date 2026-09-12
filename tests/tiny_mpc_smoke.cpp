@@ -1,5 +1,6 @@
 #include "l4_planning/tiny_mpc.hpp"
 #include "l4_planning/planner.hpp"
+#include "l5_control/controller.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -179,6 +180,22 @@ int main()
               << " pitch_dual=" << integrated_solution.pitch.info.dual_residual
               << '\n';
     return 9;
+  }
+
+  L5Control::FireDecision decision;
+  decision.shoot = true;
+  const L5Control::SerialCommand command =
+    L5Control::Controller{}.makeCommand(integrated, decision, robot);
+  const AimSample& current = integrated.samples.front();
+  if (!close(command.yaw, current.yaw)
+      || !close(command.pitch, current.pitch)
+      || !close(command.yaw_rate, current.yaw_rate)
+      || !close(command.pitch_rate, current.pitch_rate)
+      || !close(command.yaw_acceleration, current.yaw_acceleration)
+      || !close(command.pitch_acceleration, current.pitch_acceleration)
+      || !command.shoot) {
+    std::cerr << "Controller dropped MPC motion fields\n";
+    return 10;
   }
 
   std::cout << "TinyMPC smoke test passed\n";

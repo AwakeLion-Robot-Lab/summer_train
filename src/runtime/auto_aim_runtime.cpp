@@ -8,6 +8,7 @@
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/target_estimator.hpp"
 #include "l4_planning/planner.hpp"
+#include "l4_planning/planner_config.hpp"
 #include "l5_control/controller.hpp"
 #include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
@@ -87,6 +88,17 @@ void AutoAimRuntime::run()
 {
   running_ = true;
 
+  L4Planning::PlannerTuning planner_tuning;
+  try {
+    planner_tuning = L4Planning::loadPlannerTuning(
+      "config/planner_config.yaml");
+  } catch (const std::exception& error) {
+    L6Telemetry::logError(
+      "failed to load planner configuration", error.what());
+    running_ = false;
+    return;
+  }
+
   auto camera = std::make_shared<L1Sensor::Camera>(config_path_);
   {
     std::lock_guard<std::mutex> lock(camera_mutex_);
@@ -123,9 +135,14 @@ void AutoAimRuntime::run()
     L6Telemetry::logWarn("camera calibration missing; L3/L4 disabled");
   }
 
-  L4Planning::Planner planner;
+  L4Planning::Planner planner(planner_tuning.planner);
   L5Control::Controller controller;
   L4Planning::PlannerContext planner_context;
+  planner_context.config = planner_tuning.planner;
+  planner_context.latency = planner_tuning.latency;
+  planner_context.armor_score_weights = planner_tuning.armor_score_weights;
+  planner_context.facing_angle_good = planner_tuning.facing_angle_good;
+  planner_context.facing_angle_bad = planner_tuning.facing_angle_bad;
 
   cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
 

@@ -122,17 +122,44 @@ int main()
 
   Protocol tx_protocol;
   L5Control::SerialCommand command{};
+  command.yaw = 1.25;
+  command.pitch = -0.75;
+  command.yaw_rate = 2.5;
+  command.pitch_rate = -1.5;
+  command.yaw_acceleration = 30.0;
+  command.pitch_acceleration = -40.0;
+  command.shoot = true;
+  const auto encoded_command = tx_protocol.encodeCommand(command);
+  if (encoded_command.size() != sizeof(Protocol::TxPacket)) {
+    std::cerr << "SerialProtocol encoded an unexpected command size\n";
+    return 5;
+  }
+  Protocol::TxPacket encoded_packet{};
+  std::memcpy(
+    &encoded_packet, encoded_command.data(), sizeof(encoded_packet));
+  if (encoded_packet.data.yaw != 1.25F
+      || encoded_packet.data.pitch != -0.75F
+      || encoded_packet.data.yaw_rate != 2.5F
+      || encoded_packet.data.pitch_rate != -1.5F
+      || encoded_packet.data.yaw_acceleration != 30.0F
+      || encoded_packet.data.pitch_acceleration != -40.0F
+      || encoded_packet.data.shoot != 1) {
+    std::cerr << "SerialProtocol dropped MPC motion fields\n";
+    return 6;
+  }
+
+  Protocol sequence_protocol;
   for (int expected = 0; expected < 256; ++expected) {
-    const auto bytes = tx_protocol.encodeCommand(command);
+    const auto bytes = sequence_protocol.encodeCommand(command);
     if (txSequence(bytes) != static_cast<std::uint8_t>(expected)) {
       std::cerr << "SerialProtocol tx seq is not monotonic\n";
-      return 5;
+      return 7;
     }
   }
 
-  if (txSequence(tx_protocol.encodeCommand(command)) != 0) {
+  if (txSequence(sequence_protocol.encodeCommand(command)) != 0) {
     std::cerr << "SerialProtocol tx seq did not wrap after 255\n";
-    return 6;
+    return 8;
   }
 
   std::cout << "SerialProtocol smoke test passed\n";

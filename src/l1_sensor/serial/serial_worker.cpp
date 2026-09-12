@@ -219,6 +219,10 @@ void SerialWorker::txLoop() {
             command_expired = true;
           }
         }
+        command.yaw_rate = 0.0;
+        command.pitch_rate = 0.0;
+        command.yaw_acceleration = 0.0;
+        command.pitch_acceleration = 0.0;
         command.shoot = false;
       }
     }

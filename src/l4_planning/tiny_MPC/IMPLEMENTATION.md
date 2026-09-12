@@ -5,8 +5,8 @@
 本目录已经实现 README.md 描述的二阶 TinyMPC 云台控制器：
 
 - `get_trajectory.cpp` 生成居中的 100 点 yaw/pitch 参考轨迹；
-- `track_planner/admm.cpp` 使用 Riccati 递推和 ADMM 求解两个单轴问题；
-- `output.cpp` 从第 50 点开始生成 50 个 `AimSample`；
+- `track_planner.cpp` 使用 Riccati 递推和 ADMM 求解两个单轴问题；
+- `result.cpp` 从第 50 点开始生成 50 个 `AimSample`；
 - `Planner` 在直接瞄准有效且 MPC 收敛时设置 `using_MPC=true`，失败时
   保留安全的直接瞄准输出。
 
@@ -19,8 +19,8 @@
 | 文件 | 建议职责 |
 | --- | --- |
 | `get_trajectory.cpp` | 根据目标预测和弹道解生成 yaw、pitch 角度及角速度参考，处理角度环绕和采样时间 |
-| `track_planner/admm.cpp` | 单轴优化迭代，包括反向递推、正向展开、盒约束投影、对偶更新和残差检查 |
-| `output.cpp` | 将求解结果转换为 `AimSample`，填写执行时间并更新 `AimPlan` |
+| `track_planner.cpp` | 单轴优化迭代，包括反向递推、正向展开、盒约束投影、对偶更新和残差检查 |
+| `result.cpp` | 将求解结果转换为 `AimSample`，填写执行时间并更新 `AimPlan` |
 
 实现增加了以下文件：
 
@@ -47,8 +47,9 @@ Riccati 预计算和内部配置校验均与 ADMM 实现在同一翻译单元中
    每次调用独立初始化，不跨目标热启动。
 5. **输出有效性**：用投影后的加速度重新正向展开状态，从而同时保证盒约束
    和离散动力学；只有残差收敛才发布 MPC，否则回退到直接瞄准。
-6. **协议接入**：成功时 `samples` 含第 50～99 点并按执行时间排序，沿用
-   上层目标身份、跟踪状态和开火许可语义。
+6. **协议接入**：成功时 `samples` 含第 50～99 点并按执行时间排序；当前点的
+   角度、角速度和角加速度经 `SerialCommand` 写入串口 `TxPayload`。该协议
+   布局需要下位机同步为 6 个 `float` 加 1 个 `uint8_t shoot`。
 
 ## 后续实现的验证重点
 
@@ -57,4 +58,17 @@ Riccati 预计算和内部配置校验均与 ADMM 实现在同一翻译单元中
 - 加速度饱和与迭代未收敛时的状态和回退行为。
 - 输出控制点的索引、绝对执行时间及 `AimPlan` 协议一致性。
 
-本次仅补充组织说明，不构成可运行的 MPC 实现。
+上述验证已由 `tiny_mpc_smoke` 覆盖，串口字段编码由
+`serial_protocol_smoke` 和 `serial_worker_smoke` 覆盖。
+
+
+
+  注意：下位机必须同步采用以下字段顺序，否则协议无法兼容：
+
+  float yaw;
+  float pitch;
+  float yaw_rate;
+  float pitch_rate;
+  float yaw_acceleration;
+  float pitch_acceleration;
+  uint8_t shoot;
