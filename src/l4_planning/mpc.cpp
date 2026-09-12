@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace L4Planning {
 
@@ -152,6 +153,9 @@ bool AxisMpc::solve(
   const int steps = config_.horizon;
   const double u_limit = config_.max_acceleration;
 
+  converged_ = false;
+  iterations_ = 0;
+  residual_ = std::numeric_limits<double>::infinity();
   x_.col(0) = x0;
 
   // 先按本帧的参考更新一次线性项再进循环。TinyMPC 的主循环是"先反向递推、最后
@@ -183,8 +187,22 @@ bool AxisMpc::solve(
     g_.noalias() += x_ - v_new;
     y_.noalias() += u_ - z_new;
 
+    // 残差判据同 TinyMPC：原始残差是解与松弛变量的差（也就是离可行域多远），
+    // 对偶残差是松弛变量两次迭代之间的变化。两者都够小才算收敛。
+    const double primal_residual = (u_ - z_new).cwiseAbs().maxCoeff();
+    const double dual_residual =
+      config_.rho * (z_ - z_new).cwiseAbs().maxCoeff();
+
     v_ = v_new;
     z_ = z_new;
+    iterations_ = iteration + 1;
+    residual_ = std::max(primal_residual, dual_residual);
+
+    if (primal_residual < config_.tolerance &&
+        dual_residual < config_.tolerance) {
+      converged_ = true;
+      break;
+    }
 
     updateLinearCost(x_ref);
   }

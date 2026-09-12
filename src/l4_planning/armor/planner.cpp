@@ -34,6 +34,31 @@ double centerYaw(const L3Estimation::TrackedTarget& target)
 Planner::Planner(ArmorPlanConfig config)
 : config_(config), ballistic_(config.ballistic)
 {
+  if (!config_.mpc.enable) {
+    return;
+  }
+  // 两轴只有加速度上限不同，其余参数共用一套。
+  AxisMpc::Config axis;
+  axis.dt = config_.mpc.dt;
+  axis.horizon = config_.mpc.horizon;
+  axis.q_position = config_.mpc.q_position;
+  axis.q_velocity = config_.mpc.q_velocity;
+  axis.r_input = config_.mpc.r_input;
+  axis.rho = config_.mpc.rho;
+  axis.max_iterations = config_.mpc.max_iterations;
+  axis.tolerance = config_.mpc.tolerance;
+
+  axis.max_acceleration = config_.mpc.max_yaw_acceleration;
+  const bool yaw_ok = yaw_mpc_.setup(axis);
+  axis.max_acceleration = config_.mpc.max_pitch_acceleration;
+  const bool pitch_ok = pitch_mpc_.setup(axis);
+
+  // 中心点要落在采样窗口内部，否则读不到中点；horizon 至少 3 步。
+  mpc_ready_ = yaw_ok && pitch_ok && config_.mpc.horizon >= 3;
+  if (mpc_ready_) {
+    yaw_reference_.resize(2, config_.mpc.horizon);
+    pitch_reference_.resize(2, config_.mpc.horizon);
+  }
 }
 
 Plan Planner::plan(const PlanInput& input)
@@ -149,18 +174,68 @@ Plan Planner::plan(const PlanInput& input)
     plan.status = PlanStatus::FireReady;
     plan.reason = PlanError::None;
   }
-  plan.aim = AimReference{
-    point,
-    std::atan2(point.y(), point.x()) + config_.impact.yaw_offset,
-    // 世界系约定 pitch 向下为正，因此弹道仰角在此取反。
-    -(current_trajectory.pitch + config_.impact.pitch_offset)};
+  // 射击角：打中命中点所需要的角，不受加速度约束整形。
+  const double shoot_yaw =
+    std::atan2(point.y(), point.x()) + config_.impact.yaw_offset;
+  // 世界系约定 pitch 向下为正，因此弹道仰角在此取反。
+  const double shoot_pitch =
+    -(current_trajectory.pitch + config_.impact.pitch_offset);
+
+  plan.aim = AimReference{};
+  plan.aim.point = point;
+  plan.aim.shoot_yaw = shoot_yaw;
+  plan.aim.shoot_pitch = shoot_pitch;
+  // 默认下发角就是射击角；下面整形成功才覆盖。
+  plan.aim.yaw = shoot_yaw;
+  plan.aim.pitch = shoot_pitch;
+
+  double yaw_span = 0.0;
+  double pitch_span = 0.0;
+  if (mpc_ready_ &&
+      buildReference(
+        target, current_trajectory.fly_time, bullet_speed, shoot_yaw,
+        shoot_pitch, yaw_reference_, pitch_reference_, yaw_span, pitch_span)) {
+    const int center = config_.mpc.horizon / 2;
+    const bool solved =
+      yaw_mpc_.solve(yaw_reference_, yaw_reference_.col(0)) &&
+      pitch_mpc_.solve(pitch_reference_, pitch_reference_.col(0));
+
+    // 兜底闸门：整形是对参考的平滑，解不该跑出参考自身覆盖的角度范围。
+    //
+    // 不拿 ADMM 残差做这件事——实测残差在不同 rho 下不可比：rho=1/迭代10 的
+    // 残差中位 0.05 却偏出 3.7 度，rho=10/迭代25 残差 2.15 反而只偏 0.025 度。
+    // 而整形量本身有干净的界：50 条实车参考上，精确解的中点整形量中位 0.073
+    // 度、最大 2.40 度，参考幅值中位 8.96 度，比值最大 0.296。所以拿"整形量不
+    // 超过参考幅值"做闸门有三倍余量，又能挡住那种十几度的失控解。
+    constexpr double kSpanFloor = 1.0e-3;  // 参考近乎不动时的数值噪声余量
+    const bool sane = solved &&
+      std::abs(yaw_mpc_.position(center)) <= yaw_span + kSpanFloor &&
+      std::abs(pitch_mpc_.position(center)) <= pitch_span + kSpanFloor;
+    if (sane) {
+      // 参考存的是相对中心角的偏差，读出来要加回中心角。
+      const double yaw_command =
+        L6Telemetry::limit_rad(shoot_yaw + yaw_mpc_.position(center));
+      const double pitch_command = shoot_pitch + pitch_mpc_.position(center);
+      // 非有限值一律不采用，宁可这一帧不整形。
+      if (std::isfinite(yaw_command) && std::isfinite(pitch_command)) {
+        plan.aim.yaw = yaw_command;
+        plan.aim.pitch = pitch_command;
+        plan.aim.yaw_velocity = yaw_mpc_.velocity(center);
+        plan.aim.yaw_acceleration = yaw_mpc_.acceleration(center);
+        plan.aim.pitch_velocity = pitch_mpc_.velocity(center);
+        plan.aim.pitch_acceleration = pitch_mpc_.acceleration(center);
+        plan.aim.shaped = true;
+      }
+    }
+  }
+
   plan.fire = FireReference{final_aim.armor_id, final_aim.xyza};
   plan.timing = PlanTiming{
     future + secondsToDuration(current_trajectory.fly_time),
     current_trajectory.fly_time,
     delay};
 
-  if (!std::isfinite(plan.aim.yaw) || !std::isfinite(plan.aim.pitch) ||
+  if (!std::isfinite(plan.aim.shoot_yaw) || !std::isfinite(plan.aim.shoot_pitch) ||
       !std::isfinite(plan.timing.fly_time)) {
     return rejected(PlanError::BallisticFailed);
   }
@@ -184,9 +259,121 @@ Plan Planner::plan(
 void Planner::reset() noexcept
 {
   // locked_id_ 由候选板变化时更新。短暂中断不清锁，避免恢复后立即切板。
+  //
+  // MPC 的热启动必须清：它跨帧复用上一次的解和对偶变量，10 次迭代才够用。
+  // 目标丢了再回来时参考轨迹已经不连续，带着旧解迭代会把旧目标的偏置拖进来。
+  yaw_mpc_.reset();
+  pitch_mpc_.reset();
 }
 
 // ---- 以下为私有实现 ----
+
+bool Planner::buildReference(
+  const L3Estimation::TrackedTarget& target_at_fire,
+  double fly_time,
+  double bullet_speed,
+  double center_yaw,
+  double center_pitch,
+  Eigen::Matrix<double, 2, Eigen::Dynamic>& yaw_reference,
+  Eigen::Matrix<double, 2, Eigen::Dynamic>& pitch_reference,
+  double& yaw_span,
+  double& pitch_span) const
+{
+  const int steps = config_.mpc.horizon;
+  const double dt = config_.mpc.dt;
+  const int center = steps / 2;
+
+  // 速度用中心差分，所以两端各要多采一个点：原始采样 steps + 2 个，
+  // 原始下标 i 对应参考列 j = i - 1。
+  const int raw_count = steps + 2;
+  std::vector<double> raw_yaw(static_cast<std::size_t>(raw_count));
+  std::vector<double> raw_pitch(static_cast<std::size_t>(raw_count));
+  // 每个采样点选中的板号。速度只能在同一块板的采样点之间差分，见下面。
+  std::vector<int> raw_id(static_cast<std::size_t>(raw_count));
+
+  // 迟滞锁沿窗口正向推进，用局部副本，绝不写回成员——这是一次"看一眼整条
+  // 轨迹"，不该改变当前帧的锁。
+  //
+  // 窗口起点在半个窗口之前，那时的锁没有记录，只能拿当前的锁做种子。小陀螺下
+  // 这半秒车身已经转过大半圈，种子多半不在起点的候选里；chooseAimPoint 遇到
+  // 这种情况会直接选最正对的一块，一两个采样点内就自愈，比为此保存一份历史
+  // 命令轨迹划算得多。
+  int lock = locked_id_;
+
+  for (int i = 0; i < raw_count; ++i) {
+    const double offset = static_cast<double>(i - 1 - center) * dt;
+
+    L3Estimation::TrackedTarget probe = target_at_fire;
+    // target_at_fire 是发射时刻的状态，再推一个飞行时间才是命中时刻。窗口就
+    // 以这个命中时刻为中心：每个采样点回答"要打中那一刻的目标，枪得指哪"。
+    probe.predict(fly_time + offset);
+
+    const AimPoint aim = chooseAimPoint(probe, lock);
+    if (!aim.valid) {
+      return false;
+    }
+    const Eigen::Vector3d position = aim.xyza.head<3>();
+    const Ballistic trajectory = ballistic_.solve(
+      std::hypot(position.x(), position.y()), position.z(), bullet_speed);
+    if (!trajectory.valid) {
+      return false;
+    }
+
+    raw_yaw[static_cast<std::size_t>(i)] =
+      std::atan2(position.y(), position.x()) + config_.impact.yaw_offset;
+    raw_pitch[static_cast<std::size_t>(i)] =
+      -(trajectory.pitch + config_.impact.pitch_offset);
+    raw_id[static_cast<std::size_t>(i)] = aim.armor_id;
+  }
+
+  // 两轴都存成相对中心角的偏差：yaw 是为了避开 ±pi 跳变，pitch 是为了让参考
+  // 末值落在 0 附近——终端代价用的是 Riccati 的 Pinf，参考绝对值越小它越不
+  // 敏感。差分一律走归一化差，跨 ±pi 时直接相减会得到一个假尖峰。
+  // 速度只在**同一块板**的采样点之间差分。跨切板做中心差分会把整板宽度的台阶
+  // 除以 2*dt，得到一个几 rad/s 的假尖峰：3 m 处两块板的方位角差约 5.3 度，
+  // dt=10 ms 时假速度就是 4.6 rad/s。它一旦落在第 0 列就成了 x0 的初速度，
+  // MPC 带着它冲半个窗口，中点能偏出十几度——实测录像上每十几帧撞上一次，
+  // 命令会出现单帧的大幅甩出再弹回。sp_vision 的 get_trajectory 是无条件中心
+  // 差分，这里是一处有意的偏离。
+  //
+  // 位置上的台阶要保留：那才是切板本身，正是要交给 MPC 去平滑的东西。
+  const auto axisVelocity = [&](const std::vector<double>& raw, std::size_t i,
+                                bool wrap) {
+    const auto difference = [wrap](double a, double b) {
+      return wrap ? L6Telemetry::limit_rad(a - b) : a - b;
+    };
+    const bool same_before = raw_id[i - 1] == raw_id[i];
+    const bool same_after = raw_id[i] == raw_id[i + 1];
+    if (same_before && same_after) {
+      return difference(raw[i + 1], raw[i - 1]) / (2.0 * dt);
+    }
+    if (same_before) {
+      return difference(raw[i], raw[i - 1]) / dt;
+    }
+    if (same_after) {
+      return difference(raw[i + 1], raw[i]) / dt;
+    }
+    // 前后都换了板：这一点孤立，给不出可信的速度，宁可报 0。
+    return 0.0;
+  };
+
+  for (int j = 0; j < steps; ++j) {
+    const std::size_t i = static_cast<std::size_t>(j + 1);
+    yaw_reference(0, j) =
+      L6Telemetry::limit_rad(raw_yaw[i] - center_yaw);
+    yaw_reference(1, j) = axisVelocity(raw_yaw, i, true);
+    pitch_reference(0, j) = raw_pitch[i] - center_pitch;
+    pitch_reference(1, j) = axisVelocity(raw_pitch, i, false);
+  }
+
+  // 参考自身覆盖的角度范围。整形是对它的平滑，解不该跑出这个范围——用作下面
+  // 的兜底闸门。
+  yaw_span = yaw_reference.row(0).cwiseAbs().maxCoeff();
+  pitch_span = pitch_reference.row(0).cwiseAbs().maxCoeff();
+
+  return yaw_reference.allFinite() && pitch_reference.allFinite();
+}
+
 
 Planner::AimPoint Planner::chooseAimPoint(
   const L3Estimation::TrackedTarget& target, int& lock) const

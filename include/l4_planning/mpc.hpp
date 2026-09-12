@@ -36,8 +36,12 @@ public:
     double q_velocity{0.0};         // 速度偏差权重
     double r_input{1.0};            // 加速度代价权重
     double rho{1.0};                // ADMM 罚参数
-    int max_iterations{10};         // 每次求解的迭代上限
+    int max_iterations{25};         // 每次求解的迭代上限
     double max_acceleration{50.0};  // |u| 上限，rad/s^2
+    // 收敛判据：原始残差 max|u - z| 与对偶残差 rho*max|z - z_prev| 都小于它才
+    // 算收敛。单位是 rad/s^2，也就是加速度。没收敛的解不能用——实测上一版
+    // 迭代不足时中点会偏出十几度，而真正的最优解只偏离参考零点几度。
+    double tolerance{1.0e-3};
   };
 
   // 预计算 Riccati 缓存。参数非法（dt/horizon/权重/上限不合理）时返回 false，
@@ -56,6 +60,15 @@ public:
   bool solve(const Eigen::Ref<const Eigen::Matrix<double, 2, Eigen::Dynamic>>& x_ref,
              const Eigen::Vector2d& x0);
 
+  // 上一次 solve() 是否达到收敛判据。**没收敛的解不要用**：它既不满足最优性
+  // 也可能离参考很远，下游拿去当命令会出现单帧的大幅甩出。
+  [[nodiscard]] bool converged() const noexcept { return converged_; }
+  // 上一次 solve() 实际用掉的迭代次数，用于判断 max_iterations 配得够不够。
+  [[nodiscard]] int iterations() const noexcept { return iterations_; }
+  // 上一次 solve() 结束时两个残差里较大的那个，单位 rad/s^2。它就是 converged()
+  // 拿去和 tolerance 比的量，暴露出来是为了能在遥测里看"离收敛还差多远"。
+  [[nodiscard]] double residual() const noexcept { return residual_; }
+
   // 求解结果。索引范围 [0, horizon)，加速度只到 horizon - 1。
   [[nodiscard]] double position(int step) const;
   [[nodiscard]] double velocity(int step) const;
@@ -67,6 +80,9 @@ private:
 
   Config config_{};
   bool ready_{false};
+  bool converged_{false};
+  int iterations_{0};
+  double residual_{0.0};
 
   // 离散模型与 Riccati 缓存。
   Eigen::Matrix2d A_{Eigen::Matrix2d::Identity()};

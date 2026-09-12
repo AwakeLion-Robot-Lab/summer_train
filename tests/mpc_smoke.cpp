@@ -36,6 +36,9 @@ L4Planning::AxisMpc::Config baseConfig()
   config.rho = 1.0;
   config.max_iterations = 4000;
   config.max_acceleration = 1.0e9;  // 大到约束一定不起作用
+  // 精确性用例要的是跑到定点，所以判据收到机器精度附近；实际部署用的是
+  // Config 的默认值 1e-3 rad/s^2。
+  config.tolerance = 1.0e-14;
   return config;
 }
 
@@ -400,6 +403,47 @@ void testResetClearsWarmStart()
 
 }  // namespace
 
+// ---- 7. 收敛标志必须如实反映是否收敛 ----
+// 上一版没有这个标志，迭代不够时解会悄悄偏出十几度被当成命令发出去。实测
+// 50 条真实参考：rho=1 时 10 次迭代最差偏 3.7 度，而真正的最优解只偏 0.1 度。
+void testConvergedFlagIsHonest()
+{
+  const auto reference = stepReference(40, 15, 0.10);
+  const Eigen::Vector2d x0 = reference.col(0);
+
+  // 迭代给够 + 判据宽松 -> 必须报收敛，且用掉的迭代数小于上限。
+  {
+    auto config = baseConfig();
+    config.max_acceleration = 1.0;
+    config.tolerance = 1.0e-3;
+    config.max_iterations = 4000;
+    L4Planning::AxisMpc mpc;
+    require(mpc.setup(config), "setup must succeed");
+    require(mpc.solve(reference, x0), "solve must succeed");
+    require(mpc.converged(), "a well-converged solve must report converged");
+    require(
+      mpc.iterations() < config.max_iterations,
+      "converged solve must stop before the iteration cap");
+  }
+
+  // 迭代掐到 1 次 -> 必须报不收敛。这是下游拒绝使用该解的唯一依据。
+  {
+    auto config = baseConfig();
+    config.max_acceleration = 1.0;
+    config.tolerance = 1.0e-12;
+    config.max_iterations = 1;
+    L4Planning::AxisMpc mpc;
+    require(mpc.setup(config), "setup must succeed");
+    require(mpc.solve(reference, x0), "solve must still return true");
+    require(
+      !mpc.converged(),
+      "a one-iteration solve must not claim convergence");
+    require(mpc.iterations() == 1, "iteration count must be reported");
+  }
+
+  std::cout << "  [ok] converged() reflects the real residuals\n";
+}
+
 int main()
 {
   testSetupRejectsBadConfig();
@@ -408,6 +452,7 @@ int main()
   testStatesAreConsistentWithInputs();
   testBrakesBeforeTheStep();
   testResetClearsWarmStart();
+  testConvergedFlagIsHonest();
   std::cout << "mpc smoke test passed\n";
   return 0;
 }

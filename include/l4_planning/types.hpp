@@ -55,10 +55,28 @@ enum class PlanStatus : std::uint8_t {
 };
 
 // 命中点及其对应的世界系枪管角命令。
+//
+// **下发角与射击角是两个量**，切板过渡期间它们不相等：
+//   yaw/pitch             —— 本帧真正下发给电控的角，受加速度约束整形过；
+//   shoot_yaw/shoot_pitch —— 打中命中点所需要的角，不受约束整形。
+// 没开轨迹规划时两者逐位相同。开火判据必须比 shoot_*：过渡段下发角是故意
+// 偏开的，拿它去比等于在问"云台跟得准不准"，而要问的是"现在打出去能不能中"。
+//
+// velocity/acceleration 是规划出的一阶、二阶前馈量，供下位机叠加到自己的环上。
+// 不发前馈时它们仍然有值——遥测要画，也用来核对 a_max 有没有被突破。
 struct AimReference {
   Eigen::Vector3d point{Eigen::Vector3d::Zero()};
   double yaw{0.0};
   double pitch{0.0};
+  double shoot_yaw{0.0};
+  double shoot_pitch{0.0};
+  double yaw_velocity{0.0};       // rad/s
+  double yaw_acceleration{0.0};   // rad/s^2
+  double pitch_velocity{0.0};     // rad/s
+  double pitch_acceleration{0.0}; // rad/s^2
+  // 本帧的下发角是否由轨迹规划整形过。关掉规划、或参考轨迹这一帧建不出来时
+  // 为假，此时 yaw/pitch 与 shoot_* 相同。
+  bool shaped{false};
 };
 
 // L5 判定始终落在一块实体装甲板上；armor_pose = [x, y, z, normal_yaw]。

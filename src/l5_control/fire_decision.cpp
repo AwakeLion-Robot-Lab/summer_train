@@ -82,7 +82,15 @@ FireDecision FireDecider::decide(const FireInput& input) const
     return decision;
   }
 
-  // 命中判据：实际枪管指向与规划角之差必须落在实体板的角度投影内。
+  // 命中判据：实际枪管指向与**射击角**之差必须落在实体板的角度投影内。
+  //
+  // 比的是 shoot_*，不是下发的 aim.yaw/aim.pitch。跟随段两者相同；切板过渡段
+  // 下发角被加速度约束整形过、是故意偏开的，拿它去比等于在问"云台跟得准不准"，
+  // 而这里要问的是"现在打出去能不能中"。
+  //
+  // 顺带一个副作用是想要的：过渡期间云台正走在偏开的下发角上，实测姿态与射击角
+  // 的差自然变大，本判据自己就把开火关掉了，不需要再加一道"过渡段禁止开火"的
+  // 闸门。sp_vision 用的是同一个机制，只是它比的是参考轨迹与 MPC 解之差。
   const auto armor_type =
     input.target.has_value() ? L3Estimation::armorTypeOf(input.target->name)
                              : std::optional<L3Estimation::ArmorType>{};
@@ -92,9 +100,9 @@ FireDecision FireDecider::decide(const FireInput& input) const
   decision.tolerance = tolerance(
     plan, armor_type.value_or(L3Estimation::ArmorType::Small), armor_name);
   decision.yaw_error =
-    std::abs(L6Telemetry::limit_rad(plan.aim.yaw - input.actual_yaw));
+    std::abs(L6Telemetry::limit_rad(plan.aim.shoot_yaw - input.actual_yaw));
   decision.pitch_error =
-    std::abs(L6Telemetry::limit_rad(plan.aim.pitch - input.actual_pitch));
+    std::abs(L6Telemetry::limit_rad(plan.aim.shoot_pitch - input.actual_pitch));
 
   if (!decision.tolerance.valid) {
     // 没有实体装甲板可判——中心档下这意味着这一帧本来就不该开火。

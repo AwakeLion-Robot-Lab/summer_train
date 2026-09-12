@@ -524,7 +524,21 @@ nlohmann::json telemetryFrame(
   if (plan.valid()) {
     data["aim"]["yaw"] = plan.aim.yaw * kRadToDeg;
     data["aim"]["pitch"] = plan.aim.pitch * kRadToDeg;
+    // 射击角。**必须和 aim/yaw 画在同一张图上**：轨迹规划调的就是这两条线怎么
+    // 分开又怎么合上，只画一条完全看不出整形做没做、做过头没有。跟随段两者重合
+    // 是正常的，不是数据重复。开火判据比的也是这一条。
+    data["aim"]["shoot_yaw"] = plan.aim.shoot_yaw * kRadToDeg;
+    data["aim"]["shoot_pitch"] = plan.aim.shoot_pitch * kRadToDeg;
+    // 规划出的前馈量。对着 planning.mpc 里配的 a_max 看：贴着上限走是正常的，
+    // 长期顶满说明 a_max 配小了或者转速已经超出云台能力。
+    data["aim"]["yaw_vel"] = plan.aim.yaw_velocity * kRadToDeg;
+    data["aim"]["yaw_acc"] = plan.aim.yaw_acceleration * kRadToDeg;
+    data["aim"]["pitch_vel"] = plan.aim.pitch_velocity * kRadToDeg;
+    data["aim"]["pitch_acc"] = plan.aim.pitch_acceleration * kRadToDeg;
   }
+  // 本帧下发角是否被整形过。恒为 0 说明规划没生效——要么没开，要么参考轨迹
+  // 每帧都建不出来，后者才是问题。
+  data["aim"]["shaped"] = plan.aim.shaped ? 1 : 0;
   data["aim"]["armor_id"] = plan.fire ? plan.fire->armor_id : -1;
 
   // delay: 五段延迟链。绝不合并成一个标量——上车标定 send_to_control 时

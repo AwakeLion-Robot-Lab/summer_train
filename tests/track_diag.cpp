@@ -442,7 +442,7 @@ int main(int argc, char* argv[])
     std::ofstream aim_csv(out_dir / "aim.csv");
     aim_csv << "frame,t,plan_valid,plan_armor_id,aim_x,aim_y,aim_z,"
                "cmd_yaw_deg,cmd_pitch_deg,fly_time,before_fire,fire_admissible,"
-               "fire_delta_deg,aim_jump\n";
+               "fire_delta_deg,aim_jump,shaped,shoot_yaw_deg,yaw_acc\n";
     aim_csv << std::fixed;
 
     // 叠加层像素位置。目的是和 sp_vision 逐帧比"框画在哪儿"，所以这里只出
@@ -784,7 +784,10 @@ int main(int argc, char* argv[])
               << plan.aim.pitch * kRadToDeg << ',' << plan.timing.fly_time << ','
               << plan.timing.delay.beforeFire() << ','
               << (plan.fireAdmissible() ? 1 : 0) << ','
-              << fire_facing * kRadToDeg << ',' << aim_jump << '\n';
+              << fire_facing * kRadToDeg << ',' << aim_jump << ','
+              << (plan.aim.shaped ? 1 : 0) << ','
+              << plan.aim.shoot_yaw * kRadToDeg << ','
+              << plan.aim.yaw_acceleration << '\n';
 
       // 开环预测：缓存 t 时刻外推 predict_time 后的整车，等真到那一刻再对账。
       if (target && predict_time > 0.0) {

@@ -52,7 +52,12 @@ L5Control::FireInput makeInput()
   L4Planning::Plan plan;
   plan.status = L4Planning::PlanStatus::FireReady;
   plan.reason = L4Planning::PlanError::None;
-  plan.aim = {{4.0, 0.0, 0.1}, 0.0, 0.05};
+  // 跟随段下发角与射击角相同；命中判据比的是射击角。
+  plan.aim.point = {4.0, 0.0, 0.1};
+  plan.aim.yaw = 0.0;
+  plan.aim.pitch = 0.05;
+  plan.aim.shoot_yaw = plan.aim.yaw;
+  plan.aim.shoot_pitch = plan.aim.pitch;
   plan.fire = L4Planning::FireReference{0, {4.0, 0.0, 0.1, 0.0}};
   input.plan = plan;
 
@@ -199,6 +204,45 @@ void testPitchErrorAlsoBlocks()
   std::cout << "  [ok] both axes gate the shot\n";
 }
 
+// 切板整形期间，命中判据必须比射击角而不是下发角。
+// 下发角被整形成偏开的过渡轨迹，云台正跟着它走；这时"云台跟得准不准"是满足的，
+// 但"现在打出去能不能中"不满足——判据比错了就会在过渡段放枪打空。
+void testHitCriterionUsesShootAngleNotCommand()
+{
+  const L5Control::FireDecider decider(makeConfig());
+
+  // 情形一：云台精确跟上了被整形的下发角，但射击角在别处。必须禁火。
+  {
+    auto input = makeInput();
+    input.plan.aim.shaped = true;
+    input.plan.aim.yaw = 0.30;  // 过渡段故意偏开
+    input.plan.aim.pitch = 0.05;
+    input.actual_yaw = input.plan.aim.yaw;  // 云台跟得很准
+    input.actual_pitch = input.plan.aim.pitch;
+    // shoot_* 仍是 makeInput 里的 0.0 / 0.05
+    const auto decision = decider.decide(input);
+    require(
+      !decision.fire_feasible,
+      "following the shaped command perfectly must not open fire by itself");
+  }
+
+  // 情形二：反过来——云台恰好停在射击角上，下发角在别处。必须允许开火。
+  {
+    auto input = makeInput();
+    input.plan.aim.shaped = true;
+    input.plan.aim.yaw = 0.30;
+    input.plan.aim.pitch = 0.05;
+    input.actual_yaw = input.plan.aim.shoot_yaw;
+    input.actual_pitch = input.plan.aim.shoot_pitch;
+    const auto decision = decider.decide(input);
+    require(
+      decision.fire_feasible,
+      "sitting on the shoot angle must open fire even mid-transition");
+  }
+
+  std::cout << "  [ok] hit criterion follows the shoot angle, not the command\n";
+}
+
 // 云台机械范围不在视觉火控层重复限制。
 void testGimbalRangeIsNotFireGate()
 {
@@ -206,8 +250,10 @@ void testGimbalRangeIsNotFireGate()
   auto input = makeInput();
   input.plan.aim.yaw = 4.0;
   input.plan.aim.pitch = 1.0;
-  input.actual_yaw = input.plan.aim.yaw;
-  input.actual_pitch = input.plan.aim.pitch;
+  input.plan.aim.shoot_yaw = input.plan.aim.yaw;
+  input.plan.aim.shoot_pitch = input.plan.aim.pitch;
+  input.actual_yaw = input.plan.aim.shoot_yaw;
+  input.actual_pitch = input.plan.aim.shoot_pitch;
 
   const auto decision = decider.decide(input);
   require(
@@ -373,6 +419,7 @@ int main()
   testTiltedArmorNarrowsYawTolerance();
   testFacingAngleUsesLineOfSight();
   testPitchErrorAlsoBlocks();
+  testHitCriterionUsesShootAngleNotCommand();
   testGimbalRangeIsNotFireGate();
   testWindowAndAimAreSeparateReasons();
   testReasonsAreNotShortCircuited();

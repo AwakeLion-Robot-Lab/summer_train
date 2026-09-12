@@ -186,6 +186,24 @@ void normalize(AutoAimConfig& config)
     config.plan.selector.outpost_leaving_angle =
       plan_defaults.selector.outpost_leaving_angle;
   }
+  // MPC 参数非法时不去猜一组凑合的值，直接关掉整节——AxisMpc::setup 也会拒绝，
+  // 这里提前关掉只是为了让 enable 的语义和实际行为一致。
+  if (config.plan.mpc.enable) {
+    const bool sane = positiveFinite(config.plan.mpc.dt) &&
+      config.plan.mpc.horizon >= 3 && config.plan.mpc.max_iterations >= 1 &&
+      positiveFinite(config.plan.mpc.q_position) &&
+      std::isfinite(config.plan.mpc.q_velocity) &&
+      config.plan.mpc.q_velocity >= 0.0 &&
+      std::isfinite(config.plan.mpc.r_input) &&
+      config.plan.mpc.r_input >= 0.0 && positiveFinite(config.plan.mpc.rho) &&
+      positiveFinite(config.plan.mpc.tolerance) &&
+      positiveFinite(config.plan.mpc.max_yaw_acceleration) &&
+      positiveFinite(config.plan.mpc.max_pitch_acceleration);
+    if (!sane) {
+      config.plan.mpc = L4Planning::MpcConfig{};
+    }
+  }
+
   // 标定值必须是正的有限数，否则当作没标定。
   // 弹道参数越界都是静默失效：重力为负会解出朝天的仰角，阻力系数为负会让
   // 等效距离随距离指数缩短（越远打得越准，明显是错的），max_pitch 超过 90°
@@ -435,6 +453,27 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     planning, "outpost_leaving_angle_deg", config.plan.selector.outpost_leaving_angle);
   // 不写这一项就表示还没在实车上标定：Planner 会把计划降级成 TrackOnly，
   // 云台照常跟随但不允许开火。写了才算标定完成。
+  // 切板轨迹规划。整块可以不写：不写就是不启用，Plan 与本节出现之前逐位相同。
+  YAML::Node mpc;
+  if (planning) {
+    mpc = planning["mpc"];
+  }
+  if (mpc) {
+    readValue(mpc, "enable", config.plan.mpc.enable);
+    readMillisecondsAsSeconds(mpc, "dt_ms", config.plan.mpc.dt);
+    readValue(mpc, "horizon", config.plan.mpc.horizon);
+    readValue(mpc, "q_position", config.plan.mpc.q_position);
+    readValue(mpc, "q_velocity", config.plan.mpc.q_velocity);
+    readValue(mpc, "r_input", config.plan.mpc.r_input);
+    readValue(mpc, "rho", config.plan.mpc.rho);
+    readValue(mpc, "max_iterations", config.plan.mpc.max_iterations);
+    readValue(mpc, "tolerance", config.plan.mpc.tolerance);
+    readValue(
+      mpc, "max_yaw_acc_rad_s2", config.plan.mpc.max_yaw_acceleration);
+    readValue(
+      mpc, "max_pitch_acc_rad_s2", config.plan.mpc.max_pitch_acceleration);
+  }
+
   if (planning && planning["send_to_control_ms"]) {
     config.plan.impact.send_to_control =
       planning["send_to_control_ms"].as<double>() * 1e-3;

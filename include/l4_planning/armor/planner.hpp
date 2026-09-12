@@ -3,6 +3,7 @@
 #include "l1_sensor/serial/robot_state.hpp"
 #include "l3_estimation/armor/target_estimator.hpp"
 #include "l4_planning/armor/types.hpp"
+#include "l4_planning/mpc.hpp"
 
 #include <Eigen/Core>
 
@@ -48,11 +49,37 @@ private:
   AimPoint chooseAimPoint(
     const L3Estimation::TrackedTarget& target, int& lock) const;
 
+  // 采样整条射击轨迹作为 MPC 的参考。窗口以本帧的命中时刻为中心，向前后各
+  // 铺开 horizon/2 步；每个采样点独立选板、独立解弹道，切板在结果里就是一个
+  // 台阶。yaw 存成相对中心角的偏差，避开 ±pi 跳变。
+  //
+  // 中途任何一点选不出板或弹道无解都返回 false——宁可这一帧不整形（下发角退回
+  // 射击角），也不拿一条有洞的参考去解。
+  [[nodiscard]] bool buildReference(
+    const L3Estimation::TrackedTarget& target_at_fire,
+    double fly_time,
+    double bullet_speed,
+    double center_yaw,
+    double center_pitch,
+    Eigen::Matrix<double, 2, Eigen::Dynamic>& yaw_reference,
+    Eigen::Matrix<double, 2, Eigen::Dynamic>& pitch_reference,
+    double& yaw_span,
+    double& pitch_span) const;
+
   ArmorPlanConfig config_;
   // 弹道求解器在构造时按 ballistic.drag_coefficient 选定模型：0 走真空闭式
   // 解，非 0 走等效距离的二次阻力闭式解。每帧解算不再重建模型。
   BallisticSolver ballistic_;
   int locked_id_{-1};
+
+  // 两轴各一个求解器。setup 失败（配置非法）时 mpc_ready_ 为假，整条链路退回
+  // 不整形的行为，而不是拿一组凑合的参数继续算。
+  AxisMpc yaw_mpc_;
+  AxisMpc pitch_mpc_;
+  bool mpc_ready_{false};
+  // 复用的参考轨迹缓冲，避免每帧分配。
+  mutable Eigen::Matrix<double, 2, Eigen::Dynamic> yaw_reference_;
+  mutable Eigen::Matrix<double, 2, Eigen::Dynamic> pitch_reference_;
 };
 
 }  // namespace L4Planning

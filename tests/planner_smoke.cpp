@@ -8,11 +8,13 @@
 
 #include <Eigen/Dense>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <numbers>
+#include <vector>
 
 namespace {
 
@@ -603,6 +605,103 @@ void testSharedIterationProducesFiniteCommands()
 
 }  // namespace
 
+// ---- 轨迹规划关掉时，下发角必须逐位等于射击角 ----
+// 这一节的全部代码都挂在 mpc.enable 上；关掉时 Plan 必须和这一节出现之前完全
+// 一样，否则"先关着上车"这个安全前提就不成立。
+void testMpcDisabledLeavesCommandUnshaped()
+{
+  L4Planning::Planner planner(calibratedConfig());
+  L1Sensor::RobotState robot_state;
+  robot_state.bullet_speed = 23.0;
+
+  for (int step = 0; step < 40; ++step) {
+    const auto target = makeTarget(
+      5.5, L6Telemetry::limit_rad(step * 0.11));
+    const auto plan = planner.plan(target, robot_state, {}, false);
+    require(plan.valid(), "plan must stay valid");
+    require(!plan.aim.shaped, "no shaping may happen while mpc is disabled");
+    require(
+      plan.aim.yaw == plan.aim.shoot_yaw &&
+        plan.aim.pitch == plan.aim.shoot_pitch,
+      "with mpc off the command must be bit-identical to the shoot angle");
+    require(
+      plan.aim.yaw_acceleration == 0.0 && plan.aim.pitch_acceleration == 0.0,
+      "no feedforward may be produced while mpc is disabled");
+  }
+  std::cout << "  [ok] mpc disabled leaves the command unshaped\n";
+}
+
+// ---- 打开之后：逐帧命令的隐含加速度必须降下来 ----
+// 这是整个方案要解决的问题本身。小陀螺切板时射击轨迹有个整板宽度的阶跃，直接
+// 下发的话逐帧命令的二阶差分会要求云台做出远超能力的加速度——在实车录像
+// 3m_run_fast 上实测 13.6% 的帧超过 50 rad/s^2、p90 到 238。这里用同样的口径
+// 在合成目标上对照：关掉 / 打开，量逐帧命令的二阶差分。
+void testMpcCutsCommandAcceleration()
+{
+  L1Sensor::RobotState robot_state;
+  robot_state.bullet_speed = 23.0;
+
+  constexpr double kFrameDt = 0.02;   // 20 ms，和录像的帧间隔一致
+  constexpr double kVYaw = 5.5;       // rad/s，和录像的中位转速一致
+  constexpr int kFrames = 120;
+
+  const auto sweep = [&](bool enable_mpc) {
+    auto config = calibratedConfig();
+    config.mpc.enable = enable_mpc;
+    config.mpc.max_yaw_acceleration = 50.0;
+    config.mpc.max_pitch_acceleration = 100.0;
+    L4Planning::Planner planner(config);
+
+    std::vector<double> command;
+    command.reserve(kFrames);
+    for (int step = 0; step < kFrames; ++step) {
+      const auto target = makeTarget(
+        kVYaw, L6Telemetry::limit_rad(step * kVYaw * kFrameDt));
+      const auto plan = planner.plan(target, robot_state, {}, false);
+      require(plan.valid(), "plan must stay valid across the sweep");
+      command.push_back(plan.aim.yaw);
+    }
+
+    // 逐帧命令的二阶差分，跨 ±pi 走归一化差。
+    std::vector<double> acceleration;
+    for (std::size_t i = 2; i < command.size(); ++i) {
+      const double v1 =
+        L6Telemetry::limit_rad(command[i - 1] - command[i - 2]) / kFrameDt;
+      const double v2 =
+        L6Telemetry::limit_rad(command[i] - command[i - 1]) / kFrameDt;
+      acceleration.push_back(std::abs(v2 - v1) / kFrameDt);
+    }
+    std::sort(acceleration.begin(), acceleration.end());
+    return acceleration;
+  };
+
+  const auto off = sweep(false);
+  const auto on = sweep(true);
+  require(!off.empty() && off.size() == on.size(), "sweeps must be comparable");
+
+  const auto p90 = [](const std::vector<double>& v) {
+    return v[static_cast<std::size_t>(v.size() * 0.9)];
+  };
+  const double off_p90 = p90(off);
+  const double on_p90 = p90(on);
+  const int off_over = static_cast<int>(std::count_if(
+    off.begin(), off.end(), [](double a) { return a > 50.0; }));
+  const int on_over = static_cast<int>(std::count_if(
+    on.begin(), on.end(), [](double a) { return a > 50.0; }));
+
+  // 关掉时必须真的超限，否则这个用例证明不了任何事。
+  require(
+    off_over > 0 && off_p90 > 50.0,
+    "the unshaped command must actually exceed the limit in this case");
+  require(
+    on_over < off_over && on_p90 < 0.5 * off_p90,
+    "shaping must cut the command acceleration, not just change it");
+
+  std::cout << "  [ok] mpc cuts command acceleration, p90 " << off_p90
+            << " -> " << on_p90 << " rad/s^2, over-limit frames " << off_over
+            << " -> " << on_over << '\n';
+}
+
 int main()
 {
   testPredictorAdvancesYaw();
@@ -613,6 +712,8 @@ int main()
   testDragInverseIsExact();
   testIterativeFallbackMatchesClosedForm();
   testBallisticRejectsBadInput();
+  testMpcDisabledLeavesCommandUnshaped();
+  testMpcCutsCommandAcceleration();
   testPlannerConverges();
   testPlannerUsesOneSidedBulletFallback();
   testPlannerGatesOnDelayCalibration();
