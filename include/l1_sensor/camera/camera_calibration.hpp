@@ -16,6 +16,12 @@ namespace L1Sensor {
 // 外参命名统一采用 T_A_B：把 B 坐标系中的点转换到 A 坐标系。
 // T_barrel_camera 是相机与枪管之间不随帧变化的静态机械外参。
 // 未标定时保持 std::nullopt，禁止用单位阵冒充有效标定。
+//
+// barrel 是右手系：x 指向枪口（瞄准方向），z 朝上，y 朝左，允许与 IMU 轴向
+// 不同，差异写在 config/serial_config.yaml 的 R_imu_barrel 里。
+// T_barrel_camera 必须标定到这个 barrel 系；相机光学系为 z 前 / x 右 / y 下，
+// 纯轴向部分是 [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]，机械安装角再叠加上去。
+// 轴向不一致时程序不会报错，只会让世界系姿态整体错掉。
 struct CameraCalibration {
   cv::Size image_size{};
   cv::Mat camera_matrix;

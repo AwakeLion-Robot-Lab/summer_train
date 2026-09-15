@@ -1,75 +1,387 @@
+#include "l1_sensor/camera/camera_calibration.hpp"
 #include "l3_estimation/pnp_solver.hpp"
+#include "l6_telemetry/math.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <iostream>
+#include <limits>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 #include <opencv2/calib3d.hpp>
+#include <yaml-cpp/yaml.h>
 
 namespace {
 
-L1Sensor::CameraCalibration makeCalibration()
+constexpr double kSmallWidth = 0.135;
+constexpr double kBigWidth = 0.230;
+constexpr double kArmorHeight = 0.056;
+
+int failure_count = 0;
+
+void expect(bool condition, std::string_view message)
 {
-  L1Sensor::CameraCalibration calibration;
-  calibration.image_size = {1280, 1024};
-  calibration.camera_matrix = (cv::Mat_<double>(3, 3)
-    << 1200.0, 0.0, 640.0,
-       0.0, 1200.0, 512.0,
-       0.0, 0.0, 1.0);
-  calibration.distortion_coefficients = cv::Mat::zeros(1, 5, CV_64FC1);
-  return calibration;
+  if (!condition) {
+    std::cerr << "FAIL: " << message << '\n';
+    ++failure_count;
+  }
 }
 
-std::array<cv::Point3f, 4> smallArmorPoints()
+[[nodiscard]] std::vector<cv::Point3d> armorPoints(double width)
 {
-  return {{{0.0F,  0.0675F,  0.0275F},
-           {0.0F, -0.0675F,  0.0275F},
-           {0.0F, -0.0675F, -0.0275F},
-           {0.0F,  0.0675F, -0.0275F}}};
+  const double half_width = width / 2.0;
+  const double half_height = kArmorHeight / 2.0;
+  return {
+    {0.0, half_width, half_height},
+    {0.0, -half_width, half_height},
+    {0.0, -half_width, -half_height},
+    {0.0, half_width, -half_height}};
+}
+
+[[nodiscard]] cv::Vec3d rotationVector(const cv::Matx33d& rotation)
+{
+  cv::Vec3d rvec;
+  cv::Rodrigues(rotation, rvec);
+  return rvec;
+}
+
+[[nodiscard]] std::array<cv::Point2f, 4> projectArmor(
+  const L1Sensor::CameraCalibration& calibration,
+  double width,
+  const cv::Matx33d& rotation,
+  const cv::Vec3d& translation)
+{
+  std::vector<cv::Point2d> projected;
+  cv::projectPoints(
+    armorPoints(width),
+    rotationVector(rotation),
+    translation,
+    calibration.camera_matrix,
+    calibration.distortion_coefficients,
+    projected);
+
+  return {
+    cv::Point2f(projected[0]),
+    cv::Point2f(projected[1]),
+    cv::Point2f(projected[2]),
+    cv::Point2f(projected[3])};
+}
+
+[[nodiscard]] double manualReprojectionRmse(
+  const L1Sensor::CameraCalibration& calibration,
+  const L3Estimation::Armor& armor)
+{
+  const double width = armor.type == L3Estimation::ArmorType::Big
+    ? kBigWidth
+    : kSmallWidth;
+  const cv::Matx33d rotation =
+    L6Telemetry::toCv(L6Telemetry::yprToRotation(armor.ypr_in_camera));
+  const cv::Vec3d translation{
+    armor.xyz_in_camera.x(),
+    armor.xyz_in_camera.y(),
+    armor.xyz_in_camera.z()};
+
+  std::vector<cv::Point2d> projected;
+  cv::projectPoints(
+    armorPoints(width),
+    rotationVector(rotation),
+    translation,
+    calibration.camera_matrix,
+    calibration.distortion_coefficients,
+    projected);
+
+  double squared_error_sum = 0.0;
+  for (std::size_t index = 0; index < armor.points.size(); ++index) {
+    const double dx = projected[index].x - armor.points[index].x;
+    const double dy = projected[index].y - armor.points[index].y;
+    squared_error_sum += dx * dx + dy * dy;
+  }
+  return std::sqrt(squared_error_sum / armor.points.size());
+}
+
+[[nodiscard]] bool outputsCleared(const L3Estimation::Armor& armor)
+{
+  return armor.xyz_in_camera.isZero(0.0) &&
+         armor.xyz_in_world.isZero(0.0) &&
+         armor.ypr_in_camera.isZero(0.0) &&
+         armor.ypr_in_world.isZero(0.0) &&
+         armor.ypd_in_world.isZero(0.0) &&
+         armor.name == L3Estimation::ArmorName::Unknown &&
+         armor.type == L3Estimation::ArmorType::Small &&
+         std::isinf(armor.reprojection_error);
+}
+
+[[nodiscard]] bool allQualityFlagsClear(const L3Estimation::Armor& armor)
+{
+  return !armor.quality.pnp_ok && !armor.quality.reprojection_ok &&
+         !armor.quality.geometry_ok && !armor.quality.finite &&
+         !armor.quality.valid();
+}
+
+[[nodiscard]] L1Sensor::CameraCalibration cloneCalibration(
+  const L1Sensor::CameraCalibration& calibration)
+{
+  auto clone = calibration;
+  clone.camera_matrix = calibration.camera_matrix.clone();
+  clone.distortion_coefficients =
+    calibration.distortion_coefficients.clone();
+  return clone;
 }
 
 }  // namespace
 
 int main()
 {
-  const auto calibration = makeCalibration();
+  const auto camera_config =
+    YAML::LoadFile("tests/data/camera_calibration_inline.yaml");
+  const auto calibration = L1Sensor::loadCameraCalibration(
+    camera_config["calibration"], "PnP smoke config");
+
   L3Estimation::PnpSolver solver(calibration);
+  expect(solver.ready(), "PnpSolver rejected valid calibration");
 
-  // 把装甲板的 x 法向、y 向左、z 向上转换到相机的 x 右、y 下、z 向前。
-  const cv::Matx33d rotation{
-     0.0, -1.0,  0.0,
-     0.0,  0.0, -1.0,
-     1.0,  0.0,  0.0};
-  cv::Vec3d rvec;
-  cv::Rodrigues(rotation, rvec);
-  const cv::Vec3d expected_tvec{0.12, -0.04, 3.2};
+  auto intrinsic_only_node = YAML::Clone(camera_config["calibration"]);
+  intrinsic_only_node.remove("T_barrel_camera");
+  const auto intrinsic_only = L1Sensor::loadCameraCalibration(
+    intrinsic_only_node, "PnP intrinsic-only smoke config");
+  L3Estimation::PnpSolver solver_without_extrinsics(intrinsic_only);
+  expect(
+    !solver_without_extrinsics.ready(),
+    "PnpSolver accepted missing barrel extrinsics");
 
-  std::vector<cv::Point2f> projected;
-  cv::projectPoints(
-    smallArmorPoints(), rvec, expected_tvec,
-    calibration.camera_matrix, calibration.distortion_coefficients, projected);
+  L3Estimation::ArmorConfig invalid_config;
+  invalid_config.small_width = 0.0;
+  L3Estimation::PnpSolver solver_with_invalid_config(
+    calibration, invalid_config);
+  expect(
+    !solver_with_invalid_config.ready(),
+    "PnpSolver accepted invalid armor dimensions");
 
-  L2Perception::ArmorDetection detection;
-  std::copy(projected.begin(), projected.end(), detection.corners.begin());
-  const auto pose = solver.solve(detection, L3Estimation::ArmorSize::Small);
-  if (!pose) {
-    std::cerr << "PnpSolver failed on synthetic armor points\n";
+  // 基准姿态：局部 +X 大致指向相机 +Z，因此局部 -X 正面朝向相机。
+  const cv::Matx33d optical_alignment{
+    0.0, -1.0, 0.0,
+    0.0, 0.0, -1.0,
+    1.0, 0.0, 0.0};
+  const Eigen::Matrix3d R_camera_armor =
+    L6Telemetry::toEigen(optical_alignment) *
+    L6Telemetry::yprToRotation({0.16, -0.12, 0.08});
+  const cv::Matx33d R_camera_armor_cv = L6Telemetry::toCv(R_camera_armor);
+  const cv::Vec3d tvec{0.05, -0.03, 3.0};
+
+  const Eigen::Vector3d world_barrel_ypr{0.24, -0.09, 0.07};
+  const Eigen::Matrix3d R_world_barrel =
+    L6Telemetry::yprToRotation(world_barrel_ypr);
+  const Eigen::Quaterniond q_world_barrel(R_world_barrel);
+  solver.set_R_world_barrel(
+    std::optional<Eigen::Quaterniond>{q_world_barrel});
+
+  L3Estimation::Armor armor;
+  armor.class_id = static_cast<int>(L2Perception::ArmorClass::Infantry3);
+  armor.points = projectArmor(
+    calibration, kSmallWidth, R_camera_armor_cv, tvec);
+  solver.single_pnp(armor);
+
+  const Eigen::Vector3d expected_camera{tvec[0], tvec[1], tvec[2]};
+  const Eigen::Vector3d expected_barrel =
+    *calibration.T_barrel_camera * expected_camera;
+  const Eigen::Vector3d expected_world =
+    R_world_barrel * expected_barrel;
+  const Eigen::Matrix3d expected_world_rotation =
+    R_world_barrel * calibration.T_barrel_camera->linear() *
+    R_camera_armor;
+  const double camera_rotation_error =
+    (L6Telemetry::yprToRotation(armor.ypr_in_camera) - R_camera_armor)
+      .norm();
+  const Eigen::Vector3d expected_world_ypr =
+    L6Telemetry::eulers(expected_world_rotation, 2, 1, 0);
+  const double world_pitch_roll_error =
+    (armor.ypr_in_world.tail<2>() - expected_world_ypr.tail<2>()).norm();
+  const Eigen::Vector3d expected_ypd = L6Telemetry::xyz2ypd(expected_world);
+
+  expect(armor.quality.pnp_ok, "valid synthetic armor did not solve PnP");
+  expect(armor.quality.geometry_ok, "valid synthetic armor failed geometry checks");
+  expect(armor.quality.finite, "valid synthetic armor produced non-finite output");
+  expect(
+    armor.quality.reprojection_ok,
+    "near-zero synthetic reprojection failed its gate");
+  expect(
+    armor.quality.valid(),
+    "valid PnP observation did not pass the combined quality check");
+  expect(
+    armor.type == L3Estimation::ArmorType::Small,
+    "infantry armor did not use the small model");
+  expect(
+    (armor.xyz_in_camera - expected_camera).norm() < 1e-3,
+    "camera-frame translation is incorrect");
+  expect(
+    (armor.xyz_in_world - expected_world).norm() < 1e-3,
+    "camera/barrel/world translation chain is incorrect");
+  expect(camera_rotation_error < 1e-3, "camera-frame YPR is incorrect");
+  expect(
+    world_pitch_roll_error < 1e-3,
+    "world-frame pitch/roll changed during yaw optimization");
+  expect(
+    (armor.ypd_in_world - expected_ypd).norm() < 1e-3,
+    "world-frame yaw/pitch/distance is incorrect");
+  expect(
+    armor.reprojection_error < 1e-3,
+    "noise-free synthetic armor does not have near-zero pixel RMSE");
+
+  // Hero 独占大装甲尺寸；包括 BaseLarge 在内的其余合法 class_id 都用小装甲。
+  for (int class_id = static_cast<int>(L2Perception::ArmorClass::Guard);
+       class_id <= static_cast<int>(L2Perception::ArmorClass::BaseLarge);
+       ++class_id) {
+    const bool is_hero =
+      class_id == static_cast<int>(L2Perception::ArmorClass::Hero);
+    const double width = is_hero ? kBigWidth : kSmallWidth;
+    L3Estimation::Armor sized_armor;
+    sized_armor.class_id = class_id;
+    sized_armor.points = projectArmor(
+      calibration, width, R_camera_armor_cv, tvec);
+    solver.single_pnp(sized_armor);
+
+    expect(
+      sized_armor.quality.pnp_ok && sized_armor.quality.geometry_ok &&
+        sized_armor.quality.finite,
+      "a legal armor class did not produce a usable PnP result");
+    expect(
+      (sized_armor.xyz_in_camera - expected_camera).norm() < 1e-3,
+      "an armor class used the wrong physical width");
+    expect(
+      sized_armor.type == (is_hero ? L3Estimation::ArmorType::Big
+                                   : L3Estimation::ArmorType::Small),
+      "armor type classification disagrees with its class_id");
+  }
+
+  // 非对称微扰保证不能被一个理想矩形姿态完全解释。
+  L3Estimation::Armor noisy_armor;
+  noisy_armor.class_id =
+    static_cast<int>(L2Perception::ArmorClass::Infantry4);
+  noisy_armor.points = projectArmor(
+    calibration, kSmallWidth, R_camera_armor_cv, tvec);
+  const std::array<cv::Point2f, 4> noise{
+    cv::Point2f{0.45F, -0.20F},
+    cv::Point2f{-0.30F, 0.35F},
+    cv::Point2f{0.25F, 0.15F},
+    cv::Point2f{-0.40F, -0.25F}};
+  for (std::size_t index = 0; index < noisy_armor.points.size(); ++index) {
+    noisy_armor.points[index] += noise[index];
+  }
+  solver.single_pnp(noisy_armor);
+
+  const double manual_rmse = manualReprojectionRmse(calibration, noisy_armor);
+  expect(
+    noisy_armor.quality.pnp_ok && noisy_armor.quality.geometry_ok &&
+      noisy_armor.quality.finite,
+    "noisy armor did not retain a valid PnP pose");
+  expect(
+    noisy_armor.reprojection_error > 1e-3,
+    "corner noise unexpectedly produced zero reprojection error");
+  expect(
+    std::abs(noisy_armor.reprojection_error - manual_rmse) < 1e-8,
+    "reported reprojection error is not four-corner pixel RMSE");
+
+  L3Estimation::ArmorConfig strict_config;
+  strict_config.max_reprojection_error = 0.05;
+  L3Estimation::PnpSolver strict_solver(calibration, strict_config);
+  strict_solver.set_R_world_barrel(
+    std::optional<Eigen::Quaterniond>{q_world_barrel});
+  L3Estimation::Armor rejected_by_reprojection = noisy_armor;
+  strict_solver.single_pnp(rejected_by_reprojection);
+  expect(
+    rejected_by_reprojection.quality.pnp_ok &&
+      rejected_by_reprojection.quality.geometry_ok &&
+      rejected_by_reprojection.quality.finite,
+    "reprojection gate incorrectly discarded the PnP pose itself");
+  expect(
+    rejected_by_reprojection.reprojection_error >
+      strict_config.max_reprojection_error &&
+      !rejected_by_reprojection.quality.reprojection_ok,
+    "above-threshold corner perturbation passed reprojection gating");
+  expect(
+    !rejected_by_reprojection.quality.valid(),
+    "rejected reprojection was marked valid for EKF use");
+
+  // 当前与 SP-Vision 一致，solvePnP + IPPE 使用单解。
+  L3Estimation::Armor frontal_armor;
+  frontal_armor.class_id =
+    static_cast<int>(L2Perception::ArmorClass::Infantry5);
+  frontal_armor.points = projectArmor(
+    calibration, kSmallWidth, optical_alignment, tvec);
+  solver.single_pnp(frontal_armor);
+  expect(
+    frontal_armor.quality.pnp_ok && frontal_armor.quality.geometry_ok &&
+      frontal_armor.quality.reprojection_ok,
+    "near-frontal planar observation failed PnP");
+  // 失败路径都复用一个已有结果，验证不会泄漏上一帧状态。
+  L3Estimation::Armor nan_armor = frontal_armor;
+  nan_armor.points[1].x = std::numeric_limits<float>::quiet_NaN();
+  solver.single_pnp(nan_armor);
+  expect(outputsCleared(nan_armor), "NaN input retained previous PnP output");
+  expect(allQualityFlagsClear(nan_armor), "NaN input retained quality flags");
+
+  solver.set_R_world_barrel(std::nullopt);
+  L3Estimation::Armor missing_pose_armor = frontal_armor;
+  solver.single_pnp(missing_pose_armor);
+  expect(
+    outputsCleared(missing_pose_armor),
+    "missing image-time barrel pose retained previous PnP output");
+  expect(
+    allQualityFlagsClear(missing_pose_armor),
+    "missing image-time barrel pose retained quality flags");
+  solver.set_R_world_barrel(
+    std::optional<Eigen::Quaterniond>{q_world_barrel});
+
+  // 与 SP-Vision 一致，不使用正面方向作为拒绝门限。
+  const cv::Matx33d back_facing_rotation{
+    0.0, 1.0, 0.0,
+    0.0, 0.0, -1.0,
+    -1.0, 0.0, 0.0};
+  L3Estimation::Armor wrong_geometry_armor = frontal_armor;
+  wrong_geometry_armor.points = projectArmor(
+    calibration, kSmallWidth, back_facing_rotation, tvec);
+  solver.single_pnp(wrong_geometry_armor);
+  expect(
+    wrong_geometry_armor.quality.pnp_ok,
+    "back-facing test geometry did not reach pose validation");
+  expect(
+    wrong_geometry_armor.quality.geometry_ok &&
+      wrong_geometry_armor.quality.finite &&
+      wrong_geometry_armor.quality.reprojection_ok,
+    "SP-compatible solvePnP rejected a finite back-facing pose");
+
+  auto invalid_calibration = cloneCalibration(calibration);
+  invalid_calibration.camera_matrix.at<double>(0, 0) =
+    std::numeric_limits<double>::quiet_NaN();
+  L3Estimation::PnpSolver invalid_calibration_solver(invalid_calibration);
+  expect(
+    !invalid_calibration_solver.ready(),
+    "PnpSolver accepted non-finite camera calibration");
+  invalid_calibration_solver.set_R_world_barrel(
+    std::optional<Eigen::Quaterniond>{q_world_barrel});
+  L3Estimation::Armor invalid_calibration_armor = frontal_armor;
+  invalid_calibration_solver.single_pnp(invalid_calibration_armor);
+  expect(
+    outputsCleared(invalid_calibration_armor),
+    "invalid calibration retained previous PnP output");
+  expect(
+    allQualityFlagsClear(invalid_calibration_armor),
+    "invalid calibration retained quality flags");
+
+  L3Estimation::Armor invalid_class_armor = frontal_armor;
+  invalid_class_armor.class_id = -1;
+  solver.single_pnp(invalid_class_armor);
+  expect(
+    outputsCleared(invalid_class_armor) &&
+      allQualityFlagsClear(invalid_class_armor),
+    "invalid class_id retained previous PnP state");
+
+  if (failure_count != 0) {
+    std::cerr << failure_count << " PnpSolver smoke assertion(s) failed\n";
     return 1;
-  }
-
-  if (cv::norm(pose->tvec - expected_tvec) > 1e-4) {
-    std::cerr << "PnpSolver recovered an inaccurate translation: "
-              << pose->tvec << '\n';
-    return 2;
-  }
-
-  L2Perception::ArmorDetection degenerate;
-  degenerate.corners = {{{10.0F, 10.0F}, {20.0F, 10.0F},
-                         {30.0F, 10.0F}, {40.0F, 10.0F}}};
-  if (solver.solve(degenerate, L3Estimation::ArmorSize::Small)) {
-    std::cerr << "PnpSolver accepted degenerate collinear corners\n";
-    return 3;
   }
 
   std::cout << "PnpSolver smoke test passed\n";

@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include <opencv2/dnn/dnn.hpp>
+
 namespace L2Perception
 {
 namespace
@@ -15,8 +17,8 @@ namespace
 struct DecodedCandidate
 {
   Armor detection;
-  cv::Rect2f bounds;
-  // 使用类别最大分数做 NMS 的排序和二次阈值过滤，保留该值以复现模型原行为。
+  cv::Rect bounds;
+  // SP 默认保存 objectness；显式兼容其他模型时也可保存类别最大分数。
   float nms_score{0.0F};
 };
 
@@ -31,30 +33,7 @@ struct DecodedCandidate
   return exp_value / (1.0F + exp_value);
 }
 
-[[nodiscard]] std::array<cv::Point2f, 4> sortCorners(std::array<cv::Point2f, 4> corners)
-{
-  // 模型不一定保证角点顺序。先按相对中心的角度环绕排序，再旋转到左上角起点。
-  // 对图像 y 向下的坐标系，结果为左上、右上、右下、左下，满足 PnP 约定。
-  cv::Point2f center{};
-  for (const auto& corner : corners) {
-    center += corner;
-  }
-  center *= 0.25F;
-
-  std::sort(corners.begin(), corners.end(), [&center](const cv::Point2f& left, const cv::Point2f& right) {
-    const float left_angle = std::atan2(left.y - center.y, left.x - center.x);
-    const float right_angle = std::atan2(right.y - center.y, right.x - center.x);
-    return left_angle < right_angle;
-  });
-
-  const auto top_left = std::min_element(corners.begin(), corners.end(), [](const cv::Point2f& left, const cv::Point2f& right) {
-    return left.x + left.y < right.x + right.y;
-  });
-  std::rotate(corners.begin(), top_left, corners.end());
-  return corners;
-}
-
-[[nodiscard]] cv::Rect2f boundsOf(const std::array<cv::Point2f, 4>& corners)
+[[nodiscard]] cv::Rect boundsOf(const std::array<cv::Point2f, 4>& corners)
 {
   float min_x = std::numeric_limits<float>::max();
   float min_y = std::numeric_limits<float>::max();
@@ -66,10 +45,12 @@ struct DecodedCandidate
     max_x = std::max(max_x, corner.x);
     max_y = std::max(max_y, corner.y);
   }
-  return {min_x, min_y, max_x - min_x, max_y - min_y};
+  // SP-Vision 将浮点关键点直接构造成 cv::Rect，坐标和尺寸在此截断为整数。
+  return {static_cast<int>(min_x), static_cast<int>(min_y), static_cast<int>(max_x - min_x),
+          static_cast<int>(max_y - min_y)};
 }
 
-[[nodiscard]] float iou(const cv::Rect2f& first, const cv::Rect2f& second) noexcept
+[[nodiscard]] float iou(const cv::Rect& first, const cv::Rect& second) noexcept
 {
   const float intersection = (first & second).area();
   const float union_area = first.area() + second.area() - intersection;
@@ -85,25 +66,32 @@ struct DecodedCandidate
 
 }  // namespace
 
-ArmorDecoder::ArmorDecoder(ArmorDecoderConfig config)
-  : config_(std::move(config))
+ArmorDecoder::ArmorDecoder(ArmorDecoderConfig config) : config_(std::move(config))
 {
+  std::array<bool, 4> used{};
+  for (const std::size_t corner_index : config_.corner_order) {
+    if (corner_index >= used.size() || used[corner_index]) {
+      throw std::invalid_argument("ArmorDecoder corner_order must be a permutation of 0, 1, 2, 3");
+    }
+    used[corner_index] = true;
+  }
 }
 
-std::vector<Armor> ArmorDecoder::decode(
-  const InferenceResult& result,
-  const ImageTransform& transform) const
+std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
+                                        const ImageTransform& transform) const
 {
   const InferenceTensor* output = nullptr;
   if (config_.output_name.empty()) {
     if (result.outputs.size() != 1) {
-      throw std::invalid_argument("ArmorDecoder requires output_name when a model has multiple outputs");
+      throw std::invalid_argument("ArmorDecoder requires output_name when a "
+                                  "model has multiple outputs");
     }
     output = &result.outputs.front();
   } else {
     output = result.findOutput(config_.output_name);
     if (output == nullptr) {
-      throw std::invalid_argument("ArmorDecoder could not find configured model output: " + config_.output_name);
+      throw std::invalid_argument("ArmorDecoder could not find configured model output: " +
+                                  config_.output_name);
     }
   }
 
@@ -120,16 +108,14 @@ std::vector<Armor> ArmorDecoder::decode(
 
   const std::size_t shape_offset = output->shape.size() == 3 ? 1 : 0;
   const std::size_t candidate_count = config_.tensor_layout == ArmorTensorLayout::CandidatesByFields
-                                      ? output->shape[shape_offset]
-                                      : output->shape[shape_offset + 1];
+                                          ? output->shape[shape_offset]
+                                          : output->shape[shape_offset + 1];
   const std::size_t field_count = config_.tensor_layout == ArmorTensorLayout::CandidatesByFields
-                                  ? output->shape[shape_offset + 1]
-                                  : output->shape[shape_offset];
-  const std::size_t required_fields = std::max({
-    config_.corner_offset + 8,
-    config_.confidence_index + 1,
-    config_.color_offset + config_.color_count,
-    config_.class_offset + config_.class_count});
+                                      ? output->shape[shape_offset + 1]
+                                      : output->shape[shape_offset];
+  const std::size_t required_fields = std::max(
+      {config_.corner_offset + 8, config_.confidence_index + 1,
+       config_.color_offset + config_.color_count, config_.class_offset + config_.class_count});
   if (field_count < required_fields) {
     throw std::invalid_argument("ArmorDecoder configuration exceeds the model output field count");
   }
@@ -155,34 +141,37 @@ std::vector<Armor> ArmorDecoder::decode(
       continue;
     }
 
-    std::array<cv::Point2f, 4> model_corners{};
-    for (std::size_t corner = 0; corner < model_corners.size(); ++corner) {
+    std::array<cv::Point2f, 4> raw_model_corners{};
+    for (std::size_t corner = 0; corner < raw_model_corners.size(); ++corner) {
       float x = valueAt(candidate, config_.corner_offset + corner * 2);
       float y = valueAt(candidate, config_.corner_offset + corner * 2 + 1);
       if (config_.coordinates_are_normalized) {
         x *= static_cast<float>(transform.model_size.width);
         y *= static_cast<float>(transform.model_size.height);
       }
-      model_corners[corner] = {x, y};
+      raw_model_corners[corner] = {x, y};
     }
-    if (!finiteCorners(model_corners)) {
+    if (!finiteCorners(raw_model_corners)) {
       continue;
     }
 
     Armor detection;
-    // 先在模型坐标排序，再通过同帧 letterbox 变换还原到原图坐标。
-    detection.corners = sortCorners(model_corners);
-    for (auto& corner : detection.corners) {
-      corner = transform.modelToSource(corner);
+    // SP-Vision 明确按 0、3、2、1 重排模型点。这里不再按几何位置重新排序，
+    // 避免强透视或异常点让角点身份发生跳变。
+    for (std::size_t corner = 0; corner < detection.corners.size(); ++corner) {
+      detection.corners[corner] =
+          transform.modelToSource(raw_model_corners[config_.corner_order[corner]]);
+      detection.center += detection.corners[corner];
     }
+    detection.center = detection.center * 0.25F;
     detection.confidence = confidence;
 
     // 颜色/类别一般是 logits；比较大小求 argmax 无需先做 softmax。
     if (config_.color_count > 0) {
       std::size_t best_color = 0;
       for (std::size_t color = 1; color < config_.color_count; ++color) {
-        if (valueAt(candidate, config_.color_offset + color)
-            > valueAt(candidate, config_.color_offset + best_color)) {
+        if (valueAt(candidate, config_.color_offset + color) >
+            valueAt(candidate, config_.color_offset + best_color)) {
           best_color = color;
         }
       }
@@ -197,8 +186,8 @@ std::vector<Armor> ArmorDecoder::decode(
     if (config_.class_count > 0) {
       std::size_t best_class = 0;
       for (std::size_t class_index = 1; class_index < config_.class_count; ++class_index) {
-        if (valueAt(candidate, config_.class_offset + class_index)
-            > valueAt(candidate, config_.class_offset + best_class)) {
+        if (valueAt(candidate, config_.class_offset + class_index) >
+            valueAt(candidate, config_.class_offset + best_class)) {
           best_class = class_index;
         }
       }
@@ -206,42 +195,72 @@ std::vector<Armor> ArmorDecoder::decode(
       best_class_score = valueAt(candidate, config_.class_offset + best_class);
     }
 
-    // NMSBoxes 不是按 objectness 排序，而是按最大类别分数排序；
-    // 同时类别分数低于 0.65 的候选会被 NMSBoxes 丢弃。这里显式复现该行为。
-    const float nms_score = config_.nms_score_source == ArmorNmsScoreSource::ClassScore
-                              ? best_class_score
-                              : confidence;
+    // SP-Vision 默认以 sigmoid(objectness) 作为 NMS 分数。仍保留 ClassScore
+    // 配置项，便于显式兼容其他同形状模型，但它不再是默认行为。
+    const float nms_score =
+        config_.nms_score_source == ArmorNmsScoreSource::ClassScore ? best_class_score : confidence;
     if (!std::isfinite(nms_score) || nms_score < config_.nms_score_threshold) {
       continue;
     }
 
-    const cv::Rect2f bounds = boundsOf(detection.corners);
+    const cv::Rect bounds = boundsOf(detection.corners);
     if (bounds.width <= 0.0F || bounds.height <= 0.0F) {
       continue;
     }
     candidates.push_back({.detection = detection, .bounds = bounds, .nms_score = nms_score});
   }
 
-  // 贪心 NMS：高置信度框优先保留，后续高度重叠候选被抑制。
-  std::sort(candidates.begin(), candidates.end(), [](const DecodedCandidate& left, const DecodedCandidate& right) {
-    return left.nms_score > right.nms_score;
-  });
+  std::vector<const DecodedCandidate*> kept_candidates;
+  if (!config_.class_aware_nms) {
+    // 默认路径直接调用与 SP-Vision 相同的 OpenCV NMSBoxes。
+    std::vector<cv::Rect> boxes;
+    std::vector<float> scores;
+    boxes.reserve(candidates.size());
+    scores.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+      boxes.push_back(candidate.bounds);
+      scores.push_back(candidate.nms_score);
+    }
 
-  std::vector<Armor> detections;
-  for (const auto& candidate : candidates) {
-    bool suppressed = false;
-    for (const auto& kept : detections) {
-      if (config_.class_aware_nms
-          && (candidate.detection.class_id != kept.class_id || candidate.detection.color != kept.color)) {
-        continue;
+    std::vector<int> kept_indices;
+    cv::dnn::NMSBoxes(boxes, scores, config_.nms_score_threshold, config_.nms_iou_threshold,
+                      kept_indices);
+    kept_candidates.reserve(kept_indices.size());
+    for (const int index : kept_indices) {
+      kept_candidates.push_back(&candidates[static_cast<std::size_t>(index)]);
+    }
+  } else {
+    // 非默认兼容路径：不同颜色/类别分别进行贪心 NMS。
+    std::sort(candidates.begin(), candidates.end(),
+              [](const DecodedCandidate& left, const DecodedCandidate& right) {
+                return left.nms_score > right.nms_score;
+              });
+
+    for (const auto& candidate : candidates) {
+      bool suppressed = false;
+      for (const auto* kept : kept_candidates) {
+        if (candidate.detection.class_id != kept->detection.class_id ||
+            candidate.detection.color != kept->detection.color) {
+          continue;
+        }
+        if (iou(candidate.bounds, kept->bounds) > config_.nms_iou_threshold) {
+          suppressed = true;
+          break;
+        }
       }
-      if (iou(candidate.bounds, boundsOf(kept.corners)) > config_.nms_iou_threshold) {
-        suppressed = true;
-        break;
+      if (!suppressed) {
+        kept_candidates.push_back(&candidate);
       }
     }
-    if (!suppressed) {
-      detections.push_back(candidate.detection);
+  }
+
+  // 先完整执行 NMS，再应用 SP demo 的 min_confidence (> 0.8)。这个顺序与
+  // YOLOV5::parse() -> check_name() 一致。
+  std::vector<Armor> detections;
+  detections.reserve(kept_candidates.size());
+  for (const auto* candidate : kept_candidates) {
+    if (candidate->detection.confidence > config_.minimum_confidence) {
+      detections.push_back(candidate->detection);
     }
   }
   return detections;

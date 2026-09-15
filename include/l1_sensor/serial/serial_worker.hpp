@@ -64,10 +64,15 @@ public:
   std::uint64_t failedCommandCount() const;
 
   // 根据图像时间戳查询云台姿态；内部会在历史 RPY 中找前后两帧并 slerp。
+  // 返回的姿态已经是 barrel -> world，可直接交给 L3，无需再补轴向转换。
   std::optional<Eigen::Quaterniond> gimbalPoseAt(
     std::chrono::steady_clock::time_point timestamp) const;
 
 private:
+  // 把下位机 IMU 约定下的姿态按 config_.R_imu_barrel 转换到 barrel 约定。
+  Eigen::Quaterniond toBarrelPose(
+    const Eigen::Quaterniond& q_world_imu) const;
+
   // 确保串口处于打开状态；断开后会尝试重新打开。
   bool ensureOpen();
 
