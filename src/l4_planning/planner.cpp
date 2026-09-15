@@ -308,13 +308,13 @@ AimPlan Planner::plan(
       return ballistic_solver.solve(request);
   };
   std::vector<ArmorCandidate> candidates;
-  candidates.reserve(4);
+  candidates.reserve(static_cast<std::size_t>(target_state.armor_count));
 
   // 与 calculateShootingParameters 相同，这里使用固定点迭代：
   //   旧飞行时间 -> 命中时刻的装甲板位置 -> 新飞行时间。
   // 区别是对四块装甲板分别迭代，并同时检查飞行时间和位置（或角度）
   // 的收敛性，未收敛的候选不会进入最终选择。
-  for (int armor_id = 0; armor_id < 4; ++armor_id) {
+  for (int armor_id = 0; armor_id < target_state.armor_count; ++armor_id) {
     ArmorCandidate candidate;
     // current_fly_time 是固定点变量：本轮用它预测位置，再得到下一轮值。
     double current_fly_time = 0.0;

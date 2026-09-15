@@ -1,6 +1,6 @@
 #include "l1_sensor/serial/robot_state.hpp"
-#include "l3_estimation/types.hpp"
 #include "l4_planning/planner.hpp"
+#include "l4_planning/predictor.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -36,6 +36,27 @@ L3Estimation::TargetState makeTarget(
 int main()
 {
   using namespace std::chrono_literals;
+
+  // Normal vehicles keep the original four-armor model. Outpost uses three
+  // equally spaced armors and two independent height offsets from L3.
+  L3Estimation::TargetState outpost = makeTarget(
+    L4Planning::TimePoint{1s}, 0.0);
+  outpost.robot_id = 6;
+  outpost.armor_count = 3;
+  outpost.three_armor_height_offsets = {0.0, 0.03, -0.02};
+  const L4Planning::PredictionResult outpost_prediction =
+    L4Planning::Predictor{}.predict({outpost, outpost.timestamp});
+  if (!outpost_prediction.valid ||
+      outpost_prediction.armor_candidates.size() != 3 ||
+      std::abs(outpost_prediction.armor_candidates[1].yaw_world -
+        2.0 * kPi / 3.0) > 1e-12 ||
+      std::abs(outpost_prediction.armor_candidates[1].position_world.z() -
+        0.03) > 1e-12 ||
+      std::abs(outpost_prediction.armor_candidates[2].position_world.z() +
+        0.02) > 1e-12) {
+    std::cerr << "outpost must expand exactly three armor plates\n";
+    return 10;
+  }
 
   L4Planning::Planner planner;
   L4Planning::PlannerContext context;

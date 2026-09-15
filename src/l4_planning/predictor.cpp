@@ -3,6 +3,7 @@
 #include "l3_estimation/target_state.hpp"
 #include "l4_planning/types.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
@@ -10,7 +11,6 @@ namespace L4Planning {
 
 namespace {
 
-constexpr int kArmorCount = 4;
 constexpr double kPi = 3.14159265358979323846;
 
 // 将角度限制到 (-pi, pi]，避免装甲板跨越 ±pi 时出现跳变。
@@ -24,7 +24,14 @@ constexpr double kPi = 3.14159265358979323846;
 [[nodiscard]] bool validTargetState(const L3Estimation::TargetState& target) noexcept
 {
   const double second_radius = target.radius + target.radius_offset;
+  const bool armor_count_valid =
+    target.armor_count == 3 || target.armor_count == 4;
+  const bool heights_valid = std::all_of(
+    target.three_armor_height_offsets.begin(),
+    target.three_armor_height_offsets.end(),
+    [](double value) { return std::isfinite(value); });
   return target.robot_id >= 0
+         && armor_count_valid
          && target.center.allFinite()
          && target.velocity.allFinite()
          && std::isfinite(target.yaw)
@@ -33,15 +40,16 @@ constexpr double kPi = 3.14159265358979323846;
          && std::isfinite(target.radius_offset)
          && std::isfinite(target.height_offset)
          && target.radius > 0.0
-         && second_radius > 0.0
+         && (target.armor_count != 4 || second_radius > 0.0)
+         && heights_valid
          && target.covariance.allFinite();
 }
 
 // 根据 Fosu 识别类别确定整车使用的大/小装甲板类型。后期考虑大小装甲板走不同的锁定条件，暂时保留
 [[nodiscard]] ArmorType armorTypeForRobot(int robot_id) noexcept
 {
-  // Fosu 类别编号中 1 为英雄大装甲，8 为基地大装甲，其余车辆使用小装甲。
-  return robot_id == 1 || robot_id == 8
+  // The merged L3 geometry maps only Hero (class 1) to a physical big plate.
+  return robot_id == 1
            ? ArmorType::Large
            : ArmorType::Small;
 }
@@ -99,27 +107,35 @@ PredictionResult Predictor::predict(const PredictionRequest& request) const
     return result;
   }
 
-  result.armor_candidates.reserve(kArmorCount);
-  for (int armor_id = 0; armor_id < kArmorCount; ++armor_id) {
+  result.armor_candidates.reserve(
+    static_cast<std::size_t>(result.predicted_vehicle.armor_count));
+  for (int armor_id = 0;
+       armor_id < result.predicted_vehicle.armor_count;
+       ++armor_id) {
     // 四装甲模型中 0/2 与 1/3 分别使用两组半径和高度。
-    const bool second_group = armor_id % 2 != 0;
+    const bool second_group =
+      result.predicted_vehicle.armor_count == 4 && armor_id % 2 != 0;
     const double radius =
       result.predicted_vehicle.radius
       + (second_group ? result.predicted_vehicle.radius_offset : 0.0);
     const double armor_yaw = normalizeAngle(
       result.predicted_vehicle.yaw
-      + static_cast<double>(armor_id) * kPi / 2.0);
+      + static_cast<double>(armor_id) * 2.0 * kPi /
+          static_cast<double>(result.predicted_vehicle.armor_count));
 
     ArmorPose armor;
     armor.robot_id = result.predicted_vehicle.robot_id;
     armor.armor_id = armor_id;
     armor.armor_type = armorTypeForRobot(armor.robot_id);
     // L3 的 yaw 指向“装甲板到车辆中心”，因此装甲板位置为 center-r*n。
+    const double height_offset = result.predicted_vehicle.armor_count == 3
+      ? result.predicted_vehicle.three_armor_height_offsets[
+          static_cast<std::size_t>(armor_id)]
+      : (second_group ? result.predicted_vehicle.height_offset : 0.0);
     armor.position_world = {
       result.predicted_vehicle.center.x() - radius * std::cos(armor_yaw),
       result.predicted_vehicle.center.y() - radius * std::sin(armor_yaw),
-      result.predicted_vehicle.center.z()
-        + (second_group ? result.predicted_vehicle.height_offset : 0.0)};
+      result.predicted_vehicle.center.z() + height_offset};
 
     // 对 center-r*[cos(yaw), sin(yaw)] 求导，得到旋转产生的切向速度。
     armor.velocity_world = result.predicted_vehicle.velocity;
@@ -134,7 +150,8 @@ PredictionResult Predictor::predict(const PredictionRequest& request) const
     result.armor_candidates.push_back(armor);
   }
 
-  result.valid = result.armor_candidates.size() == kArmorCount;
+  result.valid = result.armor_candidates.size() ==
+    static_cast<std::size_t>(result.predicted_vehicle.armor_count);
   for (const auto& armor : result.armor_candidates) {
     result.valid = result.valid && armor.valid;
   }

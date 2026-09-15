@@ -19,6 +19,7 @@ std::optional<L3Estimation::TargetState> toL4TargetState(
 
   L3Estimation::TargetState snapshot;
   snapshot.robot_id = static_cast<int>(target->name);
+  snapshot.armor_count = target->armor_num();
   snapshot.center = {
     state[L3Estimation::XC],
     state[L3Estimation::YC],
@@ -32,11 +33,19 @@ std::optional<L3Estimation::TargetState> toL4TargetState(
   snapshot.radius = state[L3Estimation::RADIUS];
   snapshot.radius_offset = state[L3Estimation::RADIUS_OFFSET];
   snapshot.height_offset = state[L3Estimation::HEIGHT_OFFSET];
+  if (snapshot.armor_count == 3) {
+    if (state.size() < L3Estimation::TrackedTarget::kStateSize) {
+      return std::nullopt;
+    }
+    snapshot.three_armor_height_offsets = {0.0, state[11], state[12]};
+  }
   snapshot.covariance = covariance.topLeftCorner<
     L3Estimation::STATE_DIM, L3Estimation::STATE_DIM>();
   snapshot.timestamp = target->t();
 
-  if (snapshot.robot_id < 0 || !snapshot.center.allFinite() ||
+  if (snapshot.robot_id < 0 ||
+      (snapshot.armor_count != 3 && snapshot.armor_count != 4) ||
+      !snapshot.center.allFinite() ||
       !snapshot.velocity.allFinite() || !snapshot.covariance.allFinite()) {
     return std::nullopt;
   }
