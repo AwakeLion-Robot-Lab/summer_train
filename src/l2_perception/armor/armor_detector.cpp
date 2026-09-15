@@ -26,7 +26,7 @@ ArmorDetector::ArmorDetector(
   if (!classifier_.ready()) {
     throw std::invalid_argument("ArmorDetector: number classifier is not loaded");
   }
-  LightDecoder::validateOutputs(probeOutputSpecs(*backend_));
+  LightDecoder::validate(probeOutputSpecs(*backend_));
 }
 
 bool ArmorDetector::ready() const noexcept
@@ -40,7 +40,7 @@ std::vector<Armor> ArmorDetector::detect(const cv::Mat& image) const
   return detectFrame(image).armors;
 }
 
-double ArmorDetector::networkAspectRatio() const noexcept
+double ArmorDetector::net_aspect_ratio() const noexcept
 {
   if (!backend_) {
     return 1.0;

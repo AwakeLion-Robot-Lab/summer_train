@@ -9,9 +9,9 @@
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l1_sensor/serial/serial_config.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
-#include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/pnp_solver.hpp"
+#include "runtime/armor_detector_factory.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "l4_planning/armor/planner.hpp"
 #include "l5_control/controller.hpp"
@@ -76,7 +76,7 @@ constexpr double kCostStepDegrees = 0.5;
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
-  "{model m | model/light_model/best.onnx | OpenVINO 灯条关键点模型}"
+  "{model m |  | 灯条关键点模型，留空用 auto_aim.yaml 的}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
   "{convention | imu | 录像四元数约定：imu / sp}"
@@ -277,20 +277,20 @@ public:
     return std::nullopt;
   }
 
-  std::optional<cv::Rect> lightDetectionRoi(
+  std::optional<cv::Rect> lightRoi(
     const std::optional<Eigen::Quaterniond>& q_world_barrel,
     L3Estimation::TimePoint timestamp, const cv::Size& image_size) const
   {
-    return tracker_.lightDetectionRoi(q_world_barrel, timestamp, image_size);
+    return tracker_.lightRoi(q_world_barrel, timestamp, image_size);
   }
 
   // 本帧关联到的板数与编号。关联在编号间来回跳会让整车 yaw 每帧偏 2π/N。
   int lastMatchCount() const noexcept { return tracker_.lastMatchCount(); }
   std::string lastMatchedIdsString() const { return tracker_.lastMatchedIds(); }
 
-  const std::vector<L3Estimation::UvlUpdateLight>& lastUvlUpdateLights() const noexcept
+  const std::vector<L3Estimation::UvlUpdateLight>& uvlLights() const noexcept
   {
-    return tracker_.lastUvlUpdateLights();
+    return tracker_.uvlLights();
   }
 
   // 送给网络的 ROI：整车先验驱动的显式空间注意力。
@@ -308,9 +308,9 @@ public:
     return tracker_.observations();
   }
 
-  std::vector<Eigen::Vector4d> targetArmorPoses() const
+  std::vector<Eigen::Vector4d> armorPoses() const
   {
-    return tracker_.targetArmorPoses();
+    return tracker_.armorPoses();
   }
 
   L3Estimation::TrackState state() const noexcept { return tracker_.state(); }
@@ -1105,21 +1105,15 @@ int main(int argc, char** argv)
 
     // L2/L3/L4 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
     // YAML 里调噪声或灯条门限，这里根本看不出变化。
-    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
+    const auto runtime_config = runtime::loadConfig("config/auto_aim.yaml");
 
-    auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
-    // 颜色顺序、归一化和后端调度都沿用 auto_aim.yaml，只有模型路径和设备
-    // 允许命令行覆盖，方便对比 FP32 / INT8 或 CPU / GPU。
-    L2Perception::InferenceModelConfig model_config = runtime_config.inference;
-    model_config.model_path = cli.get<std::string>("model");
-    model_config.device = cli.get<std::string>("device");
-    backend->load(model_config);
-    require(backend->ready(), "OpenVINO 后端未就绪");
-    L2Perception::NumberClassifier classifier;
-    classifier.load(runtime_config.number_classifier);
-    L2Perception::ArmorDetector detector(
-      std::move(backend), std::move(classifier), runtime_config.light_decoder,
-      runtime_config.light_matcher);
+    // 检测器与实机同一个工厂组装，只有模型路径和设备允许命令行覆盖。
+    runtime::AutoAimConfig detector_config = runtime_config;
+    if (const std::string model = cli.get<std::string>("model"); !model.empty()) {
+      detector_config.inference.model_path = model;
+    }
+    detector_config.inference.device = cli.get<std::string>("device");
+    const L2Perception::ArmorDetector detector = runtime::makeDetector(detector_config);
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
@@ -1229,12 +1223,12 @@ int main(int argc, char** argv)
 
       /// 自瞄核心逻辑
 
-      const std::optional<cv::Rect> light_roi = tracker.lightDetectionRoi(
+      const std::optional<cv::Rect> light_roi = tracker.lightRoi(
         q_world_barrel, timestamp, img.size());
       // 整车先验驱动的显式空间注意力：ROI 已按网络输入宽高比修正并扩成方形，
       // 远距小目标裁剪后再 resize 相当于局部放大。目标丢失时它自动退化为整图。
       const cv::Rect net_roi = tracker.netFocusRoi(
-        q_world_barrel, timestamp, img.size(), detector.networkAspectRatio());
+        q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio());
       L2Perception::ArmorFrame detection_frame =
         detector.detectFrame(img, light_roi, net_roi, enemy_color);
       const std::vector<L2Perception::Armor> recognized_armors =
@@ -1250,10 +1244,10 @@ int main(int argc, char** argv)
       solver.set_R_world_barrel(q_world_barrel);
       const auto target = tracker.track(
         armors, detection_frame.lights, q_world_barrel, timestamp);
-      const auto& uvl_update_lights = tracker.lastUvlUpdateLights();
+      const auto& uvl_update_lights = tracker.uvlLights();
       const cv::Mat uvl_update_panel = makeUvlUpdatePanel(
         img, uvl_update_lights, detection_frame.lights.size());
-      const auto target_armor_poses = tracker.targetArmorPoses();
+      const auto target_armor_poses = tracker.armorPoses();
       const std::optional<FilterEstimate> filter_estimate = target
         ? std::optional<FilterEstimate>{target->estimate()}
         : std::nullopt;
@@ -1267,7 +1261,7 @@ int main(int argc, char** argv)
         diagnostic_pnp_observations.reserve(armors.size());
         for (const auto& armor : armors) {
           diagnostic_pnp_observations.push_back(
-            L3Estimation::toArmorObservation(armor, timestamp));
+            L3Estimation::toObservation(armor, timestamp));
           solver.single_pnp(diagnostic_pnp_observations.back());
         }
       }

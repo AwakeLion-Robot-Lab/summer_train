@@ -6,7 +6,7 @@
 // track_diag 回答「这些观测喂给整车滤波器之后怎么样」。
 
 #include "l2_perception/armor/armor_detector.hpp"
-#include "l2_perception/inference/backends/openvino_backend.hpp"
+#include "runtime/armor_detector_factory.hpp"
 #include "runtime/auto_aim_config.hpp"
 
 #include <opencv2/core.hpp>
@@ -83,7 +83,7 @@ std::string percent(long long part, long long total)
 }
 
 // 右上角排开每个配对送进 MLP 的数字图，绿框通过、灰框被拒。
-void drawNumberStrip(
+void drawNumbers(
   cv::Mat& image, const std::vector<ArmorCandidate>& candidates,
   const L2Perception::NumberClassifier& classifier)
 {
@@ -158,7 +158,7 @@ void draw(cv::Mat& image, const std::vector<Light>& lights,
     }
   }
 
-  drawNumberStrip(image, candidates, classifier);
+  drawNumbers(image, candidates, classifier);
 }
 
 }  // namespace
@@ -193,24 +193,16 @@ int main(int argc, char** argv)
     }
     require(std::filesystem::exists(input), "找不到录像 " + input.string());
 
-    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
-    L2Perception::InferenceModelConfig model_config = runtime_config.inference;
+    // 检测器与实机同一个工厂组装，只有模型路径和设备允许命令行覆盖。
+    runtime::AutoAimConfig config = runtime::loadConfig("config/auto_aim.yaml");
     const std::string model_override = cli.get<cv::String>("model");
     if (!model_override.empty()) {
-      model_config.model_path = model_override;
+      config.inference.model_path = model_override;
     }
-    model_config.device = cli.get<cv::String>("device");
-
-    auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
-    backend->load(model_config);
-    require(backend->ready(), "OpenVinoBackend 未就绪");
-    L2Perception::NumberClassifier classifier;
-    classifier.load(runtime_config.number_classifier);
-    const L2Perception::ArmorDetector detector(
-      std::move(backend), std::move(classifier), runtime_config.light_decoder,
-      runtime_config.light_matcher);
-    std::cout << "灯条模型 " << model_config.model_path << "  数字模型 "
-              << runtime_config.number_classifier.model_path << '\n';
+    config.inference.device = cli.get<cv::String>("device");
+    const L2Perception::ArmorDetector detector = runtime::makeDetector(config);
+    std::cout << "灯条模型 " << config.inference.model_path << "  数字模型 "
+              << config.number_classifier.model_path << '\n';
 
     const ArmorColor enemy_color = parseEnemyColor(cli.get<cv::String>("enemy"));
     const int start_index = cli.get<int>("start-index");
@@ -282,7 +274,7 @@ int main(int argc, char** argv)
         ++verdict_counts[candidate.number.verdict];
         if (candidate.number.verdict == NumberVerdict::Accepted) {
           const std::string& label =
-            detector.numberClassifier().label(candidate.number.label_index);
+            detector.classifier().label(candidate.number.label_index);
           ++accepted_labels[label];
           frame_labels += (frame_labels.empty() ? "" : " ") + label;
         }
@@ -299,7 +291,7 @@ int main(int argc, char** argv)
 
       if (!headless || !save_dir.empty()) {
         cv::Mat canvas = frame.clone();
-        draw(canvas, lights, candidates, detector.numberClassifier(),
+        draw(canvas, lights, candidates, detector.classifier(),
              cv::format("frame %d | %zu lights | %zu pairs, %zu armors | %.1f ms", frame_index,
                         lights.size(), candidates.size(), perception.armors.size(), l2_ms));
         if (!save_dir.empty()) {

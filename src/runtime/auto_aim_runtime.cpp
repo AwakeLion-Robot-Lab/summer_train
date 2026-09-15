@@ -10,6 +10,7 @@
 #include "l5_control/controller.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/logger.hpp"
+#include "runtime/armor_detector_factory.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include <opencv2/opencv.hpp>
 
@@ -50,35 +51,15 @@ constexpr bool isEnemyArmor(
          observed == enemyArmorColor(expected);
 }
 
-L2Perception::ArmorDetector makeArmorDetector(
-  const runtime::AutoAimConfig& config)
+L2Perception::ArmorDetector loadDetector(const runtime::AutoAimConfig& config)
 {
   try {
-    auto backend = L2Perception::makeInferenceBackend(config.inference_backend);
-    // 模型路径、设备、颜色顺序、归一化以及后端调度参数全部来自 auto_aim.yaml
-    // 的 inference 节点，loadAutoAimConfig 已经把 model_path/device 回填进去。
-    // 宿主输入恒为 uint8 NHWC BGR；颜色和归一化转换由具体后端完成。
-    const L2Perception::InferenceModelConfig& model_config = config.inference;
-    backend->load(model_config);
-
-    L2Perception::NumberClassifier classifier;
-    classifier.load(config.number_classifier);
-
-    L6Telemetry::logInfo(
-      "light model loaded",
-      std::string{L2Perception::inferenceBackendName(config.inference_backend)},
-      config.model_path.string(), model_config.device,
-      config.number_classifier.model_path.string());
-    // 预处理保持默认（letterbox 左上贴齐、纯黑填充，与 light_model_test 验证时一致）。
-    // ArmorDetector 构造时会核对灯条模型的输出形状，不符直接抛到下面的 catch。
-    return L2Perception::ArmorDetector(
-      std::move(backend), std::move(classifier), config.light_decoder,
-      config.light_matcher);
+    return runtime::makeDetector(config);
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
     L6Telemetry::logError(
       "light model or number classifier unavailable",
-      std::string{L2Perception::inferenceBackendName(config.inference_backend)},
+      std::string{L2Perception::backendName(config.inference_backend)},
       config.model_path.string(), error.what());
     return {};
   }
@@ -94,7 +75,7 @@ AutoAimRuntime::AutoAimRuntime(const std::string &config_path)
 void AutoAimRuntime::run() {
   running_ = true;
   const AutoAimConfig auto_aim_config =
-    loadAutoAimConfig("config/auto_aim.yaml");
+    loadConfig("config/auto_aim.yaml");
   auto camera = std::make_shared<L1Sensor::Camera>(config_path_);
   {
     std::lock_guard<std::mutex> lock(camera_mutex_);
@@ -102,7 +83,7 @@ void AutoAimRuntime::run() {
   }
   // 启动时只加载一次模型；每帧仅执行预处理、推理、配对和数字分类。
   L2Perception::ArmorDetector armor_detector =
-    makeArmorDetector(auto_aim_config);
+    loadDetector(auto_aim_config);
 
   //配置并启动串口
   auto serial_config = L1Sensor::loadSerialConfig("config/serial_config.yaml");
@@ -208,10 +189,10 @@ void AutoAimRuntime::run() {
           std::optional<cv::Rect> net_roi;
           if (tracker && tracker->ready()) {
             light_roi =
-              tracker->lightDetectionRoi(image_pose, timestamp, frame.size());
+              tracker->lightRoi(image_pose, timestamp, frame.size());
             net_roi = tracker->netFocusRoi(
               image_pose, timestamp, frame.size(),
-              armor_detector.networkAspectRatio());
+              armor_detector.net_aspect_ratio());
           }
           // 灯条按下位机给的敌方颜色配对和输出：传 Unknown 会把友军灯条也
           // 配成板、送进 L3 关联。

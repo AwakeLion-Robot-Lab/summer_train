@@ -263,7 +263,7 @@ int main()
 
     const Eigen::Matrix3d rotation =
       VM::vehicleRotation<double>(outpost.data(), L3Estimation::ArmorName::Outpost);
-    const Eigen::Vector3d logged = L3Estimation::so3Log<double>(rotation);
+    const Eigen::Vector3d logged = L6Telemetry::so3Log<double>(rotation);
     expect(
       std::abs(logged.x()) < 1e-12 && std::abs(logged.y()) < 1e-12,
       "前哨站姿态应当只有 yaw 分量");

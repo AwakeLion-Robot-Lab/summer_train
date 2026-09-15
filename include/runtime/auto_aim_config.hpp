@@ -59,6 +59,6 @@ struct AutoAimConfig {
 };
 
 // 缺失字段保留各层的安全默认值；特别是 shoot_enable 默认为 false。
-[[nodiscard]] AutoAimConfig loadAutoAimConfig(const std::string& path);
+[[nodiscard]] AutoAimConfig loadConfig(const std::string& path);
 
 }  // namespace runtime

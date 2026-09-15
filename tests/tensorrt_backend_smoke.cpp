@@ -24,7 +24,7 @@ int main(int argc, char** argv)
 {
   try {
     const auto runtime_config =
-      runtime::loadAutoAimConfig("config/auto_aim.yaml");
+      runtime::loadConfig("config/auto_aim.yaml");
     require(
       runtime_config.inference_backend ==
         L2Perception::InferenceBackendKind::TensorRt,
@@ -39,14 +39,14 @@ int main(int argc, char** argv)
         std::abs(runtime_config.armor.height - 0.056) < 1e-12,
       "runtime L3 armor config is wrong");
 
-    const auto backend_kind = L2Perception::inferenceBackendFromString("Tensor-RT");
+    const auto backend_kind = L2Perception::parseBackend("Tensor-RT");
     require(
       backend_kind == L2Perception::InferenceBackendKind::TensorRt,
       "TensorRT backend name was not parsed");
     require(
-      !L2Perception::inferenceBackendFromString("unknown"),
+      !L2Perception::parseBackend("unknown"),
       "an unknown inference backend name must be rejected");
-    auto selected_backend = L2Perception::makeInferenceBackend(*backend_kind);
+    auto selected_backend = L2Perception::makeBackend(*backend_kind);
     require(
       dynamic_cast<L2Perception::TensorRtBackend*>(selected_backend.get()) != nullptr,
       "the inference backend factory selected the wrong implementation");

@@ -4,11 +4,11 @@ inference:
   # 灯条关键点模型（YOLOv8n-pose，1 类 2 关键点，输出 [1, 11, A]）。装甲板由它
   # 检出的灯条配对、再经数字分类确认而来，没有整板检测网络。输出形状在启动时
   # 核对，换成别的模型会直接报错而不是解出垃圾端点。三个导出精度：
-  #   best.onnx       FP32，默认
+  #   best.onnx       FP32
   #   best_fp16.onnx  CPU 上与 FP32 同速
   #   best_int8.onnx  CPU 上约快 2.5 倍，但端点精度明显变差（3m_high 灯条长度
-  #                   p90 31.3 -> 35.1 px），UVL 的深度线索正是灯条长度，换之前
-  #                   必须重跑 track_diag
+  #                   p90 31.3 -> 35.1 px），UVL 的深度线索正是灯条长度，换模型
+  #                   之后必须重跑 track_diag
   model_path: "model/light_model/best_int8.onnx"
   device: "CPU"
 

@@ -32,7 +32,7 @@ public:
 
   // 启动阶段校验模型输出形状。契约不符时抛出带原因的异常：配错模型不会让
   // 解码失败，只会解出垃圾端点，所以必须在加载时就挡住。
-  static void validateOutputs(const std::vector<InferenceOutputSpec>& outputs);
+  static void validate(const std::vector<InferenceOutputSpec>& outputs);
 
   // source 是送进网络的那张 BGR 图（整图或 ROI 裁剪）；返回的灯条坐标也在
   // 这张图上，调用方负责补 ROI 偏移。

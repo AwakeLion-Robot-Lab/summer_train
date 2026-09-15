@@ -12,7 +12,7 @@
 
 #include "l3_estimation/armor/uvl_measure.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
-#include "l3_estimation/error_state_ekf.hpp"
+#include "l3_estimation/filter/error_state_ekf.hpp"
 
 #include <Eigen/Dense>
 
@@ -124,10 +124,10 @@ int main()
     const Eigen::Isometry3d pose_in_camera = camera.inverse() * pose_in_world;
 
     const std::vector<cv::Point3f> object_points =
-      L3Estimation::armorLightPoints3D(kName, true, ctx.armor_config);
+      L3Estimation::lightPoints3D(kName, true, ctx.armor_config);
 
     std::vector<Eigen::Vector2d> ours;
-    L3Estimation::projectPoints<double>(
+    L6Telemetry::projectPoints<double>(
       object_points, pose_in_camera, ctx.camera_matrix, ctx.distortion_coefficients, ours);
 
     cv::Mat rvec;
@@ -169,7 +169,7 @@ int main()
       z[L3Estimation::uvl::LENGTH], cv::norm(top - bottom), 1e-3, "长度不是端点距离");
 
     // 角度落在 ±π 附近而不是 0，这是 awakening 的既有行为，不是笔误：
-    // armorLightPoints3D 的第一个点是世界 +z（上），而相机光学系 y 轴朝下，
+    // lightPoints3D 的第一个点是世界 +z（上），而相机光学系 y 轴朝下，
     // 所以投影后"上端点"的 v 更小、Δy < 0，atan2(Δx, Δy) 自然落在 ±π。
     //
     // 关键在于预测与观测同号、残差走 normalizeAngle，所以滤波器不受影响。但
@@ -180,8 +180,8 @@ int main()
       std::numbers::pi - std::abs(z[L3Estimation::uvl::ANGLE]) < 0.35,
       "竖直灯条的角度观测应当落在 ±π 附近，检查 atan2 的参数顺序与 3D 点序");
 
-    // 预测与观测共用 pointsToObservation，喂同样的点必须得到同样的四维量。
-    const L3Estimation::UvlVector from_pixels = L3Estimation::uvlMeasurementFrom(top, bottom);
+    // 预测与观测共用 pointsToUvl，喂同样的点必须得到同样的四维量。
+    const L3Estimation::UvlVector from_pixels = L3Estimation::toUvl(top, bottom);
     expect((from_pixels - z).cwiseAbs().maxCoeff() < 1e-3, "预测与观测的构造不一致");
   }
 
@@ -289,7 +289,7 @@ int main()
         for (const bool is_left : {true, false}) {
           const L3Estimation::UvlMeasure measure{makeContext(id, is_left, camera)};
           const auto [top, bottom] = measure.projectedPoints(truth_now);
-          const L3Estimation::UvlVector z = L3Estimation::uvlMeasurementFrom(top, bottom);
+          const L3Estimation::UvlVector z = L3Estimation::toUvl(top, bottom);
 
           const double length = cv::norm(top - bottom);
           const double sigma_pixel = kSigmaPixelRatio * length;

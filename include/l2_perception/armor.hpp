@@ -47,7 +47,7 @@ constexpr ArmorClass armorClassFromId(int class_id) noexcept
 // 未知类别返回 nullopt，不猜板型。L2 的灯条配对用它剔除「数字与两灯条间距
 // 推出的板型矛盾」的候选，L3 的 armorTypeOf 也由它派生——两处必须同一份映射，
 // 否则会出现 L2 当大板放行、L3 却按小板几何做 PnP 的情况。
-constexpr std::optional<bool> isLargeArmorClass(ArmorClass armor_class) noexcept
+constexpr std::optional<bool> isLargeArmor(ArmorClass armor_class) noexcept
 {
   switch (armor_class) {
     case ArmorClass::Hero:

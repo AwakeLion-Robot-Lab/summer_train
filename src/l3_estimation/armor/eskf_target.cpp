@@ -132,7 +132,7 @@ void EskfTarget::reset(
   if (name != ArmorName::Outpost) {
     x_[VM::idx::LOG_R2] = std::log(radius);
   }
-  const Eigen::Vector3d rotation = so3Log<double>(vehicle_in_world.linear());
+  const Eigen::Vector3d rotation = L6Telemetry::so3Log<double>(vehicle_in_world.linear());
   x_[VM::idx::ROT_X] = rotation.x();
   x_[VM::idx::ROT_Y] = rotation.y();
   x_[VM::idx::ROT_Z] = rotation.z();
@@ -443,7 +443,7 @@ int EskfTarget::update(
 int EskfTarget::update(
   const std::vector<std::pair<int, Armor>>& matched,
   const std::vector<MatchedLight>& matched_lights,
-  const std::optional<double>& armor_lights_depth_difference, TimePoint timestamp,
+  const std::optional<double>& lights_depth_diff, TimePoint timestamp,
   const L1Sensor::CameraCalibration& calibration,
   const Eigen::Isometry3d& camera_in_world)
 {
@@ -467,7 +467,7 @@ int EskfTarget::update(
   const auto addLight = [&](const cv::Point2f & top, const cv::Point2f & bottom, int id,
                             bool is_left, bool isolated) {
     const UvlMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
-    const UvlVector z = uvlMeasurementFrom(top, bottom);
+    const UvlVector z = toUvl(top, bottom);
 
     const double length = cv::norm(top - bottom);
     const double scale = isolated ? config_.isolated_light_sigma_scale : 1.0;
@@ -537,13 +537,13 @@ int EskfTarget::update(
 
   // 只有一块完整板时纯重投影观测容易在斜视方向退化。照搬 Awakening：
   // IPPE 只贡献左右灯条中心的相机深度差这一维，不写入绝对位姿。
-  if (matched.size() == 1 && armor_lights_depth_difference &&
-      std::isfinite(*armor_lights_depth_difference)) {
+  if (matched.size() == 1 && lights_depth_diff &&
+      std::isfinite(*lights_depth_diff)) {
     const int id = matched.front().first;
     const DepthDiffMeasure measure{
       makeContext(id, true, calibration, camera_in_world)};
     DepthDiffVector z;
-    z[0] = *armor_lights_depth_difference;
+    z[0] = *lights_depth_diff;
 
     Eigen::Matrix<double, kDepthDiffMeasureSize, kDepthDiffMeasureSize> r_cov;
     r_cov.setZero();
@@ -572,7 +572,7 @@ int EskfTarget::update(
   // NIS = rᵀ S⁻¹ r，取先验线性化点的创新量。迭代后的残差被压缩过，不再服从
   // 自由度等于观测维数的卡方分布，用它记账会让门限失配。
   const Eigen::VectorXd & innovation = filter_->lastResidual();
-  const Eigen::MatrixXd & innovation_covariance = filter_->lastInnovationCovariance();
+  const Eigen::MatrixXd & innovation_covariance = filter_->lastInnovCov();
   if (innovation.size() > 0 && innovation_covariance.rows() == innovation.size()) {
     const Eigen::LLT<Eigen::MatrixXd> llt(innovation_covariance);
     if (llt.info() == Eigen::Success) {

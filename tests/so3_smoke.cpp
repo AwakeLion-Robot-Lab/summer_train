@@ -8,7 +8,7 @@
 // 数值微分的精度上限约为 eps^(2/3) ≈ 6e-6（中心差分的截断误差与舍入误差
 // 折中），所以断言门限取 1e-6 量级而不是机器精度。
 
-#include "l3_estimation/so3.hpp"
+#include "l6_telemetry/so3.hpp"
 
 #include <ceres/jet.h>
 
@@ -90,9 +90,9 @@ void checkScalarFunction(
 
 int main()
 {
-  using L3Estimation::so3Exp;
-  using L3Estimation::so3Log;
-  using L3Estimation::so3Hat;
+  using L6Telemetry::so3Exp;
+  using L6Telemetry::so3Log;
+  using L6Telemetry::so3Hat;
 
   // --- 1. 每个初等函数单独对拍 ---------------------------------------
   const Vector sample{0.7, -0.35, 1.4, 0.22};

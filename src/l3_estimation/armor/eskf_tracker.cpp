@@ -23,7 +23,7 @@ bool validTrackerConfig(const EskfTrackerConfig & config) noexcept
 
 }  // namespace
 
-Armor toArmorObservation(
+Armor toObservation(
   const L2Perception::Armor& detection, TimePoint timestamp)
 {
   // 只搬运检测元数据；三维位姿由当前帧的 PnpSolver 计算。
@@ -67,7 +67,7 @@ void EskfTracker::reset() noexcept
   observations_.clear();
 }
 
-bool EskfTracker::semanticObservationUsable(const Armor& armor) const noexcept
+bool EskfTracker::semanticUsable(const Armor& armor) const noexcept
 {
   return armor.name != ArmorName::Unknown &&
          armor.color != L2Perception::ArmorColor::Unknown &&
@@ -78,7 +78,7 @@ bool EskfTracker::semanticObservationUsable(const Armor& armor) const noexcept
            });
 }
 
-bool EskfTracker::pnpObservationUsable(const Armor& armor) const noexcept
+bool EskfTracker::pnpUsable(const Armor& armor) const noexcept
 {
   return armor.name != ArmorName::Unknown && armor.xyz_in_camera.allFinite() &&
          armor.xyz_in_camera.z() > 0.0 && armor.xyz_in_world.allFinite() &&
@@ -86,17 +86,17 @@ bool EskfTracker::pnpObservationUsable(const Armor& armor) const noexcept
          std::isfinite(armor.reprojection_error);
 }
 
-std::vector<Armor> EskfTracker::initializationObservations()
+std::vector<Armor> EskfTracker::initCandidates()
 {
   std::vector<Armor> result;
   result.reserve(observations_.size());
   for (const Armor& observation : observations_) {
-    if (!semanticObservationUsable(observation)) {
+    if (!semanticUsable(observation)) {
       continue;
     }
     Armor pnp_observation = observation;
     pnp_solver_.single_pnp(pnp_observation);
-    if (pnpObservationUsable(pnp_observation)) {
+    if (pnpUsable(pnp_observation)) {
       result.push_back(std::move(pnp_observation));
     }
   }
@@ -108,13 +108,13 @@ std::vector<Armor> EskfTracker::initializationObservations()
   return result;
 }
 
-double EskfTracker::lostTimeThreshold(const EskfTarget & target) const noexcept
+double EskfTracker::lostThreshold(const EskfTarget & target) const noexcept
 {
   return target.name == ArmorName::Outpost ? tracker_config_.lost_time_thres_outpost
                                            : tracker_config_.lost_time_thres;
 }
 
-bool EskfTracker::initializeTarget(
+bool EskfTracker::initTarget(
   Slot& slot, const std::vector<Armor>& candidates, TimePoint timestamp,
   const Eigen::Isometry3d & camera_in_world)
 {
@@ -142,7 +142,7 @@ bool EskfTracker::updateTarget(
   std::vector<Armor> same_name;
   same_name.reserve(candidates.size());
   for (const auto & armor : candidates) {
-    if (armor.name == slot.target.name && semanticObservationUsable(armor)) {
+    if (armor.name == slot.target.name && semanticUsable(armor)) {
       same_name.push_back(armor);
     }
   }
@@ -155,7 +155,7 @@ bool EskfTracker::updateTarget(
 
   std::optional<double> depth_difference;
   if (matched.size() == 1) {
-    depth_difference = pnp_solver_.armor_lights_depth_difference(
+    depth_difference = pnp_solver_.lights_depth_diff(
       matched.front().second);
   }
 
@@ -222,7 +222,7 @@ std::optional<EskfTarget> EskfTracker::track(
   pnp_solver_.set_R_world_barrel(q_world_barrel);
   observations_.reserve(detections.size());
   for (const auto & detection : detections) {
-    Armor observation = toArmorObservation(detection, timestamp);
+    Armor observation = toObservation(detection, timestamp);
     observation.name = L2Perception::armorClassFromId(observation.class_id);
     if (const auto type = armorTypeOf(observation.name)) {
       observation.type = *type;
@@ -239,7 +239,7 @@ std::optional<EskfTarget> EskfTracker::track(
   std::optional<std::vector<Armor>> initialization_candidates;
   const auto getInitializationCandidates = [&]() -> const std::vector<Armor>& {
     if (!initialization_candidates) {
-      initialization_candidates = initializationObservations();
+      initialization_candidates = initCandidates();
     }
     return *initialization_candidates;
   };
@@ -247,7 +247,7 @@ std::optional<EskfTarget> EskfTracker::track(
   const auto process = [&](std::size_t index) {
     Slot & slot = buffer_[index];
     const bool found = (slot.lifecycle.state == TrackState::Lost)
-                         ? initializeTarget(
+                         ? initTarget(
                              slot, getInitializationCandidates(), timestamp,
                              camera_in_world)
                          : updateTarget(
@@ -256,7 +256,7 @@ std::optional<EskfTarget> EskfTracker::track(
 
     updateFsm(
       found, slot.lifecycle, tracker_config_.tracking_thres,
-      elapsedSeconds(slot.last_update, timestamp), lostTimeThreshold(slot.target));
+      elapsedSeconds(slot.last_update, timestamp), lostThreshold(slot.target));
 
     // 发散的目标直接丢弃，不要让它把下游一起拖歪。
     if (slot.lifecycle.isTracking() && slot.target.diverged()) {
@@ -292,7 +292,7 @@ std::optional<EskfTarget> EskfTracker::track(
   return active.target.snapshot();
 }
 
-std::optional<cv::Rect> EskfTracker::predictedLightBounds(
+std::optional<cv::Rect> EskfTracker::lightBounds(
   const std::optional<Eigen::Quaterniond>& q_world_barrel, TimePoint timestamp,
   const cv::Size& image_size, bool require_light_measurements) const
 {
@@ -302,13 +302,13 @@ std::optional<cv::Rect> EskfTracker::predictedLightBounds(
   const Slot& active = buffer_[current_];
   if (!active.lifecycle.isTracking() || !active.target.initialized() ||
       elapsedSeconds(active.last_update, timestamp) >=
-        lostTimeThreshold(active.target)) {
+        lostThreshold(active.target)) {
     return std::nullopt;
   }
   // 独立灯条 ROI 额外要求：开关打开，且目标不是基地（基地板不绕转，
   // 整车预测对它的灯条位置没有约束力）。
   if (require_light_measurements &&
-      (!active.target.lightMeasurementsEnabled() ||
+      (!active.target.lightsEnabled() ||
        active.target.name == ArmorName::BaseSmall ||
        active.target.name == ArmorName::BaseLarge)) {
     return std::nullopt;
@@ -362,12 +362,12 @@ cv::Rect expandAndClip(const cv::Rect& rect, double ratio, const cv::Rect& image
 
 }  // namespace
 
-std::optional<cv::Rect> EskfTracker::lightDetectionRoi(
+std::optional<cv::Rect> EskfTracker::lightRoi(
   const std::optional<Eigen::Quaterniond>& q_world_barrel,
   TimePoint timestamp, const cv::Size& image_size) const
 {
   const cv::Rect image_rect(0, 0, image_size.width, image_size.height);
-  const auto bounds = predictedLightBounds(q_world_barrel, timestamp, image_size, true);
+  const auto bounds = lightBounds(q_world_barrel, timestamp, image_size, true);
   if (!bounds) {
     return std::nullopt;
   }
@@ -386,7 +386,7 @@ cv::Rect EskfTracker::netFocusRoi(
 {
   const cv::Rect image_rect(0, 0, image_size.width, image_size.height);
   // 不可聚焦时返回整图，而不是空：调用方拿到的永远是能直接用的矩形。
-  const auto bounds = predictedLightBounds(q_world_barrel, timestamp, image_size, false);
+  const auto bounds = lightBounds(q_world_barrel, timestamp, image_size, false);
   if (!bounds) {
     return image_rect;
   }
@@ -430,7 +430,7 @@ cv::Rect EskfTracker::netFocusRoi(
   //    搜索范围就该越大——这条让 ROI 机制在跟丢时自动放手，而不是把网络
   //    永远锁在一个错误的小窗口里。
   const double lost_time = elapsedSeconds(active.last_update, timestamp);
-  const double lost_thres = lostTimeThreshold(active.target);
+  const double lost_thres = lostThreshold(active.target);
   const int base_side = std::max(ratio_rect.width, ratio_rect.height);
   const int max_side = std::max(image_size.width, image_size.height);
   int side = max_side;
@@ -450,7 +450,7 @@ cv::Rect EskfTracker::netFocusRoi(
   return square.empty() ? image_rect : square;
 }
 
-std::vector<Eigen::Vector4d> EskfTracker::targetArmorPoses() const
+std::vector<Eigen::Vector4d> EskfTracker::armorPoses() const
 {
   const Slot & active = buffer_[current_];
   if (active.lifecycle.state == TrackState::Lost || !active.target.initialized()) {

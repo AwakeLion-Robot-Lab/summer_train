@@ -158,7 +158,7 @@ z_hat = h(x) = [α_hat, u_hat, v_hat, L_hat]ᵀ
 
 相机姿态与图像必须对应同一时间，否则云台运动会表现成错误的灯条残差，进而污染目标状态。runtime 按图像时间调用 `gimbalPoseAt(timestamp)` 查询姿态；查询超出姿态历史范围时，当前实现取历史端点值。
 
-源码：[uvl_measure.hpp](../include/l3_estimation/armor/uvl_measure.hpp) 的 `projectPointsOf()`，以及 [projection.hpp](../include/l3_estimation/projection.hpp)。
+源码：[uvl_measure.hpp](../include/l3_estimation/armor/uvl_measure.hpp) 的 `projectPointsOf()`，以及 [projection.hpp](../include/l6_telemetry/projection.hpp)。
 
 ### 4.3 这些图像量怎样约束三维状态
 
@@ -309,7 +309,7 @@ R_depth = armor_lights_depth_diff_sigma² / 2
 
 ## 8. 残差怎样变成整车状态的修正量
 
-这是 UVL 与滤波器配合的核心。以下对应 [error_state_ekf.hpp](../include/l3_estimation/error_state_ekf.hpp) 中的 `updateMulti()`。
+这是 UVL 与滤波器配合的核心。以下对应 [error_state_ekf.hpp](../include/l3_estimation/filter/error_state_ekf.hpp) 中的 `updateMulti()`。
 
 ### 8.1 先计算图像残差
 
@@ -536,7 +536,7 @@ NIS 的计算形式是 `eᵀ S⁻¹ e`，但当前 `updateMulti()` 保存的是�
 | 2 | 同文件：`projectPointsOf()`、`operator()`、`residual()` | 整车状态怎样产生预测 UVL，再算残差 |
 | 3 | [vehicle_model.hpp](../include/l3_estimation/armor/vehicle_model.hpp)：`armorPose()`、`Motion` | 装甲板几何与时间推进模型 |
 | 4 | [eskf_target.cpp](../src/l3_estimation/armor/eskf_target.cpp)：`update()` 内的 `addLight` | 观测对象和 `R` 怎样组装，哪些观测参与更新 |
-| 5 | [error_state_ekf.hpp](../include/l3_estimation/error_state_ekf.hpp)：`updateMulti()` | 堆叠 `H/R`，迭代求 `δ`，更新 `P` |
+| 5 | [error_state_ekf.hpp](../include/l3_estimation/filter/error_state_ekf.hpp)：`updateMulti()` | 堆叠 `H/R`，迭代求 `δ`，更新 `P` |
 | 6 | [eskf_tracker.cpp](../src/l3_estimation/armor/eskf_tracker.cpp)：`updateTarget()` | 预测、关联、深度差和更新的调用顺序 |
 | 7 | [planner.cpp](../src/l4_planning/armor/planner.cpp)：`planTarget()` | 如何把滤波得到的运动状态用于命中预测 |
 

@@ -53,7 +53,7 @@ public:
 
   // 网络输入的宽高比（宽 / 高）。L3 的 netFocusRoi 用它把 ROI 修成同一比例，
   // 减少 letterbox padding。后端不可用时返回 1.0。
-  [[nodiscard]] double networkAspectRatio() const noexcept;
+  [[nodiscard]] double net_aspect_ratio() const noexcept;
 
   // 最近一帧的调试快照：颜色过滤后的全部灯条（不受 light_roi 限制）和全部配对。
   const std::vector<Light>& lastLights() const noexcept { return last_lights_; }
@@ -61,7 +61,7 @@ public:
   {
     return last_candidates_;
   }
-  const NumberClassifier& numberClassifier() const noexcept { return classifier_; }
+  const NumberClassifier& classifier() const noexcept { return classifier_; }
 
 private:
   std::unique_ptr<IInferenceBackend> backend_;

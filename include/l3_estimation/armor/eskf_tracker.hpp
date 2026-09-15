@@ -2,7 +2,7 @@
 
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l2_perception/armor.hpp"
-#include "l3_estimation/armor/association.hpp"
+#include "l3_estimation/tracking/association.hpp"
 #include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/armor/pnp_solver.hpp"
 #include "l3_estimation/armor/types.hpp"
@@ -19,7 +19,7 @@ namespace L3Estimation {
 
 // L2 -> L3 的显式转换入口。这里只复制检测字段，三维位姿由调用方用当帧的
 // PnpSolver 补充——L3 需要的是"哪些像素角点属于哪块板"，位姿是后一步的事。
-Armor toArmorObservation(
+Armor toObservation(
   const L2Perception::Armor& detection, TimePoint timestamp);
 
 struct EskfTrackerConfig
@@ -69,13 +69,13 @@ public:
 
   // 用上一帧目标预测整车全部灯条的包围框，再按 Awakening 的 1.6 倍扩张。
   // 仅 Tracking/TempLost 且开启独立灯条观测时返回 ROI。
-  std::optional<cv::Rect> lightDetectionRoi(
+  std::optional<cv::Rect> lightRoi(
     const std::optional<Eigen::Quaterniond>& q_world_barrel,
     TimePoint timestamp, const cv::Size& image_size) const;
 
   // 送给**网络**的检测 ROI。照搬 awakening 的 get_net_focus_roi。
   //
-  // 与 lightDetectionRoi 的分工：那个只决定哪些灯条作为独立观测，越紧越好；这个要喂
+  // 与 lightRoi 的分工：那个只决定哪些灯条作为独立观测，越紧越好；这个要喂
   // 进固定尺寸输入的网络，所以多三步——按网络输入宽高比修正（减少 letterbox
   // padding）、扩成方形、并随"距上次更新的时长"线性膨胀，超时直接退化为整图。
   //
@@ -94,14 +94,14 @@ public:
 
   // 最近一帧中实际参与 updateMulti() 的全部 UVL 灯条。初始化帧、无关联帧
   // 和纯预测帧均为空，避免把“检测候选”误画成“已用于更新”。
-  const std::vector<UvlUpdateLight>& lastUvlUpdateLights() const noexcept
+  const std::vector<UvlUpdateLight>& uvlLights() const noexcept
   {
     return buffer_[current_].uvl_update_lights;
   }
 
   // 本帧全部观测（含被质量门限拒绝的），供 L6 调试。
   const std::vector<Armor> & observations() const noexcept { return observations_; }
-  std::vector<Eigen::Vector4d> targetArmorPoses() const;
+  std::vector<Eigen::Vector4d> armorPoses() const;
 
   void reset() noexcept;
 
@@ -115,7 +115,7 @@ private:
     std::vector<UvlUpdateLight> uvl_update_lights;
   };
 
-  bool initializeTarget(
+  bool initTarget(
     Slot& slot, const std::vector<Armor>& candidates, TimePoint timestamp,
     const Eigen::Isometry3d & camera_in_world);
   bool updateTarget(
@@ -125,14 +125,14 @@ private:
 
   // 当前目标所有装甲板灯条端点的预测包围盒。两个 ROI 共用这一步。
   // 目标不可聚焦（未初始化、非跟踪态、超时）时返回空。
-  std::optional<cv::Rect> predictedLightBounds(
+  std::optional<cv::Rect> lightBounds(
     const std::optional<Eigen::Quaterniond>& q_world_barrel, TimePoint timestamp,
     const cv::Size& image_size, bool require_light_measurements) const;
 
-  bool semanticObservationUsable(const Armor& armor) const noexcept;
-  bool pnpObservationUsable(const Armor& armor) const noexcept;
-  std::vector<Armor> initializationObservations();
-  double lostTimeThreshold(const EskfTarget & target) const noexcept;
+  bool semanticUsable(const Armor& armor) const noexcept;
+  bool pnpUsable(const Armor& armor) const noexcept;
+  std::vector<Armor> initCandidates();
+  double lostThreshold(const EskfTarget & target) const noexcept;
 
   L1Sensor::CameraCalibration calibration_;
   ArmorConfig armor_config_;

@@ -1,11 +1,11 @@
 #pragma once
 
 #include "l1_sensor/camera/camera_calibration.hpp"
-#include "l3_estimation/armor/association.hpp"
+#include "l3_estimation/tracking/association.hpp"
 #include "l3_estimation/armor/types.hpp"
 #include "l3_estimation/armor/uvl_measure.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
-#include "l3_estimation/error_state_ekf.hpp"
+#include "l3_estimation/filter/error_state_ekf.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -136,7 +136,7 @@ public:
   int update(
     const std::vector<std::pair<int, Armor>>& matched,
     const std::vector<MatchedLight>& matched_lights,
-    const std::optional<double>& armor_lights_depth_difference,
+    const std::optional<double>& lights_depth_diff,
     TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
     const Eigen::Isometry3d& camera_in_world);
 
@@ -208,7 +208,7 @@ public:
   {
     return voter_.direction;
   }
-  bool lightMeasurementsEnabled() const noexcept
+  bool lightsEnabled() const noexcept
   {
     return config_.enable_lights_measure;
   }

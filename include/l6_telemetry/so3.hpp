@@ -13,8 +13,9 @@
 //
 // 误差状态滤波把姿态的所有运算都关进"小角度"这个安全区：δ 恒在零附近，所以
 // so3Exp 的泰勒分支才是常走的路径，而 so3Log 在 θ→π 处的奇异永远碰不到。
-// 推导见 docs/esekf_uvl_port.md 第 1 节。
-namespace L3Estimation {
+// 推导见 docs/esekf_uvl_port.md 第 1 节。与 math.hpp 同属各层共用的数学工具，
+// 放在 L6 是沿用 math.hpp 的位置。
+namespace L6Telemetry {
 
 // 反对称矩阵（hat 算子），把叉乘写成矩阵乘法：so3Hat(w) * v == w × v。
 template <typename T>
@@ -86,4 +87,4 @@ Eigen::Matrix<T, 3, 1> so3Log(const Eigen::Matrix<T, 3, 3> & rotation)
   return scale * vee;
 }
 
-}  // namespace L3Estimation
+}  // namespace L6Telemetry

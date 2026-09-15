@@ -96,7 +96,7 @@ LightDecoder::LightDecoder(LightDecoderConfig config) : config_(std::move(config
 {
 }
 
-void LightDecoder::validateOutputs(const std::vector<InferenceOutputSpec>& outputs)
+void LightDecoder::validate(const std::vector<InferenceOutputSpec>& outputs)
 {
   const InferenceOutputSpec* output = pickOutput(outputs);
   if (output == nullptr) {

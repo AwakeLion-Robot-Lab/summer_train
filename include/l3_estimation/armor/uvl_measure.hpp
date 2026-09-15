@@ -2,7 +2,7 @@
 
 #include "l3_estimation/armor/types.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
-#include "l3_estimation/projection.hpp"
+#include "l6_telemetry/projection.hpp"
 
 #include <ceres/jet.h>
 
@@ -38,7 +38,7 @@ using UvlVector = Eigen::Matrix<double, kUvlMeasureSize, 1>;
 //
 // 板系约定 x = 板面法向、y = 左、z = 上，与 PnpSolver::armorPoints 同源；
 // 左灯条在 +y 侧，右灯条在 -y 侧。
-inline std::vector<cv::Point3f> armorLightPoints3D(
+inline std::vector<cv::Point3f> lightPoints3D(
   ArmorName name, bool is_left, const ArmorConfig & config)
 {
   const auto type = armorTypeOf(name);
@@ -90,10 +90,10 @@ struct UvlMeasure
     const auto pose_in_camera = camera_in_world_jet.inverse() * pose_in_world;
 
     const std::vector<cv::Point3f> object_points =
-      armorLightPoints3D(ctx.name, ctx.is_left, ctx.armor_config);
+      lightPoints3D(ctx.name, ctx.is_left, ctx.armor_config);
 
     std::vector<ImagePoint<T>> image_points;
-    projectPoints<T>(
+    L6Telemetry::projectPoints<T>(
       object_points, pose_in_camera, ctx.camera_matrix, ctx.distortion_coefficients,
       image_points);
 
@@ -109,7 +109,7 @@ struct UvlMeasure
   // 角。灯条基本竖直，这样 α 在 0 附近工作，残差归一化和线性化都干净；用通常
   // 写法 α 会跑到 ±π/2 附近。
   template <typename T>
-  static void pointsToObservation(
+  static void pointsToUvl(
     const ImagePoint<T> & top, const ImagePoint<T> & bottom, T * z)
   {
     const ImagePoint<T> delta = top - bottom;
@@ -124,7 +124,7 @@ struct UvlMeasure
   void operator()(const T * x, T * z) const
   {
     const auto points = projectPointsOf<T>(x);
-    pointsToObservation<T>(points[0], points[1], z);
+    pointsToUvl<T>(points[0], points[1], z);
   }
 
   // 调试与关联用：直接拿到预测的两个像素点。
@@ -151,13 +151,13 @@ struct UvlMeasure
   }
 };
 
-// 从检测到的两个像素端点构造观测量。与预测共用 pointsToObservation。
-inline UvlVector uvlMeasurementFrom(const cv::Point2f & top, const cv::Point2f & bottom)
+// 从检测到的两个像素端点构造观测量。与预测共用 pointsToUvl。
+inline UvlVector toUvl(const cv::Point2f & top, const cv::Point2f & bottom)
 {
   const Eigen::Vector2d top_point(top.x, top.y);
   const Eigen::Vector2d bottom_point(bottom.x, bottom.y);
   UvlVector observation;
-  UvlMeasure::pointsToObservation<double>(top_point, bottom_point, observation.data());
+  UvlMeasure::pointsToUvl<double>(top_point, bottom_point, observation.data());
   return observation;
 }
 
@@ -182,7 +182,7 @@ struct DepthDiffMeasure
 
     const auto centerInCamera = [&](bool is_left) {
       const std::vector<cv::Point3f> points =
-        armorLightPoints3D(ctx.name, is_left, ctx.armor_config);
+        lightPoints3D(ctx.name, is_left, ctx.armor_config);
       Eigen::Matrix<T, 3, 1> center = Eigen::Matrix<T, 3, 1>::Zero();
       for (const cv::Point3f& point : points) {
         center += armor_in_camera * Eigen::Matrix<T, 3, 1>(

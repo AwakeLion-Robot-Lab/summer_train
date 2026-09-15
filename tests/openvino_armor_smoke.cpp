@@ -1,6 +1,5 @@
 #include "l2_perception/armor/armor_detector.hpp"
-#include "l2_perception/inference/backends/openvino_backend.hpp"
-#include "l2_perception/inference/image_preprocessor.hpp"
+#include "runtime/armor_detector_factory.hpp"
 #include "runtime/auto_aim_config.hpp"
 
 #include <algorithm>
@@ -28,18 +27,6 @@ void require(bool condition, const std::string& message)
   if (!condition) {
     throw std::runtime_error(message);
   }
-}
-
-void printShape(const std::vector<std::size_t>& shape)
-{
-  std::cout << '[';
-  for (std::size_t index = 0; index < shape.size(); ++index) {
-    if (index != 0) {
-      std::cout << ", ";
-    }
-    std::cout << shape[index];
-  }
-  std::cout << ']';
 }
 
 cv::Point toPixel(const cv::Point2f& point)
@@ -88,7 +75,7 @@ int main(int argc, char** argv)
   try {
     // 不给模型参数时跑 auto_aim.yaml 里真正配置的那一个；给了参数则只换灯条模型，
     // 数字分类器和各项门限仍取 YAML。
-    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
+    const auto runtime_config = runtime::loadConfig("config/auto_aim.yaml");
     const std::filesystem::path model_path = argc < 2
       ? runtime_config.model_path
       : std::filesystem::path{argv[1]};
@@ -113,32 +100,12 @@ int main(int argc, char** argv)
       image = cv::Mat(1080, 1440, CV_8UC3, cv::Scalar(0, 0, 0));
     }
 
-    auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
-    L2Perception::InferenceModelConfig model_config = runtime_config.inference;
-    model_config.model_path = model_path;
-    model_config.device = device;
-    backend->load(model_config);
-
-    require(backend->ready(), "OpenVINO backend did not become ready");
-    const auto input_spec = backend->inputSpec();
-    require(
-      input_spec.shape.size() == 4 && input_spec.shape[0] == 1
-      && input_spec.shape[3] == 3,
-      "OpenVINO host input is not U8 NHWC");
-
-    // 移交后端所有权前先探一次输出形状，便于把模型/后端错误与解码错误分开定位。
-    const auto output_specs = L2Perception::probeOutputSpecs(*backend);
-    require(output_specs.size() == 1, "light model must produce exactly one output");
-    const std::vector<std::size_t> output_shape = output_specs.front().shape;
-
-    L2Perception::NumberClassifier classifier;
-    classifier.load(runtime_config.number_classifier);
-
-    // 正式帧全部通过任务级 Detector，覆盖 Backend + Preprocessor + 解码 + 配对 +
-    // 数字分类的实际编排。构造时还会再核对一次输出契约。
-    L2Perception::ArmorDetector armor_detector(
-      std::move(backend), std::move(classifier), runtime_config.light_decoder,
-      runtime_config.light_matcher);
+    // 与实机同一个工厂组装：灯条模型 + 数字分类，所以这里量到的就是实机 L2 的整帧耗时。
+    runtime::AutoAimConfig detector_config = runtime_config;
+    detector_config.inference.model_path = model_path;
+    detector_config.inference.device = device;
+    const L2Perception::ArmorDetector armor_detector =
+      runtime::makeDetector(detector_config);
     require(armor_detector.ready(), "ArmorDetector did not accept the loaded backend");
     const auto detect_frame = [&](const cv::Mat& frame) {
       return armor_detector.detect(frame);
@@ -238,15 +205,13 @@ int main(int argc, char** argv)
     require(processed_frames != 0, "no frame was processed");
     const double average_ms = total_l2_ms / static_cast<double>(processed_frames);
 
-    std::cout << "OpenVINO armor smoke passed\nmodel " << model_path.string() << "\ndevice " << device << "\ninput  ";
-    printShape(input_spec.shape);
-    std::cout << " U8 NHWC BGR\noutput ";
-    printShape(output_shape);
-    std::cout << " FP32 zero-copy\naverage full L2 time: " << average_ms
+    std::cout << "OpenVINO armor smoke passed\nmodel " << model_path.string() << "\ndevice "
+              << device << "\naverage full L2 time: " << average_ms
               << " ms\nprocessed frames: " << processed_frames
               << "\nframes with detections: " << frames_with_detections
               << "\ntotal detections: " << total_detections
               << "\nmax detections per frame: " << max_detections_per_frame
+
               << "\ncolors: red=" << color_counts[0] << ", blue=" << color_counts[1]
               << ", unknown=" << color_counts[2]
               << "\nclasses [G,1,2,3,4,5,O,Bs,Bb]: ";

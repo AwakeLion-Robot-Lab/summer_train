@@ -332,7 +332,7 @@ void PnpSolver::single_pnp(Armor &armor) const {
   optimize_yaw(armor);
 }
 
-std::optional<double> PnpSolver::armor_lights_depth_difference(
+std::optional<double> PnpSolver::lights_depth_diff(
   const Armor& armor) const
 {
   const auto armor_type = armorTypeFromClassId(armor.class_id);

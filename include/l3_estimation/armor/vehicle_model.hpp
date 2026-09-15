@@ -2,7 +2,7 @@
 
 #include "l3_estimation/armor/types.hpp"
 #include "l3_estimation/types.hpp"
-#include "l3_estimation/so3.hpp"
+#include "l6_telemetry/so3.hpp"
 
 #include <ceres/jet.h>
 
@@ -135,9 +135,9 @@ template <typename T>
 Eigen::Matrix<T, 3, 3> vehicleRotation(const T * x, ArmorName name)
 {
   if (yawOnlyTarget(name)) {
-    return so3Exp<T>(Eigen::Matrix<T, 3, 1>(T(0.0), T(0.0), x[idx::ROT_Z]));
+    return L6Telemetry::so3Exp<T>(Eigen::Matrix<T, 3, 1>(T(0.0), T(0.0), x[idx::ROT_Z]));
   }
-  return so3Exp<T>(Eigen::Matrix<T, 3, 1>(x[idx::ROT_X], x[idx::ROT_Y], x[idx::ROT_Z]));
+  return L6Telemetry::so3Exp<T>(Eigen::Matrix<T, 3, 1>(x[idx::ROT_X], x[idx::ROT_Y], x[idx::ROT_Z]));
 }
 
 // 整车在世界系的位姿：状态的前六维取位置，姿态三维取朝向。
@@ -204,7 +204,7 @@ template <class StateVector>
 auto stateRotation(const StateVector & state)
 {
   using Scalar = typename std::decay_t<StateVector>::Scalar;
-  return so3Exp<Scalar>(Eigen::Matrix<Scalar, 3, 1>(
+  return L6Telemetry::so3Exp<Scalar>(Eigen::Matrix<Scalar, 3, 1>(
     state[idx::ROT_X], state[idx::ROT_Y], state[idx::ROT_Z]));
 }
 
@@ -228,7 +228,7 @@ void injectState(const DeltaVector & delta, StateVector & nominal)
 
   const Vector3 delta_rotation(delta[idx::ROT_X], delta[idx::ROT_Y], delta[idx::ROT_Z]);
   const Vector3 injected =
-    so3Log<Scalar>((stateRotation(nominal) * so3Exp<Scalar>(delta_rotation)).eval());
+    L6Telemetry::so3Log<Scalar>((stateRotation(nominal) * L6Telemetry::so3Exp<Scalar>(delta_rotation)).eval());
   nominal[idx::ROT_X] = injected.x();
   nominal[idx::ROT_Y] = injected.y();
   nominal[idx::ROT_Z] = injected.z();
@@ -248,7 +248,7 @@ void boxMinusState(const StateVector & nominal, const StateVector & value, Delta
   delta = value - nominal;  // 旋转三维此刻是错的，下面覆盖掉
 
   const Vector3 delta_rotation =
-    so3Log<Scalar>((stateRotation(nominal).transpose() * stateRotation(value)).eval());
+    L6Telemetry::so3Log<Scalar>((stateRotation(nominal).transpose() * stateRotation(value)).eval());
   delta[idx::ROT_X] = delta_rotation.x();
   delta[idx::ROT_Y] = delta_rotation.y();
   delta[idx::ROT_Z] = delta_rotation.z();
@@ -364,10 +364,10 @@ struct Motion
       // 右乘：delta_rotation 只有 z 分量，表达的是"绕车体自身竖直轴"。
       // 若改左乘，这就变成"绕世界 z 轴"，车一有 roll/pitch 就错。
       const Eigen::Matrix<T, 3, 3> rotated =
-        (so3Exp<T>(Eigen::Matrix<T, 3, 1>(x0[idx::ROT_X], x0[idx::ROT_Y], x0[idx::ROT_Z])) *
-         so3Exp<T>(delta_rotation))
+        (L6Telemetry::so3Exp<T>(Eigen::Matrix<T, 3, 1>(x0[idx::ROT_X], x0[idx::ROT_Y], x0[idx::ROT_Z])) *
+         L6Telemetry::so3Exp<T>(delta_rotation))
           .eval();
-      const Eigen::Matrix<T, 3, 1> updated = so3Log<T>(rotated);
+      const Eigen::Matrix<T, 3, 1> updated = L6Telemetry::so3Log<T>(rotated);
       x1[idx::ROT_X] = updated.x();
       x1[idx::ROT_Y] = updated.y();
       x1[idx::ROT_Z] = updated.z();

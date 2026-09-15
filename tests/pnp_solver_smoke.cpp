@@ -247,7 +247,7 @@ int main()
     expected_camera;
   const double expected_depth_difference =
     expected_left_center.z() - expected_right_center.z();
-  const auto depth_difference = solver.armor_lights_depth_difference(armor);
+  const auto depth_difference = solver.lights_depth_diff(armor);
   expect(
     depth_difference.has_value(),
     "valid synthetic armor did not produce a light-center depth difference");
@@ -287,7 +287,7 @@ int main()
       (R_camera_outpost *
        Eigen::Vector3d(0.0, kSmallWidth, 0.0)).z();
     const auto outpost_depth =
-      solver.armor_lights_depth_difference(outpost);
+      solver.lights_depth_diff(outpost);
     expect(
       outpost_depth.has_value(),
       "outpost did not produce a constrained light-center depth difference");

@@ -17,7 +17,7 @@
 // 状态 → 板位姿 → 相机系 → 像素 必须是纯代数、处处可微的，Jet 才能一路走到
 // 底——这是 UVL 观测模型可行的技术前提。眼下 ObsBase 类型擦除后走的是中心
 // 差分，但观测模型本身保持模板化，将来去掉类型擦除即可直接换成 Jet 求 H。
-namespace L3Estimation {
+namespace L6Telemetry {
 
 // 把物点从自身坐标系经 pose_in_camera 变换到相机光学系，再投影成像素。
 //
@@ -87,4 +87,4 @@ void projectPoints(
   }
 }
 
-}  // namespace L3Estimation
+}  // namespace L6Telemetry

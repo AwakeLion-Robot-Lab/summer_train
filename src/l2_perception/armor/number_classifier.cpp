@@ -135,13 +135,13 @@ NumberResult NumberClassifier::classify(
   // rm_auto_aim 的剔除条件是三条取并集：置信度低、ignore_classes（默认
   // negative）、板型不符。集合与原版相同，这里只是把原因分开记。
   //
-  // 板型不符改用 isLargeArmorClass：rm_auto_aim 的表按老规则写（小板上出现
+  // 板型不符改用 isLargeArmor：rm_auto_aim 的表按老规则写（小板上出现
   // 1/base 就剔），而现在基地装甲板实物是小板、只有英雄是大板。
   if (labels_[static_cast<std::size_t>(class_point.x)] == kNegativeLabel) {
     result.verdict = NumberVerdict::Negative;
   } else if (confidence < config_.min_confidence) {
     result.verdict = NumberVerdict::LowConfidence;
-  } else if (const auto expected_large = isLargeArmorClass(result.armor_class);
+  } else if (const auto expected_large = isLargeArmor(result.armor_class);
              expected_large && *expected_large != large) {
     result.verdict = NumberVerdict::TypeMismatch;
   } else {

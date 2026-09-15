@@ -76,7 +76,7 @@ public:
   // 两者差 (I − KH)·δ。迭代次数一多，前者的偏差会复利放大——在 3m_run_fast
   // 上实测 iteration_num 从 1 升到 5，车心帧间跳变的 p99 从 0.126 m 恶化到
   // 0.326 m，单调变差。详见 docs/iterated_ekf.md。
-  void setTextbookIteration(bool enabled) { textbook_iteration_ = enabled; }
+  void setTextbook(bool enabled) { textbook_iteration_ = enabled; }
 
   template <class Inject>
   void setInject(const Inject & inject)
@@ -330,7 +330,7 @@ public:
 
   // 最近一次更新的创新量与其协方差，供 NIS 记账与遥测读取。
   const Eigen::VectorXd & lastResidual() const noexcept { return last_residual_; }
-  const Eigen::MatrixXd & lastInnovationCovariance() const noexcept
+  const Eigen::MatrixXd & lastInnovCov() const noexcept
   {
     return last_innovation_covariance_;
   }

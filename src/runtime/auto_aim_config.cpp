@@ -329,7 +329,7 @@ void normalize(AutoAimConfig& config)
 
 }  // namespace
 
-AutoAimConfig loadAutoAimConfig(const std::string& path)
+AutoAimConfig loadConfig(const std::string& path)
 {
   AutoAimConfig config;
   if (!std::filesystem::exists(path)) {
@@ -344,7 +344,7 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   } else {
     if (inference["backend"]) {
       const std::string name = inference["backend"].as<std::string>();
-      const auto backend = L2Perception::inferenceBackendFromString(name);
+      const auto backend = L2Perception::parseBackend(name);
       if (!backend) {
         throw std::runtime_error(
           "inference.backend must be 'openvino' or 'tensorrt'; got " + name);
@@ -571,7 +571,7 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 
   L6Telemetry::logInfo(
     "auto-aim config loaded", path,
-    std::string{L2Perception::inferenceBackendName(config.inference_backend)},
+    std::string{L2Perception::backendName(config.inference_backend)},
     config.model_path.string(), config.inference_device);
   return config;
 }

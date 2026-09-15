@@ -26,7 +26,7 @@ std::string normalizedBackendName(std::string_view name)
 
 }  // namespace
 
-std::string_view inferenceBackendName(InferenceBackendKind backend) noexcept
+std::string_view backendName(InferenceBackendKind backend) noexcept
 {
   switch (backend) {
     case InferenceBackendKind::OpenVino:
@@ -37,7 +37,7 @@ std::string_view inferenceBackendName(InferenceBackendKind backend) noexcept
   return "unknown";
 }
 
-std::optional<InferenceBackendKind> inferenceBackendFromString(
+std::optional<InferenceBackendKind> parseBackend(
   std::string_view name)
 {
   const std::string normalized = normalizedBackendName(name);
@@ -50,7 +50,7 @@ std::optional<InferenceBackendKind> inferenceBackendFromString(
   return std::nullopt;
 }
 
-std::unique_ptr<IInferenceBackend> makeInferenceBackend(InferenceBackendKind backend)
+std::unique_ptr<IInferenceBackend> makeBackend(InferenceBackendKind backend)
 {
   switch (backend) {
     case InferenceBackendKind::OpenVino:

@@ -31,7 +31,7 @@ public:
   // Awakening 单完整板约束专用：IPPE 求全部候选解，选择板正面朝向相机的
   // 一支，只返回左右灯条中心在相机 z 轴上的深度差；前哨沿用其固定俯仰
   // 与黄金分割 yaw 修正分支。
-  std::optional<double> armor_lights_depth_difference(
+  std::optional<double> lights_depth_diff(
     const Armor& armor) const;
 
   // 校验并替换相机标定，同时缓存 camera -> barrel 外参。

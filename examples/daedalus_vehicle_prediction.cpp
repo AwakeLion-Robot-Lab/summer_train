@@ -7,6 +7,7 @@
 #include "l4_planning/armor/predictor.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/logger.hpp"
+#include "runtime/armor_detector_factory.hpp"
 #include "runtime/auto_aim_config.hpp"
 
 #include <Eigen/Geometry>
@@ -354,19 +355,6 @@ void drawStatus(
     image, motion.str(), {12, 90}, {0, 255, 0}, 0.52);
 }
 
-L2Perception::ArmorDetector makeDetector(const runtime::AutoAimConfig& config)
-{
-  auto backend = L2Perception::makeInferenceBackend(config.inference_backend);
-  backend->load(config.inference);
-  if (!backend->ready()) {
-    throw std::runtime_error("configured inference backend is not ready");
-  }
-  L2Perception::NumberClassifier classifier;
-  classifier.load(config.number_classifier);
-  return L2Perception::ArmorDetector(
-    std::move(backend), std::move(classifier), config.light_decoder,
-    config.light_matcher);
-}
 
 }  // namespace
 
@@ -394,8 +382,8 @@ int main(int argc, char** argv)
     }
     const L1Sensor::CameraCalibration calibration = makeCalibration(first_frame);
     const runtime::AutoAimConfig config =
-      runtime::loadAutoAimConfig(options.config_path);
-    L2Perception::ArmorDetector detector = makeDetector(config);
+      runtime::loadConfig(options.config_path);
+    L2Perception::ArmorDetector detector = runtime::makeDetector(config);
     L3Estimation::EskfTracker tracker(
       calibration, config.armor, config.ieskf_tracker, config.ieskf_target);
     L3Estimation::PnpSolver overlay_solver(calibration, config.armor);
@@ -439,11 +427,11 @@ int main(int argc, char** argv)
         throw std::runtime_error("Daedalus published an invalid barrel quaternion");
       }
 
-      const auto light_roi = tracker.lightDetectionRoi(
+      const auto light_roi = tracker.lightRoi(
         q_world_barrel, frame.capture_time, frame.image_bgr.size());
       const cv::Rect net_roi = tracker.netFocusRoi(
         q_world_barrel, frame.capture_time, frame.image_bgr.size(),
-        detector.networkAspectRatio());
+        detector.net_aspect_ratio());
       L2Perception::ArmorFrame perception = detector.detectFrame(
         frame.image_bgr, light_roi, net_roi, options.enemy_color);
       const std::vector<L2Perception::Armor> all_detections = perception.armors;
