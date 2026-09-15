@@ -66,7 +66,7 @@ void drawDetections(
                                ? "red"
                                : detection.color == L2Perception::ArmorColor::Blue ? "blue" : "unknown";
 
-    // 画模型解码后的四角点。这里的坐标已经由 Decoder 从 640x640 letterbox 还原到原图。
+    // 画灯条端点构成的四角点，坐标已从 letterbox 还原到原图。
     for (std::size_t index = 0; index < detection.corners.size(); ++index) {
       const auto& start = detection.corners[index];
       const auto& end = detection.corners[(index + 1) % detection.corners.size()];
@@ -86,12 +86,10 @@ void drawDetections(
 int main(int argc, char** argv)
 {
   try {
-    // 不给模型参数时跑 auto_aim.yaml 里真正配置的那一个，并在下面顺带校验
-    // inference.decoder.layout 是否和该模型的输出形状一致——改完 YAML 之后
-    // 这是最直接的一道检查。给了参数则只测那个模型，不再和 YAML 对照。
-    const bool use_configured_model = argc < 2;
+    // 不给模型参数时跑 auto_aim.yaml 里真正配置的那一个；给了参数则只换灯条模型，
+    // 数字分类器和各项门限仍取 YAML。
     const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
-    const std::filesystem::path model_path = use_configured_model
+    const std::filesystem::path model_path = argc < 2
       ? runtime_config.model_path
       : std::filesystem::path{argv[1]};
     // 第三个可选参数用于同口径比较 CPU/GPU；不传时保持稳定的 CPU 默认值。
@@ -116,12 +114,9 @@ int main(int argc, char** argv)
     }
 
     auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
-    L2Perception::InferenceModelConfig model_config;
+    L2Perception::InferenceModelConfig model_config = runtime_config.inference;
     model_config.model_path = model_path;
     model_config.device = device;
-    // 与 SP-Vision 一致：宿主输入是 OpenCV BGR，OpenVINO 在模型前转换为 RGB。
-    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
-    model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
 
     require(backend->ready(), "OpenVINO backend did not become ready");
@@ -131,34 +126,19 @@ int main(int argc, char** argv)
       && input_spec.shape[3] == 3,
       "OpenVINO host input is not U8 NHWC");
 
-    std::vector<std::size_t> output_shape;
-    L2Perception::ArmorDecoderConfig decoder_config;
+    // 移交后端所有权前先探一次输出形状，便于把模型/后端错误与解码错误分开定位。
+    const auto output_specs = L2Perception::probeOutputSpecs(*backend);
+    require(output_specs.size() == 1, "light model must produce exactly one output");
+    const std::vector<std::size_t> output_shape = output_specs.front().shape;
 
-    // 移交后端所有权前先探一次原始张量，便于把模型/后端错误与 Decoder 错误分开定位。
-    // 这里按输出名挑契约，只是为了让同一个 smoke 能验两种模型；runtime 不这么做，
-    // 那边的契约由 auto_aim.yaml 的 inference.decoder.layout 显式指定。
-    {
-      const auto preprocessed = L2Perception::ImagePreprocessor::run(image, input_spec);
-      const auto raw_result = backend->infer(preprocessed.input);
-      require(raw_result.outputs.size() == 1, "armor model must produce exactly one output");
-      require(raw_result.outputs.front().isConsistent(), "armor output shape/data mismatch");
-      output_shape = raw_result.outputs.front().shape;
+    L2Perception::NumberClassifier classifier;
+    classifier.load(runtime_config.number_classifier);
 
-      decoder_config = L2Perception::armorDecoderConfigFor(
-        {{raw_result.outputs.front().name, output_shape}});
-
-      if (use_configured_model) {
-        // 探到的契约和 YAML 写的必须一致。配错 layout 不会让解码失败，只会解出
-        // 垃圾角点，所以这条检查放在这里，而不是等实机发现瞄不准。
-        require(runtime_config.decoder.contract == decoder_config.contract,
-                "config/auto_aim.yaml inference.decoder.layout does not match the model output");
-        // YAML 可能覆盖过阈值，所以后续解码用配置里的那份而不是裸预设。
-        decoder_config = runtime_config.decoder;
-      }
-    }
-
-    // 正式帧全部通过任务级 Detector，覆盖 Backend + Preprocessor + Decoder 的实际编排。
-    L2Perception::ArmorDetector armor_detector(std::move(backend), decoder_config);
+    // 正式帧全部通过任务级 Detector，覆盖 Backend + Preprocessor + 解码 + 配对 +
+    // 数字分类的实际编排。构造时还会再核对一次输出契约。
+    L2Perception::ArmorDetector armor_detector(
+      std::move(backend), std::move(classifier), runtime_config.light_decoder,
+      runtime_config.light_matcher);
     require(armor_detector.ready(), "ArmorDetector did not accept the loaded backend");
     const auto detect_frame = [&](const cv::Mat& frame) {
       return armor_detector.detect(frame);
@@ -258,7 +238,7 @@ int main(int argc, char** argv)
     require(processed_frames != 0, "no frame was processed");
     const double average_ms = total_l2_ms / static_cast<double>(processed_frames);
 
-    std::cout << "OpenVINO armor smoke passed\ndevice " << device << "\ninput  ";
+    std::cout << "OpenVINO armor smoke passed\nmodel " << model_path.string() << "\ndevice " << device << "\ninput  ";
     printShape(input_spec.shape);
     std::cout << " U8 NHWC BGR\noutput ";
     printShape(output_shape);

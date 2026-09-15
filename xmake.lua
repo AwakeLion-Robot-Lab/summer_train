@@ -253,21 +253,19 @@ local standalone_tests = {
         includes = {"include", "/usr/include/eigen3"},
         opencv   = {"opencv_core", "opencv_calib3d"},
     },
-    -- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK。
-    armor_refiner_smoke = {
-        files    = {"src/l2_perception/armor/armor_refiner.cpp"},
+    -- 灯条配对只依赖 OpenCV，不牵扯相机/串口 SDK，也不需要模型。
+    light_matcher_smoke = {
+        files    = {"src/l2_perception/armor/light_matcher.cpp"},
         includes = {"include", "/usr/include/eigen3"},
         opencv   = {"opencv_core", "opencv_imgproc"},
     },
 }
 
--- 需要开关或平台才存在的目标。openvino 这几个都要模型；
--- armor_refiner_video_test 和 auto_aim_test 还要显示器。
+-- 需要开关或平台才存在的目标。openvino 这几个都要模型；auto_aim_test 还要显示器。
 local gated_tests = {
     openvino_armor_smoke     = "use_openvino",
     auto_aim_test            = "use_openvino",
     track_diag               = "use_openvino",
-    armor_refiner_video_test = "use_openvino",
     light_model_test         = "use_openvino",
     serial_worker_smoke      = "linux",
 }

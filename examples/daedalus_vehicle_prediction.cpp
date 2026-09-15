@@ -361,9 +361,11 @@ L2Perception::ArmorDetector makeDetector(const runtime::AutoAimConfig& config)
   if (!backend->ready()) {
     throw std::runtime_error("configured inference backend is not ready");
   }
+  L2Perception::NumberClassifier classifier;
+  classifier.load(config.number_classifier);
   return L2Perception::ArmorDetector(
-    std::move(backend), config.decoder,
-    L2Perception::ImagePreprocessConfig{}, config.refiner);
+    std::move(backend), std::move(classifier), config.light_decoder,
+    config.light_matcher);
 }
 
 }  // namespace

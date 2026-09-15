@@ -21,31 +21,18 @@ enum class ArmorType : std::uint8_t {
   Big     // 大装甲板
 };
 
-// 识别类别 → 实际板型。场上只有四板车，大装甲板仅英雄使用：平衡步兵已不存在，
-// 基地虽然有 Bs/Bb 两个类别但装甲板实物都是小板，所以只有 Hero 走 Big 分支。
+// 识别类别 → 实际板型。映射本身在 L2 的 isLargeArmorClass：L2 配对时就要用它
+// 检查数字与板型是否矛盾，这里只换成 L3 的枚举，不另写一份。
 //
 // 未知类别返回 nullopt，不猜板型：猜错会同时污染 PnP 几何和火控的角度容差。
-// L3 的 PnpSolver 和 L5 的 FireDecider 共用这一份映射，不各写一份。
+// L3 的 PnpSolver 和 L5 的 FireDecider 共用这一份映射。
 constexpr std::optional<ArmorType> armorTypeOf(ArmorName name) noexcept
 {
-  switch (name) {
-    case ArmorName::Hero:
-      return ArmorType::Big;
-
-    case ArmorName::Guard:
-    case ArmorName::Engineer:
-    case ArmorName::Infantry3:
-    case ArmorName::Infantry4:
-    case ArmorName::Infantry5:
-    case ArmorName::Outpost:
-    case ArmorName::BaseSmall:
-    case ArmorName::BaseLarge:
-      return ArmorType::Small;
-
-    case ArmorName::Unknown:
-      break;
+  const std::optional<bool> large = L2Perception::isLargeArmorClass(name);
+  if (!large) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  return *large ? ArmorType::Big : ArmorType::Small;
 }
 
 // 装甲板绕自身水平轴的后仰角，单位 rad。常规车的板顶向后倾 15 度；前哨站的

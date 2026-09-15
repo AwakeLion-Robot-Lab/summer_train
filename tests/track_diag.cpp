@@ -47,7 +47,7 @@ constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
-  "{model m | model/armor_model/yolov5.xml | OpenVINO 装甲板模型}"
+  "{model m | model/light_model/best.onnx | OpenVINO 灯条关键点模型}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
   "{convention | imu | 录像四元数约定：imu / sp}"
@@ -259,23 +259,22 @@ int main(int argc, char* argv[])
     require(calibration.barrelExtrinsicsReady(), calibration_path + " 缺少 T_barrel_camera");
 
     // L2/L3/L4 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
-    // YAML 里调噪声或精修阈值，这里根本看不出变化。
+    // YAML 里调噪声或灯条门限，这里根本看不出变化。
     const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
 
     auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
-    L2Perception::InferenceModelConfig model_config;
+    // 颜色顺序、归一化和后端调度都沿用 auto_aim.yaml，只有模型路径和设备
+    // 允许命令行覆盖，方便对比 FP32 / INT8 或 CPU / GPU。
+    L2Perception::InferenceModelConfig model_config = runtime_config.inference;
     model_config.model_path = cli.get<std::string>("model");
     model_config.device = cli.get<std::string>("device");
-    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
-    model_config.normalization_divisor = 255.0F;
     backend->load(model_config);
     require(backend->ready(), "OpenVINO 后端未就绪");
-    // 模型来自 --model，没有 auto_aim.yaml 的 layout 可依，按输出形状探契约。
-    const auto decoder_config =
-      L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
+    L2Perception::NumberClassifier classifier;
+    classifier.load(runtime_config.number_classifier);
     L2Perception::ArmorDetector detector(
-      std::move(backend), decoder_config, L2Perception::ImagePreprocessConfig{},
-      runtime_config.refiner);
+      std::move(backend), std::move(classifier), runtime_config.light_decoder,
+      runtime_config.light_matcher);
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;

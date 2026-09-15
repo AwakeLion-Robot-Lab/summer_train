@@ -305,7 +305,7 @@ std::optional<cv::Rect> EskfTracker::predictedLightBounds(
         lostTimeThreshold(active.target)) {
     return std::nullopt;
   }
-  // 传统灯条检测那条路额外要求：开关打开，且目标不是基地（基地板不绕转，
+  // 独立灯条 ROI 额外要求：开关打开，且目标不是基地（基地板不绕转，
   // 整车预测对它的灯条位置没有约束力）。
   if (require_light_measurements &&
       (!active.target.lightMeasurementsEnabled() ||
@@ -372,7 +372,7 @@ std::optional<cv::Rect> EskfTracker::lightDetectionRoi(
     return std::nullopt;
   }
 
-  // 送给传统检测的 ROI 越紧越好：搜索区域越大，环境灯光越容易混进候选集，
+  // 筛独立灯条的 ROI 越紧越好：范围越大，别的车和环境灯光越容易混进候选集，
   // CPU 开销和误匹配概率也一起上去。
   constexpr double kExpandRatio = 1.6;
   const cv::Rect expanded = expandAndClip(*bounds, kExpandRatio, image_rect);

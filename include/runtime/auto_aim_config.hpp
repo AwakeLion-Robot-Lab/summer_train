@@ -1,7 +1,8 @@
 #pragma once
 
-#include "l2_perception/armor/armor_decoder.hpp"
-#include "l2_perception/armor/armor_refiner.hpp"
+#include "l2_perception/armor/light_decoder.hpp"
+#include "l2_perception/armor/light_matcher.hpp"
+#include "l2_perception/armor/number_classifier.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/types.hpp"
@@ -28,7 +29,8 @@ struct RuntimeSafetyConfig {
 };
 
 struct AutoAimConfig {
-  std::filesystem::path model_path{"model/armor_model/yolov5.xml"};
+  // 灯条关键点模型。装甲板由它检出的灯条配对而来，不再有整板检测网络。
+  std::filesystem::path model_path{"model/light_model/best.onnx"};
   std::string inference_device{"CPU"};
   L2Perception::InferenceBackendKind inference_backend{
     L2Perception::InferenceBackendKind::OpenVino};
@@ -40,13 +42,12 @@ struct AutoAimConfig {
   // 打日志和选后端；其余的只在构造 Backend 时透传，所以整个结构体直接放这。
   L2Perception::InferenceModelConfig inference;
 
-  // 模型输出契约。和 model_path 是一对：换模型必须同时换契约，否则解码出的
-  // 是垃圾角点而不是报错。默认是 SP YOLOV5 的 [1, 25200, 22]。
-  L2Perception::ArmorDecoderConfig decoder;
-
-  // 传统灯条精修：网络四点划 ROI，ROI 内跑传统灯条，端点足够近才覆盖网络角点。
-  // 角点抖动直接放大成 PnP 的 yaw 抖动，所以这几个数是要按场地光照调的。
-  L2Perception::ArmorRefinerConfig refiner;
+  // 灯条模型的解码阈值与颜色判定。输出形状在构造 ArmorDetector 时核对。
+  L2Perception::LightDecoderConfig light_decoder;
+  // 灯条两两配对的几何门限。
+  L2Perception::LightMatcherConfig light_matcher;
+  // 数字分类（mlp.onnx）：只负责认出是哪辆车，决定整车模型的板数和 PnP 板型。
+  L2Perception::NumberClassifierConfig number_classifier;
 
   L3Estimation::ArmorConfig armor;
   L3Estimation::EskfTrackerConfig ieskf_tracker;

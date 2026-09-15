@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 #include <opencv2/core/types.hpp>
@@ -16,9 +17,9 @@ enum class ArmorColor {
   Unknown
 };
 
-// SP yolov5.xml 的 9 个车辆类别，数值与模型第 13~21 字段 argmax 的下标一致。
-// class_id 仍保留在 Armor 中，方便记录原始模型编号；
-// 需要语义时调用此函数。
+// 9 个车辆类别。数值是跨层约定的 class_id（G、1、2、3、4、5、O、Bs、Bb），
+// 由数字分类器的标签映射而来；Armor 里保留 class_id 方便记录，需要语义时
+// 调用 armorClassFromId。
 enum class ArmorClass : int {
   Guard = 0,      // G，哨兵
   Hero = 1,       // 1，英雄
@@ -40,27 +41,45 @@ constexpr ArmorClass armorClassFromId(int class_id) noexcept
            : ArmorClass::Unknown;
 }
 
-// 角点的来源。传统灯条精修只在证据充分时才替换网络角点，
-// 因此下游需要能区分这两种角点的可信度。
-enum class CornerSource {
-  Network,  // 网络回归的原始角点
-  Refined   // 已由 ROI 内的灯条端点替换
-};
+// 识别类别 → 是否大装甲板。场上只有四板车，大装甲板仅英雄使用：平衡步兵已不存在，
+// 基地虽然有 Bs/Bb 两个类别但装甲板实物都是小板。
+//
+// 未知类别返回 nullopt，不猜板型。L2 的灯条配对用它剔除「数字与两灯条间距
+// 推出的板型矛盾」的候选，L3 的 armorTypeOf 也由它派生——两处必须同一份映射，
+// 否则会出现 L2 当大板放行、L3 却按小板几何做 PnP 的情况。
+constexpr std::optional<bool> isLargeArmorClass(ArmorClass armor_class) noexcept
+{
+  switch (armor_class) {
+    case ArmorClass::Hero:
+      return true;
 
+    case ArmorClass::Guard:
+    case ArmorClass::Engineer:
+    case ArmorClass::Infantry3:
+    case ArmorClass::Infantry4:
+    case ArmorClass::Infantry5:
+    case ArmorClass::Outpost:
+    case ArmorClass::BaseSmall:
+    case ArmorClass::BaseLarge:
+      return false;
+
+    case ArmorClass::Unknown:
+      break;
+  }
+  return std::nullopt;
+}
+
+// 由左右两根灯条配出、并经数字分类确认的装甲板。
 struct Armor {
   // 顺序固定为：左上、右上、右下、左下；PnP 必须沿用同一顺序。
+  // 四个角点就是左右灯条的上下端点。
   std::array<cv::Point2f, 4> corners{};
-  // 精修前的网络原始角点，顺序与 corners 一致。精修生效时保留它，
-  // 是为了能离线对比两条通路的差异，否则无法验证精修是否真的有收益。
-  std::array<cv::Point2f, 4> network_corners{};
-  CornerSource corner_source{CornerSource::Network};
-  // 精修角点相对网络角点的最大位移，单位为像素；未精修时为 0。
-  float corner_shift{0.0F};
   // 四个角点在原图像素坐标系中的几何中心。
   cv::Point2f center{};
-  // SP 模型约定：0~8 分别为 G、1、2、3、4、5、O、Bs、Bb。
+  // 车辆类别编号，见 ArmorClass。
   int class_id{-1};
   ArmorColor color{ArmorColor::Unknown};
+  // 数字分类的 softmax 概率。
   float confidence{0.0F};
 
   Eigen::Vector3d xyz_in_barrel{Eigen::Vector3d::Zero()};  // 单位：m
@@ -71,7 +90,7 @@ struct Armor {
   Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};   // 方位角加距离
 };
 
-// 传统视觉独立检出的单根灯条。它不带车辆编号，只保留 UVL 观测需要的上下
+// 灯条关键点模型检出的单根灯条。它不带车辆编号，只保留 UVL 观测需要的上下
 // 端点和几何量；具体属于哪块装甲板、是左灯还是右灯，由 L3 根据整车预测关联。
 struct Light {
   cv::Point2f center{};
@@ -79,13 +98,15 @@ struct Light {
   cv::Point2f bottom{};
   ArmorColor color{ArmorColor::Unknown};
   double length{0.0};
-  double width{0.0};
+  // 偏离竖直方向的角度，单位为度。
   float tilt_angle_deg{0.0F};
+  // 灯条模型的类别分数。
+  float score{0.0F};
   std::size_t id{0};
 };
 
-// 一帧装甲感知的完整输出。保留 ArmorDetector::detect() 的旧接口，同时让
-// IESKF 路线能拿到 Awakening 使用的独立灯条观测。
+// 一帧装甲感知的完整输出：配对并通过数字分类的装甲板，加上交给 L3 做独立
+// UVL 观测的灯条。
 struct ArmorFrame {
   std::vector<Armor> armors;
   std::vector<Light> lights;

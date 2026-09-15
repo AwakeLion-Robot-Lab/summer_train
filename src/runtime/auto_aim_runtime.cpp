@@ -61,19 +61,23 @@ L2Perception::ArmorDetector makeArmorDetector(
     const L2Perception::InferenceModelConfig& model_config = config.inference;
     backend->load(model_config);
 
+    L2Perception::NumberClassifier classifier;
+    classifier.load(config.number_classifier);
+
     L6Telemetry::logInfo(
-      "armor model loaded",
+      "light model loaded",
       std::string{L2Perception::inferenceBackendName(config.inference_backend)},
-      config.model_path.string(), model_config.device);
-    // Decoder 的字段布局跟着 model_path 走；预处理保持默认（letterbox 的对齐和
-    // 填充色对现有模型实测无差别）；传统灯条精修来自 refiner 节点。
+      config.model_path.string(), model_config.device,
+      config.number_classifier.model_path.string());
+    // 预处理保持默认（letterbox 左上贴齐、纯黑填充，与 light_model_test 验证时一致）。
+    // ArmorDetector 构造时会核对灯条模型的输出形状，不符直接抛到下面的 catch。
     return L2Perception::ArmorDetector(
-      std::move(backend), config.decoder, L2Perception::ImagePreprocessConfig{},
-      config.refiner);
+      std::move(backend), std::move(classifier), config.light_decoder,
+      config.light_matcher);
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
     L6Telemetry::logError(
-      "armor model unavailable",
+      "light model or number classifier unavailable",
       std::string{L2Perception::inferenceBackendName(config.inference_backend)},
       config.model_path.string(), error.what());
     return {};
@@ -96,7 +100,7 @@ void AutoAimRuntime::run() {
     std::lock_guard<std::mutex> lock(camera_mutex_);
     active_camera_ = camera;
   }
-  // 启动时只加载一次模型；每帧仅执行预处理、推理和 Decoder。
+  // 启动时只加载一次模型；每帧仅执行预处理、推理、配对和数字分类。
   L2Perception::ArmorDetector armor_detector =
     makeArmorDetector(auto_aim_config);
 
@@ -196,9 +200,10 @@ void AutoAimRuntime::run() {
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 
           // L2: ROI 聚焦 + 检测，保留敌方装甲板。两个 ROI 都由上一帧的整车
-          // 状态外推到本帧曝光时刻：light_roi 只服务独立灯条检测，越紧越好；
-          // net_roi 喂网络，远距小目标裁剪后再 resize 相当于局部放大。
-          // Lost/冷启动时前者返回空、后者退化为整图，等价于全图检测。
+          // 状态外推到本帧曝光时刻：net_roi 喂灯条模型，远距小目标裁剪后再
+          // resize 相当于局部放大；light_roi 决定哪些灯条作为独立观测交给 L3，
+          // 越紧越不容易把别的车的灯条混进来。Lost/冷启动时前者退化为整图、
+          // 后者返回空，等价于全图检测、不给独立灯条。
           std::optional<cv::Rect> light_roi;
           std::optional<cv::Rect> net_roi;
           if (tracker && tracker->ready()) {
@@ -208,8 +213,8 @@ void AutoAimRuntime::run() {
               image_pose, timestamp, frame.size(),
               armor_detector.networkAspectRatio());
           }
-          // 独立灯条按下位机给的敌方颜色提取：传 Unknown 会红蓝各跑一遍
-          // 候选提取，既费时又会把友军灯条送进 L3 关联。
+          // 灯条按下位机给的敌方颜色配对和输出：传 Unknown 会把友军灯条也
+          // 配成板、送进 L3 关联。
           auto perception = armor_detector.detectFrame(
             frame, light_roi, net_roi, enemyArmorColor(state->enemy_color));
           std::erase_if(perception.armors, [&state](const auto& armor) {

@@ -106,115 +106,56 @@ void normalize(AutoAimConfig& config)
     config.armor.height = armor_defaults.height;
   }
 
-  // 精修参数越界会让它静默失效（阈值 255 时二值图全黑，一块灯条也找不到）
-  // 或者全盘接受（端点距离无穷大时任何传统解都覆盖网络角点），都不会报错。
-  const L2Perception::ArmorRefinerConfig refiner_defaults;
-  if (!(config.refiner.binary_threshold > 0.0 &&
-        config.refiner.binary_threshold < 255.0)) {
-    config.refiner.binary_threshold = refiner_defaults.binary_threshold;
+  // 灯条链路的阈值越界不会报错，只会静默失效：分数阈值 >= 1 一根灯条也检不出，
+  // 颜色比 <= 1 会让红蓝判定区间重叠。
+  const L2Perception::LightDecoderConfig light_decoder_defaults;
+  if (!(config.light_decoder.score_threshold > 0.0F &&
+        config.light_decoder.score_threshold < 1.0F)) {
+    config.light_decoder.score_threshold = light_decoder_defaults.score_threshold;
   }
-  if (!positiveFinite(config.refiner.min_lightbar_length_px)) {
-    config.refiner.min_lightbar_length_px = refiner_defaults.min_lightbar_length_px;
+  if (!(config.light_decoder.nms_iou_threshold > 0.0F &&
+        config.light_decoder.nms_iou_threshold <= 1.0F)) {
+    config.light_decoder.nms_iou_threshold = light_decoder_defaults.nms_iou_threshold;
   }
-  if (!positiveFinite(config.refiner.max_endpoint_distance_px)) {
-    config.refiner.max_endpoint_distance_px = refiner_defaults.max_endpoint_distance_px;
+  if (!(std::isfinite(config.light_decoder.color_ratio_threshold) &&
+        config.light_decoder.color_ratio_threshold > 1.0)) {
+    config.light_decoder.color_ratio_threshold =
+      light_decoder_defaults.color_ratio_threshold;
   }
-  if (!(config.refiner.min_lightbar_ratio > 0.0F &&
-        config.refiner.min_lightbar_ratio < config.refiner.max_lightbar_ratio)) {
-    config.refiner.min_lightbar_ratio = refiner_defaults.min_lightbar_ratio;
-    config.refiner.max_lightbar_ratio = refiner_defaults.max_lightbar_ratio;
+
+  const L2Perception::LightMatcherConfig light_matcher_defaults;
+  if (!(config.light_matcher.min_light_length_ratio > 0.0F &&
+        config.light_matcher.min_light_length_ratio < 1.0F)) {
+    config.light_matcher.min_light_length_ratio =
+      light_matcher_defaults.min_light_length_ratio;
   }
-  if (!(config.refiner.max_angle_error_deg > 0.0F &&
-        config.refiner.max_angle_error_deg <= 90.0F)) {
-    config.refiner.max_angle_error_deg = refiner_defaults.max_angle_error_deg;
+  // 四个间距必须依次不减，否则小板/大板区间会交叉或整个为空。
+  if (!(config.light_matcher.min_small_center_distance > 0.0F &&
+        config.light_matcher.min_small_center_distance <
+          config.light_matcher.max_small_center_distance &&
+        config.light_matcher.max_small_center_distance <=
+          config.light_matcher.min_large_center_distance &&
+        config.light_matcher.min_large_center_distance <
+          config.light_matcher.max_large_center_distance)) {
+    config.light_matcher.min_small_center_distance =
+      light_matcher_defaults.min_small_center_distance;
+    config.light_matcher.max_small_center_distance =
+      light_matcher_defaults.max_small_center_distance;
+    config.light_matcher.min_large_center_distance =
+      light_matcher_defaults.min_large_center_distance;
+    config.light_matcher.max_large_center_distance =
+      light_matcher_defaults.max_large_center_distance;
   }
-  if (!(config.refiner.independent_light_binary_threshold > 0.0 &&
-        config.refiner.independent_light_binary_threshold < 255.0)) {
-    config.refiner.independent_light_binary_threshold =
-      refiner_defaults.independent_light_binary_threshold;
+  if (!(config.light_matcher.max_pair_angle_deg > 0.0F &&
+        config.light_matcher.max_pair_angle_deg <= 90.0F)) {
+    config.light_matcher.max_pair_angle_deg = light_matcher_defaults.max_pair_angle_deg;
   }
-  if (!nonNegativeFinite(
-        config.refiner.independent_light_threshold_tolerance)) {
-    config.refiner.independent_light_threshold_tolerance =
-      refiner_defaults.independent_light_threshold_tolerance;
+
+  const L2Perception::NumberClassifierConfig number_defaults;
+  if (!(config.number_classifier.min_confidence >= 0.0 &&
+        config.number_classifier.min_confidence < 1.0)) {
+    config.number_classifier.min_confidence = number_defaults.min_confidence;
   }
-  if (!nonNegativeFinite(
-        config.refiner.independent_light_color_diff_threshold)) {
-    config.refiner.independent_light_color_diff_threshold =
-      refiner_defaults.independent_light_color_diff_threshold;
-  }
-  if (!positiveFinite(
-        config.refiner.independent_light_min_contour_area_px)) {
-    config.refiner.independent_light_min_contour_area_px =
-      refiner_defaults.independent_light_min_contour_area_px;
-  }
-  if (!(config.refiner.independent_light_min_fill_ratio > 0.0 &&
-        config.refiner.independent_light_min_fill_ratio <= 1.0)) {
-    config.refiner.independent_light_min_fill_ratio =
-      refiner_defaults.independent_light_min_fill_ratio;
-  }
-  if (!positiveFinite(config.refiner.independent_light_min_length_px)) {
-    config.refiner.independent_light_min_length_px =
-      refiner_defaults.independent_light_min_length_px;
-  }
-  if (!(config.refiner.independent_light_min_width_length_ratio > 0.0F &&
-        config.refiner.independent_light_min_width_length_ratio <
-          config.refiner.independent_light_max_width_length_ratio)) {
-    config.refiner.independent_light_min_width_length_ratio =
-      refiner_defaults.independent_light_min_width_length_ratio;
-    config.refiner.independent_light_max_width_length_ratio =
-      refiner_defaults.independent_light_max_width_length_ratio;
-  }
-  if (!(config.refiner.independent_light_max_tilt_angle_deg > 0.0F &&
-        config.refiner.independent_light_max_tilt_angle_deg <= 90.0F)) {
-    config.refiner.independent_light_max_tilt_angle_deg =
-      refiner_defaults.independent_light_max_tilt_angle_deg;
-  }
-  const auto hueRangeValid = [](int low, int high) {
-    return low >= 0 && low <= high && high <= 180;
-  };
-  const auto channelMinimumValid = [](int value) {
-    return value >= 0 && value <= 255;
-  };
-  if (!hueRangeValid(
-        config.refiner.independent_light_red_h_min_low,
-        config.refiner.independent_light_red_h_max_low) ||
-      !hueRangeValid(
-        config.refiner.independent_light_red_h_min_high,
-        config.refiner.independent_light_red_h_max_high) ||
-      !channelMinimumValid(config.refiner.independent_light_red_s_min) ||
-      !channelMinimumValid(config.refiner.independent_light_red_v_min)) {
-    config.refiner.independent_light_red_h_min_low =
-      refiner_defaults.independent_light_red_h_min_low;
-    config.refiner.independent_light_red_h_max_low =
-      refiner_defaults.independent_light_red_h_max_low;
-    config.refiner.independent_light_red_h_min_high =
-      refiner_defaults.independent_light_red_h_min_high;
-    config.refiner.independent_light_red_h_max_high =
-      refiner_defaults.independent_light_red_h_max_high;
-    config.refiner.independent_light_red_s_min =
-      refiner_defaults.independent_light_red_s_min;
-    config.refiner.independent_light_red_v_min =
-      refiner_defaults.independent_light_red_v_min;
-  }
-  if (!hueRangeValid(
-        config.refiner.independent_light_blue_h_min,
-        config.refiner.independent_light_blue_h_max) ||
-      !channelMinimumValid(config.refiner.independent_light_blue_s_min) ||
-      !channelMinimumValid(config.refiner.independent_light_blue_v_min)) {
-    config.refiner.independent_light_blue_h_min =
-      refiner_defaults.independent_light_blue_h_min;
-    config.refiner.independent_light_blue_h_max =
-      refiner_defaults.independent_light_blue_h_max;
-    config.refiner.independent_light_blue_s_min =
-      refiner_defaults.independent_light_blue_s_min;
-    config.refiner.independent_light_blue_v_min =
-      refiner_defaults.independent_light_blue_v_min;
-  }
-  config.refiner.independent_light_morphology_width = std::clamp(
-    config.refiner.independent_light_morphology_width, 1, 31);
-  config.refiner.independent_light_morphology_height = std::clamp(
-    config.refiner.independent_light_morphology_height, 1, 31);
 
   // awakening IESKF：状态机按真实时间计，过程噪声在车体系表达，UVL 的观测
   // 噪声是 sigma 而非方差。
@@ -463,27 +404,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     if (!(config.inference.normalization_divisor > 0.0F)) {
       throw std::runtime_error("inference.normalization_divisor must be positive");
     }
-
-    // 输出契约。layout 选定字段布局（下标由模型导出时定死，不在 YAML 里逐个
-    // 手配），随后的阈值才是可调项。配错 layout 不会报错，只会解出垃圾角点。
-    const YAML::Node decoder = inference["decoder"];
-    if (decoder) {
-      if (decoder["layout"]) {
-        const std::string layout = decoder["layout"].as<std::string>();
-        const auto preset = L2Perception::armorDecoderPreset(layout);
-        if (!preset) {
-          throw std::runtime_error(
-            "inference.decoder.layout must be 'yolov5_22' or 'yolov8_21'; got " + layout);
-        }
-        config.decoder = *preset;
-      }
-      // 阈值在预设之后覆盖，顺序不能反。只有筛选策略可以从 YAML 调；
-      // 字段布局属于 ArmorTensorContract，只能整组由 layout 选。
-      readValue(decoder, "confidence_threshold", config.decoder.confidence_threshold);
-      readValue(decoder, "minimum_confidence", config.decoder.minimum_confidence);
-      readValue(decoder, "nms_iou_threshold", config.decoder.nms_iou_threshold);
-      readValue(decoder, "nms_score_threshold", config.decoder.nms_score_threshold);
-    }
   }
 
   // 三个单列字段是同一份配置的一部分，回填进去，构造 Backend 时只传一个结构体。
@@ -495,88 +415,40 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(armor, "big_width_m", config.armor.big_width);
   readValue(armor, "height_m", config.armor.height);
 
-  // 传统灯条精修。默认值来自 sp_vision 的 standard3.yaml，按场地光照调
-  // binary_threshold 是最常动的一个。
-  const YAML::Node refiner = root["refiner"];
-  readValue(refiner, "enable", config.refiner.enable);
-  readValue(refiner, "binary_threshold", config.refiner.binary_threshold);
-  readValue(refiner, "min_lightbar_length_px", config.refiner.min_lightbar_length_px);
-  readValue(refiner, "max_angle_error_deg", config.refiner.max_angle_error_deg);
-  readValue(refiner, "min_lightbar_ratio", config.refiner.min_lightbar_ratio);
-  readValue(refiner, "max_lightbar_ratio", config.refiner.max_lightbar_ratio);
+  const YAML::Node light_decoder = root["light_decoder"];
+  readValue(light_decoder, "score_threshold", config.light_decoder.score_threshold);
+  readValue(light_decoder, "nms_iou_threshold", config.light_decoder.nms_iou_threshold);
   readValue(
-    refiner, "max_endpoint_distance_px", config.refiner.max_endpoint_distance_px);
+    light_decoder, "color_ratio_threshold", config.light_decoder.color_ratio_threshold);
+
+  const YAML::Node light_matcher = root["light_matcher"];
   readValue(
-    refiner, "pca_corner_correction", config.refiner.pca_corner_correction);
+    light_matcher, "min_light_length_ratio", config.light_matcher.min_light_length_ratio);
   readValue(
-    refiner, "independent_light_enable",
-    config.refiner.independent_light_enable);
+    light_matcher, "min_small_center_distance",
+    config.light_matcher.min_small_center_distance);
   readValue(
-    refiner, "independent_light_binary_threshold",
-    config.refiner.independent_light_binary_threshold);
+    light_matcher, "max_small_center_distance",
+    config.light_matcher.max_small_center_distance);
   readValue(
-    refiner, "independent_light_threshold_tolerance",
-    config.refiner.independent_light_threshold_tolerance);
+    light_matcher, "min_large_center_distance",
+    config.light_matcher.min_large_center_distance);
   readValue(
-    refiner, "independent_light_color_diff_threshold",
-    config.refiner.independent_light_color_diff_threshold);
+    light_matcher, "max_large_center_distance",
+    config.light_matcher.max_large_center_distance);
+  readValue(light_matcher, "max_pair_angle_deg", config.light_matcher.max_pair_angle_deg);
+
+  const YAML::Node number_classifier = root["number_classifier"];
+  if (number_classifier && number_classifier["model_path"]) {
+    config.number_classifier.model_path =
+      number_classifier["model_path"].as<std::string>();
+  }
+  if (number_classifier && number_classifier["label_path"]) {
+    config.number_classifier.label_path =
+      number_classifier["label_path"].as<std::string>();
+  }
   readValue(
-    refiner, "independent_light_min_contour_area_px",
-    config.refiner.independent_light_min_contour_area_px);
-  readValue(
-    refiner, "independent_light_min_fill_ratio",
-    config.refiner.independent_light_min_fill_ratio);
-  readValue(
-    refiner, "independent_light_min_length_px",
-    config.refiner.independent_light_min_length_px);
-  readValue(
-    refiner, "independent_light_min_width_length_ratio",
-    config.refiner.independent_light_min_width_length_ratio);
-  readValue(
-    refiner, "independent_light_max_width_length_ratio",
-    config.refiner.independent_light_max_width_length_ratio);
-  readValue(
-    refiner, "independent_light_max_tilt_angle_deg",
-    config.refiner.independent_light_max_tilt_angle_deg);
-  readValue(
-    refiner, "independent_light_red_h_min_low",
-    config.refiner.independent_light_red_h_min_low);
-  readValue(
-    refiner, "independent_light_red_h_max_low",
-    config.refiner.independent_light_red_h_max_low);
-  readValue(
-    refiner, "independent_light_red_h_min_high",
-    config.refiner.independent_light_red_h_min_high);
-  readValue(
-    refiner, "independent_light_red_h_max_high",
-    config.refiner.independent_light_red_h_max_high);
-  readValue(
-    refiner, "independent_light_red_s_min",
-    config.refiner.independent_light_red_s_min);
-  readValue(
-    refiner, "independent_light_red_v_min",
-    config.refiner.independent_light_red_v_min);
-  readValue(
-    refiner, "independent_light_blue_h_min",
-    config.refiner.independent_light_blue_h_min);
-  readValue(
-    refiner, "independent_light_blue_h_max",
-    config.refiner.independent_light_blue_h_max);
-  readValue(
-    refiner, "independent_light_blue_s_min",
-    config.refiner.independent_light_blue_s_min);
-  readValue(
-    refiner, "independent_light_blue_v_min",
-    config.refiner.independent_light_blue_v_min);
-  readValue(
-    refiner, "independent_light_use_morphology",
-    config.refiner.independent_light_use_morphology);
-  readValue(
-    refiner, "independent_light_morphology_width",
-    config.refiner.independent_light_morphology_width);
-  readValue(
-    refiner, "independent_light_morphology_height",
-    config.refiner.independent_light_morphology_height);
+    number_classifier, "min_confidence", config.number_classifier.min_confidence);
 
   const YAML::Node ieskf = root["ieskf"];
   readValue(ieskf, "tracking_thres", config.ieskf_tracker.tracking_thres);

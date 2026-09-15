@@ -245,7 +245,6 @@ int main()
     light.bottom = predicted_light.second;
     light.center = (light.top + light.bottom) * 0.5F;
     light.length = cv::norm(light.top - light.bottom);
-    light.width = light.length * 0.1;
     light.color = L2Perception::ArmorColor::Blue;
 
     const auto matched_lights = target.matchLight(

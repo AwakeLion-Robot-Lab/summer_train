@@ -75,7 +75,7 @@ public:
 
   // 送给**网络**的检测 ROI。照搬 awakening 的 get_net_focus_roi。
   //
-  // 与 lightDetectionRoi 的分工：那个只服务传统灯条检测，越紧越好；这个要喂
+  // 与 lightDetectionRoi 的分工：那个只决定哪些灯条作为独立观测，越紧越好；这个要喂
   // 进固定尺寸输入的网络，所以多三步——按网络输入宽高比修正（减少 letterbox
   // padding）、扩成方形、并随"距上次更新的时长"线性膨胀，超时直接退化为整图。
   //

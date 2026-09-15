@@ -1,23 +1,22 @@
 # 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
 inference:
   backend: "openvino"
-  # model_path 和下面的 decoder.layout 必须成对修改。已验证的组合：
-  #   model/armor_model/yolov5.xml       -> yolov5_22   （SP-Vision 自带）
-  #   model/armor_model/szu-v5n.xml      -> yolov5_22   （深大 Infantry-v5n）
-  #   model/armor_model/szu-v8n-fp16.onnx-> yolov8_21   （深大 Infantry-v8n）
-  # szu-v8n 的 .xml/.bin 需要较新的 OpenVINO 运行时（2023.1 读不了它的
-  # MaxPool），旧运行时必须走同名 .onnx。
-  model_path: "model/armor_model/szu-v8n-fp16.onnx"
+  # 灯条关键点模型（YOLOv8n-pose，1 类 2 关键点，输出 [1, 11, A]）。装甲板由它
+  # 检出的灯条配对、再经数字分类确认而来，没有整板检测网络。输出形状在启动时
+  # 核对，换成别的模型会直接报错而不是解出垃圾端点。三个导出精度：
+  #   best.onnx       FP32，默认
+  #   best_fp16.onnx  CPU 上与 FP32 同速
+  #   best_int8.onnx  CPU 上约快 2.5 倍，但端点精度明显变差（3m_high 灯条长度
+  #                   p90 31.3 -> 35.1 px），UVL 的深度线索正是灯条长度，换之前
+  #                   必须重跑 track_diag
+  model_path: "model/light_model/best_int8.onnx"
   device: "CPU"
 
   # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
   # 训练/导出时模型期望的颜色顺序。宿主侧输入恒为 uint8 NHWC BGR，
   # 转换在后端内部完成。取值 rgb / bgr。
   #
-  # 必须是 rgb。sp_vision 自己的 tasks/auto_aim/yolos/yolov5.cpp 就是
-  # set_color_format(BGR) + convert_color(RGB)，深大那两个模型同理。
-  # 写成 bgr 会让颜色分支判成相反的颜色（红蓝对调），敌我过滤随之反向，
-  # 同时置信度普遍下降约 0.1。
+  # 必须是 rgb：灯条模型由 ultralytics 训练，输入是 RGB / 255。
   model_color_order: "rgb"
   # 像素归一化的除数（不是乘数）。255 表示除到 [0, 1]。
   normalization_divisor: 255.0
@@ -48,79 +47,32 @@ inference:
   # 因此这里不给默认值。
   # enable_hyper_threading: false
 
-  # ---- 输出契约：和 model_path 成对，配错不会报错，只会解出垃圾角点 ----
-  decoder:
-    # yolov5_22：[1, 25200, 22]，输出名 output，字段为
-    #   0~7 四角点 / 8 objectness logit / 9~12 颜色 / 13~21 九类。
-    # yolov8_21：[1, 21, 6300]，输出名 output0，channels-first，字段为
-    #   0~3 颜色 / 4~12 九类 / 13~20 四角点，没有 objectness 通道，
-    #   置信度取类别分支最大值且已过 sigmoid。
-    layout: "yolov8_21"
-    # 下面四项在 layout 预设之上覆盖，缺省则用预设值。
-    # yolov5_22 预设：0.7 / 0.8 / 0.3 / 0.7（对齐 SP demo）
-    # yolov8_21 预设：0.5 / 0.5 / 0.2 / 0.5（对齐上游部署库）
-    # 两种模型的置信度分布不同（objectness vs 类别分数），阈值不要互相照抄。
-    # confidence_threshold: 0.7
-    # minimum_confidence: 0.8
-    # nms_iou_threshold: 0.3
-    # nms_score_threshold: 0.7
+# 灯条模型解码。
+light_decoder:
+  # 类别分数阈值与 NMS IoU。
+  score_threshold: 0.25
+  nms_iou_threshold: 0.45
+  # 灯条颜色不由网络判：在灯条外扩框里跳过饱和和过暗像素后比较 R/B 能量，
+  # 比值大于它判红、小于它的倒数判蓝，中间判未知（未知的灯条直接丢弃）。
+  color_ratio_threshold: 1.10
 
-# 传统灯条精修。网络给出四点后在其 ROI 内跑一次传统灯条检测，两侧端点到网络
-# 角点的距离和小于 max_endpoint_distance_px 时，才用传统端点覆盖网络角点；
-# 覆盖不了就保留网络的。角点抖 1 px 在 5 m 处就是单板 yaw 抖好几度，所以这几个
-# 数值得按场地光照实调，用 `xmake run armor_refiner_video_test --headless=true`
-# 看 refined / network_kept / rejected 的比例。
-#
-# 默认值取自 sp_vision 的 configs/standard3.yaml。
-refiner:
-  enable: true
-  # 最常动的一个：场地偏暗调低，曝光偏亮调高。取值须在 (0, 255) 内。
-  binary_threshold: 150.0
-  # 灯条筛选：长度下限、与竖直方向的最大夹角、长宽比区间。
-  min_lightbar_length_px: 8.0
-  max_angle_error_deg: 45.0
-  min_lightbar_ratio: 1.5
-  max_lightbar_ratio: 20.0
-  # 传统端点到网络角点的距离和上限。放大会让传统解无条件覆盖网络解，
-  # 光照不好时反而更差。
-  max_endpoint_distance_px: 15.0
-  # 灯条端点用亮度梯度 + PCA 主轴定位，替代 minAreaRect 的二值边界。
-  # minAreaRect 的端点误差沿灯条轴向，正是深度线索最敏感的方向。
-  pca_corner_correction: true
+# 灯条两两配对的几何门限，取自 rm_auto_aim。距离以两灯条平均长度为单位。
+# 这一步只筛「可能是」：相邻两块板的灯条也会配成一对，靠数字分类判 negative 剔掉。
+light_matcher:
+  min_light_length_ratio: 0.7
+  min_small_center_distance: 0.8
+  max_small_center_distance: 3.2
+  min_large_center_distance: 3.2
+  max_large_center_distance: 5.5
+  max_pair_angle_deg: 35.0
 
-  # 独立灯条通路。只有 IESKF 已进入 Tracking/TempLost 后，才在预测整车
-  # 包围框的 1.6 倍 ROI 内运行，不会全图常开。候选提取参考 dx_vision：
-  # 敌方颜色 HSV 分割 + 亮度门限 + 轮廓填充率 + 灯条几何门限。
-  independent_light_enable: true
-  independent_light_binary_threshold: 120.0
-  independent_light_threshold_tolerance: 50.0
-  independent_light_color_diff_threshold: 20.0
-  independent_light_min_contour_area_px: 5.0
-  independent_light_min_fill_ratio: 0.5
-  independent_light_min_length_px: 6.0
-  # width / length，对应 dx_vision 代码默认的 length / width ∈ (2.4, 17)。
-  # 比其配置样例的 (1.8, 40) 更适合独立灯条：可排除极细背景线和近方形色块。
-  independent_light_min_width_length_ratio: 0.0588
-  independent_light_max_width_length_ratio: 0.4167
-  independent_light_max_tilt_angle_deg: 30.0
-
-  # OpenCV HSV 范围，默认值取自 dx_vision/preprocess_coefficient.yaml。
-  independent_light_red_h_min_low: 0
-  independent_light_red_h_max_low: 35
-  independent_light_red_h_min_high: 156
-  independent_light_red_h_max_high: 180
-  independent_light_red_s_min: 43
-  independent_light_red_v_min: 110
-  independent_light_blue_h_min: 80
-  independent_light_blue_h_max: 120
-  independent_light_blue_s_min: 30
-  independent_light_blue_v_min: 150
-
-  # dx_vision 默认关闭；现场出现碎点时可打开。3x3 对很远、仅 1~2 px 宽的灯条
-  # 可能偏激进，所以不默认启用。
-  independent_light_use_morphology: false
-  independent_light_morphology_width: 3
-  independent_light_morphology_height: 3
+# 数字分类（rm_auto_aim 的 mlp.onnx）：两灯条之间透视抠数字 → OTSU → MLP。
+# 只负责认出是哪辆车；类别决定整车模型的板数（前哨/基地三板）和 PnP 板型（英雄大板）。
+# 标签文件逐行对应模型输出，只认 1 2 3 4 5 outpost guard base negative。
+number_classifier:
+  model_path: "model/light_model/mlp.onnx"
+  label_path: "model/light_model/label.txt"
+  min_confidence: 0.7
 
 # L3 PnP 使用的装甲板几何尺寸。
 armor:
