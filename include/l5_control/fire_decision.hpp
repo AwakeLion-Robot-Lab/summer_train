@@ -26,7 +26,7 @@ struct FireConfig {
 struct FireInput {
   std::optional<L3Estimation::TrackedTarget> target;
   L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
-  L4Planning::Plan plan;
+  L4Planning::AimPlan plan;
 
   // 必须是 L1 回传的实际云台角，而不是上一帧命令值。
   double actual_yaw{0.0};
@@ -60,7 +60,9 @@ public:
   // 根据实体板尺寸、距离和朝向计算本帧 yaw/pitch 容差。
   // 命中窗口。要板型定宽高，还要类别定后仰角——前哨站的板反着倾。
   AimTolerance tolerance(
-    const L4Planning::Plan& plan, L3Estimation::ArmorType type,
+    const L4Planning::AimPlan& plan,
+    const std::optional<Eigen::Vector4d>& armor_pose,
+    L3Estimation::ArmorType type,
     L3Estimation::ArmorName name) const noexcept;
   const FireConfig& config() const noexcept { return config_; }
 

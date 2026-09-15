@@ -42,26 +42,6 @@ void readMilliseconds(
   value = std::chrono::milliseconds{milliseconds};
 }
 
-void readMicroseconds(
-  const YAML::Node& section,
-  const char* key,
-  std::chrono::microseconds& value)
-{
-  int microseconds = static_cast<int>(value.count());
-  readValue(section, key, microseconds);
-  value = std::chrono::microseconds{microseconds};
-}
-
-void readMillisecondsAsSeconds(
-  const YAML::Node& section,
-  const char* key,
-  double& seconds)
-{
-  double milliseconds = seconds * 1e3;
-  readValue(section, key, milliseconds);
-  seconds = milliseconds * 1e-3;
-}
-
 void readDegrees(
   const YAML::Node& section,
   const char* key,
@@ -144,65 +124,10 @@ void normalize(AutoAimConfig& config)
     }
   }
 
-  const L4Planning::ArmorPlanConfig plan_defaults;
-  config.plan.impact.max_iterations = std::max(config.plan.impact.max_iterations, 1);
-  config.plan.impact.fly_time_tolerance = std::max(
-    config.plan.impact.fly_time_tolerance, std::chrono::microseconds{1});
-  if (!std::isfinite(config.plan.impact.high_speed_delay_time) ||
-      config.plan.impact.high_speed_delay_time < 0.0) {
-    config.plan.impact.high_speed_delay_time = plan_defaults.impact.high_speed_delay_time;
-  }
-  if (!std::isfinite(config.plan.impact.low_speed_delay_time) ||
-      config.plan.impact.low_speed_delay_time < 0.0) {
-    config.plan.impact.low_speed_delay_time = plan_defaults.impact.low_speed_delay_time;
-  }
-  if (!std::isfinite(config.plan.impact.decision_speed) ||
-      config.plan.impact.decision_speed < 0.0) {
-    config.plan.impact.decision_speed = plan_defaults.impact.decision_speed;
-  }
-  if (!std::isfinite(config.plan.impact.yaw_offset)) {
-    config.plan.impact.yaw_offset = plan_defaults.impact.yaw_offset;
-  }
-  if (!std::isfinite(config.plan.impact.pitch_offset)) {
-    config.plan.impact.pitch_offset = plan_defaults.impact.pitch_offset;
-  }
-  if (!positiveFinite(config.plan.impact.fallback_bullet_speed)) {
-    config.plan.impact.fallback_bullet_speed = plan_defaults.impact.fallback_bullet_speed;
-  }
-  if (!positiveFinite(config.plan.impact.min_valid_bullet_speed)) {
-    config.plan.impact.min_valid_bullet_speed = plan_defaults.impact.min_valid_bullet_speed;
-  }
-  if (!positiveFinite(config.plan.selector.coming_angle)) {
-    config.plan.selector.coming_angle = plan_defaults.selector.coming_angle;
-  }
-  if (!positiveFinite(config.plan.selector.leaving_angle)) {
-    config.plan.selector.leaving_angle = plan_defaults.selector.leaving_angle;
-  }
-  if (!positiveFinite(config.plan.selector.outpost_coming_angle)) {
-    config.plan.selector.outpost_coming_angle =
-      plan_defaults.selector.outpost_coming_angle;
-  }
-  if (!positiveFinite(config.plan.selector.outpost_leaving_angle)) {
-    config.plan.selector.outpost_leaving_angle =
-      plan_defaults.selector.outpost_leaving_angle;
-  }
   // 标定值必须是正的有限数，否则当作没标定。
   // 弹道参数越界都是静默失效：重力为负会解出朝天的仰角，阻力系数为负会让
   // 等效距离随距离指数缩短（越远打得越准，明显是错的），max_pitch 超过 90°
   // 则失去保护意义。三者任一非法就退回结构体默认值。
-  const L4Planning::BallisticConfig ballistic_defaults;
-  if (!positiveFinite(config.plan.ballistic.gravity)) {
-    config.plan.ballistic.gravity = ballistic_defaults.gravity;
-  }
-  if (!(std::isfinite(config.plan.ballistic.drag_coefficient) &&
-        config.plan.ballistic.drag_coefficient >= 0.0)) {
-    L6Telemetry::logWarn("ballistic.drag_coefficient is invalid, using vacuum");
-    config.plan.ballistic.drag_coefficient = ballistic_defaults.drag_coefficient;
-  }
-  if (!(config.plan.ballistic.max_pitch > 0.0 &&
-        config.plan.ballistic.max_pitch < std::numbers::pi / 2.0)) {
-    config.plan.ballistic.max_pitch = ballistic_defaults.max_pitch;
-  }
 
   // 这一段**允许为负**。它名义上是"串口发出 -> 电控执行"的传输耗时，但实际
   // 标出来的是把下位机自身的前馈也算进去之后的净值：电控如果自己做了预测，
@@ -214,16 +139,6 @@ void normalize(AutoAimConfig& config)
   // 保留 ±100 ms 的范围检查——真实的传输耗时不可能有这个量级。
   // 注意范围检查只管这一段：五段加起来的 beforeFire() 若为负，说明标定本身
   // 有问题，那是要在曲线上看出来的事，不该由加载器悄悄改掉。
-  constexpr double kMaxAbsSendToControl = 0.1;
-  if (config.plan.impact.send_to_control &&
-      !(std::isfinite(*config.plan.impact.send_to_control) &&
-        std::abs(*config.plan.impact.send_to_control) <= kMaxAbsSendToControl)) {
-    L6Telemetry::logWarn(
-      "planning.send_to_control_ms out of range, treated as uncalibrated:",
-      *config.plan.impact.send_to_control * 1e3, "ms");
-    config.plan.impact.send_to_control.reset();
-  }
-
   const L5Control::FireConfig fire_defaults;
   if (!positiveFinite(config.fire.armor_width_small)) {
     config.fire.armor_width_small = fire_defaults.armor_width_small;
@@ -401,41 +316,8 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(
     estimator, "armor_yaw_distance_divisor", config.target.armor_yaw_distance_divisor);
 
-  const YAML::Node planning = root["planning"];
-  readValue(planning, "max_iterations", config.plan.impact.max_iterations);
-  readMicroseconds(
-    planning, "fly_time_tolerance_us", config.plan.impact.fly_time_tolerance);
-  readMillisecondsAsSeconds(
-    planning, "high_speed_delay_ms", config.plan.impact.high_speed_delay_time);
-  readMillisecondsAsSeconds(
-    planning, "low_speed_delay_ms", config.plan.impact.low_speed_delay_time);
-  readValue(
-    planning, "decision_speed_rad_s", config.plan.impact.decision_speed);
-  readDegrees(planning, "yaw_offset_deg", config.plan.impact.yaw_offset);
-  readDegrees(planning, "pitch_offset_deg", config.plan.impact.pitch_offset);
-  readValue(
-    planning,
-    "fallback_bullet_speed_mps",
-    config.plan.impact.fallback_bullet_speed);
-  readValue(
-    planning,
-    "min_valid_bullet_speed_mps",
-    config.plan.impact.min_valid_bullet_speed);
-  readDegrees(
-    planning, "coming_angle_deg", config.plan.selector.coming_angle);
-  readDegrees(
-    planning, "leaving_angle_deg", config.plan.selector.leaving_angle);
-  readDegrees(
-    planning, "outpost_coming_angle_deg", config.plan.selector.outpost_coming_angle);
-  readDegrees(
-    planning, "outpost_leaving_angle_deg", config.plan.selector.outpost_leaving_angle);
   // 不写这一项就表示还没在实车上标定：Planner 会把计划降级成 TrackOnly，
   // 云台照常跟随但不允许开火。写了才算标定完成。
-  if (planning && planning["send_to_control_ms"]) {
-    config.plan.impact.send_to_control =
-      planning["send_to_control_ms"].as<double>() * 1e-3;
-  }
-
   const YAML::Node fire = root["fire"];
   readValue(fire, "shoot_enable", config.fire.shoot_enable);
   readValue(fire, "armor_width_small_m", config.fire.armor_width_small);
@@ -452,12 +334,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     runtime,
     "command_jump_deg",
     config.runtime.command_jump_threshold);
-
-  const YAML::Node ballistic = root["ballistic"];
-  readValue(ballistic, "gravity", config.plan.ballistic.gravity);
-  readValue(
-    ballistic, "drag_coefficient", config.plan.ballistic.drag_coefficient);
-  readDegrees(ballistic, "max_pitch_deg", config.plan.ballistic.max_pitch);
 
   const YAML::Node debug = root["debug"];
   readValue(debug, "overlay", config.debug.overlay);

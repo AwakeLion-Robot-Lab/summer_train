@@ -30,7 +30,7 @@ struct AimOverlayInput
   const std::vector<L3Estimation::Armor>& observations;
   const std::optional<L3Estimation::TrackedTarget>& target;
   L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
-  const L4Planning::Plan& plan;
+  const L4Planning::AimPlan& plan;
   const L5Control::FireDecision& fire;
   // 曝光时刻的枪管姿态，用于把世界系点投回图像。
   const std::optional<Eigen::Quaterniond>& q_world_barrel;

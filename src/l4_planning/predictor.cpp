@@ -1,6 +1,6 @@
 #include "l4_planning/predictor.hpp"
 
-#include "l3_estimation/types.hpp"
+#include "l3_estimation/target_state.hpp"
 #include "l4_planning/types.hpp"
 
 #include <chrono>

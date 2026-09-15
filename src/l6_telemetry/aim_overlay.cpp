@@ -54,16 +54,25 @@ void drawAimOverlay(
       image, input.target->armor_xyza_list(), type, input.target->name, solver,
       {0, 255, 0}, 2);
     // 红色：Plan 选中的命中时刻实体板，它领先绿框是延迟补偿的正常结果。
-    if (input.plan.valid() && input.plan.fire.has_value()) {
-      drawVehicle(
-        image, {input.plan.fire->armor_pose}, type, input.target->name, solver,
-        {0, 0, 255}, 2);
+    if (input.plan.valid && input.plan.armor_id >= 0 &&
+        input.plan.impact_time >= input.target->t()) {
+      L3Estimation::TrackedTarget predicted = *input.target;
+      predicted.predict(input.plan.impact_time);
+      const auto predicted_armors = predicted.armor_xyza_list();
+      const auto selected = static_cast<std::size_t>(input.plan.armor_id);
+      if (selected < predicted_armors.size()) {
+        drawVehicle(
+          image, {predicted_armors[selected]}, type, input.target->name, solver,
+          {0, 0, 255}, 2);
+      }
     }
   }
 
   // 一行状态：跟踪状态、规划是否可开火、以及不开火的第一个原因。
   std::string status = trackStateName(input.track_state);
-  status += input.plan.fireAdmissible() ? " | plan:fire-ready" : " | plan:track-only";
+  status += input.plan.fire_permitted
+    ? " | plan:fire-ready"
+    : " | plan:track-only";
   if (!input.fire.reasons.empty()) {
     status += " | " + L5Control::toString(input.fire.reasons.front());
     if (input.fire.reasons.size() > 1) {

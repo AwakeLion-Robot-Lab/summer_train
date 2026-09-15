@@ -4,6 +4,7 @@
 #include "l5_control/reject_reason.hpp"
 #include "l6_telemetry/auto_aim_trace.hpp"
 #include "runtime/auto_aim_config.hpp"
+#include "runtime/l4_target_adapter.hpp"
 
 #include <cmath>
 #include <chrono>
@@ -16,11 +17,9 @@ int main()
     L3Estimation::Armor, L3Estimation::ArmorObservation>);
 
   L4Planning::Delay delay;
-  delay.image_to_plan = 0.001;
-  delay.plan_to_send = 0.002;
-  delay.send_to_control = 0.003;
-  delay.control_to_fire = 0.004;
-  delay.fire_to_hit = 0.010;
+  delay.camera_timestamp = std::chrono::steady_clock::now();
+  delay.command_timestamp = delay.camera_timestamp + std::chrono::milliseconds{10};
+  delay.fire_delay = 0.010;
   if (std::abs(delay.beforeFire() - 0.010) > 1e-12 ||
       std::abs(delay.total() - 0.020) > 1e-12) {
     std::cerr << "Delay aggregation is incorrect\n";
@@ -80,10 +79,15 @@ int main()
   L6Telemetry::AimTrace trace;
   trace.target = tracked_target;
   trace.track_state = L3Estimation::TrackState::Tracking;
-  trace.plan.status = L4Planning::PlanStatus::TrackOnly;
-  trace.plan.reason = L4Planning::PlanError::BadBulletSpeed;
+  trace.plan.valid = true;
+  trace.plan.fire_permitted = false;
   trace.fire.reasons.push_back(L5Control::RejectReason::ShootDisabled);
-  if (!trace.target || !trace.plan.valid() || trace.plan.fireAdmissible() ||
+  const auto l4_target = runtime::toL4TargetState(trace.target);
+  if (!trace.target || !l4_target ||
+      std::abs(l4_target->center.x() - tracked_target.ekf_x()[0]) > 1e-12 ||
+      l4_target->robot_id != static_cast<int>(tracked_target.name) ||
+      l4_target->timestamp != tracked_target.t() ||
+      !trace.plan.valid || trace.plan.fire_permitted ||
       trace.track_state != L3Estimation::TrackState::Tracking ||
       L5Control::toString(trace.fire.reasons.front()) != "shoot_disabled") {
     std::cerr << "AimTrace data contract is incorrect\n";

@@ -6,13 +6,15 @@
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/armor/tracker.hpp"
-#include "l4_planning/armor/planner.hpp"
+#include "l4_planning/planner.hpp"
+#include "l4_planning/planner_config.hpp"
 #include "l5_control/controller.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 #include "l6_telemetry/udp_json_sender.hpp"
 #include "runtime/auto_aim_config.hpp"
+#include "runtime/l4_target_adapter.hpp"
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
@@ -83,7 +85,7 @@ nlohmann::json telemetryFrame(
   const std::vector<L3Estimation::Armor>& observations,
   const std::optional<L3Estimation::TrackedTarget>& target,
   L3Estimation::TrackState track_state,
-  const L4Planning::Plan& plan,
+  const L4Planning::AimPlan& plan,
   const L5Control::FireDecision& fire,
   bool command_sent);
 /********************************** debug **********************************/
@@ -99,6 +101,16 @@ void AutoAimRuntime::run() {
   running_ = true;
   const AutoAimConfig auto_aim_config =
     loadAutoAimConfig("config/auto_aim.yaml");
+  L4Planning::PlannerTuning planner_tuning;
+  try {
+    planner_tuning = L4Planning::loadPlannerTuning(
+      "config/planner_config.yaml");
+  } catch (const std::exception& error) {
+    L6Telemetry::logError(
+      "failed to load planner configuration", error.what());
+    running_ = false;
+    return;
+  }
   auto camera = std::make_shared<L1Sensor::Camera>(config_path_);
   {
     std::lock_guard<std::mutex> lock(camera_mutex_);
@@ -135,7 +147,13 @@ void AutoAimRuntime::run() {
     }
   }
 
-  L4Planning::Planner planner(auto_aim_config.plan);
+  L4Planning::Planner planner(planner_tuning.planner);
+  L4Planning::PlannerContext planner_context;
+  planner_context.config = planner_tuning.planner;
+  planner_context.latency = planner_tuning.latency;
+  planner_context.armor_score_weights = planner_tuning.armor_score_weights;
+  planner_context.facing_angle_good = planner_tuning.facing_angle_good;
+  planner_context.facing_angle_bad = planner_tuning.facing_angle_bad;
   L5Control::Controller controller(
     auto_aim_config.fire,
     auto_aim_config.runtime.command_jump_threshold);
@@ -154,7 +172,7 @@ void AutoAimRuntime::run() {
     if (tracker) {
       tracker->reset();
     }
-    planner.reset();
+    planner.resetTracking();
     sendSafeHold();
   };
 
@@ -189,8 +207,6 @@ void AutoAimRuntime::run() {
   std::chrono::steady_clock::time_point timestamp;
   // "规划结束 -> 串口发出"的实测耗时。本帧的值要等规划做完才知道，所以
   // 用上一帧的量代入本帧的延迟链；这一段帧间基本恒定。
-  double measured_plan_to_send = 0.0;
-
   // 单线程同步是设计选择不是待办：自瞄的代价是开火那一刻的位置误差而不是
   // 帧率，异步流水线换来吞吐、代价是结果多滞后一帧，那一帧会进
   // Delay::image_to_plan 再被 v_yaw 放大成瞄准偏差。真正降低单帧延迟的并行
@@ -236,13 +252,11 @@ void AutoAimRuntime::run() {
           const auto actual_pose = serial.gimbalPoseAt(plan_time);
 
           // L4: 预测命中时刻、选板并解算弹道。
-          L4Planning::PlanInput plan_input;
-          plan_input.target = target;
-          plan_input.robot_state = *state;
-          plan_input.plan_time = plan_time;
-          plan_input.to_now = true;
-          plan_input.plan_to_send = measured_plan_to_send;
-          const auto plan = planner.plan(plan_input);
+          planner_context.planning_time = plan_time;
+          auto planning_state = *state;
+          planning_state.timestamp = plan_time;
+          const auto plan = planner.plan(
+            toL4TargetState(target), planning_state, planner_context);
 
           // L5: 开火判定、命令跳变检查和安全保持。
           const auto command = controller.update(
@@ -260,9 +274,6 @@ void AutoAimRuntime::run() {
           // 规划到发送的实测耗时必须在 updateCommand 之后**立刻**取。
           // 放到叠加层之后的话，画图的几毫秒会被算进 plan_to_send，而恰恰
           // 只有开着叠加层调试时才会去看这个数。
-          measured_plan_to_send = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - plan_time).count();
-
           /*************************** debug ****************************/
           // 全部排在命令下发和延迟测量之后，不占用瞄准链路的时间预算。
           if (plotter) {
@@ -364,7 +375,7 @@ nlohmann::json telemetryFrame(
   const std::vector<L3Estimation::Armor>& observations,
   const std::optional<L3Estimation::TrackedTarget>& target,
   L3Estimation::TrackState track_state,
-  const L4Planning::Plan& plan,
+  const L4Planning::AimPlan& plan,
   const L5Control::FireDecision& fire,
   bool command_sent)
 {
@@ -436,23 +447,39 @@ nlohmann::json telemetryFrame(
   }
 
   // aim: L4 规划出的云台目标姿态。**与 gimbal/ 分开**，两者同图即跟随误差。
-  data["aim"]["status"] = static_cast<int>(plan.status);
-  data["aim"]["reason"] = static_cast<int>(plan.reason);
-  if (plan.valid()) {
-    data["aim"]["yaw"] = plan.aim.yaw * kRadToDeg;
-    data["aim"]["pitch"] = plan.aim.pitch * kRadToDeg;
+  data["aim"]["valid"] = plan.valid ? 1 : 0;
+  data["aim"]["tracking_phase"] = static_cast<int>(plan.tracking_phase);
+  data["aim"]["fire_permitted"] = plan.fire_permitted ? 1 : 0;
+  if (plan.valid) {
+    const double command_yaw = plan.using_MPC && !plan.samples.empty()
+      ? plan.samples.front().yaw
+      : plan.yaw;
+    const double command_pitch = plan.using_MPC && !plan.samples.empty()
+      ? plan.samples.front().pitch
+      : plan.pitch;
+    data["aim"]["yaw"] = command_yaw * kRadToDeg;
+    data["aim"]["pitch"] = command_pitch * kRadToDeg;
   }
-  data["aim"]["armor_id"] = plan.fire ? plan.fire->armor_id : -1;
+  data["aim"]["armor_id"] = plan.armor_id;
 
   // delay: 五段延迟链。绝不合并成一个标量——上车标定 send_to_control 时
   // 要能看出是哪一段在变。
-  const L4Planning::Delay& delay = plan.timing.delay;
-  data["delay"]["image_to_plan"] = delay.image_to_plan * 1e3;
-  data["delay"]["plan_to_send"] = delay.plan_to_send * 1e3;
-  data["delay"]["send_to_control"] = delay.send_to_control * 1e3;
-  data["delay"]["control_to_fire"] = delay.control_to_fire * 1e3;
-  data["delay"]["fire_to_hit"] = delay.fire_to_hit * 1e3;
-  data["delay"]["before_fire"] = delay.beforeFire() * 1e3;
+  double image_to_plan = 0.0;
+  double before_fire = 0.0;
+  if (target && plan.generated_at >= target->t()) {
+    image_to_plan = std::chrono::duration<double>(
+      plan.generated_at - target->t()).count();
+  }
+  if (target && plan.valid && plan.impact_time >= target->t()) {
+    const auto fire_time = plan.impact_time -
+      std::chrono::duration_cast<L4Planning::TimePoint::duration>(
+        std::chrono::duration<double>(plan.fly_time));
+    before_fire = std::chrono::duration<double>(
+      fire_time - target->t()).count();
+  }
+  data["delay"]["image_to_plan"] = image_to_plan * 1e3;
+  data["delay"]["before_fire"] = before_fire * 1e3;
+  data["delay"]["fire_to_hit"] = plan.fly_time * 1e3;
 
   // fire: 可行性与实际下发分开。feasible=1 而 shoot=0 就是被 shoot_enable
   // 或跳变检查拦下来了，reason 给出第一条原因（-1 表示无拒绝）。

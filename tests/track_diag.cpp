@@ -11,8 +11,9 @@
 #include "l3_estimation/armor/pnp_solver.hpp"
 #include "l3_estimation/armor/tracker.hpp"
 #include "runtime/auto_aim_config.hpp"
-#include "l4_planning/armor/planner.hpp"
-#include "l4_planning/armor/predictor.hpp"
+#include "runtime/l4_target_adapter.hpp"
+#include "l4_planning/planner.hpp"
+#include "l4_planning/planner_config.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 
@@ -411,8 +412,15 @@ int main(int argc, char* argv[])
     require(tracker.ready(), "Tracker 拒绝了该标定");
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
-    const L4Planning::Predictor predictor;
-    L4Planning::Planner planner(runtime_config.plan);
+    const auto planner_tuning =
+      L4Planning::loadPlannerTuning("config/planner_config.yaml");
+    L4Planning::Planner planner(planner_tuning.planner);
+    L4Planning::PlannerContext planner_context;
+    planner_context.config = planner_tuning.planner;
+    planner_context.latency = planner_tuning.latency;
+    planner_context.armor_score_weights = planner_tuning.armor_score_weights;
+    planner_context.facing_angle_good = planner_tuning.facing_angle_good;
+    planner_context.facing_angle_bad = planner_tuning.facing_angle_bad;
     const double bullet_speed = cli.get<double>("bullet-speed");
 
     cv::VideoCapture video(video_path);
@@ -614,8 +622,9 @@ int main(int argc, char* argv[])
       // TempLost 这一帧没有观测进入滤波器，残差无从谈起。
       if (previous_target && target &&
           state != L3Estimation::TrackState::TempLost && dt > 1e-6) {
-        const auto prior = predictor.predict(*previous_target, dt);
-        const auto prior_armors = predictor.armorPoses(prior);
+        auto prior = *previous_target;
+        prior.predict(dt);
+        const auto prior_armors = prior.armor_xyza_list();
         std::size_t slot = 0;
         for (const auto& armor : observations) {
           if (armor.name != target->name || !armor.xyz_in_world.allFinite()) continue;
@@ -754,15 +763,29 @@ int main(int argc, char* argv[])
       robot_state.mode = L1Sensor::WorkMode::AutoAim;
       robot_state.rpy.yaw = gimbal_yaw;
       robot_state.timestamp = timestamp;
-      const auto plan = planner.plan(target, robot_state, timestamp, false);
-      const int armor_id = plan.fire ? plan.fire->armor_id : -1;
-      const double fire_facing = plan.fire
-        ? plan.fire->facingAngle()
-        : std::numeric_limits<double>::quiet_NaN();
+      planner_context.planning_time = timestamp;
+      const auto plan = planner.plan(
+        runtime::toL4TargetState(target), robot_state, planner_context);
+      const int armor_id = plan.armor_id;
+      double fire_facing = std::numeric_limits<double>::quiet_NaN();
+      if (target && plan.valid && armor_id >= 0 &&
+          plan.impact_time >= target->t()) {
+        auto impact_target = *target;
+        impact_target.predict(plan.impact_time);
+        const auto impact_armors = impact_target.armor_xyza_list();
+        const auto selected = static_cast<std::size_t>(armor_id);
+        if (selected < impact_armors.size()) {
+          const auto& pose_at_impact = impact_armors[selected];
+          fire_facing = std::remainder(
+            std::atan2(pose_at_impact.y(), pose_at_impact.x()) -
+              pose_at_impact.w(),
+            2.0 * std::numbers::pi);
+        }
+      }
 
       double aim_jump = std::numeric_limits<double>::quiet_NaN();
-      if (plan.valid() && last_aim_point) {
-        aim_jump = (plan.aim.point - *last_aim_point).norm();
+      if (plan.valid && last_aim_point) {
+        aim_jump = (plan.aim_point_world - *last_aim_point).norm();
         aim_jumps.push_back(aim_jump);
         if (armor_id != last_aim_armor_id) {
           switch_jumps.push_back(aim_jump);
@@ -770,20 +793,23 @@ int main(int argc, char* argv[])
           steady_jumps.push_back(aim_jump);
         }
       }
-      if (plan.valid()) {
-        last_aim_point = plan.aim.point;
+      if (plan.valid) {
+        last_aim_point = plan.aim_point_world;
         last_aim_armor_id = armor_id;
       } else {
         last_aim_point.reset();
         last_aim_armor_id = -1;
       }
 
-      aim_csv << frame_index << ',' << pose.seconds << ',' << (plan.valid() ? 1 : 0) << ','
-              << armor_id << ',' << plan.aim.point.x() << ',' << plan.aim.point.y() << ','
-              << plan.aim.point.z() << ',' << plan.aim.yaw * kRadToDeg << ','
-              << plan.aim.pitch * kRadToDeg << ',' << plan.timing.fly_time << ','
-              << plan.timing.delay.beforeFire() << ','
-              << (plan.fireAdmissible() ? 1 : 0) << ','
+      aim_csv << frame_index << ',' << pose.seconds << ',' << (plan.valid ? 1 : 0) << ','
+              << armor_id << ',' << plan.aim_point_world.x() << ',' << plan.aim_point_world.y() << ','
+              << plan.aim_point_world.z() << ',' << plan.yaw * kRadToDeg << ','
+              << plan.pitch * kRadToDeg << ',' << plan.fly_time << ','
+              << (target
+                    ? std::chrono::duration<double>(plan.impact_time - target->t()).count() -
+                        plan.fly_time
+                    : 0.0) << ','
+              << (plan.fire_permitted ? 1 : 0) << ','
               << fire_facing * kRadToDeg << ',' << aim_jump << '\n';
 
       // 开环预测：缓存 t 时刻外推 predict_time 后的整车，等真到那一刻再对账。
@@ -791,11 +817,12 @@ int main(int argc, char* argv[])
         PendingPrediction entry;
         entry.valid_at = timestamp +
           std::chrono::microseconds(static_cast<long long>(predict_time * 1e6));
-        const auto predicted = predictor.predict(*target, predict_time);
+        auto predicted = *target;
+        predicted.predict(predict_time);
         const Eigen::VectorXd px = predicted.ekf_x();
         entry.center = {px[0], px[2], px[4]};
         entry.yaw = px[6];
-        entry.armors = predictor.armorPoses(predicted);
+        entry.armors = predicted.armor_xyza_list();
         pending.push_back(std::move(entry));
       }
       while (!pending.empty() && pending.front().valid_at <= timestamp) {

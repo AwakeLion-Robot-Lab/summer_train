@@ -21,7 +21,7 @@ struct AimTrace {
   std::vector<L3Estimation::Armor> armors;
   std::optional<L3Estimation::TrackedTarget> target;
   L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
-  L4Planning::Plan plan;
+  L4Planning::AimPlan plan;
   L5Control::FireDecision fire;
   L5Control::SerialCommand command;
   LatencyModel latency;

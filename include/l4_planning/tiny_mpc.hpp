@@ -1,7 +1,7 @@
 #pragma once
 
 #include "l1_sensor/serial/robot_state.hpp"
-#include "l3_estimation/types.hpp"
+#include "l3_estimation/target_state.hpp"
 #include "l4_planning/types.hpp"
 
 #include <Eigen/Geometry>
