@@ -22,12 +22,6 @@ SerialProtocol::encodeCommand(const L5Control::SerialCommand &command) {
   packet.frame_header.cmd_id = kTxCmdId;
   packet.data.yaw = static_cast<float>(command.yaw);
   packet.data.pitch = static_cast<float>(command.pitch);
-  packet.data.yaw_rate = static_cast<float>(command.yaw_rate);
-  packet.data.pitch_rate = static_cast<float>(command.pitch_rate);
-  packet.data.yaw_acceleration =
-      static_cast<float>(command.yaw_acceleration);
-  packet.data.pitch_acceleration =
-      static_cast<float>(command.pitch_acceleration);
   packet.data.shoot = command.shoot ? 1 : 0;
 
   auto header_body =
@@ -245,7 +239,6 @@ RobotState SerialProtocol::toRobotState(const RxPacket &packet) {
   state.rpy.yaw = packet.data.yaw;
   state.rpy.pitch = packet.data.pitch;
   state.bullet_speed = packet.data.bullet_speed;
-  state.heat = packet.data.heat;
   state.timestamp = std::chrono::steady_clock::now();
 
   switch (packet.data.enemy_color) {

@@ -154,7 +154,6 @@ std::vector<std::uint8_t> makeStatePacket(
   packet.data.pitch = pitch;
   packet.data.yaw = yaw;
   packet.data.bullet_speed = 23.0F;
-  packet.data.heat = 42.0F;
   packet.data.enemy_color = 1;
   packet.data.mode = 1;
 
@@ -201,14 +200,7 @@ int main()
       std::cerr << "SerialWorker failed to start on pseudo terminal\n";
       result = 2;
     } else {
-      worker.updateCommand({
-        .yaw = 1.25,
-        .pitch = -0.5,
-        .yaw_rate = 2.0,
-        .pitch_rate = -1.0,
-        .yaw_acceleration = 20.0,
-        .pitch_acceleration = -30.0,
-        .shoot = true});
+      worker.updateCommand({1.25, -0.5, true});
 
       std::vector<std::uint8_t> pending;
       std::optional<std::uint8_t> previous_sequence;
@@ -233,11 +225,7 @@ int main()
         if (packet->data.shoot != 0) {
           ++shoot_packets;
           if (std::abs(packet->data.yaw - 1.25F) > 1e-6F ||
-              std::abs(packet->data.pitch + 0.5F) > 1e-6F ||
-              std::abs(packet->data.yaw_rate - 2.0F) > 1e-6F ||
-              std::abs(packet->data.pitch_rate + 1.0F) > 1e-6F ||
-              std::abs(packet->data.yaw_acceleration - 20.0F) > 1e-6F ||
-              std::abs(packet->data.pitch_acceleration + 30.0F) > 1e-6F) {
+              std::abs(packet->data.pitch + 0.5F) > 1e-6F) {
             std::cerr << "SerialWorker altered a fresh command\n";
             result = 4;
             break;
@@ -246,11 +234,7 @@ int main()
         }
 
         if (shoot_packets >= 2 && std::abs(packet->data.yaw - 1.25F) <= 1e-6F &&
-            std::abs(packet->data.pitch + 0.5F) <= 1e-6F &&
-            packet->data.yaw_rate == 0.0F
-            && packet->data.pitch_rate == 0.0F
-            && packet->data.yaw_acceleration == 0.0F
-            && packet->data.pitch_acceleration == 0.0F) {
+            std::abs(packet->data.pitch + 0.5F) <= 1e-6F) {
           saw_safe_command = true;
         }
       }
@@ -267,11 +251,7 @@ int main()
         const auto sent_command = worker.latestSentCommand();
         if (!sent_command || sent_command->shoot ||
             std::abs(sent_command->yaw - 1.25) > 1e-6 ||
-            std::abs(sent_command->pitch + 0.5) > 1e-6 ||
-            sent_command->yaw_rate != 0.0
-            || sent_command->pitch_rate != 0.0
-            || sent_command->yaw_acceleration != 0.0
-            || sent_command->pitch_acceleration != 0.0) {
+            std::abs(sent_command->pitch + 0.5) > 1e-6) {
           std::cerr << "SerialWorker did not retain the last written command\n";
           result = 8;
         }

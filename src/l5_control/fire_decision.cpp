@@ -1,211 +1,163 @@
 #include "l5_control/fire_decision.hpp"
 
+#include "l6_telemetry/math.hpp"
+
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
 namespace L5Control {
-namespace {
 
-constexpr double kPi = 3.14159265358979323846;
-
-double angleDifference(double lhs, double rhs) noexcept
-{
-  return std::remainder(lhs - rhs, 2.0 * kPi);
-}
-
-bool isFinite(double value) noexcept
-{
-  return std::isfinite(value);
-}
-
-}  // namespace
-
-FireEvaluator::FireEvaluator(FireConfig config)
-  : config_(std::move(config))
+FireDecider::FireDecider(FireConfig config) noexcept
+: config_(std::move(config))
 {
 }
 
-FireDecision FireEvaluator::evaluate(const FireInput& input)
+FireDecision FireDecider::decide(const FireInput& input) const
 {
-  FireDecision decision{};
+  FireDecision decision;
+  const auto& plan = input.plan;
 
-  double command_yaw = input.plan.yaw;
-  double command_pitch = input.plan.pitch;
-  bool command_valid = true;
+  const auto reject = [&decision](RejectReason reason) {
+    decision.reasons.push_back(reason);
+  };
 
-  if (input.plan.using_MPC) {
-    if (input.plan.samples.empty()) {
-      command_valid = false;
-    } else {
-      command_yaw = input.plan.samples.front().yaw;
-      command_pitch = input.plan.samples.front().pitch;
-    }
+  // 不短路：一次记录本帧所有拒绝原因，便于回放直接定位多个同时存在的问题。
+  if (!config_.shoot_enable) {
+    reject(RejectReason::ShootDisabled);
   }
-
-  if (!isFinite(command_yaw) || !isFinite(command_pitch)) {
-    command_valid = false;
-    decision.reasons.push_back(RejectReason::NonFinite);
-  }
-
-  const bool parameters_ready = config_.parametersReady();
-  if (!parameters_ready) {
-    decision.reasons.push_back(RejectReason::ParametersNotReady);
-  }
-
-  if (!input.calibration_ready) {
-    decision.reasons.push_back(RejectReason::MissingCalibration);
-  }
-
-  if (input.robot_state.mode == L1Sensor::WorkMode::Idle) {
-    decision.reasons.push_back(RejectReason::AutoAimDisabled);
-  }
-
-  const auto robot_state_age = input.now - input.robot_state.timestamp;
-  if (robot_state_age > config_.max_robot_state_age) {
-    decision.reasons.push_back(RejectReason::RobotStateStale);
-  }
-
-  if (robot_state_age > config_.max_gimbal_pose_age) {
-    decision.reasons.push_back(RejectReason::GimbalPoseStale);
-  }
-
-  const auto plan_age = input.now - input.plan.generated_at;
-  if (plan_age > config_.max_plan_age || !input.plan.valid || !command_valid) {
-    decision.reasons.push_back(RejectReason::PlanInvalid);
+  if (input.command_jump) {
+    reject(RejectReason::CommandJump);
   }
 
   if (!input.target.has_value()) {
-    decision.reasons.push_back(RejectReason::NoTarget);
-  }
-
-  if (!input.plan.tracking) {
-    decision.reasons.push_back(RejectReason::NotTracking);
-  }
-
-  if (!input.plan.fire_permitted) {
-    decision.reasons.push_back(RejectReason::OutsideHitWindow);
-  }
-
-  if (parameters_ready) {
-    if (input.robot_state.bullet_speed < *config_.min_bullet_speed ||
-        input.robot_state.bullet_speed > *config_.max_bullet_speed) {
-      decision.reasons.push_back(RejectReason::BadBulletSpeed);
-    }
-
-    if (input.robot_state.heat >= *config_.heat_limit) {
-      decision.reasons.push_back(RejectReason::HeatLimit);
-    }
-
-    if (command_valid &&
-        (command_yaw < *config_.min_yaw || command_yaw > *config_.max_yaw ||
-         command_pitch < *config_.min_pitch ||
-         command_pitch > *config_.max_pitch)) {
-      decision.reasons.push_back(RejectReason::OutOfRange);
-    }
-
-    const double target_distance = input.plan.aim_point_barrel.norm();
-    const bool target_is_near = target_distance <= *config_.yaw_distance_boundary;
-
-    const double max_yaw_error =
-      target_is_near ? *config_.near_max_yaw_error : *config_.far_max_yaw_error;
-    const double max_yaw_command_jump =
-      target_is_near ? *config_.near_max_yaw_command_jump
-                     : *config_.far_max_yaw_command_jump;
-
-    if (command_valid) {
-      const double yaw_error = std::abs(
-        angleDifference(command_yaw, input.robot_state.rpy.yaw));
-      const double pitch_error =
-        std::abs(command_pitch - input.robot_state.rpy.pitch);
-
-      if (yaw_error >= max_yaw_error ||
-          pitch_error > *config_.max_aim_pitch_error ||
-          pitch_error > *config_.max_pitch_error) {
-        decision.reasons.push_back(RejectReason::Unstable);
-      }
-
-      const bool yaw_command_jump =
-        last_command_yaw_.has_value() &&
-        std::abs(angleDifference(command_yaw, *last_command_yaw_)) >=
-          max_yaw_command_jump;
-      const bool pitch_command_jump =
-        last_command_pitch_.has_value() &&
-        std::abs(command_pitch - *last_command_pitch_) >
-          *config_.max_pitch_command_jump;
-
-      if (yaw_command_jump || pitch_command_jump || input.command_jump) {
-        decision.reasons.push_back(RejectReason::CommandJump);
-      }
-    }
-  }
-
-  const int current_target_id =
-    input.target.has_value() ? input.target->robot_id : input.plan.target_id;
-  const int current_armor_id = input.plan.armor_id;
-
-  const bool target_changed =
-    (last_target_id_ != -1 && current_target_id != -1 &&
-     current_target_id != last_target_id_) ||
-    (last_armor_id_ != -1 && current_armor_id != -1 &&
-     current_armor_id != last_armor_id_);
-
-  if (target_changed || input.armor_switching) {
-    decision.reasons.push_back(RejectReason::ArmorSwitching);
-    stable_tracking_frames_ = 0;
-    last_switch_time_ = input.now;
-  } else if (input.target.has_value() && input.plan.valid && input.plan.tracking) {
-    ++stable_tracking_frames_;
+    reject(RejectReason::NoTarget);
   } else {
-    stable_tracking_frames_ = 0;
+    switch (input.track_state) {
+      case L3Estimation::TrackState::Lost:
+      case L3Estimation::TrackState::Detecting:
+        reject(RejectReason::NotTracking);
+        break;
+      case L3Estimation::TrackState::TempLost:
+        // 短时丢失时状态全靠外推，位置误差随丢失时长增长，不允许开火。
+        reject(RejectReason::TempLost);
+        break;
+      case L3Estimation::TrackState::Tracking:
+        break;
+    }
   }
 
-  constexpr std::size_t required_stable_frames = 2;
-  if (stable_tracking_frames_ < required_stable_frames) {
-    decision.reasons.push_back(RejectReason::Unstable);
+  if (!plan.valid()) {
+    reject(RejectReason::PlanInvalid);
+  }
+  if (plan.reason == L4Planning::PlanError::BallisticFailed) {
+    reject(RejectReason::BallisticInvalid);
+  }
+  if (plan.reason == L4Planning::PlanError::BadBulletSpeed) {
+    reject(RejectReason::BadBulletSpeed);
+  }
+  // 延迟链没标完就开火等于按偏早的落点打，验收前必须挡住。
+  if (plan.reason == L4Planning::PlanError::DelayNotCalibrated) {
+    reject(RejectReason::DelayNotCalibrated);
+  }
+  // 命中时刻没有板落在可击发窗口内。高速小陀螺时这是常态间歇，不是故障——
+  // 云台照常跟随，只是不开火。
+  if (plan.reason == L4Planning::PlanError::OutOfWindow) {
+    reject(RejectReason::OutsideHitWindow);
+  }
+  // TrackOnly 必须有一个可解释的降级原因；否则状态与原因自相矛盾，按无效计划
+  // 安全拒绝，避免没有任何拒绝项时 fire_feasible 被误判为 true。
+  if (plan.status == L4Planning::PlanStatus::TrackOnly &&
+      plan.reason != L4Planning::PlanError::BadBulletSpeed &&
+      plan.reason != L4Planning::PlanError::DelayNotCalibrated &&
+      plan.reason != L4Planning::PlanError::OutOfWindow) {
+    reject(RejectReason::PlanInvalid);
   }
 
-  if (current_target_id != -1) {
-    last_target_id_ = current_target_id;
-  }
-  if (current_armor_id != -1) {
-    last_armor_id_ = current_armor_id;
-  }
-
-  if (input.plan.valid && command_valid) {
-    last_command_yaw_ = command_yaw;
-    last_command_pitch_ = command_pitch;
-    last_fly_time_ = input.plan.fly_time;
+  // 只验 MCU 回传的实际角：plan.aim 的有限性由 Planner 保证。
+  if (!std::isfinite(input.actual_yaw) || !std::isfinite(input.actual_pitch)) {
+    // 无法计算实际瞄准误差时，本帧必须关火；前面已经收集的原因仍然保留。
+    reject(RejectReason::NonFinite);
+    decision.shoot = false;
+    return decision;
   }
 
-  decision.fire_feasible = decision.reasons.empty();
+  // 命中判据：实际枪管指向与规划角之差必须落在实体板的角度投影内。
+  const auto armor_type =
+    input.target.has_value() ? L3Estimation::armorTypeOf(input.target->name)
+                             : std::optional<L3Estimation::ArmorType>{};
+  const auto armor_name = input.target.has_value()
+    ? input.target->name
+    : L3Estimation::ArmorName::Unknown;
+  decision.tolerance = tolerance(
+    plan, armor_type.value_or(L3Estimation::ArmorType::Small), armor_name);
+  decision.yaw_error =
+    std::abs(L6Telemetry::limit_rad(plan.aim.yaw - input.actual_yaw));
+  decision.pitch_error =
+    std::abs(L6Telemetry::limit_rad(plan.aim.pitch - input.actual_pitch));
 
-  if (!config_.shoot_enable) {
-    decision.reasons.push_back(RejectReason::ShootDisabled);
+  if (!decision.tolerance.valid) {
+    // 没有实体装甲板可判——中心档下这意味着这一帧本来就不该开火。
+    reject(RejectReason::AimError);
+  } else if (
+    decision.yaw_error > decision.tolerance.yaw ||
+    decision.pitch_error > decision.tolerance.pitch) {
+    reject(RejectReason::AimError);
   }
 
+  // ShootDisabled 只控制最终输出，不改变理论开火窗口；因此关闭总开关时仍能
+  // 通过 fire_feasible 观察判定时序。
+  const bool only_disabled = std::all_of(
+    decision.reasons.begin(), decision.reasons.end(),
+    [](RejectReason reason) { return reason == RejectReason::ShootDisabled; });
+
+  decision.fire_feasible = only_disabled;
   decision.shoot = decision.fire_feasible && config_.shoot_enable;
   return decision;
 }
 
-void FireEvaluator::reset() noexcept
+AimTolerance FireDecider::tolerance(
+  const L4Planning::Plan& plan, L3Estimation::ArmorType type,
+  L3Estimation::ArmorName name) const noexcept
 {
-  last_target_id_ = -1;
-  last_armor_id_ = -1;
-  last_command_yaw_.reset();
-  last_command_pitch_.reset();
-  last_fly_time_.reset();
-  stable_tracking_frames_ = 0;
-  last_switch_time_ = {};
-}
+  AimTolerance result;
+  if (!plan.fire.has_value() || plan.fire->armor_id < 0) {
+    return result;
+  }
 
-bool evaluateFire(const L4Planning::AimPlan& plan)
-{
-  return shouldFire(plan);
-}
+  const Eigen::Vector3d point = plan.fire->point();
+  const double horizontal = std::hypot(point.x(), point.y());
+  const double slant = std::hypot(horizontal, point.z());
+  if (!std::isfinite(horizontal) || horizontal < 1e-3 || !std::isfinite(slant)) {
+    return result;
+  }
 
-bool shouldFire(const L4Planning::AimPlan& plan)
-{
-  return plan.valid && plan.fire_permitted;
+  const double width = type == L3Estimation::ArmorType::Big
+                         ? config_.armor_width_big
+                         : config_.armor_width_small;
+
+  // 板面斜对枪口时，水平可命中宽度按 cos(facing_angle) 收缩。
+  // 正对时取完整宽度，接近侧对时逐渐收紧到最小 yaw 容差。
+  const double facing = std::abs(std::cos(plan.fire->facingAngle()));
+  const double half_width = 0.5 * width * config_.hit_margin_ratio * facing;
+
+  // 竖直方向同理，只是收缩量由两个角相加决定：装甲板本身后仰 α，视线仰角 β，
+  // 可见高度是 h·|cos(α + β)|。板顶后仰、又从下往上看时两者叠加，可命中的
+  // 竖直窗口比板高小得多；俯角恰好抵消后仰时（α + β = 0）才看到完整板高。
+  //
+  // 用视线仰角而不是枪管 pitch：枪管 pitch 含弹道抬升，不是看过去的方向，
+  // 而这里要的是"从射手位置看这块板有多高"。
+  const double line_of_sight_pitch = std::atan2(point.z(), horizontal);
+  const double tilt =
+    std::abs(std::cos(L3Estimation::armorPitchOf(name) + line_of_sight_pitch));
+  const double half_height =
+    0.5 * config_.armor_height * config_.hit_margin_ratio * tilt;
+
+  // yaw 是水平角，用水平距离；pitch 是竖直角，用斜距。
+  result.yaw = std::max(std::atan2(half_width, horizontal), config_.min_yaw_tolerance);
+  result.pitch = std::max(std::atan2(half_height, slant), config_.min_pitch_tolerance);
+  result.valid = std::isfinite(result.yaw) && std::isfinite(result.pitch);
+  return result;
 }
 
 }  // namespace L5Control

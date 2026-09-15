@@ -13,58 +13,64 @@ Each text row is:
 timestamp_seconds quaternion_w quaternion_x quaternion_y quaternion_z
 ```
 
+`records/*.avi` and `records/*.txt` use the same format, and `auto_aim_test`
+defaults to `records/3m_high`.
+
 `camera_calibration.yaml` converts the matching camera calibration and
 `camera -> gimbal` transform from `sp_vision_25-main/configs/demo.yaml` into
-newvision's calibration schema. The replay applies SP's recorded IMU-body axis
-conversion before passing the exposure-time pose to `L3Estimation::Tracker`.
+newvision's calibration schema. It is calibrated under SP's convention, so
+replays that use it must run with `--convention=sp`, which applies SP's
+two-sided IMU-body axis flip before the exposure-time pose reaches
+`L3Estimation::Tracker`. The default is `--convention=imu`, this project's
+single-sided form, which suits `config/camera_config.yaml`.
 
-Run from the `newvision` directory:
+Run this dataset from the `newvision` directory:
 
 ```text
 xmake f --use_openvino=y
-xmake build auto_aim_test
-xmake run auto_aim_test
+xmake run auto_aim_test -- tests/data/sp_auto_aim/demo \
+  -c=tests/data/sp_auto_aim/camera_calibration.yaml --convention=sp
 ```
 
-The default run is headless and writes per-frame data to
-`logs/sp_auto_aim_replay.csv`. Display the replay at 30 FPS with:
+`--calibration` defaults to `config/camera_config.yaml`, so this dataset needs `-c=` to point back at its
+own calibration. Flags must use `-c=value`; `cv::CommandLineParser` does not accept a space-separated
+`-c value`.
 
-```text
-xmake run auto_aim_test -- --show=true
-```
+The test needs a display. It opens two windows:
 
-The overlay is generated only by the test executable. Following SP-Vision's
-`auto_aim_test`, it generates every physical armor pose from the current EKF
-target and reprojects all armor outlines in green. The display loop also
-matches SP-Vision and calls `cv::waitKey(30)` after each processed frame, so
-the actual playback rate includes inference and drawing time and can be below
-30 FPS.
+- `reprojection` — detector corners in red/blue, plus every physical armor of
+  the current EKF vehicle reprojected in green, following SP-Vision's
+  `auto_aim_test`. In orange, the same vehicle extrapolated `--predict-time`
+  seconds ahead by `L4Planning::Predictor` (constant velocity *and* constant
+  yaw rate), so the orange-to-green offset is exactly what delay compensation
+  has to absorb; `--predict-time=0` turns it off. The rotation center is a
+  filled green dot now, a hollow orange circle predicted, joined by a line.
+  `cv::waitKey(--wait)` runs after each processed frame, so playback includes
+  inference and drawing time; `--wait=0` steps frame by frame on any key.
+  `q` or Escape quits.
+- `pnp cost` — the PnP yaw-search cost curve for the armor the tracker is
+  currently associated with (or, when there is no target, the detection nearest
+  the image center).
 
-The green vehicle overlay is display-only stabilized: consecutive projected
-corners use an exponential smoothing factor of 0.4, and a missing projection
-is retained in dark green for at most five frames. A jump larger than 120
-pixels bypasses smoothing to avoid drawing a long false trail. This does not
-modify Tracker state, association, CSV values, or the IPPE diagnostics.
+The cost is exactly what `PnpSolver::armor_reprojection_error` minimizes: the
+sum of the four corner reprojection distances under the SP fixed-pitch armor
+model. It is sampled every 0.5 degrees across the solver's own ±70 degree
+window, centered on the barrel yaw. Vertical markers show the raw single-PnP
+yaw (`raw`), the yaw the solver returned (`solver`), the current EKF armor yaw
+(`ekf`), and that armor's predicted yaw (`pred`); the red dot is the sampled
+minimum. The `local minima` counter in
+the header turns orange above 1 — that is the condition under which any
+unimodal search (ternary/golden-section) can converge to the wrong branch.
 
-When `--show=true`, a second `newvision yaw cost` window plots the exact
-one-dimensional cost used by the current 140-degree yaw scan: the sum of the
-four corner reprojection distances with the SP fixed-pitch model. It marks the
-lower- and higher-RMSE IPPE solutions, the searched observation yaw, and the
-closest EKF armor yaw. The replay CSV contains the same values per frame.
+The same values, plus the observation and EKF state, are streamed as JSON to
+`127.0.0.1:9870` for PlotJuggler.
 
-The IPPE branch reported as `EKF-nearest` is diagnostic only. The current
-production path still calls single-result `solvePnP`, applies the yaw scan,
-and sends only that searched yaw to the EKF; the test recomputes both IPPE
-solutions without changing Tracker behavior.
+The replay runs with `TrackerConfig::require_quality = false`, so an observation
+only has to be a committed `single_pnp` pose to reach the EKF. That keeps the
+green and orange overlays alive while `ArmorQuality` is still being reworked;
+`--require-quality=true` restores the real-robot gate, and the summary line
+`观测门限` states which one was used.
 
-Press Space to pause or resume, `n` to advance one frame while paused, and
-`q` or Escape to quit. To reproduce the full-replay filter state around a
-reported frame, keep `--start-index=0` and use, for example:
-
-```text
-xmake run auto_aim_test -- --show=true --show-from-index=380 --end-index=390
-```
-
-Frames before 380 are processed without display delay, so Tracker reaches the
-same state as the full replay. Starting directly at frame 380 would instead
-initialize a fresh Tracker and is not equivalent.
+`--start-index` seeks the video and the text file together, so the Tracker
+starts cold at that frame and its filter state is not equivalent to a full
+replay that reaches the same frame.

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "l2_perception/armor.hpp"
-#include "l3_estimation/types.hpp"
+#include "l3_estimation/armor/target_estimator.hpp"
 #include "l4_planning/types.hpp"
 #include "l5_control/fire_decision.hpp"
 #include "l5_control/serial_command.hpp"
@@ -18,9 +18,10 @@ namespace L6Telemetry {
 struct AimTrace {
   FrameTrace frame;
   std::vector<L2Perception::Armor> detections;
-  std::vector<L3Estimation::ArmorObservation> armors;
-  std::optional<L3Estimation::TargetState> target;
-  L4Planning::AimPlan plan;
+  std::vector<L3Estimation::Armor> armors;
+  std::optional<L3Estimation::TrackedTarget> target;
+  L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
+  L4Planning::Plan plan;
   L5Control::FireDecision fire;
   L5Control::SerialCommand command;
   LatencyModel latency;

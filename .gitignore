@@ -1,7 +1,49 @@
-# XMake local state and generated build outputs.
+# xmake and build outputs
 /.xmake/
 /build/
-/.deps/
-/logs/
-/video/
-/simulator/
+/install/
+/out/
+
+# CMake-generated files
+/CMakeCache.txt
+/CMakeFiles/
+/cmake_install.cmake
+/compile_commands.json
+/cmake-build-*/
+
+# Runtime-generated logs and traces
+/logs/*
+!/logs/.gitkeep
+
+# Test and coverage artifacts
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+/Testing/
+
+# Editor and language-server files
+/.clangd/
+/.ccls-cache/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Crash dumps
+/core
+/core.*
+/vgcore.*
+
+# 离线回放录像：单个 avi 数百 MB，records/ 整体 3 GB，不进仓库
+/records/
+/tests/
+
+# OpenVINO GPU 编译时吐出的 kernel 诊断文件
+/kernel.errors.txt

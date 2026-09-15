@@ -1,0 +1,232 @@
+# 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
+inference:
+  backend: "openvino"
+  # model_path 和下面的 decoder.layout 必须成对修改。已验证的组合：
+  #   model/armor_model/yolov5.xml       -> yolov5_22   （SP-Vision 自带）
+  #   model/armor_model/szu-v5n.xml      -> yolov5_22   （深大 Infantry-v5n）
+  #   model/armor_model/szu-v8n-fp16.onnx-> yolov8_21   （深大 Infantry-v8n）
+  # szu-v8n 的 .xml/.bin 需要较新的 OpenVINO 运行时（2023.1 读不了它的
+  # MaxPool），旧运行时必须走同名 .onnx。
+  model_path: "model/armor_model/szu-v5n.xml"
+  device: "CPU"
+
+  # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
+  # 训练/导出时模型期望的颜色顺序。宿主侧输入恒为 uint8 NHWC BGR，
+  # 转换在后端内部完成。取值 rgb / bgr。
+  #
+  # 必须是 rgb。sp_vision 自己的 tasks/auto_aim/yolos/yolov5.cpp 就是
+  # set_color_format(BGR) + convert_color(RGB)，深大那两个模型同理。
+  # 写成 bgr 会让颜色分支判成相反的颜色（红蓝对调），敌我过滤随之反向，
+  # 同时置信度普遍下降约 0.1。
+  model_color_order: "rgb"
+  # 像素归一化的除数（不是乘数）。255 表示除到 [0, 1]。
+  normalization_divisor: 255.0
+
+  # ---- 后端调度：只影响算子怎么排，不改变数值结果 ----
+  # 改这几项不需要重新验证识别精度，但必须重新测帧耗时。
+  # 下面三项只有 OpenVINO 的 CPU 插件认识；device 是 GPU 或用 TensorRT 时
+  # 后端会静默跳过。
+  #
+  # 单帧同步链路要的是单次延迟而不是吞吐，正常保持 true。
+  # 改成 false 会按吞吐编译，批量场景更快，自瞄更慢。
+  latency_hint: true
+  #
+  # 推理线程数，0 表示交给 OpenVINO 自决。
+  #
+  # 的噪声里（默认 10.49 / 8线程+P核 10.34 / 8线程+E核 10.61 / 4线程 13.86）。
+  # 只有线程数少到 4 才明显变慢。所以除非换了模型或换了机器，保持默认即可，
+  # 不必在这里花时间。
+  num_threads: 8
+  #
+  # 大小核调度：any（插件默认，P/E 混用）/ pcore（只用性能核）/ ecore（只用能效核）。
+  # ecore 是给"把 P 核让给别的进程"这种取舍用的，不是为了快。
+  scheduling_core_type: "pcore"
+  #
+  # 超线程。不写这一项表示保持 OpenVINO 默认。
+  # 同一物理核上的两个逻辑线程共享执行单元和 L1/L2，算子级并行下互相抢资源，
+  # 单次延迟往往不降反升，所以关掉它通常和 pcore 一起用。吞吐场景相反，
+  # 因此这里不给默认值。
+  # enable_hyper_threading: false
+
+  # ---- 输出契约：和 model_path 成对，配错不会报错，只会解出垃圾角点 ----
+  decoder:
+    # yolov5_22：[1, 25200, 22]，输出名 output，字段为
+    #   0~7 四角点 / 8 objectness logit / 9~12 颜色 / 13~21 九类。
+    # yolov8_21：[1, 21, 6300]，输出名 output0，channels-first，字段为
+    #   0~3 颜色 / 4~12 九类 / 13~20 四角点，没有 objectness 通道，
+    #   置信度取类别分支最大值且已过 sigmoid。
+    layout: "yolov5_22"
+    # 下面四项在 layout 预设之上覆盖，缺省则用预设值。
+    # yolov5_22 预设：0.7 / 0.8 / 0.3 / 0.7（对齐 SP demo）
+    # yolov8_21 预设：0.5 / 0.5 / 0.2 / 0.5（对齐上游部署库）
+    # 两种模型的置信度分布不同（objectness vs 类别分数），阈值不要互相照抄。
+    # confidence_threshold: 0.7
+    # minimum_confidence: 0.8
+    # nms_iou_threshold: 0.3
+    # nms_score_threshold: 0.7
+
+# 传统灯条精修。网络给出四点后在其 ROI 内跑一次传统灯条检测，两侧端点到网络
+# 角点的距离和小于 max_endpoint_distance_px 时，才用传统端点覆盖网络角点；
+# 覆盖不了就保留网络的。角点抖 1 px 在 5 m 处就是单板 yaw 抖好几度，所以这几个
+# 数值得按场地光照实调，用 `xmake run armor_refiner_video_test --headless=true`
+# 看 refined / network_kept / rejected 的比例。
+#
+# 默认值取自 sp_vision 的 configs/standard3.yaml。
+refiner:
+  enable: true
+  # 最常动的一个：场地偏暗调低，曝光偏亮调高。取值须在 (0, 255) 内。
+  binary_threshold: 150.0
+  # 灯条筛选：长度下限、与竖直方向的最大夹角、长宽比区间。
+  min_lightbar_length_px: 8.0
+  max_angle_error_deg: 45.0
+  min_lightbar_ratio: 1.5
+  max_lightbar_ratio: 20.0
+  # 传统端点到网络角点的距离和上限。放大会让传统解无条件覆盖网络解，
+  # 光照不好时反而更差。
+  max_endpoint_distance_px: 15.0
+
+# L3 PnP 使用的装甲板几何尺寸。
+armor:
+  small_width_m: 0.135
+  big_width_m: 0.230
+  height_m: 0.056
+  # 预留的角点噪声参数，当前 PnP 搜索尚未使用。
+  corner_noise_px: 1.0
+
+# L3 跟踪状态机参数。
+tracker:
+  # 连续命中多少帧后，从 Detecting 切换到 Tracking。
+  min_detect_count: 5
+  # 相邻帧间隔超过该值时，放弃旧目标并重新初始化。
+  max_frame_interval_ms: 100
+  # Tracking 连续丢失多少帧后切换到 Lost。
+  max_temp_lost_count: 15
+  outpost_max_temp_lost_count: 75
+
+# L3 整车 EKF 的噪声。这两组是靠回放标定的主要旋钮：改完必须重跑
+# `xmake run track_diag` 看单步创新和 NIS 失败率，不要凭感觉调。
+# 半径物理范围、前哨固定转速这类物理常量仍在代码里，不在这里配。
+estimator:
+  # 过程噪声强度。平移与高度用 q_translation，整车 yaw 用 q_rotation。
+  q_translation: 100.0
+  q_rotation: 400.0
+  # 前哨站转速固定、轨迹规整，过程噪声显著更小。
+  outpost_q_translation: 10.0
+  outpost_q_rotation: 0.1
+  # 方位角/俯仰角的观测方差，常量。4e-3 对应 sigma 约 3.6 度。
+  angle_variance: 0.004
+  # 距离方差 = factor * d^2 * (1 + delta_angle^2)。
+  # 单板 PnP 的深度误差来自角点视差而视差 ∝ 1/d，所以方差 ∝ d^2；
+  # 斜视时两条灯条在像素上靠拢，深度进一步变差。
+  # 0.0625 使 4 m 正视处的方差等于 1.0 m^2。
+  distance_variance_factor: 0.0625
+  # 板 yaw 方差 = base + log1p(d) / divisor。
+  armor_yaw_variance_base: 0.09
+  armor_yaw_distance_divisor: 200.0
+
+# L4 定点规划。根据整车 yaw 角速度选择高、低速发射延迟。
+planning:
+  # 飞行时间与目标命中位置相互影响时，允许进行的最大迭代次数。
+  max_iterations: 10
+  # 相邻两轮飞行时间差小于该值即认为收敛，单位 us；1000 us = 1 ms。
+  fly_time_tolerance_us: 1000
+  # v_yaw > decision_speed_rad_s 时采用的发射延迟，单位 ms。
+  high_speed_delay_ms: 30
+  # v_yaw 不超过阈值（包括负向旋转）时采用的发射延迟，单位 ms。
+  low_speed_delay_ms: 15
+  # 高、低速延迟的有符号 yaw 角速度分界，单位 rad/s。
+  decision_speed_rad_s: 8.0
+  #########静止靶须调########
+  # 最终 yaw 命令的固定零偏，单位 degree。
+  yaw_offset_deg: 0.0
+  # 弹道 pitch 的固定零偏，单位 degree；加入弹道仰角后再按世界系约定取反。
+  pitch_offset_deg: 0.0
+  ##########################
+  # 实测弹速无效时用于继续生成跟随角的回退弹速，单位 m/s。
+  fallback_bullet_speed_mps: 23.0
+  # 实测弹速低于该值时使用回退弹速，并把 Plan 降级为 TrackOnly，禁止开火。
+  min_valid_bullet_speed_mps: 14.0
+  # 候选板进入角：板面相对视线的误差需小于该值，单位 degree。
+  # 常规车和旋转目标两条选板分支都用它。
+  coming_angle_deg: 60.0
+  # 结合旋转方向排除即将离开可击打区域的装甲板，单位 degree。
+  leaving_angle_deg: 20.0
+  # 前哨站转速固定、板面更窄，进入角放宽、离开角收紧，单独配一组。
+  outpost_coming_angle_deg: 70.0
+  outpost_leaving_angle_deg: 30.0
+
+  # ---- 延迟链的实车标定段 ----
+  # 五段延迟里，image_to_plan 和 plan_to_send 由 runtime 每帧实测，
+  # control_to_fire 用上面的高低速档，fire_to_hit 是弹道飞行时间；
+  # 只有"串口发出 -> 电控执行"这一段测不到，必须在实车上标。
+  #
+  # 不写这一项 = 还没标定：Planner 把计划降级成 TrackOnly，云台照常跟随，
+  # 但 L5 会以 delay_not_calibrated 拒绝开火。验收标完再取消注释。
+  #
+  # 允许为负。名义上是传输耗时，实际标出来的是扣掉下位机自身前馈之后的净值：
+  # 电控如果自己做了预测，净值就是负的（rm.cv.fans 的实测配置是 -18 ms）。
+  # 只有非有限值和超出 ±100 ms 才会被判为无效并退回未标定——那个范围是用来
+  # 挡量纲写错的（本项单位是 ms，写成 s 会大 1000 倍）。
+  #
+  # 标法：曲线上看 aim/yaw 的阶跃到 gimbal/yaw 开始响应之间的延迟，减掉
+  # delay/plan_to_send。填对之后 fire/reason 应该从 7(DelayNotCalibrated)
+  # 变成 0(ShootDisabled)。
+  # send_to_control_ms: 5.0
+
+# 弹道模型。drag_coefficient = 0 即真空，与不写这一节的行为逐位相同。
+#
+# 模型是 dv/dt = -k*v^2 的水平分量闭式解：把真实距离 d 换成等效距离
+# A = (e^(k*d) - 1) / k，其余照抛物线解。k=0 时 A 退化为 d。
+#
+# k 怎么取：按 k = rho*Cd*A/(2m) 算，17mm 弹丸（r=8.4mm, m=3.2g）约 0.019，
+# 42.5mm 英雄弹约 0.0095。awakening 用的 0.092 是同一个公式形式，但比 17mm
+# 的物理值高 4.8 倍，那是他们打靶拟合出来的经验值，不要直接抄。
+#
+# 什么时候需要开：23 m/s、k=0.019 时，真空解的落点偏低量
+#   3m 0.3cm   5m 1.3cm   7m 3.6cm   8m 5.4cm
+# 小装甲板半高 6.25cm，所以 7m 以内可以保持 0。
+#
+# 标定顺序：必须先用静止靶标好 planning.pitch_offset_deg 再标这里。零偏是
+# 常数、阻力随距离增长，不先分离的话两个参数会互相吃掉，得到一组"近处准、
+# 远处偏"或者反过来的参数。
+ballistic:
+  gravity: 9.7833
+  drag_coefficient: 0.0
+  # 解出的仰角超过该值判为无解，防止近距离奇异解把枪管指向天上。
+  max_pitch_deg: 72.0
+
+# L5 开火闸门。shoot_enable=false 时仍会跟随，但不会发出开火位。
+fire:
+  # 最终发射总开关；关闭时仍计算 fire_feasible，便于无弹调试。
+  shoot_enable: false
+  # 只把装甲板中心区域视为可命中；0.6 表示使用板面宽、高的中央 60%。
+  hit_margin_ratio: 0.6
+  # 根据板宽和距离算出的 yaw 容差下限，单位 degree。
+  min_yaw_tolerance_deg: 0.5
+  # 根据板高和距离算出的 pitch 容差下限，单位 degree。
+  min_pitch_tolerance_deg: 0.5
+
+# runtime 只管相邻命令跳变，不会修改 L4 预测结果。
+runtime:
+  command_jump_deg: 10.0
+
+# 调试叠加层。实机默认全关：cv::imshow 在 1440x1080 上要几毫秒，会计进
+# L4Planning::Delay 的 image_to_plan；而且比赛用的 NUC 上没有显示器，
+# 打开会直接抛。串流调试时把 overlay 改成 true。
+#
+# 画的内容：蓝框=L2 网络原始角点，绿框+绿箭头=真正送进滤波器的单板 PnP，
+# 绿色整车=EKF 展开的全部物理板，红框=Plan 选中的命中时刻板，
+# 顶部一行=跟踪状态 / 计划状态 / 第一条开火拒绝原因。
+debug:
+  overlay: true
+  # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
+  overlay_every: 30
+
+  # PlotJuggler 曲线遥测，UDP 发到 plot_host:plot_port。与 overlay 分开开关：
+  # 上车标定 planning.send_to_control_ms 时机器上没有显示器，要的正好是曲线。
+  # 节点分成 gimbal / track / obs / ekf / aim / delay / fire 七支，其中
+  # gimbal 是实测云台姿态、aim 是规划出的云台姿态，两者同图即跟随误差。
+  # 角度一律 degree，时间一律 ms。
+  plot: false
+  plot_host: "127.0.0.1"
+  plot_port: 9870

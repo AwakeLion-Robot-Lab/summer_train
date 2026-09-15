@@ -28,7 +28,6 @@ public:
     float yaw = 0.0F;
     float pitch = 0.0F;
     float bullet_speed = 0.0F;
-    float heat = 0.0F;
     std::uint8_t enemy_color = 2;
     std::uint8_t mode = 0;
   };
@@ -37,14 +36,8 @@ public:
   struct __attribute__((packed)) TxPayload {
     float yaw = 0.0F;
     float pitch = 0.0F;
-    float yaw_rate = 0.0F;
-    float pitch_rate = 0.0F;
-    float yaw_acceleration = 0.0F;
-    float pitch_acceleration = 0.0F;
     std::uint8_t shoot = 0;
   };
-  static_assert(sizeof(TxPayload) == 25,
-                "TxPayload wire layout changed; update lower-controller protocol");
 
   // 完整接收帧：帧头 + 状态数据 + CRC16。
   struct __attribute__((packed)) RxPacket {

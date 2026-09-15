@@ -32,12 +32,12 @@ public:
     std::shared_ptr<const void> owner);
 
   // Decoder 统一通过这个只读 span 访问数据，不关心数据来自 vector 还是后端零拷贝视图。
-  [[nodiscard]] std::span<const float> values() const noexcept;
+  std::span<const float> values() const noexcept;
 
   // shape 各维相乘得到理论元素数，例如 {1, 3, 640, 640} -> 1,228,800。
-  [[nodiscard]] std::size_t elementCount() const noexcept;
+  std::size_t elementCount() const noexcept;
   // 用于在 Decoder 前发现“shape 与实际数据长度不匹配”的后端错误。
-  [[nodiscard]] bool isConsistent() const noexcept;
+  bool isConsistent() const noexcept;
 
 private:
   std::vector<float> owned_data_;
@@ -48,13 +48,22 @@ private:
   std::shared_ptr<const void> external_owner_;
 };
 
+// 模型输出节点的名字和形状，不含数据。用于在不做完整推理解码的前提下
+// 描述一个输出——例如启动阶段探测模型契约。与 InferenceInputSpec 对称，
+// 但放在这里而不是 backend 头里：解码侧要用它，却不该知道后端的存在。
+struct InferenceOutputSpec
+{
+  std::string name;
+  std::vector<std::size_t> shape;
+};
+
 // 一次推理可拥有多个输出张量，例如检测头、分割头或姿态头。
 struct InferenceResult
 {
   std::vector<InferenceTensor> outputs;
 
   // Decoder 优先按名字找输出，避免依赖“第 0 个输出”的不稳定顺序。
-  [[nodiscard]] const InferenceTensor* findOutput(std::string_view name) const noexcept;
+  const InferenceTensor* findOutput(std::string_view name) const noexcept;
 };
 
 }  // namespace L2Perception

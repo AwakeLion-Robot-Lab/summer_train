@@ -1,4 +1,4 @@
-#include "l3_estimation/tracker.hpp"
+#include "l3_estimation/armor/tracker.hpp"
 
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
@@ -11,23 +11,21 @@
 namespace L3Estimation {
 namespace {
 
-[[nodiscard]] bool validTrackerConfig(const TrackerConfig& config) noexcept
+bool validTrackerConfig(const TrackerConfig& config) noexcept
 {
   return config.min_detect_count > 0 &&
          config.max_frame_interval > std::chrono::milliseconds::zero() &&
          config.max_temp_lost_count > 0 &&
          config.outpost_max_temp_lost_count > 0 &&
-         config.outpost_max_temp_lost_count >= config.max_temp_lost_count &&
-         config.ekf_max_iterations >= 1 &&
-         config.ekf_step_threshold > 0.0;
+         config.outpost_max_temp_lost_count >= config.max_temp_lost_count;
 }
 
-[[nodiscard]] bool isBase(ArmorName name) noexcept
+bool isBase(ArmorName name) noexcept
 {
   return name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
 }
 
-[[nodiscard]] bool badRecentNis(const TrackedTarget& target)
+bool badRecentNis(const TrackedTarget& target)
 {
   // 最近窗口中至少 40% 的更新超过 NIS 门限时认为滤波持续异常。
   const auto& ekf = target.ekf();
@@ -59,9 +57,11 @@ Armor toArmorObservation(
 Tracker::Tracker(
   const L1Sensor::CameraCalibration& calibration,
   ArmorConfig armor_config,
-  TrackerConfig tracker_config)
+  TrackerConfig tracker_config,
+  TargetConfig target_config)
   : armor_config_(armor_config),
     tracker_config_(tracker_config),
+    target_config_(target_config),
     pnp_solver_(calibration, armor_config_),
     image_center_{
       static_cast<float>(calibration.image_size.width) * 0.5F,
@@ -80,7 +80,7 @@ TrackState Tracker::state() const noexcept
   return state_;
 }
 
-std::optional<TargetState> Tracker::track(
+std::optional<TrackedTarget> Tracker::track(
   const std::vector<L2Perception::Armor>& detections,
   const std::optional<Eigen::Quaterniond>& q_world_barrel,
   TimePoint timestamp)
@@ -99,6 +99,11 @@ std::optional<TargetState> Tracker::track(
     pnp_solver_.single_pnp(observations_.back());
   }
 
+  // 单板结果全部就位后再做一遍双板联合 yaw。必须放在这里而不是循环内：配对
+  // 需要同帧另一块板的世界系位置，而位置本身来自各自的单板 PnP。
+  pnp_solver_.refine_double_armor(observations_);
+
+
   // 时间戳倒退或跟踪期间帧间隔过大时，旧运动状态不再可信。
   if (last_timestamp_) {
     const auto elapsed = timestamp - *last_timestamp_;
@@ -111,7 +116,10 @@ std::optional<TargetState> Tracker::track(
   }
   last_timestamp_ = timestamp;
 
-  // Lost 状态用最优观测初始化，其余状态先预测再尝试关联更新。
+  // 逐行对应 sp_vision 的主相机 Tracker::track：Lost 时从已排序观测
+  // 中初始化，其余状态只关联当前车辆类别。sp 只在带全向感知队列的
+  // 另一个重载中才会在 Tracking 期间按优先级强制切目标；本管线没有
+  // 那路输入，不能把单帧分类抖动当成切车信号。
   auto armors = usableObservations();
   bool found = false;
   if (state_ == TrackState::Lost) {
@@ -143,7 +151,7 @@ std::optional<TargetState> Tracker::track(
     return std::nullopt;
   }
 
-  return target_->toTargetState(state_, found);
+  return *target_;
 }
 
 const std::vector<Armor>& Tracker::observations() const noexcept
@@ -168,10 +176,13 @@ void Tracker::reset() noexcept
 
 bool Tracker::observationUsable(const Armor& armor) const noexcept
 {
-  // 观测必须通过全部 PnP 质量检查、类别有效且像素面积达到门限。
-  return armor.quality.valid() &&
-         armor.name != ArmorName::Unknown &&
-         std::isfinite(armor.area) && armor.area >= armor_config_.min_area;
+  // 唯一的门限是"single_pnp 是否成功提交了位姿"：name 只在提交的那一步才被
+  // 赋值，任何失败路径上都保持 Unknown。
+  //
+  // sp_vision 连这一条都没有——它的 Solver::solve() 无条件写位姿，没有失败
+  // 路径可言。这里保留它不是额外的质量门，而是因为 single_pnp 在标定缺失、
+  // 曝光时刻姿态缺失、角点非有限时会提前返回，不筛掉就会把零位姿喂进 EKF。
+  return armor.name != ArmorName::Unknown && armor.xyz_in_world.allFinite();
 }
 
 std::vector<const Armor*> Tracker::usableObservations() const
@@ -184,7 +195,9 @@ std::vector<const Armor*> Tracker::usableObservations() const
     }
   }
 
-  // 优先处理靠近图像中心的观测；稳定排序保留等距目标的检测顺序。
+  // SP 主相机 Tracker 先按图像中心距离排序。其第二次 priority 排序依赖外围
+  // Decider 预先写入字段；单 Tracker/离线入口没有 Decider，不能在 L3 内硬塞
+  // 一张外围优先级表。完整哨兵多目标路径应由独立 Decider 显式提供该字段。
   std::stable_sort(
     usable.begin(),
     usable.end(),
@@ -205,34 +218,30 @@ bool Tracker::initializeTarget(
 
   const Armor& armor = *armors.front();
   double radius = 0.2;
-  int armor_count = 4;
-  Eigen::VectorXd covariance_diagonal(11);
+  // 板数取 types.hpp 的共用映射，与 PnpSolver 的双板配对同源；类别未知时按四板。
+  int armor_count = armorCountOf(armor.name).value_or(4);
+  Eigen::VectorXd covariance_diagonal(TrackedTarget::kStateSize);
 
-  // 不同车辆结构使用对应的装甲板数量、初始半径和协方差。
-  // 平衡步兵已退出赛场，普通车辆一律按四板整车模型初始化。
+  // 不同车辆结构使用对应的初始半径和协方差。末两位是三板车 1、2 号板的高度
+  // 差：三板车打开（2026 规则下前哨站三块板高度互不相同，初值 0 由滤波器估），
+  // 四板车置 0 冻结。平衡步兵已退出赛场，普通车辆一律按四板整车模型初始化。
+  //          xc   vx    yc   vy    z    vz   yaw  v_yaw  r1   dr   dz   dz1  dz2
   if (armor.name == ArmorName::Outpost) {
     radius = 0.2765;
-    armor_count = 3;
     covariance_diagonal << 1.0, 64.0, 1.0, 64.0, 1.0, 81.0,
-      0.4, 100.0, 1e-4, 0.0, 0.0;
+      0.4, 100.0, 1e-4, 0.0, 0.0, 0.1, 0.1;
   } else if (isBase(armor.name)) {
     radius = 0.3205;
-    armor_count = 3;
     covariance_diagonal << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0,
-      0.4, 100.0, 1e-4, 0.0, 0.0;
+      0.4, 100.0, 1e-4, 0.0, 0.0, 0.1, 0.1;
   } else {
     covariance_diagonal << 1.0, 64.0, 1.0, 64.0, 1.0, 64.0,
-      0.4, 100.0, 1.0, 1.0, 1.0;
+      0.4, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0;
   }
 
   target_.emplace(
-    armor,
-    timestamp,
-    radius,
-    armor_count,
-    std::move(covariance_diagonal),
-    tracker_config_.ekf_max_iterations,
-    tracker_config_.ekf_step_threshold);
+    armor, timestamp, radius, armor_count, std::move(covariance_diagonal),
+    target_config_);
   return true;
 }
 

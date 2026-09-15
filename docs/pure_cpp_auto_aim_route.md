@@ -16,7 +16,7 @@ l6_telemetry   日志、trace、调试观测
 runtime        主循环和系统装配
 ```
 
-该路线从补齐“可运行闭环”开始，再逐步引入高级估计和 MPC；当前弹道求解统一通过 `BallisticSolver::solve()` 接口完成。
+但当前核心算法还未完成：`EkfTracker::reset()` 为空实现，`TargetEstimator::update()` 直接返回 `nullopt`，`Planner::plan()` 只判断目标是否存在，`BallisticSolver::solvePitch()` 还未解弹道。因此路线必须先补“可运行闭环”，再引入高级估计和 MPC。
 
 最终推荐路线：
 
@@ -108,7 +108,7 @@ SHtech 的价值在工程框架：
 
 - PnP 测距噪声与距离关系：若像素浮动近似恒定，距离方差近似随距离四次方增长。因此 EKF 的观测噪声 `R` 应随距离增大。
 - 延迟必须拆分：图像曝光中点、预测开始、发送、电控响应、发射、命中。视觉算法不应只加一个固定 delay，而应至少区分处理延迟、通信/控制延迟和飞行时间。
-- 延迟拆分不是“每段都天然精确知道”，而是给每段定义可见性：`img_to_predict` 可由本帧图像时间和预测开始时间直接测量；`predict_to_send` 可由预测开始和发送时间测量后滤波估计；`send_to_control` 依赖电控/通信标定或配置；`control_to_fire` 可由电控反馈标定，当前实现主要用配置；`fire_delay` 由枪口坐标距离和弹速计算。
+- 延迟拆分不是“每段都天然精确知道”，而是给每段定义可见性：`img_to_predict` 可由本帧图像时间和预测开始时间直接测量；`predict_to_send` 可由预测开始和发送时间测量后滤波估计；`send_to_control` 依赖电控/通信标定或配置；`control_to_fire` 可由电控反馈标定，当前实现主要用配置；`fire_to_hit` 由枪口坐标距离和弹速计算。
 - 坐标语义必须清晰：它区分相机坐标、相机光心下 IMU 坐标、枪口中心下 IMU 坐标、枪口中心相机朝向坐标、枪口发射坐标。`newvision` 不必照搬命名，但必须明确 target 坐标和 aim 坐标分别以相机还是枪口为原点。
 - 弹道解算在枪口坐标中做，而不是在相机坐标中硬加 yaw/pitch 偏置。相机到枪口的平移先转换到目标点，再解重力/阻力补偿。
 - 运行时参数热更新很有价值：调延迟、火控阈值、空气阻力、目标类型和滤波噪声时不应每次重启程序。`newvision` 可先做启动加载，后期加热更新。
@@ -119,7 +119,7 @@ SHtech 的价值在工程框架：
 - LMTD 的反陀螺模型可作为后期参考：状态包含车中心位置/速度、主装甲板 yaw/yaw_rate、半径；可直接瞄当前正对装甲板，也可在高速旋转时等待下一块装甲板进入可击打角度。
 - 自主弹道校正思路先进：记录每次 aim id、图像时间和瞄准参数，通过电控回传发射 id，反推发射时刻的控制命令，并用图像中检测到的弹丸轨迹估计误差。这一部分实现复杂，适合作为后期 telemetry/校准工具。
 
-不建议照搬的部分：`CoordConverter` 过于集中，承担了坐标、延迟、弹道、火控和比较逻辑。`newvision` 应把这些拆到 `LatencyCompensator`、`BallisticSolver`、`FireDecision`、`TargetSelector` 中，保留它的时间和坐标语义。
+不建议照搬的部分：`CoordConverter` 过于集中，承担了坐标、延迟、弹道、火控和比较逻辑。`newvision` 将这些职责拆到 `Delay/Planner`、`BallisticSolver` 和 `FireDecision` 中，保留它的时间和坐标语义。
 
 ### HUST_HeroAim_2024
 
@@ -259,13 +259,10 @@ newvision/
       target_estimator.hpp
       target_state.hpp
     l4_planning/
-      planner_interface.hpp
-      aim_plan.hpp
-      setpoint_planner.hpp
+      types.hpp
+      planner.hpp
       predictor.hpp
-      latency_compensator.hpp
-      target_selector.hpp
-      ballistic_solver.hpp
+      ballistic.hpp
     l5_control/
       controller.hpp
       fire_decision.hpp
@@ -304,12 +301,12 @@ include/l3_estimation/armor_pose.hpp
 include/l3_estimation/armor_observation.hpp
 include/l3_estimation/target_state.hpp
 
-include/l4_planning/aim_plan.hpp
-include/l4_planning/planner_interface.hpp
-include/l4_planning/setpoint_planner.hpp
-include/l4_planning/target_selector.hpp
-src/l4_planning/setpoint_planner.cpp
-src/l4_planning/target_selector.cpp
+include/l4_planning/types.hpp
+include/l4_planning/planner.hpp
+include/l4_planning/ballistic.hpp
+src/l4_planning/planner.cpp
+src/l4_planning/ballistic_model.cpp
+src/l4_planning/ballistic_solver.cpp
 
 include/l6_telemetry/replay_reader.hpp
 src/l6_telemetry/replay_reader.cpp
@@ -338,9 +335,10 @@ include/l3_estimation/pnp_solver.hpp
 include/l3_estimation/reprojection_error.hpp
 include/l3_estimation/ekf_tracker.hpp
 include/l3_estimation/target_estimator.hpp
+include/l4_planning/types.hpp
+include/l4_planning/planner.hpp
 include/l4_planning/predictor.hpp
-include/l4_planning/latency_compensator.hpp
-include/l4_planning/ballistic_solver.hpp
+include/l4_planning/ballistic.hpp
 include/l5_control/controller.hpp
 include/l5_control/fire_decision.hpp
 include/l5_control/serial_command.hpp
@@ -543,7 +541,7 @@ total_prediction_time =
 | `predict_to_send` | 解算开始到串口准备发送 | 解算开始时间与发送时间相减 | 每帧测量，用一阶滤波或滑动平均 |
 | `send_to_control` | 串口发送到电控开始执行 | 通信、电控调度、控制周期 | 配置标定，若有 ack 再在线估计 |
 | `control_to_fire` | 电控执行到弹丸真实发射 | 机械传动、拨弹、加速过程 | 配置标定；有发射 id 回传后用于回放校正 |
-| `fire_delay` | 发射到击中 | 弹速、距离、弹道模型 | 由枪口坐标目标点和弹道解算得到 |
+| `fire_to_hit` | 发射到击中 | 弹速、距离、弹道模型 | 由枪口坐标目标点和弹道解算得到 |
 
 这里要区分两个时间：
 
@@ -552,14 +550,14 @@ prediction_time = img
   + img_to_predict
   + predict_to_send
   + send_to_control
-  + fire_delay
+  + fire_to_hit
 
 hit_time = img
   + img_to_predict
   + predict_to_send
   + send_to_control
   + control_to_fire
-  + fire_delay
+  + fire_to_hit
 ```
 
 `prediction_time` 对应 rm.cv.fans 的 water-gun 假设：视觉认为电控能在 `control` 时刻达到命令角度，因此瞄准的是“control 时刻发出的弹流能击中”的目标。`hit_time` 对应真实单发弹丸回放和落点校正，要额外加入 `control_to_fire`。第一版 `newvision` 可以先统一使用 `hit_time` 做预测，但必须把这两个语义留在日志里，避免后续调火控时混淆。
@@ -621,7 +619,7 @@ struct TrajectoryPoint {
   double pitch_acc;
 };
 
-struct AimReference {
+struct AimPlan {
   double yaw;
   double pitch;
   double yaw_rate;
@@ -631,22 +629,16 @@ struct AimReference {
   double fly_time;
   double prediction_time;
   int selected_armor_id;
-  bool valid;
-};
-
-struct AimPlan : AimReference {
   PlannerKind planner_kind;
-  bool using_MPC;
-  std::vector<TrajectoryPoint> samples;
+  std::vector<TrajectoryPoint> reference_trajectory;
+  std::vector<TrajectoryPoint> planned_trajectory;
   bool valid;
   bool fire;
   std::string reject_reason;
 };
 ```
 
-第一版 `SetpointPlanner` 直接填充继承的参考字段，设置 `using_MPC=false` 并保持
-`samples` 为空。MPC 规划器设置 `using_MPC=true`，并保证 `samples.front()`
-是本周期立即执行的控制点。
+第一版 `SetpointPlanner` 可以只填当前命令点：`reference_trajectory/planned_trajectory` 各放 1 个点，`yaw_acc/pitch_acc = 0`，`planner_kind = Setpoint`。这样控制层、串口层、日志层不需要知道后续是否启用 MPC。
 
 建议接口：
 
@@ -693,8 +685,7 @@ q(T) = q1, q'(T) = v1, q''(T) = acc1
 
 落地建议：
 
-- 第一版不做 MPC，先输出 yaw/pitch/yaw_rate/pitch_rate，并保留
-  `yaw_acc/pitch_acc/using_MPC/samples` 字段。
+- 第一版不做 MPC，先输出 yaw/pitch/yaw_rate/pitch_rate，并保留 `yaw_acc/pitch_acc/reference_trajectory/planned_trajectory` 字段。
 - TinyMPC 阶段先复现 sp_vision 当前实现，验证日志和火控。
 - 小陀螺切板稳定后，再实现 `QuinticSwitchBridge`，作为 TinyMPC 的轻量分支或高转速专项策略。
 - 五次多项式必须基于已锁定的切板时刻和前后两块装甲板轨迹；切板预测不稳定时不要启用。
@@ -729,9 +720,7 @@ pitch_thresh = atan(shooting_height / 2 / distance)
 - `Detection` 改为固定 4 点数组，并记录角点顺序。
 - 增加 `ArmorPose`、`ArmorObservation`、`TrackerState`。
 - `RobotState` 补充子弹速度、敌方颜色、模式、云台 yaw/pitch。
-- 增加 `PlannerInterface`、`AimPlan`、`TrajectoryPoint`、`PlannerKind`。
-  第一版实现 `SetpointPlanner`，接口字段包含
-  `yaw_acc/pitch_acc/using_MPC/samples`，为 MPC 保留位置。
+- 增加 `PlannerInterface`、`AimPlan`、`TrajectoryPoint`、`PlannerKind`。第一版实现 `SetpointPlanner`，但接口字段包含 `yaw_acc/pitch_acc/reference_trajectory/planned_trajectory`，为 MPC 保留位置。
 - 配置文件定义相机内参、畸变、外参、装甲板尺寸、弹速默认值。
 
 ### 第 1 阶段：可运行闭环
@@ -740,7 +729,7 @@ pitch_thresh = atan(shooting_height / 2 / distance)
 
 - `l3_estimation/pnp_solver.*`
 - `l3_estimation/target_estimator.*`
-- `l4_planning/ballistic_solver.*`
+- `l4_planning/ballistic.*`
 - `l4_planning/planner.*`
 - `runtime/auto_aim_runtime.*`
 
@@ -886,7 +875,7 @@ L3 Estimation
   PnPSolver / ReprojectionYawOptimizer / EkfTracker / TargetEstimator
 
 L4 Planning
-  LatencyCompensator / ArmorSelector / BallisticSolver / Predictor / MPCPlanner
+  Planner / BallisticSolver / Predictor / MPCPlanner
 
 L5 Control
   FireDecision / Controller / SerialCommand
@@ -1095,7 +1084,7 @@ L6 Telemetry
   PnP 距离方差随距离增长的推导。`newvision` 的 EKF 观测噪声可参考它按距离放大。
 
 - `rm.cv.fans-main/docs/auto_aim/latency.md`  
-  延迟拆分文档：`img/predict/send/control/fire/hit`。这是 `newvision::LatencyCompensator` 最值得参考的语义定义。
+  延迟拆分文档：`img/predict/send/control/fire/hit`。这是 `newvision::Delay` 最值得参考的语义定义。
 
 - `rm.cv.fans-main/docs/auto_aim/latency.md:7`  
   延迟时间点定义表。`img` 是曝光中点，`predict` 是神经网络和预测器预处理完成后开始运动解算的时间点，`send` 是准备发信号的时间点，`control/fire/hit` 分别对应电控执行、弹丸发射和击中。
@@ -1119,10 +1108,10 @@ L6 Telemetry
   `send_to_control` 和 `control_to_fire` 当前来自参数配置。代码里保留了从 `robot_status.latency_cmd_to_fire` 获取真实发射延迟的注释，说明这段最好由电控反馈标定。
 
 - `rm.cv.fans-main/aimer/base/robot/coord_converter.cpp:137`  
-  `fire_delay` 当前按 `aim_xyz_i_barrel.norm() / bullet_speed` 计算；后续可替换成带空气阻力弹道飞行时间。
+  `fire_to_hit` 当前按 `aim_xyz_i_barrel.norm() / bullet_speed` 计算；后续可替换成带空气阻力弹道飞行时间。
 
 - `rm.cv.fans-main/aimer/base/robot/coord_converter.cpp:143`  
-  `get_img_to_prediction_latency()` 组合 `img_to_predict + predict_to_send + send_to_control + fire_delay`，刻意不含 `control_to_fire`。
+  `get_img_to_prediction_latency()` 组合 `img_to_predict + predict_to_send + send_to_control + fire_to_hit`，刻意不含 `control_to_fire`。
 
 - `rm.cv.fans-main/aimer/base/robot/coord_converter.cpp:155`  
   `get_img_to_hit_latency()` 组合真实单发击中时间，额外包含 `control_to_fire`。
@@ -1254,5 +1243,5 @@ L6 Telemetry
 5. sp_vision Planner：弹道、延迟、TinyMPC 参考轨迹。
 6. Talos/Climber 火控：物理窗口阈值、命令突变抑制。
 7. JLU 选板：锁定装甲板、切板死区、反复换板抑制。
-8. rm.cv.fans 延迟和枪口坐标弹道：先吸收语义，再拆成 `LatencyCompensator` 和 `BallisticSolver`。
+8. rm.cv.fans 延迟和枪口坐标弹道：先吸收语义，再落实到 `Delay/Planner` 和 `BallisticSolver`。
 9. SHtech Pipeline：在单线程闭环稳定后，再拆成纯 C++ 多线程流水线。

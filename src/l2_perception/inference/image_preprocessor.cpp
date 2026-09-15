@@ -26,14 +26,16 @@ void validateInputSpec(const InferenceInputSpec& input_spec)
 
 cv::Point2f ImageTransform::sourceToModel(const cv::Point2f& point) const noexcept
 {
-  return {point.x * source_to_model_scale + static_cast<float>(pad_left),
-          point.y * source_to_model_scale + static_cast<float>(pad_top)};
+  return {
+    static_cast<float>(static_cast<double>(point.x) * source_to_model_scale + pad_left),
+    static_cast<float>(static_cast<double>(point.y) * source_to_model_scale + pad_top)};
 }
 
 cv::Point2f ImageTransform::modelToSource(const cv::Point2f& point) const noexcept
 {
-  return {(point.x - static_cast<float>(pad_left)) / source_to_model_scale,
-          (point.y - static_cast<float>(pad_top)) / source_to_model_scale};
+  return {
+    static_cast<float>((static_cast<double>(point.x) - pad_left) / source_to_model_scale),
+    static_cast<float>((static_cast<double>(point.y) - pad_top) / source_to_model_scale)};
 }
 
 PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceInputSpec& input_spec,
@@ -56,7 +58,7 @@ PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceIn
       std::min(static_cast<double>(model_width) / static_cast<double>(image.cols),
                static_cast<double>(model_height) / static_cast<double>(image.rows));
 
-  // 与 SP-Vision 一致，浮点缩放结果直接截断为整数，不使用四舍五入。
+  //浮点缩放结果直接截断为整数，不使用四舍五入。
   const int resized_width = std::max(1, static_cast<int>(image.cols * resize_scale));
   const int resized_height = std::max(1, static_cast<int>(image.rows * resize_scale));
   const int total_padding_x = model_width - resized_width;
@@ -65,7 +67,7 @@ PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceIn
     throw std::logic_error("ImagePreprocessor generated an invalid letterbox size");
   }
 
-  // SP-Vision 把内容放在 (0, 0)，padding 全部留在右/下。Centered 仅供其他
+  // 内容放在 (0, 0)，padding 全部留在右/下。Centered 仅供其他
   // 显式配置的模型使用；无论哪种模式，偏移都会交给 Decoder 做逆变换。
   const int pad_left = config.alignment == LetterboxAlignment::Centered ? total_padding_x / 2 : 0;
   const int pad_right = total_padding_x - pad_left;
@@ -93,7 +95,7 @@ PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceIn
   // Decoder 接到模型关键点后，必须用这份同帧变换还原原图坐标，不能重新猜 scale。
   output.transform = {.source_size = image.size(),
                       .model_size = {model_width, model_height},
-                      .source_to_model_scale = static_cast<float>(resize_scale),
+                      .source_to_model_scale = resize_scale,
                       .pad_left = pad_left,
                       .pad_top = pad_top,
                       .pad_right = pad_right,

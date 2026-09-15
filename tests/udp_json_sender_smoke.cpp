@@ -25,7 +25,7 @@ public:
   SocketHandle(const SocketHandle&) = delete;
   SocketHandle& operator=(const SocketHandle&) = delete;
 
-  [[nodiscard]] int get() const { return fd_; }
+  int get() const { return fd_; }
 
 private:
   int fd_;
