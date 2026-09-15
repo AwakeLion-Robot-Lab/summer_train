@@ -18,8 +18,8 @@
 // 整车模型：十三维状态、由状态生成每块装甲板位姿的结构先验、流形上的 ⊞/⊟，
 // 以及恒速度运动模型。对齐 awakening 的 armor_track/motion_model.hpp。
 //
-// 与旧的 TrackedTarget 相比，本质区别只有一个：姿态是完整的 SO(3) 旋转向量，
-// 不是单个 yaw 标量。这带来两个连锁后果——状态不再住在向量空间（于是需要
+// 与 sp_vision 只估一个 yaw 标量的整车模型相比，本质区别只有一个：姿态是完整的
+// SO(3) 旋转向量。这带来两个连锁后果——状态不再住在向量空间（于是需要
 // ⊞/⊟ 和误差状态），而过程噪声可以在车体系表达（于是"地面车不会突然上下
 // 加速"这个先验才有地方写）。推导见 docs/esekf_uvl_port.md 第 2、3 节。
 namespace L3Estimation::VehicleModel {
@@ -74,11 +74,6 @@ constexpr double kMaxHeightOffset = 0.5;
 constexpr double kMaxOutpostHeightOffset = 0.3;
 constexpr double kMaxYawRate = 20.0;
 
-// 是否估计完整三自由度姿态。关掉则退化为只估 yaw，等价于旧的整车 EKF——
-// 留这个开关是为了能在同一段回放上做 A/B，隔离"误差状态"与"图像观测"
-// 各自贡献了多少。
-inline constexpr bool kEstimateFullAttitude = true;
-
 // 折回 (-π, π]。无分支写法，对 Jet 友好：floor 的导数恒为零，而加减 2π 不
 // 改变角度的物理含义，导数当然也不该变。
 template <typename T>
@@ -131,7 +126,7 @@ T armorRadius(const T * x, int id, int armor_num, ArmorName name)
 constexpr bool yawOnlyTarget(ArmorName name) noexcept
 {
   return name == ArmorName::Outpost || name == ArmorName::BaseSmall ||
-         name == ArmorName::BaseLarge || !kEstimateFullAttitude;
+         name == ArmorName::BaseLarge;
 }
 
 

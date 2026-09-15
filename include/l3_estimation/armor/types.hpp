@@ -48,11 +48,6 @@ constexpr std::optional<ArmorType> armorTypeOf(ArmorName name) noexcept
   return std::nullopt;
 }
 
-// 识别类别 → 车辆物理装甲板数量。前哨与基地是三板，其余按四板整车模型。
-//
-// 这一份同时被 Tracker::initializeTarget 的整车初始化和 PnpSolver 的双板配对
-// 读取：双板联合 yaw 要求两块相邻板的朝向差恰好 2π/n，n 写错会把整车 yaw 直接
-// 拉偏 30 度（前哨按 90 度配对就是这个错）。未知类别返回 nullopt，不猜板数。
 // 装甲板绕自身水平轴的后仰角，单位 rad。常规车的板顶向后倾 15 度；前哨站的
 // 三块板反过来向前倾，所以取负。
 //
@@ -64,6 +59,9 @@ constexpr double armorPitchOf(ArmorName name) noexcept
   return name == ArmorName::Outpost ? -kTilt : kTilt;
 }
 
+// 识别类别 → 车辆物理装甲板数量。前哨与基地是三板，其余按四板整车模型。
+// 相邻板朝向差恰好 2π/n，n 写错会把整车 yaw 直接拉偏 30 度。未知类别返回
+// nullopt，不猜板数。
 constexpr std::optional<int> armorCountOf(ArmorName name) noexcept
 {
   switch (name) {
@@ -86,7 +84,6 @@ constexpr std::optional<int> armorCountOf(ArmorName name) noexcept
   return std::nullopt;
 }
 
-// Tracker 的四态生命周期。
 struct Armor {
   // 分类信息。name 是车辆类别，type 是实际采用的物理板型。
   ArmorName name{ArmorName::Unknown};
@@ -117,9 +114,6 @@ struct Armor {
   double confidence{0.0};
   double yaw_raw{0.0};
   double area{0.0};
-  // 保留旧遥测字段以维持接口兼容。sp_vision 的离散 yaw 搜索不估计标准差，
-  // 因而保持无穷；EKF 也不消费这个字段。
-  double yaw_sigma{std::numeric_limits<double>::infinity()};
 
   // 对应原始图像的曝光时刻。
   TimePoint timestamp{};
@@ -130,40 +124,6 @@ struct ArmorConfig {
   double small_width{0.135};
   double big_width{0.230};
   double height{0.056};
-  // 预留的角点噪声字段；当前离散 yaw 搜索尚未使用。
-  double corner_noise_px{1.0};
-};
-
-// 整车 EKF 的过程噪声与观测噪声。这两组是靠回放标定的主要旋钮，所以出到
-// 配置；半径物理范围、前哨固定转速这类物理常量仍留在代码里。
-struct TargetConfig {
-  // 过程噪声强度。平移与高度用 translation，整车 yaw 用 rotation。
-  double q_translation{100.0};
-  double q_rotation{400.0};
-  // 前哨站转速固定、轨迹规整，过程噪声显著更小。
-  double outpost_q_translation{10.0};
-  double outpost_q_rotation{0.1};
-
-  // 观测噪声，观测量为 [方位角, 俯仰角, 距离, 装甲板 yaw]。
-  // 方位角/俯仰角取常量方差。
-  double angle_variance{4e-3};
-  // 距离方差 = factor * d^2 * (1 + delta_angle^2)。单板 PnP 的深度误差
-  // 大致正比于距离平方（板在像素上的张角 ∝ 1/d），斜视时进一步变差。
-  // 默认 0.0625 使 4 m 正视处的方差等于 1.0 m^2。
-  double distance_variance_factor{0.0625};
-  // 板 yaw 方差 = base + log1p(d) / distance_divisor。
-  double armor_yaw_variance_base{9e-2};
-  double armor_yaw_distance_divisor{200.0};
-};
-
-struct TrackerConfig {
-  // 从 Detecting 转入 Tracking 所需的连续有效观测帧数。
-  int min_detect_count{5};
-  // 非 Lost 状态允许的最大相邻帧间隔；超时后重置当前跟踪。
-  std::chrono::milliseconds max_frame_interval{100};
-  // 临时丢失按连续帧数计数；前哨站允许更长的无观测预测窗口。
-  int max_temp_lost_count{15};
-  int outpost_max_temp_lost_count{75};
 };
 
 // 跨层接口使用的语义别名。

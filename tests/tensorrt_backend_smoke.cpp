@@ -36,15 +36,8 @@ int main(int argc, char** argv)
     require(
       std::abs(runtime_config.armor.small_width - 0.135) < 1e-12 &&
         std::abs(runtime_config.armor.big_width - 0.230) < 1e-12 &&
-        std::abs(runtime_config.armor.height - 0.056) < 1e-12 &&
-        std::abs(runtime_config.armor.corner_noise_px - 1.0) < 1e-12,
+        std::abs(runtime_config.armor.height - 0.056) < 1e-12,
       "runtime L3 armor config is wrong");
-    require(
-      runtime_config.tracker.min_detect_count == 5 &&
-        runtime_config.tracker.max_frame_interval.count() == 100 &&
-        runtime_config.tracker.max_temp_lost_count == 15 &&
-        runtime_config.tracker.outpost_max_temp_lost_count == 75,
-      "runtime L3 tracker config is wrong");
 
     const auto backend_kind = L2Perception::inferenceBackendFromString("Tensor-RT");
     require(

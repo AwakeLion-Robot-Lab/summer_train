@@ -127,43 +127,10 @@ armor:
   small_width_m: 0.135
   big_width_m: 0.230
   height_m: 0.056
-  # 预留的角点噪声参数，当前 PnP 搜索尚未使用。
-  corner_noise_px: 1.0
 
-# L3 跟踪状态机参数。
-tracker:
-  # 连续命中多少帧后，从 Detecting 切换到 Tracking。
-  min_detect_count: 5
-  # 相邻帧间隔超过该值时，放弃旧目标并重新初始化。
-  max_frame_interval_ms: 100
-  # Tracking 连续丢失多少帧后切换到 Lost。
-  max_temp_lost_count: 15
-  outpost_max_temp_lost_count: 75
-
-# L3 整车 EKF 的噪声。这两组是靠回放标定的主要旋钮：改完必须重跑
-# `xmake run track_diag` 看单步创新和 NIS 失败率，不要凭感觉调。
-# 半径物理范围、前哨固定转速这类物理常量仍在代码里，不在这里配。
-estimator:
-  # 过程噪声强度。平移与高度用 q_translation，整车 yaw 用 q_rotation。
-  q_translation: 100.0
-  q_rotation: 400.0
-  # 前哨站转速固定、轨迹规整，过程噪声显著更小。
-  outpost_q_translation: 10.0
-  outpost_q_rotation: 0.1
-  # 方位角/俯仰角的观测方差，常量。4e-3 对应 sigma 约 3.6 度。
-  angle_variance: 0.004
-  # 距离方差 = factor * d^2 * (1 + delta_angle^2)。
-  # 单板 PnP 的深度误差来自角点视差而视差 ∝ 1/d，所以方差 ∝ d^2；
-  # 斜视时两条灯条在像素上靠拢，深度进一步变差。
-  # 0.0625 使 4 m 正视处的方差等于 1.0 m^2。
-  distance_variance_factor: 0.0625
-  # 板 yaw 方差 = base + log1p(d) / divisor。
-  armor_yaw_variance_base: 0.09
-  armor_yaw_distance_divisor: 200.0
-
-# awakening 路线：迭代误差状态 EKF + 灯条 UVL 图像观测。
-# 与上面的普通 EKF 参数独立；auto_aim_test 默认读取这一组，使用
-# `--estimator=ekf` 才切回上面的 YPDA EKF。
+# L3 整车估计器：迭代误差状态 EKF + 灯条 UVL 图像观测（awakening 路线）。
+# 噪声是靠回放标定的主要旋钮：改完必须重跑 `xmake run track_diag` 看 UVL
+# 创新和 NIS，不要凭感觉调。
 ieskf:
   # 状态机按录像时间戳计时，不受回放倍速影响。
   tracking_thres: 5
@@ -272,8 +239,8 @@ runtime:
 # L4Planning::Delay 的 image_to_plan；而且比赛用的 NUC 上没有显示器，
 # 打开会直接抛。串流调试时把 overlay 改成 true。
 #
-# 画的内容：蓝框=L2 网络原始角点，绿框+绿箭头=真正送进滤波器的单板 PnP，
-# 绿色整车=EKF 展开的全部物理板，红框=Plan 选中的命中时刻板，
+# 画的内容：蓝框=L2 网络原始角点，绿色整车=滤波器展开的全部物理板，
+# 红框=Plan 选中的命中时刻板，
 # 顶部一行=跟踪状态 / 计划状态 / 第一条开火拒绝原因。
 debug:
   overlay: false

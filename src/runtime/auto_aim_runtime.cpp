@@ -24,19 +24,30 @@
 namespace {
 
 // L1 的 enemy_color 是下位机给出的目标阵营；L2 的 ArmorColor 是图像识别结果。
-// 任何一侧未知时都不允许作为自瞄目标，避免误击友军。
-bool isEnemyArmor(L2Perception::ArmorColor observed,
-                  L1Sensor::EnemyColor expected) noexcept {
-  switch (expected) {
-  case L1Sensor::EnemyColor::Red:
-    return observed == L2Perception::ArmorColor::Red;
-  case L1Sensor::EnemyColor::Blue:
-    return observed == L2Perception::ArmorColor::Blue;
-  case L1Sensor::EnemyColor::Unknown:
-    return false;
-  }
+// 两个枚举同序，所以下位机的值直接转过来用，不必逐项映射；static_assert
+// 保证将来任一侧增改成员时编译期就炸，而不是把 Blue 静默当成 Red。
+static_assert(
+  static_cast<int>(L1Sensor::EnemyColor::Red) ==
+      static_cast<int>(L2Perception::ArmorColor::Red) &&
+    static_cast<int>(L1Sensor::EnemyColor::Blue) ==
+      static_cast<int>(L2Perception::ArmorColor::Blue) &&
+    static_cast<int>(L1Sensor::EnemyColor::Unknown) ==
+      static_cast<int>(L2Perception::ArmorColor::Unknown),
+  "EnemyColor 与 ArmorColor 必须同序");
 
-  return false;
+constexpr L2Perception::ArmorColor enemyArmorColor(
+  L1Sensor::EnemyColor enemy) noexcept
+{
+  return static_cast<L2Perception::ArmorColor>(enemy);
+}
+
+// 识别出的颜色与下位机给的阵营一致即为敌方。Unknown 要单独挡掉：两侧都会
+// 用它表示"没有有效值"，放过去就等于允许误击友军。
+constexpr bool isEnemyArmor(
+  L2Perception::ArmorColor observed, L1Sensor::EnemyColor expected) noexcept
+{
+  return expected != L1Sensor::EnemyColor::Unknown &&
+         observed == enemyArmorColor(expected);
 }
 
 L2Perception::ArmorDetector makeArmorDetector(
@@ -96,7 +107,7 @@ void AutoAimRuntime::run() {
   if (!serial_started && serial_config.enable) {
     L6Telemetry::logWarn("Failed to start serial worker.");
   }
-  // L3 Tracker 持有 PnP 和 EKF。标定缺失时 runtime 继续运行检测和显示，
+  // L3 EskfTracker 持有 PnP（仅整车初始化用）和 IESKF。标定缺失时 runtime 继续运行检测和显示，
   // 但后续不得生成有效瞄准/开火命令。
   std::optional<L3Estimation::EskfTracker> tracker;
   const auto& camera_calibration = camera->calibration();
@@ -184,16 +195,33 @@ void AutoAimRuntime::run() {
         case L1Sensor::WorkMode::Outpost: {
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 
-          // L2: 检测并保留敌方装甲板。
-          auto armors = armor_detector.detect(frame);
-          std::erase_if(armors, [&state](const auto& armor) {
+          // L2: ROI 聚焦 + 检测，保留敌方装甲板。两个 ROI 都由上一帧的整车
+          // 状态外推到本帧曝光时刻：light_roi 只服务独立灯条检测，越紧越好；
+          // net_roi 喂网络，远距小目标裁剪后再 resize 相当于局部放大。
+          // Lost/冷启动时前者返回空、后者退化为整图，等价于全图检测。
+          std::optional<cv::Rect> light_roi;
+          std::optional<cv::Rect> net_roi;
+          if (tracker && tracker->ready()) {
+            light_roi =
+              tracker->lightDetectionRoi(image_pose, timestamp, frame.size());
+            net_roi = tracker->netFocusRoi(
+              image_pose, timestamp, frame.size(),
+              armor_detector.networkAspectRatio());
+          }
+          // 独立灯条按下位机给的敌方颜色提取：传 Unknown 会红蓝各跑一遍
+          // 候选提取，既费时又会把友军灯条送进 L3 关联。
+          auto perception = armor_detector.detectFrame(
+            frame, light_roi, net_roi, enemyArmorColor(state->enemy_color));
+          std::erase_if(perception.armors, [&state](const auto& armor) {
             return !isEnemyArmor(armor.color, state->enemy_color);
           });
 
-          // L3: PnP、状态机与整车 EKF。
+          // L3: 关联、状态机与整车 IESKF。独立灯条与装甲板角点一起进
+          // updateMulti()，这是 UVL 观测相对纯角点观测的增量来源。
           std::optional<L3Estimation::EskfTarget> target;
           if (tracker && tracker->ready()) {
-            target = tracker->track(armors, image_pose, timestamp);
+            target = tracker->track(
+              perception.armors, perception.lights, image_pose, timestamp);
           }
           const auto track_state = tracker
             ? tracker->state()
@@ -231,8 +259,7 @@ void AutoAimRuntime::run() {
             overlay_solver->set_R_world_barrel(image_pose);
             L6Telemetry::drawAimOverlay(
               frame,
-              {.detections = armors,
-               .observations = tracker->observations(),
+              {.detections = perception.armors,
                .target = target,
                .track_state = track_state,
                .plan = plan,

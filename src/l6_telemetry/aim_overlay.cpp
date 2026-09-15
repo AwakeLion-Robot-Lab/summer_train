@@ -40,12 +40,6 @@ void drawAimOverlay(
     }
   }
 
-  if (input.q_world_barrel) {
-    // 绿色：当前帧真正送进滤波器的单板位姿及其朝向。
-    drawFilterInputArmors(
-      image, input.observations, solver, calibration, *input.q_world_barrel);
-  }
-
   if (input.target) {
     const auto type = L3Estimation::armorTypeOf(input.target->name)
                         .value_or(L3Estimation::ArmorType::Small);
@@ -152,87 +146,6 @@ void drawVehicle(
         toPixel(image_points[(index + 1) % image_points.size()]) + image_offset,
         color,
         thickness, cv::LINE_AA);
-    }
-  }
-}
-
-bool isFilterInputArmor(const L3Estimation::Armor& armor)
-{
-  // 与 Tracker::observationUsable 保持一致，避免把被滤掉的坏解画出来。
-  return armor.name != L3Estimation::ArmorName::Unknown &&
-    armor.xyz_in_world.allFinite() &&
-    std::isfinite(armor.ypr_in_world[0]);
-}
-
-// 将当前帧实际送入目标滤波器的单板 PnP 位姿重投影为红框。
-void drawFilterInputArmors(
-  cv::Mat& image,
-  const std::vector<L3Estimation::Armor>& observations,
-  const L3Estimation::PnpSolver& solver,
-  const L1Sensor::CameraCalibration& calibration,
-  const Eigen::Quaterniond& q_world_barrel)
-{
-  for (const auto& armor : observations) {
-    if (!isFilterInputArmor(armor)) {
-      continue;
-    }
-
-    const auto image_points = solver.reproject_armor(
-      armor.xyz_in_world, armor.ypr_in_world[0], armor.type, armor.name);
-    if (image_points.size() != armor.points.size()) {
-      continue;
-    }
-    for (std::size_t index = 0; index < image_points.size(); ++index) {
-      cv::line(
-        image, toPixel(image_points[index]),
-        toPixel(image_points[(index + 1) % image_points.size()]),
-        {0, 255, 0}, 2, cv::LINE_AA);
-    }
-
-    // armorPoints 使用局部 x=0 的 y-z 平面，因此局部 +x 是装甲板法向；
-    // 它在世界系中的方向正是 yaw 所表示的朝向。
-    const double pitch = L3Estimation::armorPitchOf(armor.name);
-    const double yaw = armor.ypr_in_world[0];
-    const Eigen::Vector3d normal_in_world{
-      std::cos(yaw) * std::cos(pitch),
-      std::sin(yaw) * std::cos(pitch),
-      -std::sin(pitch)};
-    constexpr double kArrowLengthMeters = 0.16;
-    const auto arrow_start = projectWorldPoint(
-      armor.xyz_in_world, calibration, q_world_barrel);
-    const auto arrow_end = projectWorldPoint(
-      armor.xyz_in_world + kArrowLengthMeters * normal_in_world,
-      calibration, q_world_barrel);
-    if (arrow_start && arrow_end && image_points.size() == 4) {
-      // 透视投影不保持垂直关系。为了让图像上的箭头直观看起来垂直于
-      // 装甲板，使用投影后长边的二维垂线；三维法向投影只用于决定正负方向。
-      const cv::Point2f long_edge =
-        (image_points[1] - image_points[0]) +
-        (image_points[2] - image_points[3]);
-      const double long_edge_length =
-        std::hypot(long_edge.x, long_edge.y);
-      if (long_edge_length > 1e-3) {
-        cv::Point2f perpendicular{
-          static_cast<float>(-long_edge.y / long_edge_length),
-          static_cast<float>(long_edge.x / long_edge_length)};
-        const cv::Point2f physical_direction =
-          *arrow_end - *arrow_start;
-        if (perpendicular.x * physical_direction.x +
-              perpendicular.y * physical_direction.y < 0.0F) {
-          perpendicular *= -1.0F;
-        }
-
-        const double short_edge_length =
-          0.5 * (cv::norm(image_points[3] - image_points[0]) +
-                 cv::norm(image_points[2] - image_points[1]));
-        const double arrow_length =
-          std::clamp(0.8 * short_edge_length, 12.0, 64.0);
-        const cv::Point2f arrow_tip =
-          *arrow_start + perpendicular * static_cast<float>(arrow_length);
-        cv::arrowedLine(
-          image, toPixel(*arrow_start), toPixel(arrow_tip),
-          {0, 255, 0}, 2, cv::LINE_AA, 0, 0.25);
-      }
     }
   }
 }

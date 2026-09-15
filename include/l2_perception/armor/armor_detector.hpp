@@ -59,7 +59,7 @@ private:
   ImagePreprocessConfig preprocess_config_{};
   ArmorRefiner refiner_{};
   bool collect_refine_records_{false};
-  // detect() 对外是 const 的只读操作，统计只作为调试快照，与 Tracker::observations() 同理。
+  // detect() 对外是 const 的只读操作，统计只作为调试快照，与 EskfTracker::observations() 同理。
   mutable RefineStats last_refine_stats_{};
   mutable std::vector<RefineRecord> last_refine_records_{};
 };

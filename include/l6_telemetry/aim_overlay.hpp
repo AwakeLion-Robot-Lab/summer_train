@@ -26,8 +26,6 @@ namespace L6Telemetry {
 struct AimOverlayInput
 {
   const std::vector<L2Perception::Armor>& detections;
-  // L3 单板 PnP 的结果，即真正送进滤波器的观测。
-  const std::vector<L3Estimation::Armor>& observations;
   const std::optional<L3Estimation::EskfTarget>& target;
   L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
   const L4Planning::Plan& plan;
@@ -36,8 +34,8 @@ struct AimOverlayInput
   const std::optional<Eigen::Quaterniond>& q_world_barrel;
 };
 
-// 在原图上画：检测角点、送入滤波器的单板重投影与朝向箭头、EKF 展开的整车、
-// Plan 的命中板，以及一行状态文字。就地修改 image。
+// 在原图上画：检测角点、滤波器展开的整车、Plan 的命中板，以及一行状态文字。
+// 就地修改 image。
 void drawAimOverlay(
   cv::Mat& image, const AimOverlayInput& input,
   const L3Estimation::PnpSolver& solver,
@@ -62,16 +60,5 @@ void drawVehicle(
   L3Estimation::ArmorType type, L3Estimation::ArmorName name,
   const L3Estimation::PnpSolver& solver, const cv::Scalar& color, int thickness,
   cv::Point image_offset = {});
-
-// 这块观测会不会真的进滤波器。必须与 Tracker::observationUsable 保持一致，
-// 否则画出来的和实际喂进 EKF 的不是一回事。
-bool isFilterInputArmor(const L3Estimation::Armor& armor);
-
-// 当前帧真正送入目标滤波器的单板 PnP 位姿：绿色重投影框和绿色朝向箭头。
-void drawFilterInputArmors(
-  cv::Mat& image, const std::vector<L3Estimation::Armor>& observations,
-  const L3Estimation::PnpSolver& solver,
-  const L1Sensor::CameraCalibration& calibration,
-  const Eigen::Quaterniond& q_world_barrel);
 
 }  // namespace L6Telemetry

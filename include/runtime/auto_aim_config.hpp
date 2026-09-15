@@ -49,10 +49,6 @@ struct AutoAimConfig {
   L2Perception::ArmorRefinerConfig refiner;
 
   L3Estimation::ArmorConfig armor;
-  L3Estimation::TrackerConfig tracker;
-  L3Estimation::TargetConfig target;
-  // awakening 路线的独立参数。普通 EKF 与 IESKF 的噪声含义不同，不能共用
-  // estimator 节点里那组数值。
   L3Estimation::EskfTrackerConfig ieskf_tracker;
   L3Estimation::EskfTargetConfig ieskf_target;
   L4Planning::ArmorPlanConfig plan;

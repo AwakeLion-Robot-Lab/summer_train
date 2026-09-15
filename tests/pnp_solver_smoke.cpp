@@ -238,10 +238,6 @@ int main()
   expect(
     armor.reprojection_error < 1e-3,
     "noise-free synthetic armor does not have near-zero pixel RMSE");
-  // sp_vision 的 1 度离散搜索不估计 yaw 标准差；兼容字段保持无穷。
-  expect(
-    std::isinf(armor.yaw_sigma),
-    "SP-compatible discrete yaw search unexpectedly estimated yaw sigma");
 
   const Eigen::Vector3d expected_left_center =
     R_camera_armor * Eigen::Vector3d(0.0, kSmallWidth * 0.5, 0.0) +
@@ -390,7 +386,7 @@ int main()
     "reported reprojection error is not four-corner pixel RMSE");
 
   // 重投影误差只是诊断量，不再是门限：与 sp_vision 一致，无论 RMSE 多大，
-  // 位姿照样提交，Tracker 照样把它喂进 EKF。
+  // 位姿照样提交，是否用于整车初始化由 EskfTracker 自己判断。
   L3Estimation::Armor large_error_armor = noisy_armor;
   for (auto& point : large_error_armor.points) {
     point.x += 6.0F;

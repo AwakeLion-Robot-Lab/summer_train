@@ -57,8 +57,6 @@ namespace {
 
 // 叠加层的绘制统一在 L6，实机 runtime 和这里共用同一份，
 // 否则两边会漂——回放里看着对的东西实机上可能画错。
-using L6Telemetry::drawFilterInputArmors;
-using L6Telemetry::isFilterInputArmor;
 using L6Telemetry::drawOutlinedText;
 using L6Telemetry::drawVehicle;
 using L6Telemetry::projectWorldPoint;
@@ -136,8 +134,8 @@ struct FilterEstimate
   std::optional<double> pitch;
 };
 
-// 回放同时支持两套估计器，但后续诊断只应看到同一个整车目标契约。awakening
-// 同样让 Tracker 返回不带滤波器的 ArmorTarget 副本，下游只在副本上外推。
+// 回放侧对整车目标的只读包装。awakening 同样让 Tracker 返回不带滤波器的
+// ArmorTarget 副本，下游只在副本上外推。
 class ReplayTarget
 {
 public:
@@ -814,97 +812,6 @@ YawCostCurve sampleYawCost(
   return curve;
 }
 
-// 复刻 PnpSolver::refine_double_armor 的配对规则：同类别、同板型、世界系间距落
-// 在相邻两板的物理范围内，取最近的一块。间距边界与 pnp_solver.cpp 的
-// kMinimumPairGap / kMaximumPairGap 一致——这里是诊断视图，不参与求解。
-//
-// 返回 partner 下标，以及 partner 相对所选板的朝向差（含符号）。世界系 y 指左，
-// 方位角大的是左板，左板 yaw 比右板小 2π/n。
-std::optional<std::pair<std::size_t, double>> selectPairPartner(
-  const std::vector<L3Estimation::Armor>& observations,
-  std::size_t index)
-{
-  constexpr double kMinimumPairGap = 0.1;
-  constexpr double kMaximumPairGap = 0.75;
-
-  const L3Estimation::Armor& armor = observations[index];
-  const auto armor_count = L3Estimation::armorCountOf(armor.name);
-  if (armor.name == L3Estimation::ArmorName::Unknown || !armor_count) {
-    return std::nullopt;
-  }
-
-  std::optional<std::size_t> partner;
-  double partner_gap = kMaximumPairGap;
-  for (std::size_t other = 0; other < observations.size(); ++other) {
-    if (other == index ||
-        observations[other].name != armor.name ||
-        observations[other].type != armor.type) {
-      continue;
-    }
-    const double gap =
-      (armor.xyz_in_world - observations[other].xyz_in_world).norm();
-    if (gap < kMinimumPairGap || gap >= partner_gap) {
-      continue;
-    }
-    partner_gap = gap;
-    partner = other;
-  }
-  if (!partner) {
-    return std::nullopt;
-  }
-
-  const double step = 2.0 * std::numbers::pi / static_cast<double>(*armor_count);
-  const bool partner_is_left =
-    observations[*partner].ypd_in_world[0] > armor.ypd_in_world[0];
-  return std::make_pair(*partner, partner_is_left ? -step : step);
-}
-
-// 双板联合代价曲线。横轴仍是所选装甲板自身相对枪管的 yaw 偏角，纵轴换成两块板
-// 共八个角点的距离之和，与 PnpSolver::optimize_yaw_pair 的代价同一定义：
-// partner 的朝向恒为所选板 + partner_offset。
-YawCostCurve sampleJointYawCost(
-  const L3Estimation::PnpSolver& solver,
-  const L3Estimation::Armor& armor,
-  const L3Estimation::Armor& partner,
-  double partner_offset,
-  const Eigen::Quaterniond& q_world_barrel)
-{
-  YawCostCurve curve;
-  curve.barrel_yaw =
-    L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0];
-
-  const auto sample_count =
-    static_cast<int>(kSearchRangeDegrees / kCostStepDegrees) + 1;
-  curve.offsets_degrees.reserve(sample_count);
-  curve.costs.reserve(sample_count);
-  for (int index = 0; index < sample_count; ++index) {
-    const double offset =
-      -kSearchRangeDegrees / 2.0 + index * kCostStepDegrees;
-    const double yaw =
-      L6Telemetry::limit_rad(curve.barrel_yaw + offset * kDegToRad);
-    const double cost = yawCost(solver, armor, yaw) +
-      yawCost(solver, partner, L6Telemetry::limit_rad(yaw + partner_offset));
-    curve.offsets_degrees.push_back(offset);
-    curve.costs.push_back(cost);
-    if (cost < curve.best_cost) {
-      curve.best_cost = cost;
-      curve.best_offset_degrees = offset;
-      curve.best_yaw = yaw;
-    }
-  }
-
-  for (std::size_t index = 1; index + 1 < curve.costs.size(); ++index) {
-    const double cost = curve.costs[index];
-    if (!std::isfinite(cost)) {
-      continue;
-    }
-    if (cost < curve.costs[index - 1] && cost <= curve.costs[index + 1]) {
-      ++curve.local_minima;
-    }
-  }
-  return curve;
-}
-
 // 选一块装甲板画代价曲线：优先跟踪器当前关联的那块，其次取图像中心附近的。
 std::optional<std::size_t> selectArmor(
   const std::vector<L3Estimation::Armor>& observations,
@@ -953,8 +860,6 @@ std::optional<std::size_t> selectArmor(
 // 代价曲线窗口。横轴是相对枪管 yaw 的偏角，竖线标出几个关键 yaw 的位置。
 cv::Mat drawCostPlot(
   const YawCostCurve* curve,
-  const YawCostCurve* joint_curve,
-  double pair_offset_degrees,
   const L3Estimation::Armor* armor,
   const L3Estimation::PnpSolver& solver,
   const std::optional<double>& ekf_armor_yaw,
@@ -963,8 +868,8 @@ cv::Mat drawCostPlot(
 {
   constexpr int kWidth = 960;
   constexpr int kHeight = 540;
-  // 顶部留出五行文字：帧号、板信息、单板 yaw、单峰统计、双板配对。
-  const cv::Rect graph{74, 156, kWidth - 74 - 24, kHeight - 156 - 56};
+  // 顶部留出四行文字：帧号、板信息、单板 yaw、单峰统计。
+  const cv::Rect graph{74, 130, kWidth - 74 - 24, kHeight - 130 - 56};
   cv::Mat plot(kHeight, kWidth, CV_8UC3, cv::Scalar{24, 24, 24});
 
   drawOutlinedText(
@@ -987,7 +892,7 @@ cv::Mat drawCostPlot(
   drawOutlinedText(
     plot,
     cv::format(
-      "raw=%.1fdeg  filter input=%.1fdeg  curve min=%.1fdeg (cost=%.1fpx)",
+      "raw=%.1fdeg  pnp yaw=%.1fdeg  curve min=%.1fdeg (cost=%.1fpx)",
       armor->yaw_raw * kRadToDeg, armor->ypr_in_world[0] * kRadToDeg,
       curve->best_yaw * kRadToDeg, curve->best_cost),
     {12, 84}, {0, 255, 255}, 0.52);
@@ -1001,34 +906,12 @@ cv::Mat drawCostPlot(
                                        : cv::Scalar{200, 200, 200},
     0.52);
 
-  // 双板：联合曲线的极小点才是 refine_double_armor 实际采用的 yaw，单板曲线
-  // 在正对枪口时接近平坦，两条线放在同一纵轴上才能看出约束起了多大作用。
-  drawOutlinedText(
-    plot,
-    joint_curve == nullptr
-      ? std::string{"double armor: unpaired (single-armor yaw in use)"}
-      : cv::format(
-          "double armor: pair offset=%+.0fdeg  joint min=%.1fdeg (cost=%.1fpx)"
-          "  local minima=%zu",
-          pair_offset_degrees, joint_curve->best_yaw * kRadToDeg,
-          joint_curve->best_cost, joint_curve->local_minima),
-    {12, 136},
-    joint_curve == nullptr ? cv::Scalar{140, 140, 140}
-                           : cv::Scalar{255, 0, 255},
-    0.52);
-
   std::vector<double> finite_costs;
   finite_costs.reserve(curve->costs.size());
   std::copy_if(
     curve->costs.begin(), curve->costs.end(),
     std::back_inserter(finite_costs),
     [](double cost) { return std::isfinite(cost); });
-  if (joint_curve != nullptr) {
-    std::copy_if(
-      joint_curve->costs.begin(), joint_curve->costs.end(),
-      std::back_inserter(finite_costs),
-      [](double cost) { return std::isfinite(cost); });
-  }
   if (finite_costs.empty()) {
     drawOutlinedText(
       plot, "cost curve unavailable", {graph.x + 16, graph.y + 32},
@@ -1096,27 +979,6 @@ cv::Mat drawCostPlot(
   cv::circle(
     plot, {x_of(curve->best_offset_degrees), y_of(curve->best_cost)}, 6,
     {0, 0, 255}, cv::FILLED, cv::LINE_AA);
-
-  if (joint_curve != nullptr) {
-    std::optional<cv::Point> previous_joint;
-    for (std::size_t index = 0; index < joint_curve->costs.size(); ++index) {
-      if (!std::isfinite(joint_curve->costs[index])) {
-        previous_joint.reset();
-        continue;
-      }
-      const cv::Point point{
-        x_of(joint_curve->offsets_degrees[index]),
-        y_of(joint_curve->costs[index])};
-      if (previous_joint) {
-        cv::line(plot, *previous_joint, point, {255, 0, 255}, 2, cv::LINE_AA);
-      }
-      previous_joint = point;
-    }
-    cv::circle(
-      plot,
-      {x_of(joint_curve->best_offset_degrees), y_of(joint_curve->best_cost)}, 6,
-      {255, 0, 255}, cv::FILLED, cv::LINE_AA);
-  }
 
   // 各个 yaw 换算成相对枪管的偏角后画竖线，落在搜索窗口外的不画。
   const auto draw_marker = [&](double yaw, const cv::Scalar& color,
@@ -1304,12 +1166,6 @@ int main(int argc, char** argv)
     std::size_t valid_pnp_observations = 0;
     std::size_t tracking_frames = 0;
     std::size_t multi_minimum_frames = 0;
-    // 双板：成功配对的帧，以及其中联合代价曲线仍非单峰的帧。
-    std::size_t paired_frames = 0;
-    std::size_t joint_multi_minimum_frames = 0;
-    // 联合极小与单板极小的 yaw 之差，即双板约束把这块板拉动了多少度。
-    double paired_yaw_shift_sum = 0.0;
-    double paired_yaw_shift_max = 0.0;
     std::size_t plan_valid_frames = 0;
     std::size_t command_frames = 0;
     std::size_t fire_feasible_frames = 0;
@@ -1419,7 +1275,6 @@ int main(int argc, char** argv)
             L3Estimation::toArmorObservation(armor, timestamp));
           solver.single_pnp(diagnostic_pnp_observations.back());
         }
-        solver.refine_double_armor(diagnostic_pnp_observations);
       }
       if (state_csv.is_open()) {
         state_csv << frame_index << ','
@@ -1453,30 +1308,12 @@ int main(int argc, char** argv)
       const auto selected = selectArmor(
         observations, target, target_armor_poses, calibration.image_size);
       std::optional<YawCostCurve> curve;
-      std::optional<YawCostCurve> joint_curve;
-      double pair_offset_degrees = 0.0;
       if (selected) {
         curve = sampleYawCost(solver, observations[*selected], q_world_barrel);
         if (curve->local_minima > 1) {
           ++multi_minimum_frames;
         }
 
-        // 同帧存在配对时再算一条联合曲线。这条曲线的极小点就是
-        // PnpSolver::refine_double_armor 实际写回两块板的 yaw。
-        if (const auto partner = selectPairPartner(observations, *selected)) {
-          pair_offset_degrees = partner->second * kRadToDeg;
-          joint_curve = sampleJointYawCost(
-            solver, observations[*selected], observations[partner->first],
-            partner->second, q_world_barrel);
-          ++paired_frames;
-          if (joint_curve->local_minima > 1) {
-            ++joint_multi_minimum_frames;
-          }
-          const double yaw_shift = std::abs(L6Telemetry::limit_rad(
-            joint_curve->best_yaw - curve->best_yaw)) * kRadToDeg;
-          paired_yaw_shift_sum += yaw_shift;
-          paired_yaw_shift_max = std::max(paired_yaw_shift_max, yaw_shift);
-        }
       }
       std::optional<double> ekf_armor_yaw;
       if (target && target->last_id >= 0 &&
@@ -1710,12 +1547,13 @@ int main(int argc, char** argv)
           L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
             kRadToDeg),
         {10, 62}, {255, 255, 255});
-      if (full_view && selected && isFilterInputArmor(observations[*selected])) {
+      if (full_view && selected &&
+          observations[*selected].name != L3Estimation::ArmorName::Unknown) {
         const auto& armor = observations[*selected];
         drawOutlinedText(
           img,
           cv::format(
-            "PnP diagnostic yaw=%.1fdeg (UVL update)",
+            "PnP diagnostic yaw=%.1fdeg (init only)",
             armor.ypr_in_world[0] * kRadToDeg),
           {10, 92}, {0, 255, 0});
       }
@@ -1778,18 +1616,6 @@ int main(int argc, char** argv)
         data["cost_min_yaw"] = curve->best_yaw * kRadToDeg;
         data["cost_min_offset"] = curve->best_offset_degrees;
         data["cost_local_minima"] = curve->local_minima;
-        // 双板联合曲线。single 与 joint 的极小 yaw 之差就是双板约束把这块板的
-        // yaw 拉动了多少度，是回放里最直接的收益量。
-        if (joint_curve) {
-          data["joint_cost_min"] = joint_curve->best_cost;
-          data["joint_cost_min_yaw"] = joint_curve->best_yaw * kRadToDeg;
-          data["joint_cost_min_offset"] = joint_curve->best_offset_degrees;
-          data["joint_cost_local_minima"] = joint_curve->local_minima;
-          data["joint_minus_single_yaw"] =
-            L6Telemetry::limit_rad(joint_curve->best_yaw - curve->best_yaw) *
-            kRadToDeg;
-          data["pair_offset"] = pair_offset_degrees;
-        }
         if (selected) {
           data["cost_at_solver_yaw"] =
             yawCost(solver, observations[*selected],
@@ -1893,8 +1719,7 @@ int main(int argc, char** argv)
         cv::imshow(
           "pnp cost",
           drawCostPlot(
-            curve ? &*curve : nullptr, joint_curve ? &*joint_curve : nullptr,
-            pair_offset_degrees,
+            curve ? &*curve : nullptr,
             selected ? &observations[*selected] : nullptr, solver, ekf_armor_yaw,
             predicted_armor_yaw, frame_index));
       }
@@ -1921,15 +1746,6 @@ int main(int argc, char** argv)
               << "Tracking 帧: " << tracking_frames << '\n'
               << "代价曲线出现多个局部极小值的帧: " << multi_minimum_frames
               << '\n'
-              << "双板配对成功的帧: " << paired_frames << '\n'
-              << "配对帧里联合代价曲线非单峰的帧: "
-              << joint_multi_minimum_frames << '\n'
-              << "双板相对单板的 yaw 改动: 均值 "
-              << (paired_frames == 0
-                    ? 0.0
-                    : paired_yaw_shift_sum /
-                        static_cast<double>(paired_frames))
-              << " deg，最大 " << paired_yaw_shift_max << " deg\n"
               << "L4 规划成功的帧: " << plan_valid_frames << '\n'
               << "实际下发命令的帧: " << command_frames << '\n'
               << "fire_feasible 的帧: " << fire_feasible_frames

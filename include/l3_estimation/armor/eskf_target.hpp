@@ -17,8 +17,7 @@
 #include <utility>
 #include <vector>
 
-// 误差状态整车目标。照搬 awakening 的 ArmorTarget，是 TrackedTarget 的 ESEKF
-// 替代品，对外保持同一组 L3 → L4 契约方法。
+// 误差状态整车目标。照搬 awakening 的 ArmorTarget。
 namespace L3Estimation {
 
 // 整车 ESEKF 的全部旋钮。噪声部分复用 VehicleModel::NoiseConfig。
@@ -147,7 +146,7 @@ public:
     const L1Sensor::CameraCalibration & calibration,
     const Eigen::Isometry3d & camera_in_world) const;
 
-  // --- L3 → L4 契约，与 TrackedTarget 同名同义 ---------------------------
+  // --- L3 → L4 契约 -------------------------------------------------------
 
   // 注意第 8、9 维对外吐的是**线性**半径而非对数：L4 的 planner.cpp:240 按
   // abs(x[8]) <= 2.0 判物理半径，内部的 log 表示不能泄漏出去。

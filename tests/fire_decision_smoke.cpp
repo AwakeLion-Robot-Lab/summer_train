@@ -90,8 +90,8 @@ void testShootEnableGatesOnlyTheOutput()
   std::cout << "  [ok] shoot_enable gates the output, not the judgement\n";
 }
 
-// IESKF 不应为了让 L5 识别目标存在而伪造一个普通 EKF 目标。火控实际只需要
-// 类别来确定板型与后仰角，所以 target_name 是两套估计器的最小公共契约。
+// 调用方不应为了让 L5 识别目标存在而伪造一个完整滤波器目标。火控实际只需要
+// 类别来确定板型与后仰角，所以 target_name 是最小契约。
 void testTargetNameOnlyInputIsAdmitted()
 {
   const L5Control::FireDecider decider(makeConfig());

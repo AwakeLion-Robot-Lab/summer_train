@@ -32,16 +32,6 @@ void readValue(
   }
 }
 
-void readMilliseconds(
-  const YAML::Node& section,
-  const char* key,
-  std::chrono::milliseconds& value)
-{
-  int milliseconds = static_cast<int>(value.count());
-  readValue(section, key, milliseconds);
-  value = std::chrono::milliseconds{milliseconds};
-}
-
 void readMicroseconds(
   const YAML::Node& section,
   const char* key,
@@ -115,18 +105,6 @@ void normalize(AutoAimConfig& config)
   if (!positiveFinite(config.armor.height)) {
     config.armor.height = armor_defaults.height;
   }
-  if (!positiveFinite(config.armor.corner_noise_px)) {
-    config.armor.corner_noise_px = armor_defaults.corner_noise_px;
-  }
-
-  config.tracker.min_detect_count =
-    std::max(config.tracker.min_detect_count, 1);
-  config.tracker.max_frame_interval = std::max(
-    config.tracker.max_frame_interval, std::chrono::milliseconds{1});
-  config.tracker.max_temp_lost_count =
-    std::max(config.tracker.max_temp_lost_count, 0);
-  config.tracker.outpost_max_temp_lost_count =
-    std::max(config.tracker.outpost_max_temp_lost_count, 0);
 
   // 精修参数越界会让它静默失效（阈值 255 时二值图全黑，一块灯条也找不到）
   // 或者全盘接受（端点距离无穷大时任何传统解都覆盖网络角点），都不会报错。
@@ -238,27 +216,8 @@ void normalize(AutoAimConfig& config)
   config.refiner.independent_light_morphology_height = std::clamp(
     config.refiner.independent_light_morphology_height, 1, 31);
 
-  // 噪声为零或负会让 EKF 的增益直接发散，越界一律退回默认。
-  const L3Estimation::TargetConfig target_defaults;
-  for (const auto & [value, fallback] : {
-         std::pair{&config.target.q_translation, target_defaults.q_translation},
-         std::pair{&config.target.q_rotation, target_defaults.q_rotation},
-         std::pair{&config.target.outpost_q_translation, target_defaults.outpost_q_translation},
-         std::pair{&config.target.outpost_q_rotation, target_defaults.outpost_q_rotation},
-         std::pair{&config.target.angle_variance, target_defaults.angle_variance},
-         std::pair{&config.target.distance_variance_factor,
-                   target_defaults.distance_variance_factor},
-         std::pair{&config.target.armor_yaw_variance_base,
-                   target_defaults.armor_yaw_variance_base},
-         std::pair{&config.target.armor_yaw_distance_divisor,
-                   target_defaults.armor_yaw_distance_divisor}}) {
-    if (!positiveFinite(*value)) {
-      *value = fallback;
-    }
-  }
-
   // awakening IESKF：状态机按真实时间计，过程噪声在车体系表达，UVL 的观测
-  // 噪声是 sigma 而非方差。这些量与上面的普通 EKF 参数不可混用。
+  // 噪声是 sigma 而非方差。
   const L3Estimation::EskfTrackerConfig ieskf_tracker_defaults;
   config.ieskf_tracker.tracking_thres =
     std::max(config.ieskf_tracker.tracking_thres, 1);
@@ -535,18 +494,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(armor, "small_width_m", config.armor.small_width);
   readValue(armor, "big_width_m", config.armor.big_width);
   readValue(armor, "height_m", config.armor.height);
-  readValue(armor, "corner_noise_px", config.armor.corner_noise_px);
-
-  const YAML::Node tracker = root["tracker"];
-  readValue(tracker, "min_detect_count", config.tracker.min_detect_count);
-  readMilliseconds(
-    tracker, "max_frame_interval_ms", config.tracker.max_frame_interval);
-  readValue(
-    tracker, "max_temp_lost_count", config.tracker.max_temp_lost_count);
-  readValue(
-    tracker,
-    "outpost_max_temp_lost_count",
-    config.tracker.outpost_max_temp_lost_count);
 
   // 传统灯条精修。默认值来自 sp_vision 的 standard3.yaml，按场地光照调
   // binary_threshold 是最常动的一个。
@@ -630,18 +577,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(
     refiner, "independent_light_morphology_height",
     config.refiner.independent_light_morphology_height);
-
-  // EKF 噪声。回放标定的主要旋钮，改这些必须重跑 track_diag 看 NIS。
-  const YAML::Node estimator = root["estimator"];
-  readValue(estimator, "q_translation", config.target.q_translation);
-  readValue(estimator, "q_rotation", config.target.q_rotation);
-  readValue(estimator, "outpost_q_translation", config.target.outpost_q_translation);
-  readValue(estimator, "outpost_q_rotation", config.target.outpost_q_rotation);
-  readValue(estimator, "angle_variance", config.target.angle_variance);
-  readValue(estimator, "distance_variance_factor", config.target.distance_variance_factor);
-  readValue(estimator, "armor_yaw_variance_base", config.target.armor_yaw_variance_base);
-  readValue(
-    estimator, "armor_yaw_distance_divisor", config.target.armor_yaw_distance_divisor);
 
   const YAML::Node ieskf = root["ieskf"];
   readValue(ieskf, "tracking_thres", config.ieskf_tracker.tracking_thres);

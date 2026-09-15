@@ -717,6 +717,9 @@ EskfTarget EskfTarget::snapshot() const
   copy.update_count_ = update_count_;
   copy.last_nis_ = last_nis_;
   copy.last_nis_dof_ = last_nis_dof_;
+  // UVL 残差和 NIS 一样属于本帧诊断，必须跟着副本走：EskfTracker::track() 对外
+  // 返回的就是 snapshot，漏掉它会让 track_diag 的创新列恒为空。
+  copy.last_uvl_residual_ = last_uvl_residual_;
   copy.voter_ = voter_;
   // 刻意不复制 filter_：下游拿到的是纯状态副本，外推随便做，不会污染滤波器。
   return copy;

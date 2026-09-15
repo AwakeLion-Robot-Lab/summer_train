@@ -7,7 +7,6 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <numbers>
 #include <optional>
 #include <vector>
 
@@ -20,16 +19,8 @@ namespace {
 // 角点深度小于该值时视为落在相机平面或相机后方。
 constexpr double kMinimumCornerDepth = 1e-6;
 
-// SP Solver::optimize_yaw 的搜索窗口宽度，单位为度。单板与双板共用同一个窗口
-// 和 1 度步长，两条代价曲线才能逐点对照。
+// SP Solver::optimize_yaw 的搜索窗口宽度，单位为度，步长 1 度。
 constexpr double kYawSearchRangeDegrees = 140.0;
-
-// 双板配对的世界系间距范围，单位为米。相邻两板间距为 2*r*sin(π/n)：四板车是
-// r*sqrt(2)，三板车是 r*sqrt(3)，配合 TrackedTarget::diverged() 认可的半径范围
-// [0.1, 0.4] 给出这两个边界。低于下限只可能是同一块板被检出两次，高于上限则不是
-// 同一辆车的相邻两板。
-constexpr double kMinimumPairGap = 0.1;
-constexpr double kMaximumPairGap = 0.75;
 
 // Awakening 对前哨单板 PnP 的固定俯仰 yaw 搜索直接使用黄金分割。保留同一
 // 收缩系数和终止精度，深度差才与其 armor_pnp 分支同口径。
@@ -154,19 +145,12 @@ void resetPnpOutput(Armor &armor) {
 }
 
 // SP 对 3/4/5 号的大装甲（平衡步兵）跳过固定俯仰假设的 yaw 优化。当前板型映射
-// 里平衡步兵已不存在，保留这条判据只为让单板与双板两条路径口径一致。
+// 里平衡步兵已不存在，保留这条判据只为与 SP 口径一致。
 bool isBalanceInfantry(const Armor &armor) noexcept {
   return armor.type == ArmorType::Big &&
          (armor.name == ArmorName::Infantry3 ||
           armor.name == ArmorName::Infantry4 ||
           armor.name == ArmorName::Infantry5);
-}
-
-// 能否参与双板配对：single_pnp 必须已提交位姿（name 只在提交那一步被赋值），
-// 类别必须能查到板数，且该类别的 yaw 优化没有被跳过。
-bool pairableObservation(const Armor &armor) noexcept {
-  return armor.name != ArmorName::Unknown && armor.xyz_in_world.allFinite() &&
-         armorCountOf(armor.name).has_value() && !isBalanceInfantry(armor);
 }
 
 bool finiteImagePoints(const std::array<cv::Point2f, 4> &points) {
@@ -497,97 +481,7 @@ void PnpSolver::optimize_yaw(Armor &armor) const {
   }
 
   armor.yaw_raw = armor.ypr_in_world[0];
-  armor.yaw_sigma = std::numeric_limits<double>::infinity();
   armor.ypr_in_world[0] = best_yaw;
-}
-
-bool PnpSolver::optimize_yaw_pair(Armor &left, Armor &right) const {
-  const std::optional<int> armor_count = armorCountOf(left.name);
-  if (!armor_count) {
-    return false;
-  }
-  // 相邻两块板的朝向差。四板车 90 度、前哨与基地 120 度——rm.cv.fans 在这里
-  // 写死了 π/2，泛化成 2π/n 才对得上三板车。
-  const double offset =
-    2.0 * std::numbers::pi / static_cast<double>(*armor_count);
-
-  // 窗口、步长、代价与单板搜索完全一致，只把代价换成两块板之和：不额外引入
-  // 单峰假设，代价曲线仍能和单板逐点对比（离线回放据此画两条曲线）。
-  const double barrel_yaw = L6Telemetry::eulers(R_barrel2world_, 2, 1, 0)[0];
-  const double yaw0 = spLimitRad(
-    barrel_yaw - kYawSearchRangeDegrees / 2.0 * CV_PI / 180.0);
-
-  double min_error = std::numeric_limits<double>::infinity();
-  double best_left_yaw = left.ypr_in_world[0];
-  for (int index = 0; index < kYawSearchRangeDegrees; ++index) {
-    const double yaw = spLimitRad(yaw0 + index * CV_PI / 180.0);
-    const double error =
-      yaw_cost(left, yaw) + yaw_cost(right, spLimitRad(yaw + offset));
-    if (error < min_error) {
-      min_error = error;
-      best_left_yaw = yaw;
-    }
-  }
-  if (!std::isfinite(min_error)) {
-    return false;
-  }
-
-  // rm.cv.fans 和 QD 在这里都不设代价门限：配对一旦成立就无条件采用联合解，
-  // 可信度由配对条件本身保证（同类别、同板型、间距在相邻板的物理范围内）。
-  left.ypr_in_world[0] = best_left_yaw;
-  right.ypr_in_world[0] = spLimitRad(best_left_yaw + offset);
-  return true;
-}
-
-void PnpSolver::refine_double_armor(std::vector<Armor> &armors) const {
-  if (!ready_ || !world_barrel_ready_ || armors.size() < 2) {
-    return;
-  }
-
-  // 同一车辆类别在场上只有一个实体（前哨、基地同理），因此同 name 同板型的
-  // 两块板就是同一辆车的相邻两板。同类别出现三块以上时只取世界系最近的一对，
-  // 多出来的那块必然是误检——rm.cv.fans 在这种情况下直接不修正 yaw。
-  std::vector<bool> paired(armors.size(), false);
-  for (std::size_t index = 0; index < armors.size(); ++index) {
-    if (paired[index] || !pairableObservation(armors[index])) {
-      continue;
-    }
-
-    std::size_t partner = armors.size();
-    double partner_gap = kMaximumPairGap;
-    for (std::size_t other = index + 1; other < armors.size(); ++other) {
-      if (paired[other] || !pairableObservation(armors[other]) ||
-          armors[other].name != armors[index].name ||
-          armors[other].type != armors[index].type) {
-        continue;
-      }
-
-      const double gap =
-        (armors[index].xyz_in_world - armors[other].xyz_in_world).norm();
-      // 下限拦重复检测：同一块板被检出两次时间距接近 0，按相邻板配对会凭空
-      // 造出一个 2π/n 的约束。
-      if (gap < kMinimumPairGap || gap >= partner_gap) {
-        continue;
-      }
-      partner_gap = gap;
-      partner = other;
-    }
-
-    if (partner >= armors.size()) {
-      continue;
-    }
-
-    // 世界系 y 指左，方位角大的那块板在图像左侧。用方位角而不是像素横坐标
-    // 排序，左右判定就不受相机 roll 影响。
-    const bool index_is_left =
-      armors[index].ypd_in_world[0] >= armors[partner].ypd_in_world[0];
-    Armor &left = index_is_left ? armors[index] : armors[partner];
-    Armor &right = index_is_left ? armors[partner] : armors[index];
-    if (optimize_yaw_pair(left, right)) {
-      paired[index] = true;
-      paired[partner] = true;
-    }
-  }
 }
 
 std::vector<cv::Point2f>

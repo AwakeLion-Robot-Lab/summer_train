@@ -14,8 +14,7 @@
 #include <string>
 #include <vector>
 
-// 误差状态整车跟踪器。照搬 awakening 的 ArmorTracker，是 Tracker 的 ESEKF
-// 替代品，公共接口刻意与之对齐，便于在同一段回放上做 A/B。
+// 误差状态整车跟踪器。照搬 awakening 的 ArmorTracker。
 namespace L3Estimation {
 
 // L2 -> L3 的显式转换入口。这里只复制检测字段，三维位姿由调用方用当帧的

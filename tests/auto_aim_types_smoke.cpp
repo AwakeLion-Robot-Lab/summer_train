@@ -1,8 +1,8 @@
 #include "l3_estimation/armor/types.hpp"
 #include "l3_estimation/armor/eskf_target.hpp"
 #include "l4_planning/types.hpp"
+#include "l5_control/fire_decision.hpp"
 #include "l5_control/reject_reason.hpp"
-#include "l6_telemetry/auto_aim_trace.hpp"
 #include "runtime/auto_aim_config.hpp"
 
 #include <cmath>
@@ -74,16 +74,16 @@ int main()
     return 5;
   }
 
-  L6Telemetry::AimTrace trace;
-  trace.target = tracked_target;
-  trace.track_state = L3Estimation::TrackState::Tracking;
-  trace.plan.status = L4Planning::PlanStatus::TrackOnly;
-  trace.plan.reason = L4Planning::PlanError::BadBulletSpeed;
-  trace.fire.reasons.push_back(L5Control::RejectReason::ShootDisabled);
-  if (!trace.target || !trace.plan.valid() || trace.plan.fireAdmissible() ||
-      trace.track_state != L3Estimation::TrackState::Tracking ||
-      L5Control::toString(trace.fire.reasons.front()) != "shoot_disabled") {
-    std::cerr << "AimTrace data contract is incorrect\n";
+  // TrackOnly 是"跟随但不允许开火"，valid() 与 fireAdmissible() 必须分开——
+  // 二者一旦被合并，延迟未标定的降级路径就会静默变成允许开火。
+  L4Planning::Plan plan;
+  plan.status = L4Planning::PlanStatus::TrackOnly;
+  plan.reason = L4Planning::PlanError::BadBulletSpeed;
+  L5Control::FireDecision fire;
+  fire.reasons.push_back(L5Control::RejectReason::ShootDisabled);
+  if (!plan.valid() || plan.fireAdmissible() ||
+      L5Control::toString(fire.reasons.front()) != "shoot_disabled") {
+    std::cerr << "Plan / FireDecision data contract is incorrect\n";
     return 6;
   }
 
