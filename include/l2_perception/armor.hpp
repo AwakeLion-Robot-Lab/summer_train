@@ -90,23 +90,33 @@ struct Armor {
   Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};   // 方位角加距离
 };
 
-// 灯条关键点模型检出的单根灯条。它不带车辆编号，只保留 UVL 观测需要的上下
-// 端点和几何量；具体属于哪块装甲板、是左灯还是右灯，由 L3 根据整车预测关联。
+// 这根灯条由哪一路检出，见 LightMode。
+enum class LightSource {
+  Model,
+  Classic
+};
+
+// 检出的单根灯条，坐标都在原图像素系。它不带车辆编号，只有 UVL 观测要用的
+// 上下端点和几何量；属于哪块装甲板、是左灯还是右灯，由 L3 按整车预测关联。
 struct Light {
+  // center 是 top 与 bottom 的中点，top 按图像 y 定，恒在 bottom 上方。
   cv::Point2f center{};
   cv::Point2f top{};
   cv::Point2f bottom{};
   ArmorColor color{ArmorColor::Unknown};
+  // 两端点的距离，单位为 pixel。
   double length{0.0};
-  // 偏离竖直方向的角度，单位为度。
+  // 端点连线偏离竖直方向的角度，单位为度。
   float tilt_angle_deg{0.0F};
-  // 灯条模型的类别分数。
+  // 模型的类别分数；传统检出的没有分数，记 1。
   float score{0.0F};
+  LightSource source{LightSource::Model};
+  // 在本帧灯条数组里的下标，LightPair 用它指回来。
   std::size_t id{0};
 };
 
-// 一帧装甲感知的完整输出：配对并通过数字分类的装甲板，加上交给 L3 做独立
-// UVL 观测的灯条。
+// 一帧装甲感知的输出：通过数字分类的装甲板，以及交给 L3 做 UVL 观测的灯条。
+// 后者按 detectFrame 的 light_roi 筛过，不一定是配出装甲板的那些。
 struct ArmorFrame {
   std::vector<Armor> armors;
   std::vector<Light> lights;

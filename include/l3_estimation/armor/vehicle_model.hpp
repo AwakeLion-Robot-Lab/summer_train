@@ -15,24 +15,19 @@
 #include <numbers>
 #include <array>
 
-// 整车模型：十三维状态、由状态生成每块装甲板位姿的结构先验、流形上的 ⊞/⊟，
-// 以及恒速度运动模型。对齐 awakening 的 armor_track/motion_model.hpp。
+// 整车模型，四部分：十三维状态的布局、由状态算出每块装甲板位姿的结构先验、
+// 流形上的 ⊞/⊟，以及恒速度运动模型和过程噪声。
 //
-// 与 sp_vision 只估一个 yaw 标量的整车模型相比，本质区别只有一个：姿态是完整的
-// SO(3) 旋转向量。这带来两个连锁后果——状态不再住在向量空间（于是需要
-// ⊞/⊟ 和误差状态），而过程噪声可以在车体系表达（于是"地面车不会突然上下
-// 加速"这个先验才有地方写）。推导见 docs/esekf_uvl_port.md 第 2、3 节。
+// 姿态用完整的 SO(3) 旋转向量而不是单个 yaw 标量，由此带来两件事：状态不住
+// 在向量空间，所以要有 ⊞/⊟ 和误差状态；过程噪声可以在车体系表达，"地面车不会
+// 突然上下加速"这个先验才有地方写。推导见 docs/esekf_uvl_port.md 第 2、3 节。
 namespace L3Estimation::VehicleModel {
 
 // 状态下标。
 //
-// 前九维（0..8）**不可改动**：L4 的 Planner 按下标直接读 x[0]、x[2]（车心
-// 平面位置）、x[7]（角速度）、x[8]（第一组半径），见 planner.cpp:64/84/240。
-// 这也正好与 awakening 的布局逐位重合，移植时不需要任何转换。
-//
-// 代价是旋转三维不连续：z 在 6，y 和 x 挤到 11、12。看着别扭，但把它们改成
-// 连续就会撞上 VYAW=7 与 LOG_R1=8，直接破坏 L4 契约。所以这个不连续是
-// 载荷，不是历史遗留。
+// 前九维（0..8）不可改动：L4 的 Planner 按下标直接读车心平面位置、角速度和
+// 第一组半径。代价是旋转三维不连续，z 在 6，y 和 x 挤到 11、12——把它们改
+// 连续就会占掉 VYAW 和 LOG_R1 的位置，破坏这个契约。
 namespace idx
 {
 enum {
@@ -49,8 +44,8 @@ enum {
   kStateSize
 };
 
-// P1 / P2 是"变形金刚"：同一个 double，四板车和前哨站上含义完全不同。
-// 所有碰这两个槽位的代码都必须先分支判 ArmorName，否则就是静默算错。
+// P1 / P2 是复用槽位：同一个 double 在四板车和前哨上含义完全不同。碰这两个
+// 槽位的代码都要先按 ArmorName 分支，否则是静默算错。
 constexpr int LOG_R2 = P1;       // 四板车：第二组半径的对数
 constexpr int HEIGHT = P2;       // 四板车：奇偶板的高度差
 constexpr int OUTPOST_DZ1 = P1;  // 前哨站：1 号板相对 0 号板的高度
@@ -60,22 +55,22 @@ constexpr int OUTPOST_DZ2 = P2;  // 前哨站：2 号板相对 0 号板的高度
 constexpr int kStateSize = idx::kStateSize;
 static_assert(kStateSize == 13, "L4 与遥测按十三维读状态");
 
-// 旋转三维的下标，按 (x, y, z) 顺序，供 ⊞/⊟ 使用。
+// 旋转三维的下标，按 (x, y, z) 顺序排好，供 ⊞/⊟ 遍历。
 constexpr int kRotationIndex[3] = {idx::ROT_X, idx::ROT_Y, idx::ROT_Z};
 
-// 半径的物理范围，用于防发散。这类物理常量留在代码里，不出到配置。
+// 半径的物理范围，Motion::clamp 用它饱和。这类物理常量留在代码里，不出配置。
 constexpr double kMinArmorRadius = 0.05;
 constexpr double kMaxArmorRadius = 0.8;
 // 前哨站半径与转速由规则固定，不参与估计。
 constexpr double kOutpostRadius = 0.55 / 2.0;
 constexpr double kOutpostYawRate = 2.51;
-// 高度差与角速度的发散判据。超界不是"估偏了一点"，而是关联错了，所以复位。
+// 高度差与角速度的发散判据。超界不是估偏一点，而是关联错了，所以直接归零。
 constexpr double kMaxHeightOffset = 0.5;
 constexpr double kMaxOutpostHeightOffset = 0.3;
 constexpr double kMaxYawRate = 20.0;
 
-// 折回 (-π, π]。无分支写法，对 Jet 友好：floor 的导数恒为零，而加减 2π 不
-// 改变角度的物理含义，导数当然也不该变。
+// 把角度折回 (-π, π]。用 floor 而不是分支：floor 的导数恒为零，加减 2π 不改
+// 变角度的物理含义，导数也就不变，Jet 穿过去是对的。
 template <typename T>
 T normalizeAngle(T angle)
 {
@@ -83,7 +78,7 @@ T normalizeAngle(T angle)
   return angle - two_pi * ceres::floor((angle + T(std::numbers::pi)) / two_pi);
 }
 
-// Rz(yaw) · Ry(pitch)。装甲板在车体系的姿态只用得到这两轴。
+// 组合出 Rz(yaw)·Ry(pitch)。装甲板在车体系的姿态只用得到这两轴。
 template <typename T>
 Eigen::Matrix<T, 3, 3> rotationZY(const T & yaw, const T & pitch)
 {
@@ -104,13 +99,13 @@ constexpr bool isBase(ArmorName name) noexcept
   return name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
 }
 
-// 第 id 块板用哪一组半径。
+// 取第 id 块板的半径：四板车的奇数板用第二组，其余都用第一组，基地的板在
+// 中心、半径为 0。
 //
-// is_r2 的两个条件缺一不可：三板车（前哨、基地）所有板到轴心的距离物理上
-// 相同，共用第一组；四板车前后一组、左右一组，底盘不是正方形。
+// 两个条件缺一不可：三板车（前哨、基地）各板到轴心距离相同，共用第一组；
+// 四板车底盘不是正方形，前后一组、左右一组。
 //
-// exp(log_r) 是半径保正的全部机制——状态里存对数，取出来必然为正，不需要
-// 任何约束或投影。
+// 状态里存的是对数，exp 出来必然为正，半径保正不需要额外约束或投影。
 template <typename T>
 T armorRadius(const T * x, int id, int armor_num, ArmorName name)
 {
@@ -121,8 +116,8 @@ T armorRadius(const T * x, int id, int armor_num, ArmorName name)
   return ceres::exp(is_r2 ? x[idx::LOG_R2] : x[idx::LOG_R1]);
 }
 
-// 目标是否退化为"只绕竖直轴转"。前哨站是固定装置绕竖直轴匀速转，基地不转，
-// 给它们估 roll/pitch 只会引入不可观测自由度让滤波器漂。
+// 该目标是否只绕竖直轴转。前哨是固定装置绕竖直轴匀速转，基地不转，给它们估
+// roll/pitch 只会多出不可观测的自由度让滤波器漂。
 constexpr bool yawOnlyTarget(ArmorName name) noexcept
 {
   return name == ArmorName::Outpost || name == ArmorName::BaseSmall ||
@@ -130,7 +125,8 @@ constexpr bool yawOnlyTarget(ArmorName name) noexcept
 }
 
 
-// 整车姿态。
+// 由状态里的旋转向量取指数映射得到整车姿态；只绕竖直轴的目标把 x、y 分量
+// 按 0 处理。
 template <typename T>
 Eigen::Matrix<T, 3, 3> vehicleRotation(const T * x, ArmorName name)
 {
@@ -140,7 +136,7 @@ Eigen::Matrix<T, 3, 3> vehicleRotation(const T * x, ArmorName name)
   return L6Telemetry::so3Exp<T>(Eigen::Matrix<T, 3, 1>(x[idx::ROT_X], x[idx::ROT_Y], x[idx::ROT_Z]));
 }
 
-// 整车在世界系的位姿：状态的前六维取位置，姿态三维取朝向。
+// 整车在世界系的位姿：平移取状态的车心三维，旋转取 vehicleRotation。
 template <typename T>
 Eigen::Transform<T, 3, Eigen::Isometry> vehiclePose(const T * x, ArmorName name)
 {
@@ -151,15 +147,16 @@ Eigen::Transform<T, 3, Eigen::Isometry> vehiclePose(const T * x, ArmorName name)
   return pose;
 }
 
-// 第 id 块装甲板在世界系的位姿。**整车估计思路的全部内容。**
+// 第 id 块装甲板在世界系的位姿：方位角按 θ = 2πi/N 定死，板心在车体系取
+// -r·(cosθ, sinθ)，高度按目标类型取 0、前哨的两个偏移或四板车的奇偶差，
+// 姿态取 Rz(θ)·Ry(后仰角)，最后左乘整车位姿。
 //
-// 板的方位角是常量而非待估量：θ_i = 2πi/N。半径和高度差是状态量。于是
-// "装甲板跳变"被转化为确定的刚体几何关系——无论当前看到的是正面板、侧面板
-// 还是相邻板的一条灯条，它们都只是同一个十三维状态在不同 i 上的投影。
+// 这是整车估计的核心：方位角是常量、半径和高度差是状态量，于是"装甲板跳变"
+// 变成确定的刚体几何关系——看到的是哪块板、甚至只有一条灯条，都只是同一个
+// 十三维状态在不同 i 上的投影。
 //
-// 注意板心位置取 -r·(cosθ, sinθ) 而姿态绕 z 转 +θ，两者反向，所以**板的
-// x 轴指向车心**，可见面是它的 -x 侧。判可见性时要用 -axis_x，搞反会把
-// 背面的板当成正对的。
+// 板心位置取负而姿态绕 z 转正，两者反向，所以板的 x 轴指向车心，可见面是
+// 它的 -x 侧；判可见性要用 -axis_x，搞反会把背面的板当成正对的。
 template <typename T>
 Eigen::Transform<T, 3, Eigen::Isometry> armorPose(
   const T * x, int id, int armor_num, ArmorName name)
@@ -193,12 +190,11 @@ Eigen::Transform<T, 3, Eigen::Isometry> armorPose(
 // --- 流形运算 -----------------------------------------------------------
 //
 // 普通 EKF 的三个动作（x += K·r、P = FPFᵀ+Q、P 是状态减均值的二阶矩）都假设
-// 状态住在向量空间。旋转不住在向量空间。解法是把状态劈成"名义状态在流形上"
-// 与"误差状态在切空间里"，滤波器的 P 是**误差状态**的协方差。
+// 状态住在向量空间，而旋转不是。这里把状态拆成流形上的名义状态和切空间里的
+// 误差状态，滤波器的 P 是误差状态的协方差。
 //
-// 扰动取右乘（局部/体坐标系）而非左乘，是被下游逼的：过程噪声要在车体系表达
-// （地面车不会突然上下加速），而 vyaw 是绕车体 z 轴的角速度。选左乘的话
-// process_noise 里 Q 的旋转和 ROT_Z–VYAW 耦合块都得重写。
+// 扰动一律取右乘（体坐标系）：过程噪声要在车体系表达，vyaw 也是绕车体 z 轴
+// 的角速度；改左乘的话 processNoise 里旋转块和 ROT_Z–VYAW 耦合块都得重写。
 
 template <class StateVector>
 auto stateRotation(const StateVector & state)
@@ -208,10 +204,10 @@ auto stateRotation(const StateVector & state)
     state[idx::ROT_X], state[idx::ROT_Y], state[idx::ROT_Z]));
 }
 
-// x̌ ⊞ δ：欧氏分量直接加，姿态右乘注入 R ← R·Exp(δ_rot)。
+// x̌ ⊞ δ：欧氏分量直接加，旋转三维右乘注入 R ← R·Exp(δ_rot) 再取对数写回。
 //
-// 循环里**跳过**旋转三维、循环外再单独处理，不是可以省的写法：
-// stateRotation(nominal) 在循环之后被调用，读到的必须是未被误加的旋转。
+// 循环里跳过旋转三维、循环外单独处理不是可以省的写法：循环后面要读
+// stateRotation(nominal)，这时旋转必须还是没被误加过的。
 template <class DeltaVector, class StateVector>
 void injectState(const DeltaVector & delta, StateVector & nominal)
 {
@@ -234,11 +230,11 @@ void injectState(const DeltaVector & delta, StateVector & nominal)
   nominal[idx::ROT_Z] = injected.z();
 }
 
-// x ⊟ x̌：欧氏分量直接减，姿态取 Log(Řᵀ·R)。injectState 的逆。
+// x ⊟ x̌：先整体相减，再把旋转三维覆盖成 Log(Řᵀ·R)。injectState 的逆。
 //
-// 转置的位置必须与右乘配套。写成 Log(R·Řᵀ)（左乘形式）互逆性就破了，而且
-// **不会报错**——滤波器照样跑，只是 Jacobian 全错、协方差没有意义、遇到大
-// 机动就发散。tests/vehicle_model_smoke.cpp 的第一条断言守的就是这个。
+// 转置的位置必须与右乘配套。写成 Log(R·Řᵀ) 就不再互逆，而且不会报错——滤波
+// 器照跑，只是 Jacobian 全错、协方差没有意义、遇到大机动发散。
+// tests/vehicle_model_smoke.cpp 的第一条断言守的就是这个。
 template <class StateVector, class DeltaVector>
 void boxMinusState(const StateVector & nominal, const StateVector & value, DeltaVector & delta)
 {
@@ -256,13 +252,12 @@ void boxMinusState(const StateVector & nominal, const StateVector & value, Delta
 
 // --- 前哨站转向投票 -----------------------------------------------------
 
-// 前哨站的转速由规则固定（kOutpostYawRate），未知的只是**转向**。与其把它
-// 当自由度交给滤波器估，不如攒够证据判明方向后直接钉死——少估一个自由度，
-// 精度和收敛速度都受益。
+// 前哨转速由规则固定，未知的只有转向，所以不交给滤波器估，而是攒够证据后
+// 直接钉死，少估一个自由度。
 //
-// 照搬 awakening 的 Voter：开机 1 秒内不投票（等状态先收敛），此后每次 yaw
-// 变化超过 0.05 rad 就给计数器 ±1，累计绝对值超过 10 票才判定。门限取得高是
-// 因为判错方向比判不出更糟——判不出只是退回按状态量推进，判错会让预测朝反
+// 投票规则：开始后 1 秒内不投（等状态先收敛），之后每次 yaw 变化超过
+// 0.05 rad 就给计数器 ±1，累计绝对值超过 10 票才判定方向。门限取得高，是
+// 因为判错方向比判不出更糟：判不出只是退回按状态量推进，判错会让预测朝反
 // 方向跑。
 struct Voter
 {
@@ -300,8 +295,8 @@ struct Voter
     }
 
     const double diff = normalizeAngle(yaw - last_yaw);
-    // 太小的变化多半是噪声，不投票，也不更新参考角——否则噪声会把参考角
-    // 一点点推着走，永远攒不出证据。
+    // 太小的变化多半是噪声：不投票，也不更新参考角，否则噪声会把参考角一点点
+    // 推着走，永远攒不出证据。
     if (std::abs(diff) < 0.05) {
       return;
     }
@@ -316,7 +311,7 @@ struct Voter
     }
   }
 
-  // 喂给 Motion 的符号：0 表示尚未判明。
+  // 转成喂给 Motion 的符号，0 表示还没判明。
   int sign() const noexcept
   {
     switch (direction) {
@@ -333,8 +328,10 @@ struct Voter
 
 // --- 运动模型 -----------------------------------------------------------
 
-// 恒速度平移 + 绕车体 z 轴恒角速度，其余状态随机游走。模型朴素是有意的：
-// 复杂度在观测端，不在这里。
+// 一步状态转移：车心按恒速度平移，姿态右乘绕车体 z 轴转 vyaw·dt，其余状态
+// 原样保留（即随机游走，由过程噪声描述），最后过一遍 clamp。
+//
+// 前哨的转向一旦判明，角速度就钉成规则常量；基地不转，整段旋转跳过。
 struct Motion
 {
   double dt{0.0};
@@ -361,8 +358,8 @@ struct Motion
         delta_rotation << T(0.0), T(0.0), x0[idx::VYAW] * T(dt);
       }
 
-      // 右乘：delta_rotation 只有 z 分量，表达的是"绕车体自身竖直轴"。
-      // 若改左乘，这就变成"绕世界 z 轴"，车一有 roll/pitch 就错。
+      // 右乘：delta_rotation 只有 z 分量，表达的是绕车体自身的竖直轴转。
+      // 改成左乘就变成绕世界 z 轴，车一有 roll/pitch 就错。
       const Eigen::Matrix<T, 3, 3> rotated =
         (L6Telemetry::so3Exp<T>(Eigen::Matrix<T, 3, 1>(x0[idx::ROT_X], x0[idx::ROT_Y], x0[idx::ROT_Z])) *
          L6Telemetry::so3Exp<T>(delta_rotation))
@@ -376,11 +373,12 @@ struct Motion
     clamp(x1);
   }
 
-  // 防发散的硬约束。半径用饱和（估偏了一点，拉回边界合理），高度差和角速度
-  // 用归零（超界几乎一定是关联错误，等于承认这一维已经没救、重来）。
+  // 防发散的硬约束：半径饱和到物理范围内（估偏一点，拉回边界是合理的），
+  // 高度差和角速度超界则归零（几乎一定是关联错了，等于承认这一维没救、重来）。
+  // 前哨的半径直接按规则常量写死，基地的角速度恒为 0。
   //
-  // 它在状态转移内部，所以 Jet 会穿过这些分支。fmin/fmax 在边界处导数分段，
-  // 理论上让 F 在饱和瞬间不连续；实践中很少触发，是个已知的近似。
+  // 它在状态转移内部，Jet 会穿过这些分支。fmin/fmax 在边界处导数分段，理论上
+  // 让 F 在饱和瞬间不连续，实践中很少触发，是个已知的近似。
   template <typename T>
   void clamp(T * x) const
   {
@@ -415,13 +413,12 @@ struct Motion
 
 // --- 过程噪声 -----------------------------------------------------------
 
-// 整车 ESEKF 的过程噪声强度。这些是靠回放标定的主要旋钮，所以出到配置；
-// 半径物理范围、前哨固定转速那类物理常量仍留在代码里。
+// 过程噪声强度。这些是靠回放标定的主要旋钮，所以出到配置；半径物理范围、
+// 前哨固定转速那类物理常量仍留在代码里。
 struct NoiseConfig
 {
-  // 车体系加速度方差 [前, 左, 上]。三个数不相等是这套写法的全部意义所在：
-  // 地面轮式车可以突然前后左右加速，但不会突然上下加速。这句话只有在**车体
-  // 坐标系**里才成立，所以 Q 必须先在体系建好再旋到世界系。
+  // 车体系加速度方差 [前, 左, 上]。三个数不相等正是在体系建 Q 的意义：地面
+  // 轮式车可以突然前后左右加速，但不会突然上下加速，而这句话只在车体系成立。
   Eigen::Vector3d body_acceleration{30.0, 30.0, 1.0};
   // 绕车体 z 轴的角加速度方差。
   double yaw_acceleration{30.0};
@@ -438,16 +435,15 @@ struct NoiseConfig
   double roll_pitch{0.1};
 };
 
-// 构造过程噪声矩阵。
+// 按四步拼出过程噪声矩阵：① 平移的常加速度块，② yaw 的常角加速度块，
+// ③ roll/pitch 随机游走，④ 半径与高度随机游走。
 //
-// 平移与 yaw 都用常加速度模型：把未建模的加速度当白噪声 a ~ N(0, σ²)，在 dt
-// 内它对位置和速度的影响是 G = [½dt², dt]ᵀ，于是那个 2×2 块是
-// G σ² Gᵀ = σ² [[¼dt⁴, ½dt³], [½dt³, dt²]]。四个系数就是这么来的。
+// 前两块用同一套常加速度推导：未建模加速度当白噪声 a ~ N(0, σ²)，dt 内它对
+// 位置和速度的影响是 G = [½dt², dt]ᵀ，于是 2×2 块为
+// G σ² Gᵀ = σ² [[¼dt⁴, ½dt³], [½dt³, dt²]]，四个系数就是这么来的。
 //
-// 平移部分先在车体系建对角阵再旋到世界系（协方差的标准传播律
-// Cov(Ra) = R Cov(a) Rᵀ）；yaw 部分**不需要旋转**，因为选了右乘之后误差状态
-// 本来就定义在体系里。若当初选左乘，这里既要把 yaw 噪声旋进世界系，
-// ROT_Z–VYAW 的耦合块还会变成三维稠密的——右乘的选择让这段保持简单。
+// 平移部分先在车体系建对角阵再按 Cov(Ra) = R Cov(a) Rᵀ 旋到世界系；yaw 部分
+// 不用旋，因为右乘扰动下误差状态本来就定义在体系里。
 inline Eigen::Matrix<double, kStateSize, kStateSize> processNoise(
   const Eigen::VectorXd & x, double dt, ArmorName name, const NoiseConfig & config)
 {

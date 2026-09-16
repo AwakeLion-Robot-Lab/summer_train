@@ -11,21 +11,15 @@
 #include <memory>
 #include <vector>
 
-// 误差状态扩展卡尔曼滤波器。照搬 awakening 的
-// 3rdparty/KalmanHyLib/error_state_extended_kalman_filter.hpp。
+// 误差状态扩展卡尔曼滤波器，状态维数和状态转移由模板参数给定。
 //
-// 与普通 EKF 的区别只有一句话：**协方差 P 描述的是误差状态 δ，不是状态 x**。
-// 状态被劈成"名义状态在流形上"与"误差状态在切空间里"，卡尔曼增益算出的是 δ，
-// 再通过 ⊞ 注入回名义状态。因为 δ 恒在零附近，旋转永远碰不到奇异点，而切空间
-// 是货真价实的向量空间，所有线性代数都合法。
+// 与普通 EKF 的区别只有一句话：协方差 P 描述的是误差状态 δ，不是状态 x。状态
+// 拆成流形上的名义状态和切空间里的误差状态，卡尔曼增益算出的是 δ，再由 ⊞ 注入
+// 回名义状态。δ 恒在零附近，旋转碰不到奇异点，而切空间是真正的向量空间，线性
+// 代数都合法。
 //
-// 两处刻意与教科书不同，是照搬上游的结果，先保持一致以便对拍：
-//   1. update_multi 的迭代式是 δ += K·r，没有往先验拉的项。标准 IEKF 是
-//      δ = K(r + H·δ)，两者差 (I - KH)δ。见 docs/iterated_ekf.md。
-//   2. H 用中心差分而非 Jet——ObsBase 是类型擦除的虚接口，VectorXd 只认
-//      double，Jet 流不过去。ObsImpl::evaluate 里那条 Jet 路径因此是死代码。
-//
-// 逐行拆解见 docs/esekf_uvl_port.md 第 6 节。
+// H 用中心差分求，不用 Jet：ObsBase 是类型擦除的虚接口，只认 VectorXd，Jet 流
+// 不过去。逐行拆解见 docs/esekf_uvl_port.md 第 6 节。
 namespace L3Estimation {
 
 template <int N_X, class PredictFunc>
@@ -46,8 +40,8 @@ public:
 
   ErrorStateEkf() = default;
 
-  // inject 与 box_minus 必须是同一个泛型可调用体：它要同时被 double 和 Jet
-  // 实例化，前者用于名义状态推进，后者用于求 F。
+  // inject 和 box_minus 要传泛型可调用体：它们会同时被 double 和 Jet 实例化，
+  // 前者用于推进名义状态，后者用于求 F。
   template <class Inject, class BoxMinus>
   ErrorStateEkf(
     const PredictFunc & f, const UpdateQFunc & update_q, const Inject & inject,
@@ -68,14 +62,14 @@ public:
   void setPredictFunc(const PredictFunc & f) { f_ = f; }
   void setIterationNum(int n) { iteration_num_ = std::max(1, n); }
 
-  // 迭代式的两种写法。默认走教科书形式。
+  // 选 updateMulti 里用哪种迭代式，默认教科书形式：
   //
-  //   Awakening:      δ ← δ + K·r          每轮累加高斯牛顿步，不回锚先验
-  //   Bell & Cathey:  δ ← K·(r + H·δ)      每轮重新把 δ 锚回先验
+  //   教科书（Bell & Cathey）：δ ← K·(r + H·δ)   每轮把 δ 重新锚回先验
+  //   累加式：                 δ ← δ + K·r       每轮只累加高斯牛顿步
   //
-  // 两者差 (I − KH)·δ。迭代次数一多，前者的偏差会复利放大——在 3m_run_fast
-  // 上实测 iteration_num 从 1 升到 5，车心帧间跳变的 p99 从 0.126 m 恶化到
-  // 0.326 m，单调变差。详见 docs/iterated_ekf.md。
+  // 两者差 (I − KH)·δ。迭代次数一多，累加式的偏差会复利放大：3m_run_fast 上
+  // 迭代次数从 1 升到 5，车心帧间跳变的 p99 从 0.126 m 单调恶化到 0.326 m。
+  // 详见 docs/iterated_ekf.md。
   void setTextbook(bool enabled) { textbook_iteration_ = enabled; }
 
   template <class Inject>
@@ -95,16 +89,15 @@ public:
   const MatrixX1 & state() const noexcept { return x_nominal_; }
   const MatrixXX & covariance() const noexcept { return P_delta_; }
 
-  // 预测步。
+  // 预测步：名义状态按 x̌⁺ = f(x̌) 推进，再用 Jet 求 F 并传播 P。
   //
-  // 名义状态照常推进 x̌⁺ = f(x̌)；F 则是 ∂δ⁺/∂δ，而 δ 与 δ⁺ 住在不同点的切空间
-  // 里，不能直接对状态求导，必须绕道：
+  // F 是 ∂δ⁺/∂δ，而 δ 与 δ⁺ 住在不同点的切空间里，不能直接对状态求导，要绕
+  // 这条链：
   //
   //   δ ──⊞──▶ x̌ ⊞ δ ──f──▶ f(x̌ ⊞ δ) ──⊟──▶ δ⁺
   //
-  // 把 δ 播种成单位阵推过这条链，出口每一行的导数就是 F。链式法则由 Jet 自动
-  // 完成，∂⊞/∂δ、∂f/∂x、∂⊟/∂x 三段被乘在一起——右雅可比 Jr(φ) 就是这样被
-  // 吸收掉的，我们永远不必显式算它。
+  // 把 δ 播种成单位阵推过去，出口每一行的导数就是 F。链式法则由 Jet 完成，
+  // ∂⊞/∂δ、∂f/∂x、∂⊟/∂x 三段自动相乘，右雅可比就是这样被吸收掉的，不用显式算。
   MatrixX1 predict() noexcept
   {
     const MatrixX1 x_prev = x_nominal_;
@@ -137,8 +130,8 @@ public:
       F_.row(i) = delta_pred_jet[i].v.transpose();
     }
 
-    // 正常流程里 delta_x_ 在每次更新末尾清零，这一行乘的是零向量。它存在是为了
-    // 支持"预测多次再更新一次"的用法。
+    // 正常流程里 delta_x_ 在每次更新末尾清零，这一行乘的是零向量；留着是为了
+    // 支持“连预测多次再更新一次”的用法。
     delta_x_ = F_ * delta_x_;
 
     Q_ = update_Q_();
@@ -148,8 +141,8 @@ public:
     return x_nominal_;
   }
 
-  // 一个观测的类型擦除接口。照搬上游：正因为这里只认 VectorXd，Jet 流不过去，
-  // update_multi 才不得不用中心差分求 H。
+  // 一个观测的类型擦除接口：给出观测维数、预测值和残差。它只认 VectorXd，
+  // Jet 流不过去，所以 updateMulti 用中心差分求 H。
   struct ObsBase
   {
     virtual ~ObsBase() = default;
@@ -219,11 +212,11 @@ public:
       std::forward<ResidualFunc>(res));
   }
 
-  // 多观测迭代更新。
+  // 多观测迭代更新：把本帧所有观测垂直拼成一个大的 [H; residual; R]，迭代
+  // iteration_num 轮高斯牛顿，最后用 Joseph 形式更新 P 并把 δ 注入名义状态。
   //
-  // 一帧里所有观测垂直拼成一个大的 [H; residual; R]，R 是块对角，于是信息严格
-  // 相加：P₊⁻¹ = P₋⁻¹ + Σ Hₖᵀ Rₖ⁻¹ Hₖ。一块完整装甲板拆成两条灯条共 8 行，
-  // 每条孤立灯条再加 4 行。
+  // R 是块对角，所以信息严格相加：P₊⁻¹ = P₋⁻¹ + Σ Hₖᵀ Rₖ⁻¹ Hₖ。一块完整装甲板
+  // 拆成两条灯条共 8 行，每条独立灯条再加 4 行。
   MatrixX1 updateMulti(const std::vector<std::shared_ptr<ObsBase>> & obs_list) noexcept
   {
     int total_dim = 0;
@@ -256,11 +249,11 @@ public:
         obs->predict(x_eval, z_pred);
         obs->residualAndR(z_pred, rk, rk_cov);
 
-        // 中心差分求 H。两处关键：
+        // 中心差分求 H，三处关键：
         //   扰动加在 δ 上再 ⊞ 进去，求出的才是 ∂z/∂δ，与 P 同一坐标系；
-        //   差的是 residual 而不是 z_pred，这样角度分量的缠绕归一化也进到导数
-        //   里——否则预测值分居 ±π 两侧时会差出一个 2π 的假梯度。
-        //   末尾取负因为 r = z - ẑ，故 -∂r/∂δ = ∂ẑ/∂δ = H。
+        //   差的是 residual 而不是 z_pred，角度分量的缠绕归一化才进得到导数
+        //   里，否则预测值分居 ±π 两侧时会差出一个 2π 的假梯度；
+        //   末尾取负，因为 r = z - ẑ，所以 -∂r/∂δ = ∂ẑ/∂δ = H。
         Eigen::MatrixXd hk(d, N_X);
         constexpr double kEps = 1e-6;
         for (int i = 0; i < N_X; ++i) {
@@ -301,11 +294,11 @@ public:
       k_matrix = ldlt.solve(pht.transpose()).transpose();  // K = P Hᵀ S⁻¹
 
       if (textbook_iteration_) {
-        // Bell & Cathey：每轮都把 δ 重新锚回先验，迭代才真正是在同一个 MAP
-        // 目标上做高斯牛顿，而不是把先验项反复计入。
+        // 教科书形式：每轮把 δ 重新锚回先验，迭代才真正是在同一个 MAP 目标上
+        // 做高斯牛顿，而不是把先验项反复计入。
         delta_iter = k_matrix * (residual + h_matrix * delta_iter);
       } else {
-        // 上游 awakening 的写法，保留以便对拍。
+        // 累加式，保留以便与旧结果对拍。
         delta_iter.noalias() += k_matrix * residual;
       }
     }
@@ -313,8 +306,8 @@ public:
     inject_state_(delta_iter, x_nominal_);
     delta_x_.setZero();
 
-    // Joseph form：对任意 K 都保持半正定。迭代 EKF 里 K 本来就不是最优增益
-    // （用的是最后一轮的），所以这里不是可选优化而是必需。
+    // Joseph 形式，对任意 K 都保持半正定。迭代 EKF 用的是最后一轮的 K，本来
+    // 就不是最优增益，所以这里不是可选优化而是必需。
     const MatrixXX identity = MatrixXX::Identity();
     const Eigen::MatrixXd ikh = identity - k_matrix * h_matrix;
     P_delta_ = ikh * p_iter * ikh.transpose() +
@@ -328,7 +321,7 @@ public:
     return x_nominal_;
   }
 
-  // 最近一次更新的创新量与其协方差，供 NIS 记账与遥测读取。
+  // 最近一次更新的创新量和它的协方差，供 NIS 记账与遥测读取。
   const Eigen::VectorXd & lastResidual() const noexcept { return last_residual_; }
   const Eigen::MatrixXd & lastInnovCov() const noexcept
   {

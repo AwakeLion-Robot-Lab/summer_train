@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l2_perception/armor/light_decoder.hpp"
+#include "l2_perception/armor/light_detector.hpp"
 #include "l2_perception/armor/light_matcher.hpp"
 #include "l2_perception/armor/number_classifier.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
@@ -15,47 +15,53 @@
 namespace L2Perception
 {
 
-// 一对配出的灯条及其数字分类结果，包含被拒绝的。只用于离线统计和叠加显示。
+// 一对配出的灯条及其数字分类结果，被数字分类拒掉的也在内。只给离线工具统计
+// 和叠加显示用，主链路不读它。
 struct ArmorCandidate
 {
   LightPair pair;
   NumberResult number;
 };
 
-// L2 装甲检测编排层：图像预处理 → 灯条关键点模型 → 灯条两两配对 → 数字分类。
-// 通过分类的配对成为装甲板（角点就是灯条端点、类别来自数字），全部灯条另外
-// 交给 L3 做独立 UVL 观测。它不拥有 PnP、跟踪或开火策略；这些工作在 L3/L4/L5。
+// L2 装甲检测的编排层，把四步串起来：找灯条（LightMode 决定用哪一路）→ 按
+// 颜色过滤 → 两两配对 → 数字分类。通过分类的配对成为装甲板，角点就是两根
+// 灯条的端点，类别来自数字；灯条本身另外交给 L3 做 UVL 观测。
+//
+// PnP、跟踪、开火策略都不在这里，分别属于 L3/L4/L5。
 class ArmorDetector
 {
 public:
-  // 默认构造表示“未配置模型”，detect() 会安全返回空结果，便于 runtime 先启动相机和串口。
+  // 默认构造表示“未配置模型”：ready() 为 false，detect() 返回空结果，runtime
+  // 可以先把相机和串口跑起来。
   ArmorDetector() = default;
-  // backend 必须已加载灯条关键点模型，classifier 必须已 load()。灯条模型的输出
-  // 形状在这里核对一次，不符时抛异常——启动阶段报错，而不是每帧解出垃圾。
+  // backend 必须已加载灯条关键点模型，classifier 必须已 load()，有一个没就绪
+  // 就抛异常；随后核对一次模型输出形状，免得每帧解出垃圾端点。
   ArmorDetector(
     std::unique_ptr<IInferenceBackend> backend, NumberClassifier classifier,
     LightDecoderConfig decoder_config = {}, LightMatcherConfig matcher_config = {},
-    ImagePreprocessConfig preprocess_config = {});
+    LightFinderConfig finder_config = {}, ImagePreprocessConfig preprocess_config = {});
 
   bool ready() const noexcept;
-  // 一帧同步检测。Backend/分类器抛出的异常会被转换为日志和空结果，避免中断主循环。
+  // 整图检测一帧，只要装甲板，等价于 detectFrame(image).armors。
   [[nodiscard]] std::vector<Armor> detect(const cv::Mat& image) const;
 
-  // IESKF 使用的完整帧入口。
-  //   net_roi   网络只跑在这块区域上，缺省为整图；
-  //   light_roi 有值时 lights 只保留中心落在其中的灯条，无值时 lights 为空——
-  //             L3 只在跟踪中才用独立灯条，ROI 外的灯条多半属于别的车；
-  //   color     只配对、只输出该颜色的灯条，Unknown 表示红蓝都要。
+  // 完整的一帧检测，L3 的 IESKF 走这个入口。
+  //   net_roi   两路灯条检测都只在这块区域里做，缺省为整图；
+  //   light_roi 有值时只把中心落在其中的灯条放进 ArmorFrame::lights，无值时
+  //             lights 为空；
+  //   color     只保留该颜色的灯条，Unknown 表示红蓝都要。
+  // 后端或分类器抛出的异常在这里转成一条日志和空结果，不会中断主循环。
   [[nodiscard]] ArmorFrame detectFrame(
     const cv::Mat& image, const std::optional<cv::Rect>& light_roi = std::nullopt,
     const std::optional<cv::Rect>& net_roi = std::nullopt,
     ArmorColor color = ArmorColor::Unknown) const;
 
-  // 网络输入的宽高比（宽 / 高）。L3 的 netFocusRoi 用它把 ROI 修成同一比例，
-  // 减少 letterbox padding。后端不可用时返回 1.0。
+  // 网络输入的宽高比（宽 / 高），取自后端的输入形状；后端不可用时返回 1.0。
+  // L3 的 netFocusRoi 用它把 ROI 修成同一比例，减少 letterbox 填充。
   [[nodiscard]] double net_aspect_ratio() const noexcept;
 
-  // 最近一帧的调试快照：颜色过滤后的全部灯条（不受 light_roi 限制）和全部配对。
+  // 最近一帧的调试快照：颜色过滤、合并之后的全部灯条（不受 light_roi 限制），
+  // 以及全部配对候选。每次 detectFrame 进来先清空。
   const std::vector<Light>& lastLights() const noexcept { return last_lights_; }
   const std::vector<ArmorCandidate>& lastCandidates() const noexcept
   {
@@ -68,8 +74,9 @@ private:
   NumberClassifier classifier_;
   LightDecoder decoder_{};
   LightMatcherConfig matcher_config_{};
+  LightFinderConfig finder_config_{};
   ImagePreprocessConfig preprocess_config_{};
-  // detect() 对外是 const 的只读操作，快照只作调试用，与 EskfTracker::observations() 同理。
+  // detectFrame 对外是 const，这两个快照只供调试读取，所以用 mutable。
   mutable std::vector<Light> last_lights_;
   mutable std::vector<ArmorCandidate> last_candidates_;
 };

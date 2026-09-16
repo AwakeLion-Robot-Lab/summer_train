@@ -9,36 +9,42 @@
 
 namespace L3Estimation {
 
-// 将二维装甲板角点恢复为相机位姿，并转换到枪管系和世界系。
-// 求解器同时提供基于重投影误差的世界系 yaw 优化。
+// 把装甲板的四个图像角点解成位姿：IPPE 求 armor -> camera，再用静态外参和
+// 曝光时刻的枪管姿态转到枪管系、世界系，最后用重投影误差搜一遍世界系 yaw。
 class PnpSolver {
 public:
-  // 标定或配置无效时对象仍可构造，但 ready() 返回 false。
+  // 标定或几何配置无效时对象照样构造得出来，只是 ready() 为 false，
+  // single_pnp 会直接返回无效结果。
   explicit PnpSolver(
     const L1Sensor::CameraCalibration& calibration,
     ArmorConfig config = {});
 
-  // 返回相机标定、静态外参和装甲板配置是否可用于求解。
+  // 相机标定、静态外参、装甲板几何是否都通过了校验。
   bool ready() const noexcept;
 
-  // 姿态表示枪管坐标系到世界坐标系的旋转，必须对应图像曝光时刻。
+  // 逐帧设置 barrel -> world 旋转，必须取图像曝光时刻的枪管姿态。传入空值或
+  // 退化四元数时清掉有效标志，不会沿用上一帧的姿态。
   void set_R_world_barrel(
     const std::optional<Eigen::Quaterniond>& barrel_pose);
 
-  // 原地补充 Armor 的相机系和世界系 PnP 结果；失败时质量标志保持无效。
+  // 原地填充 armor 的位姿字段：IPPE 解算 → 检查板中心在相机前方且四个角点
+  // 都可见 → 算重投影 RMSE（仅作诊断）→ 转到枪管系和世界系 → 搜 yaw。
+  // 任何一步不过关都只清除派生结果，把类别置为 Unknown，不写半成品。
   void single_pnp(Armor& armor) const;
 
-  // Awakening 单完整板约束专用：IPPE 求全部候选解，选择板正面朝向相机的
-  // 一支，只返回左右灯条中心在相机 z 轴上的深度差；前哨沿用其固定俯仰
-  // 与黄金分割 yaw 修正分支。
+  // 左右灯条中心在相机 z 轴上的深度差，供 UVL 观测使用。用 solvePnPGeneric
+  // 取出 IPPE 的全部候选解，按重投影误差排序后选第一个正面朝向相机的；
+  // 前哨额外把俯仰固定为 -15°，在 IPPE 的 yaw 左右各 70° 内用黄金分割重搜。
   std::optional<double> lights_depth_diff(
     const Armor& armor) const;
 
-  // 校验并替换相机标定，同时缓存 camera -> barrel 外参。
+  // 校验并替换相机标定：检查内参、畸变长度、静态外参的正交性，通过后拆出
+  // camera -> barrel 的 R 和 t 缓存起来。失败返回 false 并保持 ready() 为 false。
   [[nodiscard]] bool setCalibration(
     const L1Sensor::CameraCalibration& calibration);
 
-  // 将给定世界系装甲板重投影到图像；前置条件不满足时返回空数组。
+  // 把世界系里位姿已知的一块板重投影成四个像素角点，顺序同样是 TL/TR/BR/BL。
+  // 标定或枪管姿态缺失时返回空数组。
   std::vector<cv::Point2f> reproject_armor(
     const Eigen::Vector3d& xyz_in_world,
     double yaw,
@@ -46,15 +52,16 @@ public:
     ArmorName name) const;
 
 private:
-  // 复刻 sp_vision：以枪管 yaw 为中心，在左右各 70 度内按 1 度步长枚举，
-  // 用四角点重投影距离之和选择装甲板世界系 yaw。
+  // 以枪管 yaw 为中心、左右各 70° 按 1° 步长枚举，取 yaw_cost 最小的一个写回
+  // armor。3/4/5 号的大板跳过这一步，保留 IPPE 原始 yaw。
   void optimize_yaw(Armor& armor) const;
 
-  // 单板在给定世界系 yaw 下的四角点重投影代价，与 optimize_yaw 共用同一支：
-  // 重投影不可用时返回无穷，使调用方的比较自然跳过该采样点。
+  // 给定世界系 yaw 时四个角点的重投影距离之和。重投影不可用时返回无穷大，
+  // 这样调用方的比较会自然跳过该采样点。
   double yaw_cost(const Armor& armor, double yaw) const;
 
-  // 静态 camera -> barrel 外参，以及逐帧更新的 barrel -> world 旋转。
+  // 静态 camera -> barrel 外参，加上逐帧更新的 barrel -> world 旋转。
+  // 两套物点在构造时按 TL/TR/BR/BL 生成一次，yaw 搜索反复用，不再分配。
   L1Sensor::CameraCalibration calibration_;
   Eigen::Matrix3d R_camera2barrel_{Eigen::Matrix3d::Identity()};
   Eigen::Vector3d t_camera2barrel_{Eigen::Vector3d::Zero()};

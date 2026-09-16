@@ -14,16 +14,14 @@
 #include <array>
 #include <vector>
 
-// UVL 观测：图像平面上一条灯条的四个几何量。照搬 awakening 的 UVLMeasure。
+// UVL 观测：一条灯条在图像上的四个几何量 [角度, 中心 x, 中心 y, 长度]。
+// 观测函数是「整车状态 → 灯条两端点的三维坐标 → 投影到像素 → 折成这四个量」，
+// 滤波器拿它和检测到的端点算残差。
 //
-// 与"PnP 解位姿再滤波"的根本区别在于把观测退回到更接近传感器原始输出的地方。
-// PnP 的误差高度各向异性且相关（深度与 yaw 强相关，量级差一两个数量级），
-// 给它一个对角 R 就是撒谎；而像素误差近似各向同性，对角 R 诚实得多。
-//
-// 观测取 [角度, 中心 x, 中心 y, 长度] 而不是两个端点的四个坐标，是因为这四个
-// 量物理意义正交：长度吸收纵向误差、中心把纵向误差平均掉一半、角度只受横向
-// 误差影响且被长度归一化。于是三类量可以各给各的 sigma，对角 R 才成立。
-// 推导见 docs/esekf_uvl_port.md 第 5.4 节。
+// 观测停在像素而不是先做 PnP 再滤波：PnP 的误差各向异性且强相关（深度与 yaw
+// 量级差一两个数量级），配对角 R 不成立；像素误差近似各向同性。四个量的物理
+// 意义也相互正交——长度吸收纵向误差、中心把纵向误差平均掉一半、角度只受横向
+// 误差影响，所以三类量各给各的 sigma。推导见 docs/esekf_uvl_port.md 5.4 节。
 namespace L3Estimation {
 
 namespace uvl
@@ -34,10 +32,10 @@ enum { ANGLE, CENTER_X, CENTER_Y, LENGTH, kMeasureSize };
 constexpr int kUvlMeasureSize = uvl::kMeasureSize;
 using UvlVector = Eigen::Matrix<double, kUvlMeasureSize, 1>;
 
-// 一条灯条上下两端点在装甲板系的三维坐标。
+// 一条灯条上下两端点在装甲板系里的坐标，顺序是先上后下。板宽按 name 取大板
+// 或小板，左灯条在 +y 侧、右灯条在 -y 侧。
 //
-// 板系约定 x = 板面法向、y = 左、z = 上，与 PnpSolver::armorPoints 同源；
-// 左灯条在 +y 侧，右灯条在 -y 侧。
+// 板系约定 x = 板面法向、y = 左、z = 上，与 PnpSolver 的物点同源。
 inline std::vector<cv::Point3f> lightPoints3D(
   ArmorName name, bool is_left, const ArmorConfig & config)
 {
@@ -50,10 +48,11 @@ inline std::vector<cv::Point3f> lightPoints3D(
   return {{0.0F, y, half_height}, {0.0F, y, -half_height}};
 }
 
-// 一个 UVL 观测的上下文：哪块板的哪条灯条，以及那一帧相机在哪。
+// 一次 UVL 观测的上下文：哪辆车的第几块板、左灯还是右灯、板的几何尺寸，以及
+// 那一帧的相机位姿和内参。观测函数里除状态外的量全在这里。
 //
-// camera_in_world 必须是**按图像曝光时刻**取到的相机位姿，不是"当前"位姿。
-// 图像与 IMU 的时间对齐就发生在取这个量的时候。
+// camera_in_world 必须按图像曝光时刻取，不是"当前"位姿：图像与 IMU 的时间
+// 对齐就发生在取这个量的时候。
 struct UvlContext
 {
   int armor_num{4};
@@ -74,10 +73,12 @@ struct UvlMeasure
 
   UvlContext ctx;
 
-  // 状态 → 该灯条两端点的像素坐标。把前面所有层串起来。
+  // 状态 → 该灯条两端点的像素坐标：整车状态经 armorPose 得到板在世界系的
+  // 位姿 → 用 camera_in_world 的逆转到相机系 → 带畸变投影。
   //
-  // 状态只通过 armorPose 进入，其余全是常量（内参、外参、板尺寸、板编号）。
-  // 观测与状态之间只有这一条通路，滤波器才能用它反解状态。
+  // 状态只从 armorPose 这一条路进来，其余（内参、外参、板尺寸、板编号）都是
+  // 常量，所以这个函数能对状态求导，滤波器才能反解状态。模板参数 T 同时吃
+  // double 和 ceres::Jet。
   template <typename T>
   std::array<ImagePoint<T>, 2> projectPointsOf(const T * x) const
   {
@@ -100,14 +101,14 @@ struct UvlMeasure
     return {image_points[0], image_points[1]};
   }
 
-  // 两个端点 → 四维观测。
+  // 两个端点 → 四维观测：角度取两端点差向量偏离竖直方向的夹角，中心取两点
+  // 中点，长度取两点距离。
   //
-  // 预测值和观测值走的是**同一个函数**：前者喂投影出来的点，后者喂检测出来的
-  // 点。两边定义一旦漂移就是灾难性的隐蔽 bug，所以不拆成两份。
+  // 预测值和观测值走同一个函数，前者喂投影出来的点、后者喂检测出来的点：拆成
+  // 两份一旦定义漂移就是很难发现的 bug。
   //
-  // atan2 的参数是 (Δx, Δy) 而不是通常的 (Δy, Δx)：量的是偏离**竖直**方向的
-  // 角。灯条基本竖直，这样 α 在 0 附近工作，残差归一化和线性化都干净；用通常
-  // 写法 α 会跑到 ±π/2 附近。
+  // atan2 的参数是 (Δx, Δy) 而不是通常的 (Δy, Δx)，量的是偏离竖直方向的角。
+  // 灯条基本竖直，这样角度在 0 附近工作，缠绕归一化和线性化都干净。
   template <typename T>
   static void pointsToUvl(
     const ImagePoint<T> & top, const ImagePoint<T> & bottom, T * z)
@@ -127,7 +128,7 @@ struct UvlMeasure
     pointsToUvl<T>(points[0], points[1], z);
   }
 
-  // 调试与关联用：直接拿到预测的两个像素点。
+  // 同一条投影链路，但直接返回两个像素点，给关联和叠加显示用。
   std::pair<cv::Point2f, cv::Point2f> projectedPoints(const Eigen::VectorXd & x) const
   {
     const auto points = projectPointsOf<double>(x.data());
@@ -136,10 +137,11 @@ struct UvlMeasure
       cv::Point2f(static_cast<float>(points[1].x()), static_cast<float>(points[1].y()))};
   }
 
-  // 只有角度活在 S¹ 上，其余三维是普通欧氏量。
+  // 观测残差 z - z_pred，其中角度一维要按 S¹ 归一化到 (-π, π]，另外三维是
+  // 普通减法。
   //
-  // 求 H 的中心差分差的正是这个函数而不是 z_pred，就为了让缠绕归一化进到导数
-  // 里——否则预测值分居 ±π 两侧时会差出一个 2π 的假梯度。
+  // 求 H 的中心差分差的是这个函数而不是 z_pred，为的就是让缠绕归一化进到导数
+  // 里：否则两个预测值分居 ±π 两侧时会差出一个 2π 的假梯度。
   template <typename T>
   static Eigen::Matrix<T, kUvlMeasureSize, 1> residual(
     const Eigen::Matrix<T, kUvlMeasureSize, 1> & z_pred,
@@ -151,7 +153,7 @@ struct UvlMeasure
   }
 };
 
-// 从检测到的两个像素端点构造观测量。与预测共用 pointsToUvl。
+// 把检测到的两个像素端点折成观测向量，与预测值共用 pointsToUvl。
 inline UvlVector toUvl(const cv::Point2f & top, const cv::Point2f & bottom)
 {
   const Eigen::Vector2d top_point(top.x, top.y);
@@ -161,8 +163,11 @@ inline UvlVector toUvl(const cv::Point2f & top, const cv::Point2f & bottom)
   return observation;
 }
 
-// 单块完整装甲板场景下，IPPE 提供的左右灯条中心相机深度差。它只取 PnP
-// 中对斜视姿态最有辨识度的一维，不把抖动很大的绝对深度和完整姿态塞进滤波器。
+// 一维观测：左右灯条中心在相机 z 轴上的深度差，配出完整一块板时才有。
+// 观测函数同样从整车状态出发，只是投影换成取两个灯条中心的相机系 z 之差。
+//
+// 只取 PnP 里对斜视姿态最有辨识度的这一维，抖动大的绝对深度和完整姿态不进
+// 滤波器。
 constexpr int kDepthDiffMeasureSize = 1;
 using DepthDiffVector = Eigen::Matrix<double, kDepthDiffMeasureSize, 1>;
 

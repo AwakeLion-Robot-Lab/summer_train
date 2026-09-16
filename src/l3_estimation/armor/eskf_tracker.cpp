@@ -26,7 +26,7 @@ bool validTrackerConfig(const EskfTrackerConfig & config) noexcept
 Armor toObservation(
   const L2Perception::Armor& detection, TimePoint timestamp)
 {
-  // 只搬运检测元数据；三维位姿由当前帧的 PnpSolver 计算。
+  // 只搬检测字段，三维位姿留给当帧的 PnpSolver 填。
   Armor observation;
   observation.class_id = detection.class_id;
   observation.color = detection.color;
@@ -51,7 +51,7 @@ EskfTracker::EskfTracker(
     static_cast<float>(calibration.image_size.height) / 2.0F},
   ready_(pnp_solver_.ready() && validTrackerConfig(tracker_config))
 {
-  // 板尺寸只在一处配置，避免 PnP 物点与 UVL 灯条端点用了两套几何。
+  // 板尺寸只认这一份，免得 PnP 物点和 UVL 灯条端点用上两套几何。
   target_config_.armor = armor_config_;
 }
 
@@ -100,7 +100,7 @@ std::vector<Armor> EskfTracker::initCandidates()
       result.push_back(std::move(pnp_observation));
     }
   }
-  // 初始化时优先取离图像中心最近的，那通常是操作手正对着的目标。
+  // 按离图像中心的距离排序：初始化时优先取最近的，那通常是操作手正对的目标。
   std::sort(result.begin(), result.end(), [this](const Armor& lhs, const Armor& rhs) {
     return L6Telemetry::squaredDistance(lhs.center, image_center_) <
            L6Telemetry::squaredDistance(rhs.center, image_center_);
@@ -122,7 +122,7 @@ bool EskfTracker::initTarget(
   if (candidates.empty()) {
     return false;
   }
-  // 已排序，取最靠近图像中心的那块。
+  // candidates 已排过序，直接取最靠近图像中心的那块建目标。
   const Armor& selected = candidates.front();
   slot.target.reset(selected, target_config_, timestamp, calibration_, camera_in_world);
   slot.lifecycle.state = TrackState::Detecting;
@@ -138,7 +138,7 @@ bool EskfTracker::updateTarget(
 {
   slot.uvl_update_lights.clear();
 
-  // 只有同类别的板才可能属于同一辆车。
+  // 先按类别筛：只有同类别的板才可能属于同一辆车。
   std::vector<Armor> same_name;
   same_name.reserve(candidates.size());
   for (const auto & armor : candidates) {
@@ -173,8 +173,8 @@ bool EskfTracker::updateTarget(
     camera_in_world);
 
   if (updated > 0) {
-    // 只有 update() 成功之后才发布，用于显示的清单因此严格等于本帧真正进入
-    // updateMulti() 的 UVL 观测，而不是 matchLight() 的候选或关联中间结果。
+    // update() 成功之后才填这份清单，它因此严格等于本帧真正进了 updateMulti
+    // 的那些 UVL 观测，而不是 matchLight 的候选或关联中间结果。
     slot.uvl_update_lights.reserve(
       matched.size() * 2 + matched_lights.size());
     for (const auto& [id, armor] : matched) {
@@ -208,8 +208,8 @@ std::optional<EskfTarget> EskfTracker::track(
   observations_.clear();
   last_match_count_ = 0;
   last_matched_ids_.clear();
-  // 每帧先清空两个槽。后面只有实际完成滤波更新的槽会重新填充，早退、初始化
-  // 或 TempLost 纯预测时不会泄漏上一帧的显示结果。
+  // 每帧先把两个槽的显示清单清空：后面只有真正完成滤波更新的槽会重新填，
+  // 早退、初始化和 TempLost 纯预测都不会泄漏上一帧的结果。
   for (auto& slot : buffer_) {
     slot.uvl_update_lights.clear();
   }
@@ -217,8 +217,8 @@ std::optional<EskfTarget> EskfTracker::track(
     return std::nullopt;
   }
 
-  // L2 -> L3：正常更新只搬运类别和四角点，不以 PnP 成功作为入口门限。
-  // PnP 仅在 Lost 初始化和单完整板深度差约束时调用，与 Awakening 一致。
+  // L2 -> L3：正常更新只搬类别和四角点，不拿 PnP 成功当入口门限。PnP 只在
+  // Lost 初始化和单块完整板求深度差时才跑。
   pnp_solver_.set_R_world_barrel(q_world_barrel);
   observations_.reserve(detections.size());
   for (const auto & detection : detections) {
@@ -233,9 +233,9 @@ std::optional<EskfTarget> EskfTracker::track(
   const Eigen::Isometry3d camera_in_world =
     EskfTarget::cameraInWorld(calibration_, *q_world_barrel);
 
-  // 初始化候选按需计算并在本帧缓存：正常 Tracking 更新完全不跑 PnP；若当前槽
-  // 恰在这一帧转入 TempLost，下面立刻处理备用 Lost 槽时仍能与 Awakening 一样
-  // 当帧完成初始化，而不是平白晚一帧。
+  // 初始化候选按需算、本帧内缓存：正常 Tracking 更新一次 PnP 都不跑；当前槽
+  // 恰好在这一帧转进 TempLost 时，紧接着处理备用槽还能当帧完成初始化，不用
+  // 白等一帧。
   std::optional<std::vector<Armor>> initialization_candidates;
   const auto getInitializationCandidates = [&]() -> const std::vector<Armor>& {
     if (!initialization_candidates) {
@@ -258,7 +258,7 @@ std::optional<EskfTarget> EskfTracker::track(
       found, slot.lifecycle, tracker_config_.tracking_thres,
       elapsedSeconds(slot.last_update, timestamp), lostThreshold(slot.target));
 
-    // 发散的目标直接丢弃，不要让它把下游一起拖歪。
+    // 发散的目标直接丢掉，别让它把下游一起带歪。
     if (slot.lifecycle.isTracking() && slot.target.diverged()) {
       slot.lifecycle.reset();
       slot.uvl_update_lights.clear();
@@ -267,8 +267,8 @@ std::optional<EskfTarget> EskfTracker::track(
     return found;
   };
 
-  // 双缓冲：当前目标进 TempLost 时，另一个槽位同时尝试抓新目标；新目标一旦
-  // 转成 Tracking 就顶上，不必等当前目标超时。
+  // 双缓冲：当前目标进 TempLost 时让另一个槽同时抓新目标，新目标一转成
+  // Tracking 就交换上来，不必等当前目标超时。
   process(current_);
 
   Slot & current = buffer_[current_];
@@ -288,7 +288,7 @@ std::optional<EskfTarget> EskfTracker::track(
   if (active.lifecycle.state == TrackState::Lost || !active.target.initialized()) {
     return std::nullopt;
   }
-  // 下游拿到的是不含滤波器的副本，随便外推不会污染滤波器状态。
+  // 返回不含滤波器的副本，下游随便外推都不会污染滤波器状态。
   return active.target.snapshot();
 }
 
@@ -305,8 +305,8 @@ std::optional<cv::Rect> EskfTracker::lightBounds(
         lostThreshold(active.target)) {
     return std::nullopt;
   }
-  // 独立灯条 ROI 额外要求：开关打开，且目标不是基地（基地板不绕转，
-  // 整车预测对它的灯条位置没有约束力）。
+  // 独立灯条 ROI 多两个条件：开关打开，且目标不是基地——基地的板不绕转，
+  // 整车预测约束不了它的灯条位置。
   if (require_light_measurements &&
       (!active.target.lightsEnabled() ||
        active.target.name == ArmorName::BaseSmall ||
@@ -347,7 +347,7 @@ std::optional<cv::Rect> EskfTracker::lightBounds(
 
 namespace {
 
-// 以中心不动的方式按比例缩放矩形，再裁到图像内。
+// 保持中心不动按比例放大矩形，再裁回图像范围内。
 cv::Rect expandAndClip(const cv::Rect& rect, double ratio, const cv::Rect& image_rect)
 {
   const double center_x = rect.x + rect.width * 0.5;
@@ -372,8 +372,8 @@ std::optional<cv::Rect> EskfTracker::lightRoi(
     return std::nullopt;
   }
 
-  // 筛独立灯条的 ROI 越紧越好：范围越大，别的车和环境灯光越容易混进候选集，
-  // CPU 开销和误匹配概率也一起上去。
+  // 这个 ROI 越紧越好：范围一大，别的车和环境灯光就容易混进候选，CPU 开销和
+  // 误匹配概率一起上去。
   constexpr double kExpandRatio = 1.6;
   const cv::Rect expanded = expandAndClip(*bounds, kExpandRatio, image_rect);
   return expanded.empty() ? std::optional<cv::Rect>{image_rect}
@@ -385,7 +385,7 @@ cv::Rect EskfTracker::netFocusRoi(
   const cv::Size& image_size, double target_wh_ratio) const
 {
   const cv::Rect image_rect(0, 0, image_size.width, image_size.height);
-  // 不可聚焦时返回整图，而不是空：调用方拿到的永远是能直接用的矩形。
+  // 不可聚焦时返回整图而不是空，调用方拿到的永远是能直接用的矩形。
   const auto bounds = lightBounds(q_world_barrel, timestamp, image_size, false);
   if (!bounds) {
     return image_rect;
@@ -394,7 +394,7 @@ cv::Rect EskfTracker::netFocusRoi(
   const Slot& active = buffer_[current_];
   const bool is_base = active.target.name == ArmorName::BaseSmall ||
                        active.target.name == ArmorName::BaseLarge;
-  // 基地目标本身尺寸大、整车模型退化，ROI 要放得更宽。
+  // 基地尺寸大、整车模型退化，ROI 放得更宽。
   constexpr double kExpandRatio = 1.4;
   constexpr double kExpandRatioBase = 3.0;
   cv::Rect rect =
@@ -403,8 +403,8 @@ cv::Rect EskfTracker::netFocusRoi(
     return image_rect;
   }
 
-  // ① 按网络输入宽高比修正。工业相机图像的长宽比通常与网络输入不一致，直接
-  //    letterbox 会整体缩小；先把 ROI 修成同一比例，padding 就少了。
+  // ① 按网络输入宽高比修正形状：相机图像的长宽比通常与网络输入不一致，直接
+  //    letterbox 会整体缩小，先把 ROI 修成同一比例能少填不少边。
   const double ratio =
     (std::isfinite(target_wh_ratio) && target_wh_ratio > 0.0) ? target_wh_ratio : 1.0;
   double target_width = std::max(rect.width, 1);
@@ -426,9 +426,9 @@ cv::Rect EskfTracker::netFocusRoi(
     return image_rect;
   }
 
-  // ② 随丢失时长线性膨胀，超时退化为整图。目标越久没更新，预测越不可信，
-  //    搜索范围就该越大——这条让 ROI 机制在跟丢时自动放手，而不是把网络
-  //    永远锁在一个错误的小窗口里。
+  // ② 按距上次更新的时长线性膨胀，超时直接退化成整图：越久没更新预测越不可
+  //    信，搜索范围就该越大，跟丢时 ROI 会自动放手，而不是把网络锁死在一个
+  //    错误的小窗口里。
   const double lost_time = elapsedSeconds(active.last_update, timestamp);
   const double lost_thres = lostThreshold(active.target);
   const int base_side = std::max(ratio_rect.width, ratio_rect.height);

@@ -151,6 +151,30 @@ void normalize(AutoAimConfig& config)
     config.light_matcher.max_pair_angle_deg = light_matcher_defaults.max_pair_angle_deg;
   }
 
+  const L2Perception::LightFinderConfig light_finder_defaults;
+  if (!(config.light_finder.binary_threshold > 0 && config.light_finder.binary_threshold < 255)) {
+    config.light_finder.binary_threshold = light_finder_defaults.binary_threshold;
+  }
+  if (!(config.light_finder.min_ratio >= 0.0F &&
+        config.light_finder.min_ratio < config.light_finder.max_ratio &&
+        config.light_finder.max_ratio <= 1.0F)) {
+    config.light_finder.min_ratio = light_finder_defaults.min_ratio;
+    config.light_finder.max_ratio = light_finder_defaults.max_ratio;
+  }
+  if (!(config.light_finder.max_angle_deg > 0.0F && config.light_finder.max_angle_deg <= 90.0F)) {
+    config.light_finder.max_angle_deg = light_finder_defaults.max_angle_deg;
+  }
+  if (!(std::isfinite(config.light_finder.min_length) && config.light_finder.min_length >= 0.0F)) {
+    config.light_finder.min_length = light_finder_defaults.min_length;
+  }
+  // 判重半径到 0.8 就会把同一块板的左右灯条当成一根，见 LightFinderConfig。
+  if (!(config.light_finder.merge_radius >= 0.0F && config.light_finder.merge_radius < 0.8F)) {
+    config.light_finder.merge_radius = light_finder_defaults.merge_radius;
+  }
+  if (!(config.light_finder.length_agree >= 0.0F && config.light_finder.length_agree <= 1.0F)) {
+    config.light_finder.length_agree = light_finder_defaults.length_agree;
+  }
+
   const L2Perception::NumberClassifierConfig number_defaults;
   if (!(config.number_classifier.min_confidence >= 0.0 &&
         config.number_classifier.min_confidence < 1.0)) {
@@ -437,6 +461,28 @@ AutoAimConfig loadConfig(const std::string& path)
     light_matcher, "max_large_center_distance",
     config.light_matcher.max_large_center_distance);
   readValue(light_matcher, "max_pair_angle_deg", config.light_matcher.max_pair_angle_deg);
+
+  const YAML::Node light_finder = root["light_finder"];
+  if (light_finder && light_finder["mode"]) {
+    const std::string mode = light_finder["mode"].as<std::string>();
+    if (mode == "model") {
+      config.light_finder.mode = L2Perception::LightMode::Model;
+    } else if (mode == "classic") {
+      config.light_finder.mode = L2Perception::LightMode::Classic;
+    } else if (mode == "hybrid") {
+      config.light_finder.mode = L2Perception::LightMode::Hybrid;
+    } else {
+      throw std::runtime_error(
+        "light_finder.mode must be 'model', 'classic' or 'hybrid'; got " + mode);
+    }
+  }
+  readValue(light_finder, "binary_threshold", config.light_finder.binary_threshold);
+  readValue(light_finder, "min_ratio", config.light_finder.min_ratio);
+  readValue(light_finder, "max_ratio", config.light_finder.max_ratio);
+  readValue(light_finder, "max_angle_deg", config.light_finder.max_angle_deg);
+  readValue(light_finder, "min_length_px", config.light_finder.min_length);
+  readValue(light_finder, "merge_radius", config.light_finder.merge_radius);
+  readValue(light_finder, "length_agree", config.light_finder.length_agree);
 
   const YAML::Node number_classifier = root["number_classifier"];
   if (number_classifier && number_classifier["model_path"]) {

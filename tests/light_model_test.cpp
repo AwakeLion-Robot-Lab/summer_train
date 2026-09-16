@@ -1,6 +1,6 @@
-// L2 灯条链路单独回放：灯条关键点模型 → 配对 → 数字分类，逐帧统计和叠加显示。
-// 走的是生产的 ArmorDetector，参数全部来自 auto_aim.yaml，只有模型路径和设备
-// 允许命令行覆盖；不经过 L3，所以看到的是纯感知层的表现。
+// L2 灯条链路单独回放：找灯条（模型 / 传统 / 混合）→ 配对 → 数字分类，逐帧
+// 统计和叠加显示。走的是生产的 ArmorDetector，参数全部来自 auto_aim.yaml，只有
+// 模型路径、设备和灯条来源允许命令行覆盖；不经过 L3，所以看到的是纯感知层的表现。
 //
 // 它和 track_diag 的分工：这里回答「灯条检出、配对、数字分类各丢了多少」，
 // track_diag 回答「这些观测喂给整车滤波器之后怎么样」。
@@ -32,6 +32,8 @@ namespace
 using L2Perception::ArmorCandidate;
 using L2Perception::ArmorColor;
 using L2Perception::Light;
+using L2Perception::LightMode;
+using L2Perception::LightSource;
 using L2Perception::NumberVerdict;
 
 void require(bool condition, const std::string& message)
@@ -62,6 +64,14 @@ ArmorColor parseEnemyColor(const std::string& value)
   if (value == "blue") return ArmorColor::Blue;
   if (value == "any") return ArmorColor::Unknown;
   throw std::invalid_argument("enemy 必须是 red、blue 或 any");
+}
+
+LightMode parseMode(const std::string& value)
+{
+  if (value == "model") return LightMode::Model;
+  if (value == "classic") return LightMode::Classic;
+  if (value == "hybrid") return LightMode::Hybrid;
+  throw std::invalid_argument("mode 必须是 model、classic 或 hybrid");
 }
 
 double percentile(std::vector<double> values, double ratio)
@@ -121,9 +131,11 @@ void draw(cv::Mat& image, const std::vector<Light>& lights,
   cv::putText(image, header, {12, 30}, cv::FONT_HERSHEY_SIMPLEX, 0.7, {0, 255, 0}, 2,
               cv::LINE_AA);
 
+  // 传统灯条画黄线，模型灯条按颜色画红/蓝线。
   for (const Light& light : lights) {
-    const cv::Scalar color = light.color == ArmorColor::Red ? cv::Scalar{0, 0, 255}
-                                                            : cv::Scalar{255, 0, 0};
+    const cv::Scalar color = light.source == LightSource::Classic ? cv::Scalar{0, 255, 255}
+                             : light.color == ArmorColor::Red     ? cv::Scalar{0, 0, 255}
+                                                                  : cv::Scalar{255, 0, 0};
     cv::line(image, light.top, light.bottom, color, 1, cv::LINE_AA);
     cv::circle(image, light.top, 3, {0, 255, 0}, -1, cv::LINE_AA);
     cv::circle(image, light.bottom, 3, {255, 0, 255}, -1, cv::LINE_AA);
@@ -171,6 +183,7 @@ int main(int argc, char** argv)
     "{@input        | records/3m_run_fast | 录像路径，可省略 .avi 后缀}"
     "{model         |                     | 灯条关键点模型，留空用 auto_aim.yaml 的}"
     "{device        | CPU                 | OpenVINO 设备}"
+    "{mode          |                     | 灯条来源 model / classic / hybrid，留空用 yaml 的}"
     "{enemy         | blue                | 只配对该颜色的灯条：red / blue / any}"
     "{wait          | 1                   | imshow 等待毫秒，0 为逐帧}"
     "{start-index   | 0                   | 起始帧}"
@@ -200,6 +213,10 @@ int main(int argc, char** argv)
       config.inference.model_path = model_override;
     }
     config.inference.device = cli.get<cv::String>("device");
+    const std::string mode_override = cli.get<cv::String>("mode");
+    if (!mode_override.empty()) {
+      config.light_finder.mode = parseMode(mode_override);
+    }
     const L2Perception::ArmorDetector detector = runtime::makeDetector(config);
     std::cout << "灯条模型 " << config.inference.model_path << "  数字模型 "
               << config.number_classifier.model_path << '\n';
@@ -232,6 +249,8 @@ int main(int argc, char** argv)
     std::vector<double> lengths;
     std::vector<double> tilts;
     long long light_total = 0;
+    long long classic_total = 0;
+    long long mixed_pairs = 0;
     long long empty_light_frames = 0;
     long long pair_total = 0;
     long long frames_with_armor = 0;
@@ -260,6 +279,7 @@ int main(int argc, char** argv)
       light_total += static_cast<long long>(lights.size());
       empty_light_frames += lights.empty() ? 1 : 0;
       for (const Light& light : lights) {
+        classic_total += light.source == LightSource::Classic ? 1 : 0;
         scores.push_back(light.score);
         lengths.push_back(light.length);
         tilts.push_back(light.tilt_angle_deg);
@@ -270,6 +290,8 @@ int main(int argc, char** argv)
       std::map<NumberVerdict, int> frame_verdicts;
       std::string frame_labels;
       for (const ArmorCandidate& candidate : candidates) {
+        mixed_pairs +=
+          lights[candidate.pair.left].source != lights[candidate.pair.right].source ? 1 : 0;
         ++frame_verdicts[candidate.number.verdict];
         ++verdict_counts[candidate.number.verdict];
         if (candidate.number.verdict == NumberVerdict::Accepted) {
@@ -316,6 +338,7 @@ int main(int argc, char** argv)
     std::cout << "\n帧数 " << frames << '\n'
               << "灯条     " << light_total << " 根  每帧 " << per_frame(light_total)
               << "  零检出帧 " << empty_light_frames << '\n'
+              << "  传统 " << classic_total << "  模型 " << light_total - classic_total << '\n'
               << "  分数 p10 " << cv::format("%.2f", percentile(scores, 0.10)) << "  p50 "
               << cv::format("%.2f", percentile(scores, 0.50)) << '\n'
               << "  长度 p10 " << cv::format("%.1f", percentile(lengths, 0.10)) << "  p50 "
@@ -323,7 +346,8 @@ int main(int argc, char** argv)
               << cv::format("%.1f", percentile(lengths, 0.90)) << " px\n"
               << "  倾角 p50 " << cv::format("%.1f", percentile(tilts, 0.50)) << "  p90 "
               << cv::format("%.1f", percentile(tilts, 0.90)) << " deg\n"
-              << "配对     " << pair_total << " 对  每帧 " << per_frame(pair_total) << '\n'
+              << "配对     " << pair_total << " 对  每帧 " << per_frame(pair_total)
+              << "  传统+模型混配 " << mixed_pairs << '\n'
               << "  通过 " << accepted << " (" << percent(accepted, pair_total) << ")  negative "
               << verdict_counts[NumberVerdict::Negative] << "  低置信 "
               << verdict_counts[NumberVerdict::LowConfidence] << "  板型不符 "

@@ -19,7 +19,8 @@ bool colorMatches(const Light& first, const Light& second, ArmorColor color) noe
   return first.color == color && second.color == color;
 }
 
-// 两灯条端点围成的轴对齐框里如果还有别的灯条，说明中间隔着一根，不是同一块板。
+// 两灯条的四个端点围出轴对齐框，框里落进第三根灯条的任一端点或中心就返回
+// true：中间隔着一根，说明这两根不在同一块板上。
 bool containLight(std::size_t first, std::size_t second, const std::vector<Light>& lights)
 {
   const cv::Rect bounding_rect = cv::boundingRect(std::vector<cv::Point2f>{
@@ -43,12 +44,14 @@ std::optional<LightPair> isArmor(
 {
   const Light& light_1 = lights[first];
   const Light& light_2 = lights[second];
+  // 长度比：两根灯条在同一块板上时长度接近，差太多多半配错了。
   const double longer = std::max(light_1.length, light_2.length);
   const double shorter = std::min(light_1.length, light_2.length);
   if (!(longer > 1.0) || shorter / longer <= config.min_light_length_ratio) {
     return std::nullopt;
   }
 
+  // 中心距离按平均灯长归一化，落进小板或大板任一区间才算数。
   const cv::Point2f diff = light_1.center - light_2.center;
   const float center_distance = static_cast<float>(
     cv::norm(diff) / ((light_1.length + light_2.length) * 0.5));
@@ -60,7 +63,8 @@ std::optional<LightPair> isArmor(
     return std::nullopt;
   }
 
-  // rm_auto_aim 写的是 atan(dy / dx)，竖直排列时会除零；atan2 取绝对值等价且不会。
+  // 连线与水平方向的夹角。用 atan2 而不是 atan(dy / dx)，后者在两灯条竖直
+  // 排列时会除零。
   const float angle_deg = static_cast<float>(
     std::atan2(std::abs(diff.y), std::abs(diff.x)) * 180.0 / CV_PI);
   if (!(angle_deg < config.max_pair_angle_deg)) {

@@ -16,8 +16,8 @@ namespace VM = VehicleModel;
 
 namespace {
 
-// 装甲板四角在图像上的顺序：左上、右上、右下、左下。预测侧由左右灯条的上下
-// 端点拼出同一顺序，两边必须一致，否则四边形代价算的是两个不同形状。
+// 装甲板四角在图像上的顺序：左上、右上、右下、左下。预测侧也按这个顺序由
+// 左右灯条的端点拼出来，两边不一致的话四边形代价算的是两个不同形状。
 constexpr int kCorners = 4;
 
 double initialRadiusFor(ArmorName name, const EskfTargetConfig & config)
@@ -31,8 +31,8 @@ double initialRadiusFor(ArmorName name, const EskfTargetConfig & config)
   return config.initial_radius;
 }
 
-// 板朝向相机的程度。板的 x 轴指向车心，所以朝外的法向是 -axis_x；它与
-// "板 → 相机"方向的点积越大，板越正对。
+// 算一块板正对相机的程度：板的 x 轴指向车心，朝外的法向是 -axis_x，它与
+// 「板 → 相机」方向的点积越大，板越正对。
 double facingScore(const Eigen::Isometry3d & armor_in_camera)
 {
   const Eigen::Vector3d front_normal = -armor_in_camera.linear().col(0);
@@ -72,8 +72,8 @@ EskfTarget::EskfTarget(
 
   t_ = TimePoint{};
   initialized_ = true;
-  // 合成目标不带滤波器，也就没有"更新过多少次"可言；直接当作已收敛，
-  // 否则下游的 converged() 门限会把单测里的目标挡掉。
+  // 合成目标不带滤波器，没有“更新过多少次”可言，直接当作已收敛，否则下游的
+  // converged() 门限会把单测里的目标挡掉。
   converged_ = true;
   jumped = true;
   voter_.reset(t_);
@@ -93,8 +93,8 @@ void EskfTarget::reset(
 
   const double radius = initialRadiusFor(name, config_);
 
-  // 初始协方差全靠先验给量级。角速度最不确定——单帧完全看不出车在不在转，
-  // 给 100 等于告诉滤波器"这一维我基本不知道，请大胆用观测改它"。
+  // 初始协方差按先验给量级。角速度这一维给得最大：单帧根本看不出车在不在转，
+  // 等于告诉滤波器这一维基本不知道，放手用观测去改。
   Eigen::Matrix<double, VM::kStateSize, VM::kStateSize> p0;
   p0.setZero();
   p0.diagonal()[VM::idx::CX] = p0.diagonal()[VM::idx::CY] = p0.diagonal()[VM::idx::CZ] = 1.0;
@@ -106,13 +106,13 @@ void EskfTarget::reset(
     p0.diagonal()[VM::idx::P2] = 1.0;
   p0.diagonal()[VM::idx::VYAW] = 100.0;
 
-  // 由一块板的位姿反推整车位姿。T_car = T_armor · (T_armor^car)⁻¹。
+  // 由这块板的位姿反推整车位姿：T_car = T_armor · (T_armor^car)⁻¹。
   //
-  // T_armor^car 依赖两个未知量：板编号和半径，这里都用假设值——**假设看到的
-  // 是 0 号板**（θ=0，于是板心在车体系的 (-r, 0, 0)），半径取经验先验。
+  // 右边那一项要知道板编号和半径，这里都用假设值——当成 0 号板（θ=0，板心在
+  // 车体系的 (-r, 0, 0)），半径取先验。
   //
-  // 两个假设都会错但都不致命：编号只是标签的循环平移，认错了整车 yaw 差
-  // 2πk/N 而几何仍然自洽；半径偏差由后续观测修正（p0 给了足够不确定性）。
+  // 两个假设都会错，但都不致命：编号只是标签的循环平移，认错了整车 yaw 差
+  // 2πk/N，几何仍然自洽；半径偏差由后续观测修正，p0 给了足够的不确定性。
   Eigen::Isometry3d armor_in_world = Eigen::Isometry3d::Identity();
   armor_in_world.translation() = armor.xyz_in_world;
   armor_in_world.linear() = L6Telemetry::yprToRotation(armor.ypr_in_world);
@@ -136,7 +136,7 @@ void EskfTarget::reset(
   x_[VM::idx::ROT_X] = rotation.x();
   x_[VM::idx::ROT_Y] = rotation.y();
   x_[VM::idx::ROT_Z] = rotation.z();
-  // 速度、角速度、高度差全部从零起步。
+  // 速度、角速度、高度差都从零起步。
 
   const auto inject = [](const auto & delta, auto & nominal) {
     VM::injectState(delta, nominal);
@@ -163,7 +163,8 @@ void EskfTarget::reset(
   update_count_ = 0;
 }
 
-//相机系在世界系下的位姿
+// 相机光学系在世界系下的位姿：由 camera -> barrel 的静态外参左乘当帧的
+// barrel -> world 旋转得到，世界系原点取枪管原点。
 Eigen::Isometry3d EskfTarget::cameraInWorld(
   const L1Sensor::CameraCalibration & calibration, const Eigen::Quaterniond & q_world_barrel)
 {
@@ -184,8 +185,8 @@ void EskfTarget::predictEkf(TimePoint timestamp)
 
   filter_->setPredictFunc(
     VM::Motion{.dt = dt, .name = name, .outpost_direction = voter_.sign()});
-  // Q 依赖当前姿态（要旋到世界系）和当前半径（log 换算），必须在推进前按当前
-  // 状态求值，所以传的是 lambda 而不是值。
+  // Q 依赖当前姿态（要旋到世界系）和当前半径（log 换算），得在推进前按当时的
+  // 状态求值，所以传的是 lambda 而不是一个算好的矩阵。
   filter_->setUpdateQ([this, dt]() {
     return VM::processNoise(x_, dt, name, config_.noise);
   });
@@ -232,14 +233,14 @@ std::vector<std::pair<int, Armor>> EskfTarget::matchArmor(
   constexpr double kMaxCost = 1e9;
   const int count = armor_num();
 
-  // 把状态外推到本帧曝光时刻再做关联。
+  // 先把状态外推到本帧曝光时刻，再拿预测位置做关联。
   EskfTarget predicted = snapshot();
   predicted.predict(timestamp);
   const Eigen::VectorXd state = predicted.x_;
 
-  // 可见性筛选：按"朝向相机的程度"排序，只留最正对的前三块。一辆四板车最多
-  // 同时看到两块半，取三是留了余量。这是几何近似而非遮挡模型——它只判板朝不
-  // 朝着你，不判板有没有被车身自己挡住。
+  // 可见性筛选：按正对相机的程度排序，只留最正对的三块。四板车最多同时看到
+  // 两块半，取三留了余量。这只是几何近似，判的是板朝不朝着你，不判它有没有
+  // 被车身自己挡住。
   std::vector<std::pair<double, int>> facing;
   facing.reserve(count);
   for (int id = 0; id < count; ++id) {
@@ -272,11 +273,11 @@ std::vector<std::pair<int, Armor>> EskfTarget::matchArmor(
       const auto right =
         predicted.predictLight(id, false, state, calibration, camera_in_world);
 
-      // 预测四边形，顺序与检测角点一致：左上、右上、右下、左下。
+      // 拼出预测四边形，顺序与检测角点一致：左上、右上、右下、左下。
       const std::array<cv::Point2f, kCorners> predicted_corners{
         left.first, right.first, right.second, left.second};
 
-      // 抽象成"四边形与四边形匹配"，三项代价各自描述一个自由度：
+      // 代价是四边形与四边形的差异，三项各描述一个自由度：
       //   中心误差 —— 整体位置
       //   边角度误差 —— 姿态
       //   周长比例误差 —— 距离缩放
@@ -332,8 +333,8 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   std::vector<MatchedLight> result;
   const bool is_base =
     name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
-  // 只有本帧至少关联到一块完整装甲板时才启用：没有完整板做锚，孤立灯条的
-  // 编号/左右归属几乎是猜的。基地的板不绕转，整车预测对灯条位置没有约束力。
+  // 本帧至少关联上一块完整板才做：没有完整板做锚，独立灯条的编号和左右归属
+  // 几乎是猜的。基地的板不绕转，整车预测也约束不了它的灯条位置。
   if (!config_.enable_lights_measure || is_base || matched_armors.empty() ||
       lights.empty() || !initialized_) {
     return result;
@@ -372,7 +373,7 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
       predicted.predictLight(id, is_left, state, calibration, camera_in_world));
   };
 
-  // 最正对板的左右灯条，以及它相邻两块板靠近该板的一根灯条。
+  // 候选限定在三根：最正对那块板的左右灯条，加上相邻两块板靠近它的各一根。
   addVisible((closest_id + count - 1) % count, false);
   addVisible((closest_id + 1) % count, true);
   addVisible(closest_id, false);
@@ -384,8 +385,8 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
     observation_count,
     std::vector<double>(visible_lights.size(), kMaxCost + 1.0));
 
-  // 灯条没有数字特征，错配的代价比漏配高得多，所以三道门限都是硬拒绝，
-  // 代价本身只用位置误差排序。
+  // 灯条没有数字特征，错配比漏配代价高得多，所以三道门限都是硬拒绝，代价
+  // 本身只拿位置误差排序。
   const auto lightCost = [&](const L2Perception::Light& light,
                              const PredictedLight& candidate) -> double {
     const auto& [top, bottom] = std::get<2>(candidate);
@@ -399,7 +400,7 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
       return kMaxCost + 1.0;
     }
 
-    // 与 UVL 观测同一个角度约定：atan2(Δx, Δy)，量的是偏离竖直方向的角。
+    // 角度约定与 UVL 观测一致：atan2(Δx, Δy)，量的是偏离竖直方向的角。
     const double predicted_angle = std::atan2(top.x - bottom.x, top.y - bottom.y);
     const double light_angle =
       std::atan2(light.top.x - light.bottom.x, light.top.y - light.bottom.y);
@@ -452,18 +453,16 @@ int EskfTarget::update(
   }
 
   std::vector<std::shared_ptr<Filter::ObsBase>> observations;
-  // 记录观测块的排布，更新后用它把扁平的残差向量按物理含义拆开。
-  // 顺序固定：完整板拆出的灯条 → 单板深度差 → 独立灯条。深度差夹在中间，
-  // 所以两类灯条要分开计数，不能合并成一个总数。
+  // 记下观测块的排布，更新后拿它把扁平的残差向量按物理含义拆开。顺序固定为
+  // 完整板拆出的灯条 → 单板深度差 → 独立灯条；深度差夹在中间，所以两类灯条
+  // 要分开计数，不能合成一个总数。
   int armor_light_count = 0;
   int isolated_light_count = 0;
   bool has_depth_diff = false;
 
-  // 一条灯条 → 一个四维观测。
-  //
-  // isolated=true 表示这根灯条没有构成完整装甲板、只靠几何关联进来。两处
-  // 区别：不做"拆成两条"的 /2 折半（它就是一个测量，不存在信息翻倍），
-  // 并额外放大 sigma（没有编号和颜色证据支撑，本就更不可信）。
+  // 把一条灯条折成一个四维 UVL 观测并挂进列表：算 sigma、拼 R、记下调试用的
+  // 端点。isolated 表示这根灯条只靠几何关联进来，它的 sigma 会再乘一个放大
+  // 系数，因为没有编号和颜色证据支撑。
   const auto addLight = [&](const cv::Point2f & top, const cv::Point2f & bottom, int id,
                             bool is_left, bool isolated) {
     const UvlMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
@@ -471,9 +470,9 @@ int EskfTarget::update(
 
     const double length = cv::norm(top - bottom);
     const double scale = isolated ? config_.isolated_light_sigma_scale : 1.0;
-    // 一块板拆成两条灯条、信息量翻倍，所以每条方差减半；独立灯条不适用。
-    // 实测独立灯条不折半反而更差（径向 p99 0.110 -> 0.166），保持与
-    // awakening 一致的无条件折半。
+    // 一块板拆成两条灯条相当于信息翻倍，所以每条的方差减半。独立灯条按说
+    // 不该折半，但实测不折半反而更差（径向 p99 0.110 -> 0.166），所以这里
+    // 无条件折半。
     const double split = 2.0;
     (void)isolated;
 
@@ -487,15 +486,15 @@ int EskfTarget::update(
     r_cov(uvl::LENGTH, uvl::LENGTH) = sigma_length * sigma_length / split;
 
     if (config_.sigma_perp_px > 0.0) {
-      // 中心误差建在**灯条自身坐标系**里再旋到图像系：沿灯条 σ∥ 大、垂直
-      // σ⊥ 小。观测里的角度量的是偏离竖直方向的角（atan2(Δx, Δy)），所以
-      // 灯条方向在图像系里是 (sin α, cos α)。
+      // 中心误差先在灯条自身坐标系里建（沿灯条 sigma 大、垂直方向 sigma 小），
+      // 再旋到图像系。角度量的是偏离竖直方向的角，所以灯条方向在图像系里是
+      // (sin α, cos α)。
       const double sigma_perp = config_.sigma_perp_px * scale;
       const double angle = z[uvl::ANGLE];
       const double sin_a = std::sin(angle);
       const double cos_a = std::cos(angle);
 
-      // 沿灯条单位向量 e∥ = (sin α, cos α)，垂直 e⊥ = (cos α, -sin α)。
+      // 沿灯条方向 e∥ = (sin α, cos α)，垂直方向 e⊥ = (cos α, -sin α)。
       const double var_along = sigma_along * sigma_along / split;
       const double var_perp = sigma_perp * sigma_perp / split;
 
@@ -507,7 +506,7 @@ int EskfTarget::update(
       r_cov(uvl::CENTER_X, uvl::CENTER_Y) = covariance;
       r_cov(uvl::CENTER_Y, uvl::CENTER_X) = covariance;
     } else {
-      // 退回 awakening 的各向同性写法。
+      // 没配 sigma_perp_px 时退回各向同性：两个方向用同一个 sigma。
       r_cov(uvl::CENTER_X, uvl::CENTER_X) = sigma_along * sigma_along / split;
       r_cov(uvl::CENTER_Y, uvl::CENTER_Y) = sigma_along * sigma_along / split;
     }
@@ -525,18 +524,18 @@ int EskfTarget::update(
   };
 
   for (const auto & [id, armor] : matched) {
-    // 见过 0 号以外的板 —— 粘滞置位，此后整车 yaw 与第二组半径才真正可观测。
+    // 见过 0 号以外的板就粘滞置位，此后整车 yaw 和第二组半径才真正可观测。
     jumped = jumped || (id != 0);
     last_id = id;
 
-    // 一块完整板拆成左右两条灯条。角点序左上、右上、右下、左下：
+    // 把一块完整板拆成左右两条灯条。角点序是左上、右上、右下、左下，所以
     // 左灯条取 [0]、[3]，右灯条取 [1]、[2]。
     addLight(armor.points[0], armor.points[3], id, true, false);
     addLight(armor.points[1], armor.points[2], id, false, false);
   }
 
-  // 只有一块完整板时纯重投影观测容易在斜视方向退化。照搬 Awakening：
-  // IPPE 只贡献左右灯条中心的相机深度差这一维，不写入绝对位姿。
+  // 只有一块完整板时，纯重投影观测在斜视方向容易退化，这里补一维 IPPE 给的
+  // 左右灯条中心深度差；绝对位姿仍然不写进观测。
   if (matched.size() == 1 && lights_depth_diff &&
       std::isfinite(*lights_depth_diff)) {
     const int id = matched.front().first;
@@ -569,8 +568,8 @@ int EskfTarget::update(
   x_ = filter_->updateMulti(observations);
   t_ = timestamp;
 
-  // NIS = rᵀ S⁻¹ r，取先验线性化点的创新量。迭代后的残差被压缩过，不再服从
-  // 自由度等于观测维数的卡方分布，用它记账会让门限失配。
+  // NIS = rᵀ S⁻¹ r，取先验线性化点上的创新量。迭代后的残差被压缩过，不再服从
+  // 自由度等于观测维数的卡方分布，拿它记账会让门限失配。
   const Eigen::VectorXd & innovation = filter_->lastResidual();
   const Eigen::MatrixXd & innovation_covariance = filter_->lastInnovCov();
   if (innovation.size() > 0 && innovation_covariance.rows() == innovation.size()) {
@@ -581,7 +580,7 @@ int EskfTarget::update(
     }
   }
 
-  // 把扁平残差按块拆开。排布是 [装甲板灯条 4×n][深度差 1?][独立灯条 4×m]，
+  // 把扁平残差按块拆开，排布是 [装甲板灯条 4×n][深度差 0 或 1][独立灯条 4×m]，
   // 深度差夹在中间，所以要分段走而不是一路顺推。
   last_uvl_residual_ = UvlResidual{};
   {
@@ -628,7 +627,7 @@ int EskfTarget::update(
     }
   }
 
-  // 用更新后的整车 yaw 投票（前哨站转向）。
+  // 拿更新后的整车 yaw 给前哨转向投一票。
   const Eigen::Matrix3d rotation = VM::vehicleRotation<double>(x_.data(), name);
   voter_.update(L6Telemetry::rotationToYpr(rotation).x(), timestamp);
 
@@ -642,7 +641,7 @@ int EskfTarget::update(
 Eigen::VectorXd EskfTarget::ekf_x() const
 {
   Eigen::VectorXd out = x_;
-  // 对外吐线性半径：内部的 log 表示不能泄漏给 L4。
+  // 半径对外吐线性值，内部的 log 表示不泄漏给 L4。
   out[VM::idx::LOG_R1] = std::exp(x_[VM::idx::LOG_R1]);
   if (name != ArmorName::Outpost) {
     out[VM::idx::LOG_R2] = std::exp(x_[VM::idx::LOG_R2]);
@@ -717,8 +716,8 @@ EskfTarget EskfTarget::snapshot() const
   copy.update_count_ = update_count_;
   copy.last_nis_ = last_nis_;
   copy.last_nis_dof_ = last_nis_dof_;
-  // UVL 残差和 NIS 一样属于本帧诊断，必须跟着副本走：EskfTracker::track() 对外
-  // 返回的就是 snapshot，漏掉它会让 track_diag 的创新列恒为空。
+  // UVL 残差和 NIS 一样是本帧诊断量，必须跟着副本走：track() 对外返回的就是
+  // snapshot，漏掉它 track_diag 的创新列会恒为空。
   copy.last_uvl_residual_ = last_uvl_residual_;
   copy.voter_ = voter_;
   // 刻意不复制 filter_：下游拿到的是纯状态副本，外推随便做，不会污染滤波器。

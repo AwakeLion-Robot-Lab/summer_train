@@ -7,14 +7,15 @@
 #include <utility>
 #include <vector>
 
-// 观测关联与跟踪状态机的通用件。照搬 awakening 的 dta_utils.hpp:18-102。
+// 观测关联与跟踪状态机的通用件，装甲板和符都用这里的函数。
 namespace L3Estimation {
 
-// 贪心匹配：每轮取全局最小代价的一对，锁定后从候选中划掉，直到没有可用对。
+// 贪心匹配：每轮扫一遍代价矩阵，取还没被占用的组合里代价最小、且小于
+// max_cost 的一对，把这两行列都标记为已用，直到再也找不出这样的一对。
+// 返回的是 (观测下标, 候选下标) 的配对表，顺序即锁定顺序。
 //
-// 不用匈牙利算法是有意的：候选规模最多 3 块板 × 几个检测，贪心与最优解几乎
-// 总是一致，而贪心的失败模式（把一个次优对锁死）在这里由门控兜住——超过
-// 门限的代价根本进不了矩阵。
+// 不用匈牙利算法是有意的：候选规模最多 3 块板乘几个检测，贪心与最优解几乎
+// 总是一致；而贪心可能锁死次优对的失败模式，被 max_cost 门限兜住了。
 template <typename CostMatrix>
 std::vector<std::pair<int, int>> greedyMatch(
   const CostMatrix & cost, int observation_count, int candidate_count, double max_cost)
@@ -55,7 +56,7 @@ std::vector<std::pair<int, int>> greedyMatch(
   return result;
 }
 
-// 四态跟踪机的状态与计数。
+// 状态机的状态与两个计数器，由 updateFsm 维护。
 struct TrackLifecycle
 {
   TrackState state{TrackState::Lost};
@@ -75,11 +76,15 @@ struct TrackLifecycle
   }
 };
 
-// 推进状态机。found 表示本帧是否成功关联到观测。
+// 按本帧是否关联上观测（found）推进一步状态机：
+//   Detecting  关联上就累加计数，超过 tracking_thres 转 Tracking；丢一帧
+//              直接退回 Lost，重新开始计数；
+//   Tracking   丢帧转 TempLost；
+//   TempLost   再次关联上就回 Tracking，距上次更新超过 lost_time_thres 秒
+//              （由调用方算好传进来的 lost_time）则退回 Lost；
+//   Lost       什么都不做，新目标的建立由调用方负责。
 //
-// Detecting 要连续 tracking_thres 帧才转 Tracking，中途丢一帧就退回 Lost——
-// 这条严格性是防误初始化的：一次偶然的错误关联不该建立一个目标。而 Tracking
-// 丢失后先进 TempLost 靠预测撑住，超时才放弃。
+// Detecting 丢一帧就重来是防误初始化：一次偶然的错误关联不该建立一个目标。
 inline void updateFsm(
   bool found, TrackLifecycle & lifecycle, int tracking_thres, double lost_time,
   double lost_time_thres)
@@ -119,6 +124,7 @@ inline void updateFsm(
   }
 }
 
+// from 到 to 的秒数，钳到非负，避免乱序时间戳算出负的 dt。
 inline double elapsedSeconds(const TimePoint & from, const TimePoint & to) noexcept
 {
   return std::max(0.0, std::chrono::duration<double>(to - from).count());

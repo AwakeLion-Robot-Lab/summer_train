@@ -13,8 +13,8 @@ namespace
 
 constexpr const char* kNegativeLabel = "negative";
 
-// label.txt 的写法来自 rm_auto_aim（1 2 3 4 5 outpost guard base negative）。
-// 不认识的标签直接报错：映射错一个，整车模型的板数和 PnP 板型就跟着错。
+// 标签字符串 → 车辆类别。label.txt 只认这九行（1 2 3 4 5 outpost guard base
+// negative），其余直接报错：映射错一个，整车模型的板数和 PnP 板型就跟着错。
 ArmorClass classOfLabel(const std::string& label)
 {
   if (label == "1") return ArmorClass::Hero;
@@ -24,8 +24,8 @@ ArmorClass classOfLabel(const std::string& label)
   if (label == "5") return ArmorClass::Infantry5;
   if (label == "outpost") return ArmorClass::Outpost;
   if (label == "guard") return ArmorClass::Guard;
-  // MLP 只有一个 base 类。基地两类装甲板实物都是小板、都是三板，L3 对两者
-  // 的处理完全相同，取 BaseSmall 不丢信息。
+  // MLP 只有一个 base 类。基地的两类装甲板实物都是小板、都是三板，L3 对两者
+  // 的处理完全一样，统一取 BaseSmall。
   if (label == "base") return ArmorClass::BaseSmall;
   if (label == kNegativeLabel) return ArmorClass::Unknown;
   throw std::runtime_error("number classifier: unknown label '" + label + "'");
@@ -66,7 +66,8 @@ void NumberClassifier::load(const NumberClassifierConfig& config)
     throw std::runtime_error("number classifier: empty label file " + config.label_path.string());
   }
 
-  // 标签数与模型输出维度对不上时，argmax 下标会整体错位成另一辆车，不会报错。
+  // 跑一次空输入比对输出维度：标签数与模型对不上时 argmax 的下标会整体错位
+  // 成另一辆车，而且不会有任何报错。
   const cv::Mat blank(28, 20, CV_8UC1, cv::Scalar{0});
   net_.setInput(cv::dnn::blobFromImage(blank, 1.0 / 255.0));
   const cv::Mat logits = net_.forward();
@@ -86,8 +87,9 @@ NumberResult NumberClassifier::classify(
     return result;
   }
 
-  // 把两灯条透视到固定的 28 高画布上，灯条在图里固定 12 px 长，再取中间 20x28。
-  // 灯条长度归一化后数字大小也就归一化了，MLP 才能用这么小的输入。
+  // 透视到固定画布：两灯条的四个端点映到画布两侧，灯条在画布里固定 12 px
+  // 长、画布高 28 px，再从中间裁出 20x28。灯条长度归一化之后数字大小也就
+  // 归一化了，MLP 才能用这么小的输入。
   constexpr int kLightLength = 12;
   constexpr int kWarpHeight = 28;
   constexpr int kSmallArmorWidth = 32;
@@ -108,12 +110,12 @@ NumberResult NumberClassifier::classify(
   number_image =
     number_image(cv::Rect(cv::Point((warp_width - roi_size.width) / 2, 0), roi_size));
 
-  // rm_auto_aim 的输入是 rgb8，所以写 RGB2GRAY；这里是 BGR 原图，对应的是
-  // BGR2GRAY。照抄 RGB2GRAY 会把红蓝权重对调，OTSU 之后数字笔画的粗细会变。
+  // 入参是 BGR 原图，所以用 BGR2GRAY。写反会把红蓝权重对调，OTSU 之后数字
+  // 笔画的粗细跟着变。
   cv::cvtColor(number_image, number_image, cv::COLOR_BGR2GRAY);
   cv::threshold(number_image, number_image, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
 
-  // 二值图 /255 得到 0/1，与 rm_auto_aim 的 `image / 255.0` 后 blobFromImage 等价。
+  // 二值图除以 255 得到 0/1 输入，与训练时一致。
   net_.setInput(cv::dnn::blobFromImage(number_image, 1.0 / 255.0));
   const cv::Mat logits = net_.forward().reshape(1, 1);
 
@@ -132,11 +134,9 @@ NumberResult NumberClassifier::classify(
   result.armor_class = classes_[static_cast<std::size_t>(class_point.x)];
   result.number_image = std::move(number_image);
 
-  // rm_auto_aim 的剔除条件是三条取并集：置信度低、ignore_classes（默认
-  // negative）、板型不符。集合与原版相同，这里只是把原因分开记。
-  //
-  // 板型不符改用 isLargeArmor：rm_auto_aim 的表按老规则写（小板上出现
-  // 1/base 就剔），而现在基地装甲板实物是小板、只有英雄是大板。
+  // 三条拒绝理由按顺序判，分开记以便离线工具统计：分到 negative、置信度不够、
+  // 数字对应的板型与配对时按中心距离推出的大小板矛盾。板型由 isLargeArmor
+  // 给出，全项目共用同一份映射。
   if (labels_[static_cast<std::size_t>(class_point.x)] == kNegativeLabel) {
     result.verdict = NumberVerdict::Negative;
   } else if (confidence < config_.min_confidence) {
