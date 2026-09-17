@@ -409,6 +409,9 @@ int main(int argc, char* argv[])
     std::size_t double_update_frames = 0;
     std::size_t number_accepted = 0;
     std::size_t number_dropped = 0;
+    std::vector<double> ms_l2;
+    std::vector<double> ms_l3;
+    std::vector<double> ms_l4;
     std::vector<double> pred_pixel_err;
     std::vector<double> hold_pixel_err;
     std::vector<double> nis_values;
@@ -448,7 +451,9 @@ int main(int argc, char* argv[])
         tracker.lightRoi(q_world_barrel, timestamp, img.size());
       const cv::Rect net_roi = tracker.netFocusRoi(
         q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio());
+      const auto t_l2_begin = std::chrono::steady_clock::now();
       auto detection_frame = detector.detectFrame(img, light_roi, net_roi);
+      const auto t_l2_end = std::chrono::steady_clock::now();
       auto armors = detection_frame.armors;
       std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
         return enemy_color != L2Perception::ArmorColor::Unknown && armor.color != enemy_color;
@@ -457,8 +462,12 @@ int main(int argc, char* argv[])
       if (!armors.empty()) ++frames_with_det;
 
       solver.set_R_world_barrel(q_world_barrel);
+      const auto t_l3_begin = std::chrono::steady_clock::now();
       const auto target = tracker.track(
         armors, detection_frame.lights, q_world_barrel, timestamp);
+      const auto t_l3_end = std::chrono::steady_clock::now();
+      ms_l2.push_back(std::chrono::duration<double, std::milli>(t_l2_end - t_l2_begin).count());
+      ms_l3.push_back(std::chrono::duration<double, std::milli>(t_l3_end - t_l3_begin).count());
       const auto& observations = tracker.observations();
 
       // 观测明细。IESKF 的正常更新只吃类别和角点，不跑 PnP，所以这里只记 L2
@@ -629,7 +638,10 @@ int main(int argc, char* argv[])
       robot_state.mode = L1Sensor::WorkMode::AutoAim;
       robot_state.rpy.yaw = gimbal_yaw;
       robot_state.timestamp = timestamp;
+      const auto t_l4_begin = std::chrono::steady_clock::now();
       const auto plan = planner.plan(target, robot_state, timestamp, false);
+      ms_l4.push_back(std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_l4_begin).count());
       const int armor_id = plan.fire ? plan.fire->armor_id : -1;
       const double fire_facing = plan.fire
         ? plan.fire->facingAngle()
@@ -754,6 +766,13 @@ int main(int argc, char* argv[])
               << "垂直灯条   mean " << mean(res_perp_stats) << "  p90 "
               << percentile(res_perp_stats, 0.9) << "  max "
               << percentile(res_perp_stats, 1.0) << '\n'
+              << "-- 单帧耗时（ms）--\n"
+              << "L2 检测  p50 " << percentile(ms_l2, 0.5) << "  p90 "
+              << percentile(ms_l2, 0.9) << "  max " << percentile(ms_l2, 1.0) << '\n'
+              << "L3 跟踪  p50 " << percentile(ms_l3, 0.5) << "  p90 "
+              << percentile(ms_l3, 0.9) << "  max " << percentile(ms_l3, 1.0) << '\n'
+              << "L4 规划  p50 " << percentile(ms_l4, 0.5) << "  p90 "
+              << percentile(ms_l4, 0.9) << "  max " << percentile(ms_l4, 1.0) << '\n'
               << "-- 开环预测 " << predict_time * 1e3 << " ms（整车四块板 vs 当帧检出）--\n"
               << "预测   p50 " << percentile(pred_pixel_err, 0.5) << "  p90 "
               << percentile(pred_pixel_err, 0.9) << " px   <=20px "
