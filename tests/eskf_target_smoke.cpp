@@ -102,7 +102,7 @@ L3Estimation::Armor synthesizeDetection(
   armor.type = L3Estimation::ArmorType::Small;
   armor.timestamp = timestamp;
 
-  L3Estimation::UvlContext ctx;
+  L3Estimation::LightContext ctx;
   ctx.armor_num = kArmorNum;
   ctx.id = id;
   ctx.name = kName;
@@ -112,9 +112,9 @@ L3Estimation::Armor synthesizeDetection(
   ctx.distortion_coefficients = calibration.distortion_coefficients;
 
   ctx.is_left = true;
-  const auto left = L3Estimation::UvlMeasure{ctx}.projectedPoints(x);
+  const auto left = L3Estimation::LightMeasure{ctx}.projectedPoints(x);
   ctx.is_left = false;
-  const auto right = L3Estimation::UvlMeasure{ctx}.projectedPoints(x);
+  const auto right = L3Estimation::LightMeasure{ctx}.projectedPoints(x);
 
   // 左上、右上、右下、左下
   armor.points = {left.first, right.first, right.second, left.second};
@@ -238,15 +238,21 @@ int main()
     expect(matched.size() == 1, "单板场景应当关联到一块完整板");
 
     const int id = matched.empty() ? 0 : matched.front().first;
-    const auto predicted_light = target.predictLight(
-      id, true, target.rawState(), calibration, camera);
-    L2Perception::Light light;
-    light.top = predicted_light.first;
-    light.bottom = predicted_light.second;
-    light.center = (light.top + light.bottom) * 0.5F;
-    light.length = cv::norm(light.top - light.bottom);
-    light.color = L2Perception::ArmorColor::Blue;
+    const auto makeLight = [&](int plate_id, bool is_left) {
+      const auto predicted_light = target.predictLight(
+        plate_id, is_left, target.rawState(), calibration, camera);
+      L2Perception::Light light;
+      light.top = predicted_light.first;
+      light.bottom = predicted_light.second;
+      light.center = (light.top + light.bottom) * 0.5F;
+      light.length = cv::norm(light.top - light.bottom);
+      light.color = L2Perception::ArmorColor::Blue;
+      return light;
+    };
 
+    // 邻板的灯条没有配成完整板，应当被关联为独立灯条。
+    const L2Perception::Light light =
+      makeLight((id + 1) % target.armor_num(), true);
     const auto matched_lights = target.matchLight(
       std::vector<L2Perception::Light>{light}, matched, start, calibration, camera);
     expect(matched_lights.size() == 1, "独立灯条没有关联到预测物理灯条");
@@ -256,7 +262,16 @@ int main()
         .empty(),
       "没有完整板关联时不应启用独立灯条关联");
 
-    L3Estimation::UvlContext depth_context;
+    // 已经配成完整板的那根灯条，本帧会由板的角点拆出来当观测，不能再算一次。
+    expect(
+      target
+        .matchLight(
+          std::vector<L2Perception::Light>{makeLight(id, true)}, matched, start,
+          calibration, camera)
+        .empty(),
+      "完整板自己的灯条不应再关联为独立灯条");
+
+    L3Estimation::LightContext depth_context;
     depth_context.armor_num = target.armor_num();
     depth_context.id = id;
     depth_context.name = target.name;
@@ -275,7 +290,17 @@ int main()
       "单完整板 + 独立灯条 + 深度差应产生四个观测块");
     expect(
       target.lastNisDof() == 13,
-      "两条板灯 UVL、独立灯条 UVL 和一维深度差应合计 13 维");
+      "两根板灯、一根独立灯条的端点观测和一维深度差应合计 13 维");
+
+    // 观测取自预测本身，先验点上的创新量应当为零；诊断里的灯条根数要把
+    // 独立灯条算进去，深度差不算。
+    const auto& residual = target.lastLightResidual();
+    expect(residual.light_count == 3, "端点诊断的灯条根数应为 2 根板灯加 1 根独立灯条");
+    expect(
+      residual.along_rms_px < 0.01 && residual.perp_rms_px < 0.01 &&
+        std::abs(residual.depth_diff_m) < 1e-6,
+      "观测取自先验预测时，先验点上的端点创新应当为零");
+    expect(target.lastNis() < 1e-6, "观测取自先验预测时 NIS 应当为零");
   }
 
   // --- 4. 闭环收敛 ---------------------------------------------------

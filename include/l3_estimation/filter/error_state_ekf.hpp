@@ -251,8 +251,8 @@ public:
 
         // 中心差分求 H，三处关键：
         //   扰动加在 δ 上再 ⊞ 进去，求出的才是 ∂z/∂δ，与 P 同一坐标系；
-        //   差的是 residual 而不是 z_pred，角度分量的缠绕归一化才进得到导数
-        //   里，否则预测值分居 ±π 两侧时会差出一个 2π 的假梯度；
+        //   差的是 residual 而不是 z_pred，观测若带角度这类缠绕分量，归一化
+        //   才进得到导数里，否则预测值分居 ±π 两侧时会差出一个 2π 的假梯度；
         //   末尾取负，因为 r = z - ẑ，所以 -∂r/∂δ = ∂ẑ/∂δ = H。
         Eigen::MatrixXd hk(d, N_X);
         constexpr double kEps = 1e-6;
@@ -289,6 +289,12 @@ public:
 
       const Eigen::MatrixXd s_matrix =
         h_matrix * p_iter * h_matrix.transpose() + r_matrix;
+      // 创新量只在第 0 轮记：这一轮在先验点线性化，r 和 S 才是卡方检验要的
+      // 那一对。后面几轮的残差已被迭代压缩，拿它算 NIS 会系统性偏小。
+      if (iter == 0) {
+        last_residual_ = residual;
+        last_innovation_covariance_ = s_matrix;
+      }
       const auto ldlt = s_matrix.ldlt();
       const Eigen::MatrixXd pht = p_iter * h_matrix.transpose();
       k_matrix = ldlt.solve(pht.transpose()).transpose();  // K = P Hᵀ S⁻¹
@@ -314,14 +320,10 @@ public:
                k_matrix * r_matrix * k_matrix.transpose();
     P_delta_ = 0.5 * (P_delta_ + P_delta_.transpose());
 
-    last_residual_ = residual;
-    last_innovation_covariance_ =
-      h_matrix * p_iter * h_matrix.transpose() + r_matrix;
-
     return x_nominal_;
   }
 
-  // 最近一次更新的创新量和它的协方差，供 NIS 记账与遥测读取。
+  // 最近一次更新在先验点上的创新量和它的协方差，供 NIS 记账与遥测读取。
   const Eigen::VectorXd & lastResidual() const noexcept { return last_residual_; }
   const Eigen::MatrixXd & lastInnovCov() const noexcept
   {

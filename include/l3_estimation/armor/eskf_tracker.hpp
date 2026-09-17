@@ -33,10 +33,10 @@ struct EskfTrackerConfig
   double lost_time_thres_outpost{2.0};
 };
 
-// 本帧真正送进 IESKF 多观测更新的一根灯条。完整装甲板会拆成左右两根，
-// isolated 为 true 表示这根来自独立灯条检测、靠整车几何关联上，而不是装甲板
-// 的角点。只用于调试显示，不参与滤波计算。
-struct UvlUpdateLight
+// 本帧真正作为端点观测送进 IESKF 多观测更新的一根灯条。完整装甲板会拆成
+// 左右两根，isolated 为 true 表示这根来自独立灯条检测、靠整车几何关联上，
+// 而不是装甲板的角点。只用于调试显示，不参与滤波计算。
+struct UsedLight
 {
   cv::Point2f top{};
   cv::Point2f bottom{};
@@ -59,7 +59,7 @@ public:
   // → 推进状态机 → 返回当前目标的快照。q_world_barrel 必须对应 timestamp
   // 这一时刻的枪管姿态。Lost 或初始化失败返回空，TempLost 返回纯预测状态。
   //
-  // 第二个重载多收一组独立灯条，它们会作为额外的 UVL 观测参与同一次更新。
+  // 第二个重载多收一组独立灯条，它们会作为额外的端点观测参与同一次更新。
   std::optional<EskfTarget> track(
     const std::vector<L2Perception::Armor> & detections,
     const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp);
@@ -91,11 +91,11 @@ public:
   int lastMatchCount() const noexcept { return last_match_count_; }
   const std::string& lastMatchedIds() const noexcept { return last_matched_ids_; }
 
-  // 最近一帧真正进了 updateMulti 的 UVL 灯条。初始化帧、无关联帧和纯预测帧
-  // 都是空的，免得把“检测候选”误画成“已用于更新”。
-  const std::vector<UvlUpdateLight>& uvlLights() const noexcept
+  // 最近一帧真正进了 updateMulti 的灯条。初始化帧、无关联帧和纯预测帧都是
+  // 空的，免得把“检测候选”误画成“已用于更新”。
+  const std::vector<UsedLight>& usedLights() const noexcept
   {
-    return buffer_[current_].uvl_update_lights;
+    return buffer_[current_].used_lights;
   }
 
   // 本帧全部观测，含被质量门限拒掉的，供 L6 调试显示。
@@ -111,7 +111,7 @@ private:
     EskfTarget target;
     TrackLifecycle lifecycle;
     TimePoint last_update{};
-    std::vector<UvlUpdateLight> uvl_update_lights;
+    std::vector<UsedLight> used_lights;
   };
 
   bool initTarget(

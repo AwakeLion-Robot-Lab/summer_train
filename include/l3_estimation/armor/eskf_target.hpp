@@ -3,7 +3,7 @@
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l3_estimation/tracking/association.hpp"
 #include "l3_estimation/armor/types.hpp"
-#include "l3_estimation/armor/uvl_measure.hpp"
+#include "l3_estimation/armor/light_measure.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
 #include "l3_estimation/filter/error_state_ekf.hpp"
 
@@ -29,30 +29,29 @@ struct EskfTargetConfig
   // 装甲板物理尺寸，决定灯条端点的三维坐标。
   ArmorConfig armor{};
 
-  // 每次更新做几步高斯牛顿。观测模型强非线性（透视除法 + 畸变 + atan2），
-  // 迭代比单次线性化明显更稳。
+  // 每次更新做几步高斯牛顿。观测模型强非线性（透视除法 + 畸变），迭代比单次
+  // 线性化明显更稳。
   int iteration_num{5};
 
-  // UVL 观测噪声。位置和长度的 sigma 按灯条像素长度成比例给（乘上这两个
-  // 系数），角度的 sigma 取常数。灯条长度与距离成反比，σ 正比于长度相当于让
-  // 物理尺度上的观测噪声近似恒定，不用按距离另外调权。
-  double sigma_pixel_by_length{0.2};
-  double sigma_length_by_length{0.5};
-  double sigma_angle{0.1};
-
-  // 灯条中心在垂直于灯条方向上的 sigma，单位 px，不随灯条长度缩放；取 <= 0
-  // 时这一维退回用上面的各向同性写法。
+  // 端点观测噪声，单位 px。每个端点的误差拆成沿灯条、垂直灯条两个方向，
+  // sigma 取「系数 × 灯条像素长度」与 sigma_min_px 的较大值。垂直方向决定
+  // 灯条倾角（σ_角 = √2·σ⊥ / 长度），近正对时整车 yaw 主要靠它观测。
   //
-  // 分开给是因为中心误差本身是各向异性的：沿灯条方向端点是亮度渐变、定位差
-  // 且误差随长度缩放；垂直方向是陡峭边缘、定位好。合成一个值会同时高估垂直
-  // 方向、低估沿灯条方向，而垂直方向恰恰承载左右灯条间距，是 UVL 里深度的
-  // 主要线索。3 m 处实测：各向同性时间距 sigma 4.52 px（深度不确定 8.3%），
-  // 取 1.5 px 后降到 1.50 px（2.8%）。
-  double sigma_perp_px{-1.0};
+  // 默认两个系数为 0、下限 √40 ≈ 6.32，即 rmcs_auto_aim_v2 的各向同性常数
+  // R = 40 px²。四段 3 m 录像（灯条 25–34 px）上它比按旧 UVL 边缘方差换算的
+  // 0.16 / 0.10 × 长度更好，在 3m_high、3m_run_mid、fast_run 上后者反而不如
+  // 改动前的 UVL；垂直系数再减半（更信倾角）四段都更差。
+  //
+  // 按长度缩放的依据是长度与距离成反比，σ 正比于长度相当于物理尺度上的噪声
+  // 近似恒定；沿灯条取大是因为端点落在亮度渐变的灯条两头。录像都在 3 m，
+  // 常数与按长度缩放在这个距离上分不出来，换距离后要重新比。
+  double sigma_along_by_length{0.0};
+  double sigma_perp_by_length{0.0};
+  double sigma_min_px{6.32};
 
-  // 独立灯条那几条观测的 sigma 统一乘上它。这些灯条没配成完整板、只靠几何
-  // 关联，没有数字和板型证据，应当比从装甲板拆出来的灯条更不可信。
-  double isolated_light_sigma_scale{1.0};
+  // 独立灯条的两个 sigma 再乘上它。这些灯条没配成完整板、只靠几何关联，
+  // 没有数字和板型证据，应当比从装甲板拆出来的灯条更不可信。
+  double isolated_light_sigma_scale{1.4};
 
   // 单块完整板时那一维深度差观测的 sigma（米），以及独立灯条关联的三道门：
   // 长度比、角度差、中心距离（按灯条长度归一）。
@@ -129,14 +128,15 @@ public:
     TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
     const Eigen::Isometry3d& camera_in_world) const;
 
-  // 把关联好的板各拆成左右两条 UVL 观测，做一次多观测更新，返回观测条数。
+  // 把关联好的板各拆成左右两根灯条的端点观测，做一次多观测更新，返回观测
+  // 块数。
   int update(
     const std::vector<std::pair<int, Armor>> & matched, TimePoint timestamp,
     const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera_in_world);
 
-  // 完整更新入口：完整板各拆成两条 UVL，独立灯条各加一条（sigma 乘上放大
-  // 系数），matched 恰好一块且传入了深度差时再加一维 depth_diff 观测，最后
-  // 一起送进迭代更新。返回观测条数。
+  // 完整更新入口：完整板各拆成两根灯条，独立灯条各加一根（sigma 乘上放大
+  // 系数），每根一个四维端点观测；matched 恰好一块且传入了深度差时再加一维
+  // depth_diff 观测，最后一起送进迭代更新。返回观测块数。
   int update(
     const std::vector<std::pair<int, Armor>>& matched,
     const std::vector<MatchedLight>& matched_lights,
@@ -168,28 +168,27 @@ public:
   // 任一半径跑出物理范围就算发散，调用方据此丢弃目标。
   bool diverged() const;
 
-  // 最近一次更新的归一化创新平方（NIS）和它的自由度。UVL 的观测维数随本帧
-  // 关联到的灯条条数变（每条 4 维），所以自由度要一并给出才能和卡方门限比。
-  // 滤波器一致时 NIS 的期望值等于自由度。
+  // 最近一次更新的归一化创新平方（NIS）和它的自由度，取先验点上的创新量。
+  // 观测维数随本帧关联到的灯条根数变（每根 4 维），所以自由度要一并给出才能
+  // 和卡方门限比。滤波器一致时 NIS 的期望值等于自由度。
   double lastNis() const noexcept { return last_nis_; }
   int lastNisDof() const noexcept { return last_nis_dof_; }
 
-  // 最近一次更新的 UVL 残差，按分量分组取 RMS。四个分量量纲不同（角度是
-  // rad、中心和长度是 px），混进一个范数没有意义，所以分开给。
+  // 最近一次更新的端点创新量（先验点上），投到每根灯条自己的坐标系里分方向
+  // 取 RMS，单位 px。
   //
-  // 读法：中心残差大是整车位置偏了，长度残差大是深度偏了，角度残差大是姿态
-  // 偏了。
-  struct UvlResidual
+  // 读法：沿灯条分量大，多半是深度（灯条长度）或高度偏了；垂直分量大，是
+  // 横向位置或灯条倾角（姿态）偏了。
+  struct LightResidual
   {
-    double angle_rms_deg{0.0};
-    double center_rms_px{0.0};
-    double length_rms_px{0.0};
+    double along_rms_px{0.0};
+    double perp_rms_px{0.0};
     // 单板深度差观测的残差，单位米。本帧没有该观测时为 0。
     double depth_diff_m{0.0};
-    // 参与本次更新的灯条条数（完整板拆出的 + 独立的）。
+    // 参与本次更新的灯条根数（完整板拆出的 + 独立的）。
     int light_count{0};
   };
-  const UvlResidual & lastUvlResidual() const noexcept { return last_uvl_residual_; }
+  const LightResidual & lastLightResidual() const noexcept { return last_light_residual_; }
 
   // 由相机标定的 camera -> barrel 外参和当帧枪管姿态合成相机光学系在世界系
   // 的位姿。世界系原点取枪管原点，与 PnpSolver 的约定一致。
@@ -221,8 +220,8 @@ public:
   EskfTarget snapshot() const;
 
 private:
-  // 拼一个 UvlContext：板编号、左右、板数、板几何加当帧相机位姿与内参。
-  UvlContext makeContext(
+  // 拼一个 LightContext：板编号、左右、板数、板几何加当帧相机位姿与内参。
+  LightContext makeContext(
     int id, bool is_left, const L1Sensor::CameraCalibration & calibration,
     const Eigen::Isometry3d & camera_in_world) const;
 
@@ -238,7 +237,7 @@ private:
   int update_count_{0};
   double last_nis_{0.0};
   int last_nis_dof_{0};
-  UvlResidual last_uvl_residual_{};
+  LightResidual last_light_residual_{};
   // 前哨转向投票器。非前哨目标上它一直停在 Collecting，不影响推进。
   VehicleModel::Voter voter_{};
 };

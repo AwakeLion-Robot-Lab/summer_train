@@ -248,8 +248,8 @@ local standalone_tests = {
         includes = {"include", "/usr/include/eigen3"},
         opencv   = {"opencv_core"},
     },
-    -- UVL 观测要 calib3d 里的 projectPoints 做对拍参照。
-    uvl_measure_smoke = {
+    -- 端点观测要 calib3d 里的 projectPoints 做对拍参照。
+    light_measure_smoke = {
         includes = {"include", "/usr/include/eigen3"},
         opencv   = {"opencv_core", "opencv_calib3d"},
     },

@@ -150,9 +150,66 @@ int main()
     expectNear(filter.state()[1], kTruthVelocity, 0.35, "线性场景下速度没有收敛");
   }
 
+  // ================= 1b. 迭代时创新量取先验点 =================
+  //
+  // 迭代第 k 轮的残差是 z − h(x̌ ⊞ δ_k)，第 1 轮起已被前一步修正压缩过。NIS
+  // 要的是先验点上的 r = z − H·x̌ 和 S = H·P⁻·Hᵀ + R，多轮迭代时记错一轮
+  // 不会报错，只会让 NIS 系统性偏小，所以单独钉住。
+  {
+    using Filter = L3Estimation::ErrorStateEkf<2, LinearMotion>;
+    using Vector2 = Eigen::Matrix<double, 2, 1>;
+    using Matrix2 = Eigen::Matrix<double, 2, 2>;
+    using Vector1 = Eigen::Matrix<double, 1, 1>;
+
+    const auto inject = [](const auto & delta, auto & nominal) {
+      for (int i = 0; i < 2; ++i) {
+        nominal[i] += delta[i];
+      }
+    };
+    const auto box_minus = [](const auto & nominal, const auto & value, auto & delta) {
+      delta = value - nominal;
+    };
+
+    const Matrix2 q = Matrix2::Identity() * 1e-3;
+    Matrix2 p0;
+    p0 << 1.0, 0.0, 0.0, 4.0;
+    Filter filter(LinearMotion{}, [&]() { return q; }, inject, box_minus, p0);
+    Vector2 x0;
+    x0 << 0.2, 1.0;
+    filter.setState(x0);
+    filter.setIterationNum(3);
+
+    const Vector2 x_prior = filter.predict();
+    const Matrix2 p_prior = filter.covariance();
+
+    constexpr double kR = 0.25;
+    Vector1 z;
+    z << 3.0;
+    const auto measure = [](const double * x, double * zp) { zp[0] = x[0]; };
+    const auto update_r = [](const Vector1 &) -> Vector1 { return Vector1::Constant(double{kR}); };
+    const auto residual = [](const Vector1 & z_pred, const Vector1 & zo) -> Vector1 {
+      return zo - z_pred;
+    };
+
+    std::vector<std::shared_ptr<Filter::ObsBase>> obs;
+    obs.push_back(Filter::makeObs<1>(z, measure, update_r, residual));
+    filter.updateMulti(obs);
+
+    expect(filter.lastResidual().size() == 1, "创新量维数错误");
+    expect(filter.lastInnovCov().rows() == 1, "创新协方差维数错误");
+    if (filter.lastResidual().size() == 1 && filter.lastInnovCov().rows() == 1) {
+      expectNear(
+        filter.lastResidual()[0], z[0] - x_prior[0], 1e-9,
+        "多轮迭代时创新量应取先验点，而不是最后一轮的残差");
+      expectNear(
+        filter.lastInnovCov()(0, 0), p_prior(0, 0) + kR, 1e-9,
+        "多轮迭代时创新协方差应取先验协方差");
+    }
+  }
+
   // ================= 2. 整车模型上的收敛 =================
   //
-  // 观测取四块装甲板在世界系的三维位置（共 12 维）。这不是最终要用的 UVL
+  // 观测取四块装甲板在世界系的三维位置（共 12 维）。这不是运行时的灯条端点
   // 观测，但足以验证 ⊞/⊟ 与数值 H 在真实几何上接得上。
   {
     constexpr auto kName = L3Estimation::ArmorName::Infantry3;

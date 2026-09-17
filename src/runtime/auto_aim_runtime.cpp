@@ -203,7 +203,8 @@ void AutoAimRuntime::run() {
           });
 
           // L3: 关联、状态机与整车 IESKF。独立灯条与装甲板角点一起进
-          // updateMulti()，这是 UVL 观测相对纯角点观测的增量来源。
+          // updateMulti()，每根灯条都是一个四维端点观测，独立灯条是
+          // 在完整板之外多出来的那部分信息。
           std::optional<L3Estimation::EskfTarget> target;
           if (tracker && tracker->ready()) {
             target = tracker->track(

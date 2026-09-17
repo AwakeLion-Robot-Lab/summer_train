@@ -132,7 +132,7 @@ ArmorFrame ArmorDetector::detectFrame(
       last_candidates_.push_back({pair, std::move(number)});
     }
 
-    // ArmorFrame::lights 给 L3 做 UVL 观测，按 light_roi 再筛一次。
+    // ArmorFrame::lights 给 L3 做端点观测，按 light_roi 再筛一次。
     if (light_roi) {
       const cv::Rect roi = *light_roi & image_rect;
       for (const Light& light : lights) {

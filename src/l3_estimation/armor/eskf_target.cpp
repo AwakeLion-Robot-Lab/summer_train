@@ -8,7 +8,6 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <numbers>
 
 namespace L3Estimation {
 
@@ -195,11 +194,11 @@ void EskfTarget::predictEkf(TimePoint timestamp)
   t_ = timestamp;
 }
 
-UvlContext EskfTarget::makeContext(
+LightContext EskfTarget::makeContext(
   int id, bool is_left, const L1Sensor::CameraCalibration & calibration,
   const Eigen::Isometry3d & camera_in_world) const
 {
-  UvlContext ctx;
+  LightContext ctx;
   ctx.armor_num = armor_num();
   ctx.id = id;
   ctx.is_left = is_left;
@@ -216,7 +215,7 @@ std::pair<cv::Point2f, cv::Point2f> EskfTarget::predictLight(
   const L1Sensor::CameraCalibration & calibration,
   const Eigen::Isometry3d & camera_in_world) const
 {
-  const UvlMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
+  const LightMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
   return measure.projectedPoints(state);
 }
 
@@ -367,7 +366,17 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
     std::tuple<int, bool, std::pair<cv::Point2f, cv::Point2f>>;
   std::vector<PredictedLight> visible_lights;
   visible_lights.reserve(4);
+  // 已经配成完整板的那些板，两根灯条本帧都由 update() 从板的角点直接拆出来，
+  // 不再需要独立灯条补位，槽位也就不放进候选。
+  const auto matchedPlate = [&matched_armors](int id) {
+    return std::any_of(
+      matched_armors.begin(), matched_armors.end(),
+      [id](const std::pair<int, Armor>& matched) { return matched.first == id; });
+  };
   const auto addVisible = [&](int id, bool is_left) {
+    if (matchedPlate(id)) {
+      return;
+    }
     visible_lights.emplace_back(
       id, is_left,
       predicted.predictLight(id, is_left, state, calibration, camera_in_world));
@@ -378,6 +387,29 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   addVisible((closest_id + 1) % count, true);
   addVisible(closest_id, false);
   addVisible(closest_id, true);
+
+  if (visible_lights.empty()) {
+    return result;
+  }
+
+  // 已经配成完整板的灯条本帧会由 update() 直接从板的角点拆出来当观测，不能
+  // 再作为独立灯条进第二次：同一次测量进两遍信息矩阵，协方差会偏乐观。
+  // 剔的是观测而不是候选槽位——把槽位删掉的话，这两根灯条会转去抢邻板的
+  // 槽位（位置门限有 5 倍灯长那么松），变成错误关联。
+  const auto consumed = [&matched_armors](const L2Perception::Light& light) {
+    constexpr double kSamePointPx = 0.5;
+    return std::any_of(
+      matched_armors.begin(), matched_armors.end(),
+      [&light](const std::pair<int, Armor>& matched) {
+        const auto& points = matched.second.points;
+        // 角点序为左上、右上、右下、左下：左灯条是 [0]、[3]，右灯条是 [1]、[2]。
+        const bool same_left = cv::norm(light.top - points[0]) < kSamePointPx &&
+                               cv::norm(light.bottom - points[3]) < kSamePointPx;
+        const bool same_right = cv::norm(light.top - points[1]) < kSamePointPx &&
+                                cv::norm(light.bottom - points[2]) < kSamePointPx;
+        return same_left || same_right;
+      });
+  };
 
   constexpr double kMaxCost = 1e9;
   const int observation_count = static_cast<int>(lights.size());
@@ -400,7 +432,7 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
       return kMaxCost + 1.0;
     }
 
-    // 角度约定与 UVL 观测一致：atan2(Δx, Δy)，量的是偏离竖直方向的角。
+    // 角度取 atan2(Δx, Δy)，预测和检测同一约定，差值再折回 (-π, π]。
     const double predicted_angle = std::atan2(top.x - bottom.x, top.y - bottom.y);
     const double light_angle =
       std::atan2(light.top.x - light.bottom.x, light.top.y - light.bottom.y);
@@ -420,6 +452,9 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   };
 
   for (int observation = 0; observation < observation_count; ++observation) {
+    if (consumed(lights[observation])) {
+      continue;  // 整行保持在门限之外，这根灯条不参与配对
+    }
     for (std::size_t candidate = 0; candidate < visible_lights.size(); ++candidate) {
       cost[observation][candidate] =
         lightCost(lights[observation], visible_lights[candidate]);
@@ -453,74 +488,31 @@ int EskfTarget::update(
   }
 
   std::vector<std::shared_ptr<Filter::ObsBase>> observations;
-  // 记下观测块的排布，更新后拿它把扁平的残差向量按物理含义拆开。顺序固定为
-  // 完整板拆出的灯条 → 单板深度差 → 独立灯条；深度差夹在中间，所以两类灯条
-  // 要分开计数，不能合成一个总数。
-  int armor_light_count = 0;
-  int isolated_light_count = 0;
-  bool has_depth_diff = false;
+  // 观测块的排布固定为 [灯条 4×n][深度差 0 或 1]：灯条在前、连续排放，更新后
+  // 按下标就能把扁平残差拆回每根灯条。directions 与灯条块一一对应，记的是
+  // 检测到的灯条方向，诊断时拿它把端点残差投到灯条坐标系。
+  std::vector<Eigen::Vector2d> directions;
+  directions.reserve(matched.size() * 2 + matched_lights.size());
 
-  // 把一条灯条折成一个四维 UVL 观测并挂进列表：算 sigma、拼 R、记下调试用的
-  // 端点。isolated 表示这根灯条只靠几何关联进来，它的 sigma 会再乘一个放大
-  // 系数，因为没有编号和颜色证据支撑。
+  // 把一根灯条的上下端点挂成一个四维观测。isolated 表示这根灯条只靠几何关联
+  // 进来，没有编号和颜色证据，两个 sigma 再乘一个放大系数。
   const auto addLight = [&](const cv::Point2f & top, const cv::Point2f & bottom, int id,
                             bool is_left, bool isolated) {
-    const UvlMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
-    const UvlVector z = toUvl(top, bottom);
-
+    const LightMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
     const double length = cv::norm(top - bottom);
     const double scale = isolated ? config_.isolated_light_sigma_scale : 1.0;
-    // 一块板拆成两条灯条相当于信息翻倍，所以每条的方差减半。独立灯条按说
-    // 不该折半，但实测不折半反而更差（径向 p99 0.110 -> 0.166），所以这里
-    // 无条件折半。
-    const double split = 2.0;
-    (void)isolated;
+    const double sigma_along =
+      std::max(config_.sigma_min_px, config_.sigma_along_by_length * length) * scale;
+    const double sigma_perp =
+      std::max(config_.sigma_min_px, config_.sigma_perp_by_length * length) * scale;
+    const LightCov r_cov = lightCov(top, bottom, sigma_along, sigma_perp);
 
-    const double sigma_along = config_.sigma_pixel_by_length * length * scale;
-    const double sigma_length = config_.sigma_length_by_length * length * scale;
-    const double sigma_angle = config_.sigma_angle * scale;
-
-    Eigen::Matrix<double, kUvlMeasureSize, kUvlMeasureSize> r_cov;
-    r_cov.setZero();
-    r_cov(uvl::ANGLE, uvl::ANGLE) = sigma_angle * sigma_angle / split;
-    r_cov(uvl::LENGTH, uvl::LENGTH) = sigma_length * sigma_length / split;
-
-    if (config_.sigma_perp_px > 0.0) {
-      // 中心误差先在灯条自身坐标系里建（沿灯条 sigma 大、垂直方向 sigma 小），
-      // 再旋到图像系。角度量的是偏离竖直方向的角，所以灯条方向在图像系里是
-      // (sin α, cos α)。
-      const double sigma_perp = config_.sigma_perp_px * scale;
-      const double angle = z[uvl::ANGLE];
-      const double sin_a = std::sin(angle);
-      const double cos_a = std::cos(angle);
-
-      // 沿灯条方向 e∥ = (sin α, cos α)，垂直方向 e⊥ = (cos α, -sin α)。
-      const double var_along = sigma_along * sigma_along / split;
-      const double var_perp = sigma_perp * sigma_perp / split;
-
-      r_cov(uvl::CENTER_X, uvl::CENTER_X) =
-        var_along * sin_a * sin_a + var_perp * cos_a * cos_a;
-      r_cov(uvl::CENTER_Y, uvl::CENTER_Y) =
-        var_along * cos_a * cos_a + var_perp * sin_a * sin_a;
-      const double covariance = (var_along - var_perp) * sin_a * cos_a;
-      r_cov(uvl::CENTER_X, uvl::CENTER_Y) = covariance;
-      r_cov(uvl::CENTER_Y, uvl::CENTER_X) = covariance;
-    } else {
-      // 没配 sigma_perp_px 时退回各向同性：两个方向用同一个 sigma。
-      r_cov(uvl::CENTER_X, uvl::CENTER_X) = sigma_along * sigma_along / split;
-      r_cov(uvl::CENTER_Y, uvl::CENTER_Y) = sigma_along * sigma_along / split;
-    }
-
-    observations.push_back(Filter::makeObs<kUvlMeasureSize>(
-      z, measure, [r_cov](const UvlVector &) { return r_cov; },
-      [](const UvlVector & z_pred, const UvlVector & z_obs) {
-        return UvlMeasure::residual<double>(z_pred, z_obs);
+    observations.push_back(Filter::makeObs<kLightMeasureSize>(
+      toLight(top, bottom), measure, [r_cov](const LightVector &) { return r_cov; },
+      [](const LightVector & z_pred, const LightVector & z_obs) {
+        return LightMeasure::residual<double>(z_pred, z_obs);
       }));
-    if (isolated) {
-      ++isolated_light_count;
-    } else {
-      ++armor_light_count;
-    }
+    directions.push_back(lightDirection(top, bottom));
   };
 
   for (const auto & [id, armor] : matched) {
@@ -528,14 +520,20 @@ int EskfTarget::update(
     jumped = jumped || (id != 0);
     last_id = id;
 
-    // 把一块完整板拆成左右两条灯条。角点序是左上、右上、右下、左下，所以
+    // 把一块完整板拆成左右两根灯条。角点序是左上、右上、右下、左下，所以
     // 左灯条取 [0]、[3]，右灯条取 [1]、[2]。
     addLight(armor.points[0], armor.points[3], id, true, false);
     addLight(armor.points[1], armor.points[2], id, false, false);
   }
 
+  for (const auto& [id, is_left, light] : matched_lights) {
+    addLight(light.top, light.bottom, id, is_left, true);
+  }
+  const int light_count = static_cast<int>(directions.size());
+
   // 只有一块完整板时，纯重投影观测在斜视方向容易退化，这里补一维 IPPE 给的
   // 左右灯条中心深度差；绝对位姿仍然不写进观测。
+  bool has_depth_diff = false;
   if (matched.size() == 1 && lights_depth_diff &&
       std::isfinite(*lights_depth_diff)) {
     const int id = matched.front().first;
@@ -557,19 +555,10 @@ int EskfTarget::update(
     has_depth_diff = true;
   }
 
-  for (const auto& [id, is_left, light] : matched_lights) {
-    addLight(light.top, light.bottom, id, is_left, true);
-  }
-
-  if (observations.empty()) {
-    return 0;
-  }
-
   x_ = filter_->updateMulti(observations);
   t_ = timestamp;
 
-  // NIS = rᵀ S⁻¹ r，取先验线性化点上的创新量。迭代后的残差被压缩过，不再服从
-  // 自由度等于观测维数的卡方分布，拿它记账会让门限失配。
+  // NIS = rᵀ S⁻¹ r，r 和 S 都取先验线性化点上的（滤波器在第 0 轮迭代记下）。
   const Eigen::VectorXd & innovation = filter_->lastResidual();
   const Eigen::MatrixXd & innovation_covariance = filter_->lastInnovCov();
   if (innovation.size() > 0 && innovation_covariance.rows() == innovation.size()) {
@@ -580,50 +569,30 @@ int EskfTarget::update(
     }
   }
 
-  // 把扁平残差按块拆开，排布是 [装甲板灯条 4×n][深度差 0 或 1][独立灯条 4×m]，
-  // 深度差夹在中间，所以要分段走而不是一路顺推。
-  last_uvl_residual_ = UvlResidual{};
-  {
-    double angle_sq = 0.0;
-    double center_sq = 0.0;
-    double length_sq = 0.0;
-    int counted = 0;
-
-    const auto accumulate = [&](int base) {
-      if (base + kUvlMeasureSize > innovation.size()) {
-        return;
+  // 把每根灯条两个端点的残差投到该灯条的方向 e 和法向 n 上，分方向累加。
+  last_light_residual_ = LightResidual{};
+  if (innovation.size() >= light_count * kLightMeasureSize) {
+    double along_sq = 0.0;
+    double perp_sq = 0.0;
+    for (int i = 0; i < light_count; ++i) {
+      const int base = i * kLightMeasureSize;
+      const Eigen::Vector2d & e = directions[i];
+      const Eigen::Vector2d n(-e.y(), e.x());
+      for (const int point : {endpoint::TOP_U, endpoint::BOTTOM_U}) {
+        const Eigen::Vector2d r = innovation.segment<2>(base + point);
+        along_sq += r.dot(e) * r.dot(e);
+        perp_sq += r.dot(n) * r.dot(n);
       }
-      const double angle = innovation[base + uvl::ANGLE];
-      const double center_x = innovation[base + uvl::CENTER_X];
-      const double center_y = innovation[base + uvl::CENTER_Y];
-      const double length = innovation[base + uvl::LENGTH];
-      angle_sq += angle * angle;
-      center_sq += center_x * center_x + center_y * center_y;
-      length_sq += length * length;
-      ++counted;
-    };
-
-    for (int i = 0; i < armor_light_count; ++i) {
-      accumulate(i * kUvlMeasureSize);
     }
-    int offset = armor_light_count * kUvlMeasureSize;
-    if (has_depth_diff) {
-      if (offset < innovation.size()) {
-        last_uvl_residual_.depth_diff_m = innovation[offset];
-      }
-      offset += kDepthDiffMeasureSize;
+    if (light_count > 0) {
+      const double samples = 2.0 * light_count;
+      last_light_residual_.along_rms_px = std::sqrt(along_sq / samples);
+      last_light_residual_.perp_rms_px = std::sqrt(perp_sq / samples);
+      last_light_residual_.light_count = light_count;
     }
-    for (int i = 0; i < isolated_light_count; ++i) {
-      accumulate(offset + i * kUvlMeasureSize);
-    }
-
-    if (counted > 0) {
-      const double count = static_cast<double>(counted);
-      last_uvl_residual_.angle_rms_deg =
-        std::sqrt(angle_sq / count) * 180.0 / std::numbers::pi;
-      last_uvl_residual_.center_rms_px = std::sqrt(center_sq / count);
-      last_uvl_residual_.length_rms_px = std::sqrt(length_sq / count);
-      last_uvl_residual_.light_count = counted;
+    const int depth_index = light_count * kLightMeasureSize;
+    if (has_depth_diff && depth_index < innovation.size()) {
+      last_light_residual_.depth_diff_m = innovation[depth_index];
     }
   }
 
@@ -716,9 +685,9 @@ EskfTarget EskfTarget::snapshot() const
   copy.update_count_ = update_count_;
   copy.last_nis_ = last_nis_;
   copy.last_nis_dof_ = last_nis_dof_;
-  // UVL 残差和 NIS 一样是本帧诊断量，必须跟着副本走：track() 对外返回的就是
+  // 端点残差和 NIS 一样是本帧诊断量，必须跟着副本走：track() 对外返回的就是
   // snapshot，漏掉它 track_diag 的创新列会恒为空。
-  copy.last_uvl_residual_ = last_uvl_residual_;
+  copy.last_light_residual_ = last_light_residual_;
   copy.voter_ = voter_;
   // 刻意不复制 filter_：下游拿到的是纯状态副本，外推随便做，不会污染滤波器。
   return copy;

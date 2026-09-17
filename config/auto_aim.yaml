@@ -9,7 +9,7 @@ inference:
   #   best_int8.onnx  CPU 上约快 2.5 倍，但关键点回归精度塌了：不同录像上灯条长度
   #                   分位数完全相同（27.6/28.4/35.1 px），数字区域抠歪；低曝光
   #                   fast_run 上有装甲板的帧 67%（FP32 98%），开头反复重置。别用。
-  # UVL 的深度线索正是灯条长度，换模型之后必须重跑 track_diag。
+  # 端点观测的深度线索正是灯条长度，换模型之后必须重跑 track_diag。
   model_path: "model/light_model/best.onnx"
   device: "CPU"
 
@@ -103,16 +103,16 @@ armor:
   big_width_m: 0.230
   height_m: 0.056
 
-# L3 整车估计器：迭代误差状态 EKF + 灯条 UVL 图像观测（awakening 路线）。
-# 噪声是靠回放标定的主要旋钮：改完必须重跑 `xmake run track_diag` 看 UVL
-# 创新和 NIS，不要凭感觉调。
+# L3 整车估计器：迭代误差状态 EKF + 灯条端点像素观测（rmcs_auto_aim_v2 的
+# 观测，跑在 awakening 的滤波器上）。噪声是靠回放标定的主要旋钮：改完必须重跑
+# `xmake run track_diag` 看端点创新和 NIS，不要凭感觉调。
 ieskf:
   # 状态机按录像时间戳计时，不受回放倍速影响。
   tracking_thres: 5
   lost_time_thres: 1.5
   lost_time_thres_outpost: 2.0
 
-  # 每帧 UVL 更新的高斯牛顿迭代次数。
+  # 每帧更新的高斯牛顿迭代次数。
   iteration_num: 5
 
   # 车体系过程噪声，数值与 awakening test.yaml 对齐。
@@ -125,16 +125,15 @@ ieskf:
   outpost_height_noise: 1.0e-7
   roll_pitch_noise: 0.1
 
-  # 一条灯条的 UVL 噪声；前两项乘以该灯条的像素长度得到 sigma。
-  sigma_pixel_by_length: 0.2
-  sigma_length_by_length: 0.5
-  sigma_angle: 0.1
-  # 灯条中心误差各向异性：沿灯条方向用 sigma_pixel_by_length × 灯条长度，
-  # 垂直方向用下面这个固定像素值（边缘锐度决定，不随灯条长度缩放）。
-  # 设成 <= 0 退回 awakening 的各向同性写法。
-  sigma_perp_px: -1.0
-  # 独立灯条（纯几何关联、无编号颜色证据）的噪声放大系数。
-  isolated_light_sigma_scale: 1.0
+  # 每个端点的像素 sigma，沿灯条与垂直灯条分开给：
+  #   sigma = max(sigma_min_px, 系数 × 灯条像素长度)
+  # 上下端点互相独立。当前取 rmcs 的常数 R = 40 px²（两个系数为 0）；
+  # 录像都在 3 m，按长度缩放在别的距离上是否更好还没比过。
+  sigma_along_by_length: 0.0
+  sigma_perp_by_length: 0.0
+  sigma_min_px: 6.32
+  # 独立灯条（纯几何关联、无编号颜色证据）的 sigma 放大系数。
+  isolated_light_sigma_scale: 1.4
 
   # 单完整板 IPPE 左右灯条中心深度差，以及独立灯条关联；与 Awakening
   # test.yaml 的 armor_tracker 参数逐项对应。

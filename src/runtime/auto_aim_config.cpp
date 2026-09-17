@@ -181,8 +181,8 @@ void normalize(AutoAimConfig& config)
     config.number_classifier.min_confidence = number_defaults.min_confidence;
   }
 
-  // awakening IESKF：状态机按真实时间计，过程噪声在车体系表达，UVL 的观测
-  // 噪声是 sigma 而非方差。
+  // 整车 IESKF：状态机按真实时间计，过程噪声在车体系表达，端点观测的噪声
+  // 是 sigma（px）而非方差。
   const L3Estimation::EskfTrackerConfig ieskf_tracker_defaults;
   config.ieskf_tracker.tracking_thres =
     std::max(config.ieskf_tracker.tracking_thres, 1);
@@ -222,12 +222,8 @@ void normalize(AutoAimConfig& config)
                    ieskf_target_defaults.noise.outpost_height},
          std::pair{&config.ieskf_target.noise.roll_pitch,
                    ieskf_target_defaults.noise.roll_pitch},
-         std::pair{&config.ieskf_target.sigma_pixel_by_length,
-                   ieskf_target_defaults.sigma_pixel_by_length},
-         std::pair{&config.ieskf_target.sigma_length_by_length,
-                   ieskf_target_defaults.sigma_length_by_length},
-         std::pair{&config.ieskf_target.sigma_angle,
-                   ieskf_target_defaults.sigma_angle},
+         std::pair{&config.ieskf_target.sigma_min_px,
+                   ieskf_target_defaults.sigma_min_px},
          std::pair{&config.ieskf_target.isolated_light_sigma_scale,
                    ieskf_target_defaults.isolated_light_sigma_scale},
          std::pair{&config.ieskf_target.armor_lights_depth_diff_sigma,
@@ -252,7 +248,13 @@ void normalize(AutoAimConfig& config)
       *value = fallback;
     }
   }
+  // 两个按长度缩放的系数允许取 0：此时 sigma 恒为 sigma_min_px，即 rmcs 的
+  // 常数 R，而 sigma_min_px 已保证为正，R 不会退化。
   for (const auto& [value, fallback] : {
+         std::pair{&config.ieskf_target.sigma_along_by_length,
+                   ieskf_target_defaults.sigma_along_by_length},
+         std::pair{&config.ieskf_target.sigma_perp_by_length,
+                   ieskf_target_defaults.sigma_perp_by_length},
          std::pair{&config.ieskf_target.weight_center_error,
                    ieskf_target_defaults.weight_center_error},
          std::pair{&config.ieskf_target.weight_angle_error,
@@ -266,7 +268,7 @@ void normalize(AutoAimConfig& config)
   config.ieskf_target.match_gate_not_all_init = std::max(
     config.ieskf_target.match_gate_not_all_init,
     config.ieskf_target.match_gate);
-  // UVL 和 PnP 必须引用同一套物理板尺寸。
+  // 端点观测和 PnP 必须引用同一套物理板尺寸。
   config.ieskf_target.armor = config.armor;
 
   const L4Planning::ArmorPlanConfig plan_defaults;
@@ -518,15 +520,13 @@ AutoAimConfig loadConfig(const std::string& path)
     ieskf, "outpost_height_noise", config.ieskf_target.noise.outpost_height);
   readValue(ieskf, "roll_pitch_noise", config.ieskf_target.noise.roll_pitch);
   readValue(
-    ieskf, "sigma_pixel_by_length", config.ieskf_target.sigma_pixel_by_length);
+    ieskf, "sigma_along_by_length", config.ieskf_target.sigma_along_by_length);
   readValue(
-    ieskf, "sigma_length_by_length", config.ieskf_target.sigma_length_by_length);
-  readValue(
-    ieskf, "sigma_perp_px", config.ieskf_target.sigma_perp_px);
+    ieskf, "sigma_perp_by_length", config.ieskf_target.sigma_perp_by_length);
+  readValue(ieskf, "sigma_min_px", config.ieskf_target.sigma_min_px);
   readValue(
     ieskf, "isolated_light_sigma_scale",
     config.ieskf_target.isolated_light_sigma_scale);
-  readValue(ieskf, "sigma_angle", config.ieskf_target.sigma_angle);
   readValue(
     ieskf, "armor_lights_depth_diff_sigma",
     config.ieskf_target.armor_lights_depth_diff_sigma);

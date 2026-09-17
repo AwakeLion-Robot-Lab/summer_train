@@ -32,7 +32,7 @@ public:
   // 任何一步不过关都只清除派生结果，把类别置为 Unknown，不写半成品。
   void single_pnp(Armor& armor) const;
 
-  // 左右灯条中心在相机 z 轴上的深度差，供 UVL 观测使用。用 solvePnPGeneric
+  // 左右灯条中心在相机 z 轴上的深度差，作为端点观测之外的一维补充观测。用 solvePnPGeneric
   // 取出 IPPE 的全部候选解，按重投影误差排序后选第一个正面朝向相机的；
   // 前哨额外把俯仰固定为 -15°，在 IPPE 的 yaw 左右各 70° 内用黄金分割重搜。
   std::optional<double> lights_depth_diff(

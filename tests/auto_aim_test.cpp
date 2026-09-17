@@ -288,9 +288,9 @@ public:
   int lastMatchCount() const noexcept { return tracker_.lastMatchCount(); }
   std::string lastMatchedIdsString() const { return tracker_.lastMatchedIds(); }
 
-  const std::vector<L3Estimation::UvlUpdateLight>& uvlLights() const noexcept
+  const std::vector<L3Estimation::UsedLight>& usedLights() const noexcept
   {
-    return tracker_.uvlLights();
+    return tracker_.usedLights();
   }
 
   // 送给网络的 ROI：整车先验驱动的显式空间注意力。
@@ -624,9 +624,9 @@ cv::Mat makeRecognitionPanel(
   return panel;
 }
 
-cv::Mat makeUvlUpdatePanel(
+cv::Mat makeUsedLightPanel(
   const cv::Mat& source,
-  const std::vector<L3Estimation::UvlUpdateLight>& update_lights,
+  const std::vector<L3Estimation::UsedLight>& update_lights,
   std::size_t independent_candidate_count)
 {
   constexpr int kPanelWidth = 720;
@@ -637,13 +637,13 @@ cv::Mat makeUvlUpdatePanel(
 
   const auto isolated_count = static_cast<std::size_t>(std::count_if(
     update_lights.begin(), update_lights.end(),
-    [](const L3Estimation::UvlUpdateLight& light) {
+    [](const L3Estimation::UsedLight& light) {
       return light.isolated;
     }));
   drawOutlinedText(
     panel,
     cv::format(
-      "UVL used=%zu  armor=%zu  isolated=%zu  independent candidates=%zu",
+      "lights used=%zu  armor=%zu  isolated=%zu  independent candidates=%zu",
       update_lights.size(), update_lights.size() - isolated_count,
       isolated_count, independent_candidate_count),
     {12, 28}, {255, 255, 255}, 0.58);
@@ -1244,9 +1244,9 @@ int main(int argc, char** argv)
       solver.set_R_world_barrel(q_world_barrel);
       const auto target = tracker.track(
         armors, detection_frame.lights, q_world_barrel, timestamp);
-      const auto& uvl_update_lights = tracker.uvlLights();
-      const cv::Mat uvl_update_panel = makeUvlUpdatePanel(
-        img, uvl_update_lights, detection_frame.lights.size());
+      const auto& used_lights = tracker.usedLights();
+      const cv::Mat used_light_panel = makeUsedLightPanel(
+        img, used_lights, detection_frame.lights.size());
       const auto target_armor_poses = tracker.armorPoses();
       const std::optional<FilterEstimate> filter_estimate = target
         ? std::optional<FilterEstimate>{target->estimate()}
@@ -1445,7 +1445,7 @@ int main(int argc, char** argv)
       if (target && filter_estimate) {
         L6Telemetry::logDebugRaw(
           "[" + std::to_string(frame_index) + "] estimator=" +
-          "ieskf+uvl state=" +
+          "ieskf+endpoint state=" +
           std::string(stateName(tracker.state())) + ' ' +
           filterKinematicsText(*filter_estimate) + ' ' +
           filterGeometryText(
@@ -1454,7 +1454,7 @@ int main(int argc, char** argv)
       } else {
         L6Telemetry::logDebugRaw(
           "[" + std::to_string(frame_index) + "] estimator=" +
-          "ieskf+uvl state=" +
+          "ieskf+endpoint state=" +
           std::string(stateName(tracker.state())) + " target=none");
       }
 
@@ -1471,8 +1471,8 @@ int main(int argc, char** argv)
           }
         }
 
-        // IESKF 消费的 UVL 就是上面检测框的左右灯条端点，不再把 PnP 位姿框
-        // 冒充成滤波观测；PnP 在这条路径只负责冷启动与候选有效性检查。
+        // IESKF 消费的就是上面检测框的左右灯条端点，不再把 PnP 位姿框冒充成
+        // 滤波观测；PnP 在这条路径只负责冷启动与候选有效性检查。
       }
 
       // 绿色是当前估计器展开的全部物理装甲板，和 sp_vision 画的是同一个量：
@@ -1530,7 +1530,7 @@ int main(int argc, char** argv)
       drawOutlinedText(
         img,
         cv::format(
-          "frame=%d ieskf+uvl state=%s target=%s det=%zu obs=%zu", frame_index,
+          "frame=%d ieskf+endpoint state=%s target=%s det=%zu obs=%zu", frame_index,
           std::string(stateName(tracker.state())).c_str(),
           target ? armorClassName(target->name) : "-", armors.size(),
           observations.size()),
@@ -1719,7 +1719,7 @@ int main(int argc, char** argv)
             predicted_armor_yaw, frame_index));
       }
       cv::imshow("recognition roi", recognition_panel);
-      cv::imshow("uvl update lights", uvl_update_panel);
+      cv::imshow("used lights", used_light_panel);
       cv::resize(img, img, {}, 0.5, 0.5);  // 显示时缩小图片尺寸
       cv::imshow("reprojection", img);
       const int key = cv::waitKey(wait_ms);
@@ -1733,7 +1733,7 @@ int main(int argc, char** argv)
 
     cv::destroyAllWindows();
     std::cout << "\n回放结束\n"
-              << "估计器: ieskf+uvl" << '\n'
+              << "估计器: ieskf+endpoint" << '\n'
               << "帧数: " << frames << '\n'
               << "有 PnP 观测的帧: " << observation_frames << '\n'
               << "PnP 成功的候选数: " << valid_pnp_observations
@@ -1751,7 +1751,7 @@ int main(int argc, char** argv)
               << same_armor_direction_reversal_frames << '\n'
               << "最大折返单步: " << largest_reversal_step * kRadToDeg
               << " deg\n"
-              << "初始化门限: PnP 成功；逐帧校正: 完整板/独立灯条 UVL + 单板深度差\n";
+              << "初始化门限: PnP 成功；逐帧校正: 完整板/独立灯条端点 + 单板深度差\n";
     if (!aim_yaw_errors.empty()) {
       std::sort(aim_yaw_errors.begin(), aim_yaw_errors.end());
       const double median = aim_yaw_errors[aim_yaw_errors.size() / 2];

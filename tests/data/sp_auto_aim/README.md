@@ -32,12 +32,10 @@ xmake run auto_aim_test -- tests/data/sp_auto_aim/demo \
   -c=tests/data/sp_auto_aim/camera_calibration.yaml --convention=sp
 ```
 
-The default estimator is the awakening-style iterated error-state EKF with UVL
-light-bar observations. Use `--estimator=ekf` to replay the old YPDA EKF on the
-same frames; `--estimator=ieskf` (also `iesekf` or `esekf`) selects the new path
-explicitly.
-Both paths continue through the same L4 planner and L5 fire-decision code, so
-the command and switching statistics are directly comparable.
+The estimator is the awakening-style iterated error-state EKF, observing the
+top and bottom pixel endpoints of each light bar (the rmcs_auto_aim_v2
+observation). Its output goes through the same L4 planner and L5 fire-decision
+code as on the robot.
 
 `--calibration` defaults to `config/camera_config.yaml`, so this dataset needs `-c=` to point back at its
 own calibration. Flags must use `-c=value`; `cv::CommandLineParser` does not accept a space-separated
@@ -74,11 +72,10 @@ The per-frame console line reports the filter's center, velocity, yaw rate,
 radii, height offsets, roll/pitch, and NIS; detector/tracker latency is not
 printed. The same filter state is visible in both `sp` and `full` overlays.
 
-The old EKF requires a committed `single_pnp` pose on every accepted
-observation and then corrects with YPDA. The IESKF follows Awakening's split
-entry: PnP is required for target initialization, while normal frames associate
-the class and image corners directly. A matched full armor contributes two UVL
-light-bar observations; once tracking, independent traditional light bars are
+The IESKF follows Awakening's split entry: PnP is required for target
+initialization, while normal frames associate the class and image corners
+directly. A matched full armor contributes two four-dimensional light-bar
+endpoint observations; once tracking, independent traditional light bars are
 detected inside the predicted 1.6x vehicle ROI and associated with
 length/angle/position gates. If exactly one full armor is matched, IPPE also
 contributes the one-dimensional left-minus-right light-center depth difference.

@@ -96,7 +96,7 @@ enum class LightSource {
   Classic
 };
 
-// 检出的单根灯条，坐标都在原图像素系。它不带车辆编号，只有 UVL 观测要用的
+// 检出的单根灯条，坐标都在原图像素系。它不带车辆编号，只有端点观测要用的
 // 上下端点和几何量；属于哪块装甲板、是左灯还是右灯，由 L3 按整车预测关联。
 struct Light {
   // center 是 top 与 bottom 的中点，top 按图像 y 定，恒在 bottom 上方。
@@ -115,7 +115,7 @@ struct Light {
   std::size_t id{0};
 };
 
-// 一帧装甲感知的输出：通过数字分类的装甲板，以及交给 L3 做 UVL 观测的灯条。
+// 一帧装甲感知的输出：通过数字分类的装甲板，以及交给 L3 做端点观测的灯条。
 // 后者按 detectFrame 的 light_roi 筛过，不一定是配出装甲板的那些。
 struct ArmorFrame {
   std::vector<Armor> armors;

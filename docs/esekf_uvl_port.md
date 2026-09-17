@@ -17,6 +17,14 @@
 
 阅读顺序是严格的依赖序：读到任何一节，它用到的东西前面都讲过了。
 
+> **2026-09-17 起本仓库不再使用 UVL 观测。** L3 改为直接观测每根灯条上下端点的像素
+> 坐标（rmcs_auto_aim_v2 的写法），滤波器仍是本文拆解的 ESEKF。第 1–4、6 节和第 7 节
+> 中与观测无关的部分仍然适用；第 5 节和第 7.4 节里的 UVL 观测与 R 只作为移植记录保留，
+> 当前实现见 `docs/prediction_and_light_filter.md` 与
+> `include/l3_estimation/armor/light_measure.hpp`。文中提到的 `uvl_measure.hpp`、
+> `tests/uvl_measure_smoke.cpp` 已分别改名为 `light_measure.hpp`、
+> `tests/light_measure_smoke.cpp`。
+
 **与本仓库既有文档的关系。** `docs/iterated_ekf.md` 已经写过迭代 EKF 的 MAP 代价、
 Bell & Cathey 迭代式和四个移植坑，本文第 6.2 节与之呼应——上游 awakening 的迭代式
 恰好踩了其中一个。`docs/pnp_observation_noise_and_covariance.md` 讲的是"为什么
@@ -471,6 +479,8 @@ if (OUTPOST) x[LOG_R1] = log(OUTPOST_R);                  // 前哨半径钉死 
 
 
 ## 5. UVL 观测模型
+
+> 本节是 awakening 的原始写法。本仓库已改为直接观测灯条端点，见文首说明。
 
 `motion_model.hpp:260-341`、`utils.hpp:343-400`。整条链路的分水岭：观测不是 PnP 解出的
 位姿，而是**图像平面上一条灯条的四个几何量**。

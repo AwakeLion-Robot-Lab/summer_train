@@ -1,16 +1,17 @@
-// UVL 图像观测的正确性与闭环收敛检查。
+// 灯条端点观测的正确性与闭环收敛检查。
 //
-// 四件事，重要性递增：
+// 五件事，重要性递增：
 //   1. 手写投影与 cv::projectPoints 逐点对齐 —— 保证针孔+畸变没写错
-//   2. 观测量的几何含义自洽（中心在两端点中点、长度为端点距离、竖直灯条角度近零）
-//   3. 观测对误差状态的 Jacobian，Jet 对拍中心差分 —— 验证整条
-//      状态 → armorPose → 投影 → [α, uc, vc, L] 的链
-//   4. 把 UVL 喂进 ESEKF，从偏离真值的初值出发看是否收敛
+//   2. 观测向量的排布：[上 u, 上 v, 下 u, 下 v]，预测与检测两边一致
+//   3. 观测对状态的 Jacobian，Jet 对拍中心差分 —— 验证整条
+//      状态 → armorPose → 投影 → 端点像素 的链
+//   4. lightCov 的几何含义：端点间独立，沿灯条 / 垂直灯条两个方向的方差对得上
+//   5. 把端点观测喂进 ESEKF，从偏离真值的初值出发看是否收敛
 //
-// 第 4 条是这条路线真正的验收：观测不再是 PnP 解出的位姿，而是图像平面上的
-// 灯条几何量，滤波器要靠重投影残差反解整车状态。
+// 第 5 条是这条路线真正的验收：观测不再是 PnP 解出的位姿，而是图像平面上的
+// 灯条端点，滤波器要靠重投影残差反解整车状态。
 
-#include "l3_estimation/armor/uvl_measure.hpp"
+#include "l3_estimation/armor/light_measure.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
 #include "l3_estimation/filter/error_state_ekf.hpp"
 
@@ -20,7 +21,6 @@
 
 #include <cmath>
 #include <iostream>
-#include <numbers>
 #include <string_view>
 #include <vector>
 
@@ -87,9 +87,9 @@ State makeTruth()
   return x;
 }
 
-L3Estimation::UvlContext makeContext(int id, bool is_left, const Eigen::Isometry3d & camera)
+L3Estimation::LightContext makeContext(int id, bool is_left, const Eigen::Isometry3d & camera)
 {
-  L3Estimation::UvlContext ctx;
+  L3Estimation::LightContext ctx;
   ctx.armor_num = kArmorNum;
   ctx.id = id;
   ctx.is_left = is_left;
@@ -152,51 +152,55 @@ int main()
     }
   }
 
-  // --- 2. 观测量的几何含义 -------------------------------------------
+  // --- 2. 观测向量的排布 ---------------------------------------------
   {
-    const L3Estimation::UvlMeasure measure{makeContext(0, true, camera)};
+    using L3Estimation::endpoint::BOTTOM_U;
+    using L3Estimation::endpoint::BOTTOM_V;
+    using L3Estimation::endpoint::TOP_U;
+    using L3Estimation::endpoint::TOP_V;
+
+    const L3Estimation::LightMeasure measure{makeContext(0, true, camera)};
     const auto [top, bottom] = measure.projectedPoints(truth);
 
-    L3Estimation::UvlVector z;
+    L3Estimation::LightVector z;
     measure(truth.data(), z.data());
 
     // projectedPoints 返回 cv::Point2f，量级 500 时 float 精度约 3e-5。
-    expectNear(
-      z[L3Estimation::uvl::CENTER_X], (top.x + bottom.x) / 2.0, 1e-3, "中心 x 不是端点中点");
-    expectNear(
-      z[L3Estimation::uvl::CENTER_Y], (top.y + bottom.y) / 2.0, 1e-3, "中心 y 不是端点中点");
-    expectNear(
-      z[L3Estimation::uvl::LENGTH], cv::norm(top - bottom), 1e-3, "长度不是端点距离");
+    expectNear(z[TOP_U], top.x, 1e-3, "观测第 0 维应当是上端点 u");
+    expectNear(z[TOP_V], top.y, 1e-3, "观测第 1 维应当是上端点 v");
+    expectNear(z[BOTTOM_U], bottom.x, 1e-3, "观测第 2 维应当是下端点 u");
+    expectNear(z[BOTTOM_V], bottom.y, 1e-3, "观测第 3 维应当是下端点 v");
 
-    // 角度落在 ±π 附近而不是 0，这是 awakening 的既有行为，不是笔误：
-    // lightPoints3D 的第一个点是世界 +z（上），而相机光学系 y 轴朝下，
-    // 所以投影后"上端点"的 v 更小、Δy < 0，atan2(Δx, Δy) 自然落在 ±π。
-    //
-    // 关键在于预测与观测同号、残差走 normalizeAngle，所以滤波器不受影响。但
-    // 这也意味着 **角度观测常年贴着 ±π 的分支切口**：求 H 的中心差分必须差
-    // residual 而不是 z_pred，否则扰动一跨过切口就会差出 2π 的假梯度。那不是
-    // 防御性写法，是必需的。
+    // lightPoints3D 先上后下，世界 +z 朝上而相机 y 朝下，所以上端点的 v 更小。
+    // 这条错了，检测端点和预测端点会上下颠倒着相减。
+    expect(z[TOP_V] < z[BOTTOM_V], "上端点的像素 v 应当小于下端点");
+
+    // 检测侧走 toLight，喂同样的点必须得到同样的向量。
+    const L3Estimation::LightVector from_pixels = L3Estimation::toLight(top, bottom);
+    expect((from_pixels - z).cwiseAbs().maxCoeff() < 1e-3, "预测与观测的排布不一致");
+
+    // 端点观测没有缠绕分量，残差就是逐维相减。
+    L3Estimation::LightVector shifted = z;
+    shifted[TOP_U] += 3.0;
+    shifted[BOTTOM_V] -= 2.0;
+    const L3Estimation::LightVector r =
+      L3Estimation::LightMeasure::residual<double>(z, shifted);
     expect(
-      std::numbers::pi - std::abs(z[L3Estimation::uvl::ANGLE]) < 0.35,
-      "竖直灯条的角度观测应当落在 ±π 附近，检查 atan2 的参数顺序与 3D 点序");
-
-    // 预测与观测共用 pointsToUvl，喂同样的点必须得到同样的四维量。
-    const L3Estimation::UvlVector from_pixels = L3Estimation::toUvl(top, bottom);
-    expect((from_pixels - z).cwiseAbs().maxCoeff() < 1e-3, "预测与观测的构造不一致");
+      (r - (shifted - z)).cwiseAbs().maxCoeff() < 1e-12, "端点残差应当是普通减法");
   }
 
   // --- 3. 观测 Jacobian：Jet 对拍中心差分 ----------------------------
   //
-  // 验证整条 状态 → armorPose → 投影 → [α, uc, vc, L] 的链可微且导数正确。
+  // 验证整条 状态 → armorPose → 投影 → 端点像素 的链可微且导数正确。
   {
     using Jet = ceres::Jet<double, VM::kStateSize>;
-    const L3Estimation::UvlMeasure measure{makeContext(1, false, camera)};
+    const L3Estimation::LightMeasure measure{makeContext(1, false, camera)};
 
     std::array<Jet, VM::kStateSize> x_jet;
     for (int i = 0; i < VM::kStateSize; ++i) {
       x_jet[i] = Jet(truth[i], i);
     }
-    std::array<Jet, L3Estimation::kUvlMeasureSize> z_jet;
+    std::array<Jet, L3Estimation::kLightMeasureSize> z_jet;
     measure(x_jet.data(), z_jet.data());
 
     constexpr double kStep = 1e-7;
@@ -207,25 +211,66 @@ int main()
       plus[col] += kStep;
       minus[col] -= kStep;
 
-      L3Estimation::UvlVector z_plus;
-      L3Estimation::UvlVector z_minus;
+      L3Estimation::LightVector z_plus;
+      L3Estimation::LightVector z_minus;
       measure(plus.data(), z_plus.data());
       measure(minus.data(), z_minus.data());
 
-      for (int row = 0; row < L3Estimation::kUvlMeasureSize; ++row) {
+      for (int row = 0; row < L3Estimation::kLightMeasureSize; ++row) {
         const double numeric = (z_plus[row] - z_minus[row]) / (2.0 * kStep);
         // 像素量级在 1e3，相对误差比绝对误差更有意义。
         const double scale = std::max(1.0, std::abs(numeric));
         max_error = std::max(max_error, std::abs(z_jet[row].v[col] - numeric) / scale);
       }
     }
-    expect(max_error < 1e-5, "UVL 观测的 Jet Jacobian 与中心差分不符");
+    expect(max_error < 1e-5, "端点观测的 Jet Jacobian 与中心差分不符");
     if (max_error >= 1e-5) {
       std::cerr << "  max relative error = " << max_error << '\n';
     }
   }
 
-  // --- 4. 闭环：用 UVL 观测驱动 ESEKF --------------------------------
+  // --- 4. lightCov 的几何含义 ----------------------------------------
+  {
+    using L3Estimation::endpoint::BOTTOM_U;
+    using L3Estimation::endpoint::TOP_U;
+
+    constexpr double kAlong = 4.0;
+    constexpr double kPerp = 1.5;
+    // 倾斜约 30° 的灯条，方向不与图像轴对齐，旋转写错才测得出来。
+    const cv::Point2f top(100.0F, 200.0F);
+    const cv::Point2f bottom(125.0F, 243.3F);
+    const L3Estimation::LightCov cov =
+      L3Estimation::lightCov(top, bottom, kAlong, kPerp);
+
+    expect((cov - cov.transpose()).cwiseAbs().maxCoeff() < 1e-12, "R 应当对称");
+    expect(
+      cov.block<2, 2>(TOP_U, BOTTOM_U).cwiseAbs().maxCoeff() < 1e-12 &&
+        cov.block<2, 2>(BOTTOM_U, TOP_U).cwiseAbs().maxCoeff() < 1e-12,
+      "上下端点的误差应当互相独立");
+
+    const Eigen::Vector2d e = L3Estimation::lightDirection(top, bottom);
+    const Eigen::Vector2d n(-e.y(), e.x());
+    expectNear(e.norm(), 1.0, 1e-12, "灯条方向应当是单位向量");
+    expect(e.y() > 0.0, "灯条方向应当由上指向下");
+    for (const int point : {TOP_U, BOTTOM_U}) {
+      const Eigen::Matrix2d block = cov.block<2, 2>(point, point);
+      expectNear(e.dot(block * e), kAlong * kAlong, 1e-9, "沿灯条方向的方差不对");
+      expectNear(n.dot(block * n), kPerp * kPerp, 1e-9, "垂直灯条方向的方差不对");
+      expectNear(e.dot(block * n), 0.0, 1e-9, "灯条坐标系里两个方向应当不相关");
+    }
+    expect(Eigen::LLT<L3Estimation::LightCov>(cov).info() == Eigen::Success, "R 应当正定");
+
+    // 两端点重合时方向无定义，两个 sigma 相等就应当退化成各向同性。
+    const L3Estimation::LightCov degenerate =
+      L3Estimation::lightCov(top, top, kPerp, kPerp);
+    expect(
+      (degenerate - L3Estimation::LightCov::Identity() * kPerp * kPerp)
+          .cwiseAbs()
+          .maxCoeff() < 1e-12,
+      "两个 sigma 相等时 R 应当是各向同性的");
+  }
+
+  // --- 5. 闭环：用端点观测驱动 ESEKF ---------------------------------
   {
     using Filter = L3Estimation::ErrorStateEkf<VM::kStateSize, VM::Motion>;
 
@@ -265,11 +310,10 @@ int main()
     filter.setState(initial);
     filter.setIterationNum(5);
 
-    // R 按 awakening 的写法：位置与长度的 sigma 正比于灯条像素长度，角度取常数。
-    // 除以 2 是因为一块板拆成两条灯条、信息量翻倍。
-    constexpr double kSigmaPixelRatio = 0.2;
-    constexpr double kSigmaLengthRatio = 0.5;
-    constexpr double kSigmaAngle = 0.1;
+    // R 用按长度缩放的各向异性写法，沿灯条大、垂直灯条小，顺带验证 lightCov
+    // 的方向性不会把滤波器带偏。运行时默认是 rmcs 的各向同性常数。
+    constexpr double kAlongByLength = 0.16;
+    constexpr double kPerpByLength = 0.10;
 
     State truth_now = truth;
     const VM::Motion truth_motion{.dt = kDt, .name = kName};
@@ -287,30 +331,17 @@ int main()
           continue;
         }
         for (const bool is_left : {true, false}) {
-          const L3Estimation::UvlMeasure measure{makeContext(id, is_left, camera)};
+          const L3Estimation::LightMeasure measure{makeContext(id, is_left, camera)};
           const auto [top, bottom] = measure.projectedPoints(truth_now);
-          const L3Estimation::UvlVector z = L3Estimation::toUvl(top, bottom);
-
           const double length = cv::norm(top - bottom);
-          const double sigma_pixel = kSigmaPixelRatio * length;
-          const double sigma_length = kSigmaLengthRatio * length;
+          const L3Estimation::LightCov r_cov = L3Estimation::lightCov(
+            top, bottom, kAlongByLength * length, kPerpByLength * length);
 
-          Eigen::Matrix<double, L3Estimation::kUvlMeasureSize, L3Estimation::kUvlMeasureSize>
-            r_cov;
-          r_cov.setZero();
-          r_cov(L3Estimation::uvl::ANGLE, L3Estimation::uvl::ANGLE) =
-            kSigmaAngle * kSigmaAngle / 2.0;
-          r_cov(L3Estimation::uvl::CENTER_X, L3Estimation::uvl::CENTER_X) =
-            sigma_pixel * sigma_pixel / 2.0;
-          r_cov(L3Estimation::uvl::CENTER_Y, L3Estimation::uvl::CENTER_Y) =
-            sigma_pixel * sigma_pixel / 2.0;
-          r_cov(L3Estimation::uvl::LENGTH, L3Estimation::uvl::LENGTH) =
-            sigma_length * sigma_length / 2.0;
-
-          observations.push_back(Filter::makeObs<L3Estimation::kUvlMeasureSize>(
-            z, measure, [r_cov](const L3Estimation::UvlVector &) { return r_cov; },
-            [](const L3Estimation::UvlVector & z_pred, const L3Estimation::UvlVector & z_obs) {
-              return L3Estimation::UvlMeasure::residual<double>(z_pred, z_obs);
+          observations.push_back(Filter::makeObs<L3Estimation::kLightMeasureSize>(
+            L3Estimation::toLight(top, bottom), measure,
+            [r_cov](const L3Estimation::LightVector &) { return r_cov; },
+            [](const L3Estimation::LightVector & z_pred, const L3Estimation::LightVector & z_obs) {
+              return L3Estimation::LightMeasure::residual<double>(z_pred, z_obs);
             }));
         }
       }
@@ -334,22 +365,22 @@ int main()
       }
       max_armor_error = std::max(max_armor_error, best);
     }
-    expect(max_armor_error < 0.02, "UVL 闭环下装甲板位置未收敛");
+    expect(max_armor_error < 0.02, "端点闭环下装甲板位置未收敛");
     if (max_armor_error >= 0.02) {
       std::cerr << "  max_armor_error = " << max_armor_error << " m\n";
     }
 
-    expectNear(estimate[VM::idx::CX], truth_now[VM::idx::CX], 0.02, "UVL 闭环下车心 x 未收敛");
-    expectNear(estimate[VM::idx::CY], truth_now[VM::idx::CY], 0.02, "UVL 闭环下车心 y 未收敛");
+    expectNear(estimate[VM::idx::CX], truth_now[VM::idx::CX], 0.02, "端点闭环下车心 x 未收敛");
+    expectNear(estimate[VM::idx::CY], truth_now[VM::idx::CY], 0.02, "端点闭环下车心 y 未收敛");
     expectNear(
       std::abs(estimate[VM::idx::VYAW]), std::abs(truth[VM::idx::VYAW]), 0.3,
-      "UVL 闭环下角速度未收敛");
+      "端点闭环下角速度未收敛");
   }
 
   if (failure_count != 0) {
-    std::cerr << "uvl measure smoke test failed with " << failure_count << " error(s)\n";
+    std::cerr << "light measure smoke test failed with " << failure_count << " error(s)\n";
     return 1;
   }
-  std::cout << "uvl measure smoke test passed\n";
+  std::cout << "light measure smoke test passed\n";
   return 0;
 }

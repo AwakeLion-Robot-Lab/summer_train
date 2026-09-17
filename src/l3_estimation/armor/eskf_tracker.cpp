@@ -51,7 +51,7 @@ EskfTracker::EskfTracker(
     static_cast<float>(calibration.image_size.height) / 2.0F},
   ready_(pnp_solver_.ready() && validTrackerConfig(tracker_config))
 {
-  // 板尺寸只认这一份，免得 PnP 物点和 UVL 灯条端点用上两套几何。
+  // 板尺寸只认这一份，免得 PnP 物点和灯条端点观测用上两套几何。
   target_config_.armor = armor_config_;
 }
 
@@ -60,7 +60,7 @@ void EskfTracker::reset() noexcept
   for (auto & slot : buffer_) {
     slot.lifecycle.reset();
     slot.target = EskfTarget{};
-    slot.uvl_update_lights.clear();
+    slot.used_lights.clear();
   }
   current_ = 0;
   previous_ = 1;
@@ -118,7 +118,7 @@ bool EskfTracker::initTarget(
   Slot& slot, const std::vector<Armor>& candidates, TimePoint timestamp,
   const Eigen::Isometry3d & camera_in_world)
 {
-  slot.uvl_update_lights.clear();
+  slot.used_lights.clear();
   if (candidates.empty()) {
     return false;
   }
@@ -136,7 +136,7 @@ bool EskfTracker::updateTarget(
   const std::vector<L2Perception::Light>& lights, TimePoint timestamp,
   const Eigen::Isometry3d & camera_in_world)
 {
-  slot.uvl_update_lights.clear();
+  slot.used_lights.clear();
 
   // 先按类别筛：只有同类别的板才可能属于同一辆车。
   std::vector<Armor> same_name;
@@ -174,17 +174,17 @@ bool EskfTracker::updateTarget(
 
   if (updated > 0) {
     // update() 成功之后才填这份清单，它因此严格等于本帧真正进了 updateMulti
-    // 的那些 UVL 观测，而不是 matchLight 的候选或关联中间结果。
-    slot.uvl_update_lights.reserve(
+    // 的那些灯条观测，而不是 matchLight 的候选或关联中间结果。
+    slot.used_lights.reserve(
       matched.size() * 2 + matched_lights.size());
     for (const auto& [id, armor] : matched) {
-      slot.uvl_update_lights.push_back(
+      slot.used_lights.push_back(
         {armor.points[0], armor.points[3], id, true, false});
-      slot.uvl_update_lights.push_back(
+      slot.used_lights.push_back(
         {armor.points[1], armor.points[2], id, false, false});
     }
     for (const auto& [id, is_left, light] : matched_lights) {
-      slot.uvl_update_lights.push_back(
+      slot.used_lights.push_back(
         {light.top, light.bottom, id, is_left, true});
     }
     slot.last_update = timestamp;
@@ -211,7 +211,7 @@ std::optional<EskfTarget> EskfTracker::track(
   // 每帧先把两个槽的显示清单清空：后面只有真正完成滤波更新的槽会重新填，
   // 早退、初始化和 TempLost 纯预测都不会泄漏上一帧的结果。
   for (auto& slot : buffer_) {
-    slot.uvl_update_lights.clear();
+    slot.used_lights.clear();
   }
   if (!ready_ || !q_world_barrel) {
     return std::nullopt;
@@ -261,7 +261,7 @@ std::optional<EskfTarget> EskfTracker::track(
     // 发散的目标直接丢掉，别让它把下游一起带歪。
     if (slot.lifecycle.isTracking() && slot.target.diverged()) {
       slot.lifecycle.reset();
-      slot.uvl_update_lights.clear();
+      slot.used_lights.clear();
       L6Telemetry::logWarn("EskfTracker: 目标发散，已复位");
     }
     return found;

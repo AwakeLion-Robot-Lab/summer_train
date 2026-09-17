@@ -78,7 +78,7 @@ void testPredictorTranslates()
   observation.ypd_in_world = L6Telemetry::xyz2ypd(observation.xyz_in_world);
 
   // 直接构造一个已在运动的目标：旋转中心 (4.0, 0, 0)，沿 +x 以 1 m/s 前进。
-  // 不再靠喂十帧观测把速度攒出来——UVL 观测需要相机标定和投影，那是 L3 自己
+  // 不再靠喂十帧观测把速度攒出来——端点观测需要相机标定和投影，那是 L3 自己
   // 单测的事（tests/eskf_target_smoke.cpp），规划层这里只需要一个会动的目标。
   L3Estimation::EskfTarget target(
     L3Estimation::ArmorName::Infantry3, 4.0, 0.0, 0.2, 0.0, 0.0,

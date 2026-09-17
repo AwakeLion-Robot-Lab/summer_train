@@ -1,4 +1,4 @@
-// 整车跟踪链路的离线诊断：无显示器，逐帧把 L2 识别、IESKF 内部量、UVL 创新
+// 整车跟踪链路的离线诊断：无显示器，逐帧把 L2 识别、IESKF 内部量、端点创新
 // 和开环预测误差写成 CSV，用来定位"整车预测被什么带偏"。
 //
 // 它和 auto_aim_test 的分工：auto_aim_test 是人眼看单帧，这个是把整段录像的
@@ -300,7 +300,7 @@ int main(int argc, char* argv[])
     std::ofstream frame_csv(out_dir / "frame.csv");
     frame_csv << "frame,t,dt,gimbal_yaw_deg,ndet,nmatch,state,"
                  "xc,vx,yc,vy,z,vz,yaw_deg,v_yaw,r1,r2,dz,armor_id,jumped,multi,"
-                 "updated,nis,nis_dof,nlight,res_angle_deg,res_center_px,res_length_px,res_depth_m,reset\n";
+                 "updated,nis,nis_dof,nlight,res_along_px,res_perp_px,res_depth_m,reset\n";
     frame_csv << std::fixed;
 
     std::ofstream aim_csv(out_dir / "aim.csv");
@@ -338,9 +338,9 @@ int main(int argc, char* argv[])
     std::size_t frames_with_det = 0;
     std::size_t double_update_frames = 0;
     std::vector<double> nis_values;
-    std::vector<double> res_angle_stats;
-    std::vector<double> res_center_stats;
-    std::vector<double> res_length_stats;
+    std::vector<double> nis_per_dof;
+    std::vector<double> res_along_stats;
+    std::vector<double> res_perp_stats;
     std::vector<double> pred_center_err;
     std::vector<double> vyaws;
     std::vector<double> radii;
@@ -414,28 +414,28 @@ int main(int argc, char* argv[])
       if (reset) ++resets;
       previous_state = state;
 
-      // UVL 创新量。四个观测分量量纲不同（角度 rad、中心和长度 px），
-      // 混进一个范数没有意义，所以按物理含义分开取：中心残差大说明整车位置
-      // 偏了，长度残差大说明深度偏了，角度残差大说明姿态偏了。
-      // UVL 的残差只有滤波器自己算得出（要投影全部灯条端点），所以直接取
-      // EskfTarget 暴露的那份。
-      double res_angle_deg = std::numeric_limits<double>::quiet_NaN();
-      double res_center_px = std::numeric_limits<double>::quiet_NaN();
-      double res_length_px = std::numeric_limits<double>::quiet_NaN();
+      // 端点创新量，投到每根灯条自己的坐标系里分方向取：沿灯条分量大多半是
+      // 深度或高度偏了，垂直分量大是横向位置或姿态偏了。残差只有滤波器自己
+      // 算得出（要投影全部灯条端点），所以直接取 EskfTarget 暴露的那份。
+      double res_along_px = std::numeric_limits<double>::quiet_NaN();
+      double res_perp_px = std::numeric_limits<double>::quiet_NaN();
       double res_depth_m = std::numeric_limits<double>::quiet_NaN();
       int res_light_count = 0;
-      // TempLost 这一帧没有观测进入滤波器，残差无从谈起。
+      // TempLost 这一帧没有观测进入滤波器，残差和 NIS 都是上一帧留下的，
+      // 不进统计。
       if (target && state != L3Estimation::TrackState::TempLost) {
-        const auto& residual = target->lastUvlResidual();
+        const auto& residual = target->lastLightResidual();
         if (residual.light_count > 0) {
-          res_angle_deg = residual.angle_rms_deg;
-          res_center_px = residual.center_rms_px;
-          res_length_px = residual.length_rms_px;
+          res_along_px = residual.along_rms_px;
+          res_perp_px = residual.perp_rms_px;
           res_depth_m = residual.depth_diff_m;
           res_light_count = residual.light_count;
-          res_angle_stats.push_back(residual.angle_rms_deg);
-          res_center_stats.push_back(residual.center_rms_px);
-          res_length_stats.push_back(residual.length_rms_px);
+          res_along_stats.push_back(residual.along_rms_px);
+          res_perp_stats.push_back(residual.perp_rms_px);
+          nis_values.push_back(target->lastNis());
+          if (target->lastNisDof() > 0) {
+            nis_per_dof.push_back(target->lastNis() / target->lastNisDof());
+          }
         }
       }
 
@@ -463,7 +463,6 @@ int main(int argc, char* argv[])
                   << (target->jumped ? 1 : 0) << ','
                   << (state == L3Estimation::TrackState::TempLost ? 0 : 1) << ','
                   << nis << ',';
-        nis_values.push_back(nis);
         vyaws.push_back(std::abs(tx[7]));
         radii.push_back(tx[8]);
       } else {
@@ -471,8 +470,7 @@ int main(int argc, char* argv[])
         for (int column = 0; column < 16; ++column) frame_csv << ',';
       }
       frame_csv << (target ? target->lastNisDof() : 0) << ',' << res_light_count << ','
-                << res_angle_deg << ',' << res_center_px << ',' << res_length_px << ','
-                << res_depth_m << ',' << (reset ? 1 : 0) << '\n';
+                << res_along_px << ',' << res_perp_px << ',' << res_depth_m << ',' << (reset ? 1 : 0) << '\n';
 
       // 叠加层像素位置：整车中心 + 四块板的框心，外加当帧检出的板心作参照。
       {
@@ -625,21 +623,21 @@ int main(int argc, char* argv[])
               << "-- 滤波器 --\n"
               << "NIS  mean " << mean(nis_values) << "  p50 " << percentile(nis_values, 0.5)
               << "  p90 " << percentile(nis_values, 0.9)
-              << "  (UVL 观测维数每帧在变，见 nis_dof 列，固定卡方门限不适用)\n"
+              << "  (观测维数每帧在变，见 nis_dof 列，固定卡方门限不适用)\n"
+              << "NIS/dof mean " << mean(nis_per_dof) << "  p50 "
+              << percentile(nis_per_dof, 0.5) << "  p90 " << percentile(nis_per_dof, 0.9)
+              << "  (一致时期望为 1)\n"
               << "v_yaw |mean| " << mean(vyaws) << "  p90 " << percentile(vyaws, 0.9)
               << "  max " << percentile(vyaws, 1.0) << '\n'
               << "r1   mean " << mean(radii) << "  p50 " << percentile(radii, 0.5) << "  max "
               << percentile(radii, 1.0) << '\n'
-              << "-- UVL 创新（按分量，量纲不同不能合并）--\n"
-              << "角度(度)   mean " << mean(res_angle_stats) << "  p90 "
-              << percentile(res_angle_stats, 0.9) << "  max "
-              << percentile(res_angle_stats, 1.0) << '\n'
-              << "中心(px)   mean " << mean(res_center_stats) << "  p90 "
-              << percentile(res_center_stats, 0.9) << "  max "
-              << percentile(res_center_stats, 1.0) << '\n'
-              << "长度(px)   mean " << mean(res_length_stats) << "  p90 "
-              << percentile(res_length_stats, 0.9) << "  max "
-              << percentile(res_length_stats, 1.0) << '\n'
+              << "-- 端点创新（先验点，投到灯条坐标系，px）--\n"
+              << "沿灯条     mean " << mean(res_along_stats) << "  p90 "
+              << percentile(res_along_stats, 0.9) << "  max "
+              << percentile(res_along_stats, 1.0) << '\n'
+              << "垂直灯条   mean " << mean(res_perp_stats) << "  p90 "
+              << percentile(res_perp_stats, 0.9) << "  max "
+              << percentile(res_perp_stats, 1.0) << '\n'
               << "-- 开环预测 " << predict_time * 1e3 << " ms --\n"
               << "中心 vs 后验中心 mean " << mean(pred_center_err) << "  p90 "
               << percentile(pred_center_err, 0.9) << "  max "
