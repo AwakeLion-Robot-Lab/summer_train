@@ -4,6 +4,18 @@
 // 它和 auto_aim_test 的分工：auto_aim_test 是人眼看单帧，这个是把整段录像的
 // 数量关系压成表格。诊断结论必须能被列出来的数字支撑，只截图看不出偏差是
 // 由观测、关联还是滤波器过程噪声引起的。
+//
+// 衡量 L3 好坏的判据只有一个：pred.csv 的 pred_px —— t 时刻外推 predict_time
+// 后的整车四块板，等真到那一刻，用那一帧的云台姿态重投到像素，和那一帧真实
+// 检出的板心做一对一匹配。两条纪律来自踩过的坑：
+//
+//   * 不要拿估计去比估计。"预测中心 vs 后来的后验中心"、"离检出最近的那块板
+//     的距离"都是滤波器自己和自己对账——最近的那块板恰好就是当帧正在被观测
+//     更新的板，怎么调都好看，整车里没被观测的那三块板一点都没量到。
+//   * 一对一分配是必须的。允许两个检出都匹配同一块板的话，整车转过一个板位
+//     （yaw 偏 2π/N）在数字上看不出来。
+//
+// hold_px 是同一时刻完全不外推的基准。预测必须比它准，否则速度项是负贡献。
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l1_sensor/serial/serial_config.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
@@ -47,7 +59,7 @@ constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
-  "{model m |  | 灯条关键点模型，留空用 auto_aim.yaml 的}"
+  "{model m |  | 整板模型，留空用 auto_aim.yaml 的；给了就按输出名认 layout}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
   "{convention | imu | 录像四元数约定：imu / sp}"
@@ -183,11 +195,54 @@ std::optional<cv::Point2d> armorBoxCenter(
   return cv::Point2d{sum.x / 4.0, sum.y / 4.0};
 }
 
-// 一条缓存的开环预测：把 t 时刻的整车状态外推 horizon 秒后的结果。
+// 一条缓存的开环预测：t 时刻外推 horizon 秒后的整车，存下四块板的 world 位姿，
+// 等真到那一刻再对账。见文件头对判据的说明。
 struct PendingPrediction {
+  L3Estimation::TimePoint made_at{};
   L3Estimation::TimePoint valid_at{};
-  Eigen::Vector3d center{Eigen::Vector3d::Zero()};
+  // 外推后的四块板，以及同一时刻完全不外推的那份（基准）。
+  std::vector<Eigen::Vector4d> armors;
+  std::vector<Eigen::Vector4d> armors_hold;
+  L3Estimation::ArmorType type{L3Estimation::ArmorType::Small};
+  L3Estimation::ArmorName name{L3Estimation::ArmorName::Unknown};
 };
+
+// 把若干块板的重投影框心一对一分配给本帧检出的板心，返回最差的那一对的
+// 像素距离。一对一是关键：允许两个检出都匹配同一块板，整车转错了也看不出来。
+std::optional<double> worstAssignment(
+  const std::vector<std::optional<cv::Point2d>>& plates,
+  const std::vector<cv::Point2f>& detections)
+{
+  std::vector<cv::Point2d> usable;
+  for (const auto& plate : plates) {
+    if (plate) usable.push_back(*plate);
+  }
+  if (detections.empty() || usable.size() < detections.size()) {
+    return std::nullopt;
+  }
+  // 板最多四块、检出最多两块，直接枚举全排列取前几位即可；同一种分配会被
+  // 重复访问几次，但总共不过 24 轮，不值得为此写一套匈牙利。
+  std::vector<std::size_t> order(usable.size());
+  for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+  double best_sum = std::numeric_limits<double>::infinity();
+  double best_worst = std::numeric_limits<double>::infinity();
+  do {
+    double sum = 0.0;
+    double worst = 0.0;
+    for (std::size_t i = 0; i < detections.size(); ++i) {
+      const cv::Point2d& plate = usable[order[i]];
+      const double distance = std::hypot(
+        plate.x - detections[i].x, plate.y - detections[i].y);
+      sum += distance;
+      worst = std::max(worst, distance);
+    }
+    if (sum < best_sum) {
+      best_sum = sum;
+      best_worst = worst;
+    }
+  } while (std::next_permutation(order.begin(), order.end()));
+  return best_worst;
+}
 
 double quadWidth(const std::array<cv::Point2f, 4>& c)
 {
@@ -215,6 +270,18 @@ double mean(const std::vector<double>& values)
   double sum = 0.0;
   for (double value : values) sum += value;
   return sum / static_cast<double>(values.size());
+}
+
+// 落在门限内的比例（百分数）。均值会被少数几帧的大偏差拖走，"贴不贴板"
+// 还是按比例看更直观。
+double hitRate(const std::vector<double>& values, double threshold)
+{
+  if (values.empty()) return std::numeric_limits<double>::quiet_NaN();
+  std::size_t hits = 0;
+  for (double value : values) {
+    if (value <= threshold) ++hits;
+  }
+  return 100.0 * static_cast<double>(hits) / static_cast<double>(values.size());
 }
 
 }  // namespace
@@ -262,13 +329,16 @@ int main(int argc, char* argv[])
     // YAML 里调噪声或灯条门限，这里根本看不出变化。
     const auto runtime_config = runtime::loadConfig("config/auto_aim.yaml");
 
-    // 检测器与实机同一个工厂组装，只有模型路径和设备允许命令行覆盖。
+    // 检测器与实机同一个工厂组装，只有模型路径和设备允许命令行覆盖。命令行换了
+    // 模型时 YAML 里的 layout 未必配得上，按模型输出名认。
     runtime::AutoAimConfig detector_config = runtime_config;
-    if (const std::string model = cli.get<std::string>("model"); !model.empty()) {
-      detector_config.inference.model_path = model;
+    const std::string model_override = cli.get<std::string>("model");
+    if (!model_override.empty()) {
+      detector_config.inference.model_path = model_override;
     }
     detector_config.inference.device = cli.get<std::string>("device");
-    const L2Perception::ArmorDetector detector = runtime::makeDetector(detector_config);
+    const L2Perception::ArmorDetector detector =
+      runtime::makeDetector(detector_config, !model_override.empty());
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
@@ -294,7 +364,7 @@ int main(int argc, char* argv[])
     }
 
     std::ofstream obs_csv(out_dir / "obs.csv");
-    obs_csv << "frame,t,det,class_id,name,conf,area,px_w,px_h,aspect\n";
+    obs_csv << "frame,t,det,class_id,net_class_id,num_conf,name,conf,area,px_w,px_h,aspect\n";
     obs_csv << std::fixed;
 
     std::ofstream frame_csv(out_dir / "frame.csv");
@@ -320,14 +390,14 @@ int main(int argc, char* argv[])
     overlay_csv << std::fixed;
 
     std::ofstream pred_csv(out_dir / "pred.csv");
-    pred_csv << "frame,t,horizon,center_err\n";
+    pred_csv << "frame,t,horizon,ndet,pred_px,hold_px\n";
     pred_csv << std::fixed;
 
     cv::Mat img;
     PoseSample pose;
     const auto t0 = std::chrono::steady_clock::now();
     std::optional<L3Estimation::TimePoint> last_time;
-    auto previous_state = L3Estimation::TrackState::Lost;
+    std::size_t previous_drops = 0;
 
     std::deque<PendingPrediction> pending;
 
@@ -337,11 +407,14 @@ int main(int argc, char* argv[])
     std::size_t frames_tracking = 0;
     std::size_t frames_with_det = 0;
     std::size_t double_update_frames = 0;
+    std::size_t number_accepted = 0;
+    std::size_t number_dropped = 0;
+    std::vector<double> pred_pixel_err;
+    std::vector<double> hold_pixel_err;
     std::vector<double> nis_values;
     std::vector<double> nis_per_dof;
     std::vector<double> res_along_stats;
     std::vector<double> res_perp_stats;
-    std::vector<double> pred_center_err;
     std::vector<double> vyaws;
     std::vector<double> radii;
     std::optional<Eigen::Vector3d> last_aim_point;
@@ -397,7 +470,9 @@ int main(int argc, char* argv[])
         if (target && armor.name == target->name) ++match_here;
 
         obs_csv << frame_index << ',' << pose.seconds << ',' << index << ','
-                << armor.class_id << ',' << static_cast<int>(armor.name) << ','
+                << armor.class_id << ',' << detection.network_class_id << ','
+                << detection.number_confidence << ','
+                << static_cast<int>(armor.name) << ','
                 << armor.confidence << ',' << armor.area << ','
                 << quadWidth(detection.corners) << ',' << quadHeight(detection.corners) << ','
                 << (quadHeight(detection.corners) > 0.0
@@ -406,13 +481,16 @@ int main(int argc, char* argv[])
                 << '\n';
       }
       if (match_here > 1) ++double_update_frames;
+      // 数字二次分类丢掉的板：全局统计，判断门限是不是把有效观测也筛掉了。
+      number_accepted += detector.lastNumbers().accepted;
+      number_dropped += detector.lastNumbers().dropped();
 
       const auto state = tracker.state();
       if (state == L3Estimation::TrackState::Tracking) ++frames_tracking;
-      const bool reset = previous_state != L3Estimation::TrackState::Lost &&
-        state == L3Estimation::TrackState::Lost;
+      // 丢弃后同一帧就可能重建，状态上看不出来，按跟踪器自己的计数判断。
+      const bool reset = tracker.dropCount() != previous_drops;
       if (reset) ++resets;
-      previous_state = state;
+      previous_drops = tracker.dropCount();
 
       // 端点创新量，投到每根灯条自己的坐标系里分方向取：沿灯条分量大多半是
       // 深度或高度偏了，垂直分量大是横向位置或姿态偏了。残差只有滤波器自己
@@ -586,25 +664,61 @@ int main(int argc, char* argv[])
       // 开环预测：缓存 t 时刻外推 predict_time 后的整车，等真到那一刻再对账。
       if (target && predict_time > 0.0) {
         PendingPrediction entry;
+        entry.made_at = timestamp;
         entry.valid_at = timestamp +
           std::chrono::microseconds(static_cast<long long>(predict_time * 1e6));
-        const auto predicted = predictor.predict(*target, predict_time);
-        const Eigen::VectorXd px = predicted.ekf_x();
-        entry.center = {px[0], px[2], px[4]};
+        entry.armors = predictor.predict(*target, predict_time).armor_xyza_list();
+        entry.armors_hold = target->armor_xyza_list();
+        entry.type = L3Estimation::armorTypeOf(target->name)
+                       .value_or(L3Estimation::ArmorType::Small);
+        entry.name = target->name;
         pending.push_back(std::move(entry));
       }
       while (!pending.empty() && pending.front().valid_at <= timestamp) {
         const PendingPrediction entry = pending.front();
         pending.pop_front();
-        if (!target) continue;
 
-        const Eigen::VectorXd tx = target->ekf_x();
-        const double center_err =
-          (entry.center - Eigen::Vector3d{tx[0], tx[2], tx[4]}).norm();
-        pred_center_err.push_back(center_err);
+        // 兑现的这一帧必须真的落在 horizon 附近。sp 的 demo 是十来段素材拼起来
+        // 的，接缝处时间戳能跳 170 秒，跨接缝兑现等于拿 A 场景的预测去对 B 场景
+        // 的检出，算出来的偏差没有意义。
+        const double elapsed =
+          std::chrono::duration<double>(timestamp - entry.made_at).count();
+        if (elapsed > predict_time + runtime_config.ieskf_tracker.max_frame_gap) {
+          continue;
+        }
 
+        // 没有检出就没有参照，这条预测作废。
+        if (armors.empty()) {
+          continue;
+        }
+        std::vector<cv::Point2f> det_centers;
+        for (const auto& detection : armors) {
+          det_centers.push_back(detection.center);
+        }
+        // 用本帧的云台姿态把当时外推的四块板投回像素。云台这段时间转过多少
+        // 由这一步吸收，剩下的偏差才是整车运动没预测准的部分。
+        const auto reproject = [&](const std::vector<Eigen::Vector4d>& poses) {
+          std::vector<std::optional<cv::Point2d>> pixels;
+          pixels.reserve(poses.size());
+          for (const auto& xyza : poses) {
+            pixels.push_back(armorBoxCenter(solver, xyza, entry.type, entry.name));
+          }
+          return worstAssignment(pixels, det_centers);
+        };
+
+        const auto pred_worst = reproject(entry.armors);
+        if (!pred_worst) {
+          continue;
+        }
+        const auto hold_worst = reproject(entry.armors_hold);
+        pred_pixel_err.push_back(*pred_worst);
+        if (hold_worst) {
+          hold_pixel_err.push_back(*hold_worst);
+        }
         pred_csv << frame_index << ',' << pose.seconds << ',' << predict_time << ','
-                 << center_err << '\n';
+                 << det_centers.size() << ',' << *pred_worst << ',';
+        if (hold_worst) pred_csv << *hold_worst;
+        pred_csv << '\n';
       }
     }
 
@@ -620,6 +734,8 @@ int main(int argc, char* argv[])
               << "Tracking 帧                 " << frames_tracking << '\n'
               << "跟踪丢失/重置次数           " << resets << '\n'
               << "单帧多观测更新的帧          " << double_update_frames << '\n'
+              << "数字分类采信/丢弃           " << number_accepted << " / "
+              << number_dropped << '\n'
               << "-- 滤波器 --\n"
               << "NIS  mean " << mean(nis_values) << "  p50 " << percentile(nis_values, 0.5)
               << "  p90 " << percentile(nis_values, 0.9)
@@ -638,10 +754,14 @@ int main(int argc, char* argv[])
               << "垂直灯条   mean " << mean(res_perp_stats) << "  p90 "
               << percentile(res_perp_stats, 0.9) << "  max "
               << percentile(res_perp_stats, 1.0) << '\n'
-              << "-- 开环预测 " << predict_time * 1e3 << " ms --\n"
-              << "中心 vs 后验中心 mean " << mean(pred_center_err) << "  p90 "
-              << percentile(pred_center_err, 0.9) << "  max "
-              << percentile(pred_center_err, 1.0) << " m\n"
+              << "-- 开环预测 " << predict_time * 1e3 << " ms（整车四块板 vs 当帧检出）--\n"
+              << "预测   p50 " << percentile(pred_pixel_err, 0.5) << "  p90 "
+              << percentile(pred_pixel_err, 0.9) << " px   <=20px "
+              << hitRate(pred_pixel_err, 20.0) << "%  <=50px "
+              << hitRate(pred_pixel_err, 50.0) << "%  n=" << pred_pixel_err.size() << '\n'
+              << "不外推 p50 " << percentile(hold_pixel_err, 0.5) << "  p90 "
+              << percentile(hold_pixel_err, 0.9) << " px   <=20px "
+              << hitRate(hold_pixel_err, 20.0) << "%  （基准，预测必须比它准）\n"
               << "-- 瞄准点帧间位移（m）--\n"
               << "全部   mean " << mean(aim_jumps) << "  p90 " << percentile(aim_jumps, 0.9)
               << "  max " << percentile(aim_jumps, 1.0) << "  n=" << aim_jumps.size() << '\n'

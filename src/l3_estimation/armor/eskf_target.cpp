@@ -160,6 +160,11 @@ void EskfTarget::reset(
   jumped = false;
   last_id = 0;
   update_count_ = 0;
+  // 本帧诊断量属于上一次更新；重新初始化的这一帧没有更新，不清掉的话下游会把
+  // 旧目标的残差当成新目标的读出去。
+  last_nis_ = 0.0;
+  last_nis_dof_ = 0;
+  last_light_residual_ = LightResidual{};
 }
 
 // 相机光学系在世界系下的位姿：由 camera -> barrel 的静态外参左乘当帧的
@@ -175,17 +180,23 @@ Eigen::Isometry3d EskfTarget::cameraInWorld(
   return barrel_in_world * (*calibration.T_barrel_camera);
 }
 
-void EskfTarget::predictEkf(TimePoint timestamp)
+void EskfTarget::predictEkf(TimePoint timestamp, std::optional<TimePoint> hold_from)
 {
   if (!filter_) {
     return;
   }
   const double dt = std::chrono::duration<double>(timestamp - t_).count();
+  double motion_dt = dt;
+  if (hold_from) {
+    const double until_hold = std::chrono::duration<double>(*hold_from - t_).count();
+    motion_dt = std::min(dt, std::max(until_hold, 0.0));
+  }
 
   filter_->setPredictFunc(
-    VM::Motion{.dt = dt, .name = name, .outpost_direction = voter_.sign()});
+    VM::Motion{.dt = motion_dt, .name = name, .outpost_direction = voter_.sign()});
   // Q 依赖当前姿态（要旋到世界系）和当前半径（log 换算），得在推进前按当时的
-  // 状态求值，所以传的是 lambda 而不是一个算好的矩阵。
+  // 状态求值，所以传的是 lambda 而不是一个算好的矩阵。Q 用完整的 dt：原地保持
+  // 不等于位置更确定，没观测的这段时间里目标照样可能在动。
   filter_->setUpdateQ([this, dt]() {
     return VM::processNoise(x_, dt, name, config_.noise);
   });
@@ -332,10 +343,11 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   std::vector<MatchedLight> result;
   const bool is_base =
     name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
-  // 本帧至少关联上一块完整板才做：没有完整板做锚，独立灯条的编号和左右归属
+  // 本帧至少关联上一块完整板才做：没有完整板做锚，侧边灯条的编号和左右归属
   // 几乎是猜的。基地的板不绕转，整车预测也约束不了它的灯条位置。
   if (!config_.enable_lights_measure || is_base || matched_armors.empty() ||
-      lights.empty() || !initialized_) {
+      lights.empty() || !initialized_ || !filter_ ||
+      (config_.light_match_require_jumped && !jumped)) {
     return result;
   }
 
@@ -344,37 +356,28 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   const Eigen::VectorXd state = predicted.x_;
   const int count = armor_num();
 
-  std::vector<std::pair<double, int>> facing;
-  facing.reserve(count);
+  std::vector<double> facing(count, 0.0);
   for (int id = 0; id < count; ++id) {
     const Eigen::Isometry3d pose_in_world =
       VM::armorPose<double>(state.data(), id, count, name);
-    facing.emplace_back(
-      facingScore(camera_in_world.inverse() * pose_in_world), id);
+    facing[id] = facingScore(camera_in_world.inverse() * pose_in_world);
   }
-  if (facing.empty()) {
-    return result;
-  }
-  const auto closest = std::max_element(
-    facing.begin(), facing.end(),
-    [](const auto& left, const auto& right) {
-      return left.first < right.first;
-    });
-  const int closest_id = closest->second;
+  const int closest_id = static_cast<int>(
+    std::max_element(facing.begin(), facing.end()) - facing.begin());
 
   using PredictedLight =
     std::tuple<int, bool, std::pair<cv::Point2f, cv::Point2f>>;
   std::vector<PredictedLight> visible_lights;
   visible_lights.reserve(4);
-  // 已经配成完整板的那些板，两根灯条本帧都由 update() 从板的角点直接拆出来，
-  // 不再需要独立灯条补位，槽位也就不放进候选。
   const auto matchedPlate = [&matched_armors](int id) {
     return std::any_of(
       matched_armors.begin(), matched_armors.end(),
       [id](const std::pair<int, Armor>& matched) { return matched.first == id; });
   };
   const auto addVisible = [&](int id, bool is_left) {
-    if (matchedPlate(id)) {
+    // 已配成完整板的板，两根灯条本帧都由 update() 从板的角点拆出来，不再需要
+    // 侧边灯条补位；背对相机的板看不到灯条，槽位留着只会招来错配。
+    if (matchedPlate(id) || !(facing[id] > 0.0)) {
       return;
     }
     visible_lights.emplace_back(
@@ -382,7 +385,7 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
       predicted.predictLight(id, is_left, state, calibration, camera_in_world));
   };
 
-  // 候选限定在三根：最正对那块板的左右灯条，加上相邻两块板靠近它的各一根。
+  // 候选限定在最正对那块板的左右灯条，加上相邻两块板靠近它的各一根。
   addVisible((closest_id + count - 1) % count, false);
   addVisible((closest_id + 1) % count, true);
   addVisible(closest_id, false);
@@ -392,36 +395,16 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
     return result;
   }
 
-  // 已经配成完整板的灯条本帧会由 update() 直接从板的角点拆出来当观测，不能
-  // 再作为独立灯条进第二次：同一次测量进两遍信息矩阵，协方差会偏乐观。
-  // 剔的是观测而不是候选槽位——把槽位删掉的话，这两根灯条会转去抢邻板的
-  // 槽位（位置门限有 5 倍灯长那么松），变成错误关联。
-  const auto consumed = [&matched_armors](const L2Perception::Light& light) {
-    constexpr double kSamePointPx = 0.5;
-    return std::any_of(
-      matched_armors.begin(), matched_armors.end(),
-      [&light](const std::pair<int, Armor>& matched) {
-        const auto& points = matched.second.points;
-        // 角点序为左上、右上、右下、左下：左灯条是 [0]、[3]，右灯条是 [1]、[2]。
-        const bool same_left = cv::norm(light.top - points[0]) < kSamePointPx &&
-                               cv::norm(light.bottom - points[3]) < kSamePointPx;
-        const bool same_right = cv::norm(light.top - points[1]) < kSamePointPx &&
-                                cv::norm(light.bottom - points[2]) < kSamePointPx;
-        return same_left || same_right;
-      });
-  };
-
   constexpr double kMaxCost = 1e9;
   const int observation_count = static_cast<int>(lights.size());
   std::vector<std::vector<double>> cost(
     observation_count,
     std::vector<double>(visible_lights.size(), kMaxCost + 1.0));
 
-  // 灯条没有数字特征，错配比漏配代价高得多，所以三道门限都是硬拒绝，代价
-  // 本身只拿位置误差排序。
   const auto lightCost = [&](const L2Perception::Light& light,
                              const PredictedLight& candidate) -> double {
-    const auto& [top, bottom] = std::get<2>(candidate);
+    const auto& [id, is_left, endpoints] = candidate;
+    const auto& [top, bottom] = endpoints;
     const double predicted_length = cv::norm(top - bottom);
     if (!(predicted_length > 1e-6)) {
       return kMaxCost + 1.0;
@@ -442,19 +425,24 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
       return kMaxCost + 1.0;
     }
 
-    const double position_error =
-      cv::norm(light.top - top) + cv::norm(light.bottom - bottom);
-    if (position_error >
-        predicted_length * config_.light_match_pos_gate_by_length_ratio) {
+    // 马氏距离用的 S 与这根灯条若被采纳时真正进更新的那份一致。
+    const auto obs = lightObs(
+      light.top, light.bottom, id, is_left, true, calibration, camera_in_world);
+    Eigen::VectorXd innovation;
+    Eigen::MatrixXd innovation_covariance;
+    filter_->innovation(*obs, innovation, innovation_covariance);
+    const Eigen::LLT<Eigen::MatrixXd> llt(innovation_covariance);
+    if (llt.info() != Eigen::Success) {
       return kMaxCost + 1.0;
     }
-    return position_error;
+    const double distance = innovation.dot(llt.solve(innovation));
+    if (!(distance <= config_.light_match_chi2_gate)) {
+      return kMaxCost + 1.0;
+    }
+    return distance;
   };
 
   for (int observation = 0; observation < observation_count; ++observation) {
-    if (consumed(lights[observation])) {
-      continue;  // 整行保持在门限之外，这根灯条不参与配对
-    }
     for (std::size_t candidate = 0; candidate < visible_lights.size(); ++candidate) {
       cost[observation][candidate] =
         lightCost(lights[observation], visible_lights[candidate]);
@@ -467,6 +455,27 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
     result.emplace_back(id, is_left, lights[observation]);
   }
   return result;
+}
+
+std::shared_ptr<EskfTarget::Filter::ObsBase> EskfTarget::lightObs(
+  const cv::Point2f & top, const cv::Point2f & bottom, int id, bool is_left, bool isolated,
+  const L1Sensor::CameraCalibration & calibration,
+  const Eigen::Isometry3d & camera_in_world) const
+{
+  const LightMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
+  const double length = cv::norm(top - bottom);
+  const double scale = isolated ? config_.isolated_light_sigma_scale : 1.0;
+  const double sigma_along =
+    std::max(config_.sigma_min_px, config_.sigma_along_by_length * length) * scale;
+  const double sigma_perp =
+    std::max(config_.sigma_min_px, config_.sigma_perp_by_length * length) * scale;
+  const LightCov r_cov = lightCov(top, bottom, sigma_along, sigma_perp);
+
+  return Filter::makeObs<kLightMeasureSize>(
+    toLight(top, bottom), measure, [r_cov](const LightVector &) { return r_cov; },
+    [](const LightVector & z_pred, const LightVector & z_obs) {
+      return LightMeasure::residual<double>(z_pred, z_obs);
+    });
 }
 
 int EskfTarget::update(
@@ -494,24 +503,10 @@ int EskfTarget::update(
   std::vector<Eigen::Vector2d> directions;
   directions.reserve(matched.size() * 2 + matched_lights.size());
 
-  // 把一根灯条的上下端点挂成一个四维观测。isolated 表示这根灯条只靠几何关联
-  // 进来，没有编号和颜色证据，两个 sigma 再乘一个放大系数。
   const auto addLight = [&](const cv::Point2f & top, const cv::Point2f & bottom, int id,
                             bool is_left, bool isolated) {
-    const LightMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
-    const double length = cv::norm(top - bottom);
-    const double scale = isolated ? config_.isolated_light_sigma_scale : 1.0;
-    const double sigma_along =
-      std::max(config_.sigma_min_px, config_.sigma_along_by_length * length) * scale;
-    const double sigma_perp =
-      std::max(config_.sigma_min_px, config_.sigma_perp_by_length * length) * scale;
-    const LightCov r_cov = lightCov(top, bottom, sigma_along, sigma_perp);
-
-    observations.push_back(Filter::makeObs<kLightMeasureSize>(
-      toLight(top, bottom), measure, [r_cov](const LightVector &) { return r_cov; },
-      [](const LightVector & z_pred, const LightVector & z_obs) {
-        return LightMeasure::residual<double>(z_pred, z_obs);
-      }));
+    observations.push_back(
+      lightObs(top, bottom, id, is_left, isolated, calibration, camera_in_world));
     directions.push_back(lightDirection(top, bottom));
   };
 

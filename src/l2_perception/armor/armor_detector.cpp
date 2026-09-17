@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -11,29 +12,73 @@ namespace L2Perception
 {
 
 ArmorDetector::ArmorDetector(
-  std::unique_ptr<IInferenceBackend> backend, NumberClassifier classifier,
-  LightDecoderConfig decoder_config, LightMatcherConfig matcher_config,
-  LightFinderConfig finder_config, ImagePreprocessConfig preprocess_config)
-  : backend_(std::move(backend))
-  , classifier_(std::move(classifier))
-  , decoder_(std::move(decoder_config))
-  , matcher_config_(std::move(matcher_config))
-  , finder_config_(std::move(finder_config))
-  , preprocess_config_(std::move(preprocess_config))
+  std::unique_ptr<IInferenceBackend> armor_backend, ArmorDetectorConfig config,
+  std::unique_ptr<IInferenceBackend> light_backend)
+  : armor_backend_(std::move(armor_backend))
+  , light_backend_(std::move(light_backend))
+  , decoder_(std::move(config.decoder))
+  , refiner_(std::move(config.refiner))
+  , light_decoder_(std::move(config.light_decoder))
+  , finder_config_(std::move(config.finder))
+  , preprocess_config_(std::move(config.preprocess))
 {
-  if (backend_ == nullptr || !backend_->ready()) {
-    throw std::invalid_argument("ArmorDetector: light model backend is not loaded");
+  if (armor_backend_ == nullptr || !armor_backend_->ready()) {
+    throw std::invalid_argument("ArmorDetector: armor model backend is not loaded");
   }
+  decoder_.validate(probeOutputSpecs(*armor_backend_));
+
+  if (finder_config_.mode != LightMode::Classic) {
+    if (light_backend_ == nullptr || !light_backend_->ready()) {
+      throw std::invalid_argument(
+        "ArmorDetector: light_finder.mode needs the light model, but it is not loaded");
+    }
+    LightDecoder::validate(probeOutputSpecs(*light_backend_));
+  }
+
+  // 模型或标签有问题就在启动阶段抛，别等到每帧把类别判成另一辆车。
+  if (config.number.enable) {
+    classifier_.load(config.number);
+  }
+}
+
+NumberStats ArmorDetector::classifyNumbers(
+  const cv::Mat& image, std::vector<Armor>& armors) const
+{
+  NumberStats stats;
   if (!classifier_.ready()) {
-    throw std::invalid_argument("ArmorDetector: number classifier is not loaded");
+    return stats;
   }
-  LightDecoder::validate(probeOutputSpecs(*backend_));
+  const bool drop = classifier_.config().on_reject == RejectPolicy::Drop;
+  std::erase_if(armors, [&](Armor & armor) {
+    const NumberResult result = classifier_.classify(image, armor.corners);
+    switch (result.verdict) {
+      case NumberVerdict::Accepted:
+        ++stats.accepted;
+        break;
+      case NumberVerdict::Negative:
+        ++stats.negative;
+        return drop;
+      case NumberVerdict::LowConfidence:
+        ++stats.low_confidence;
+        return drop;
+      case NumberVerdict::TypeMismatch:
+        ++stats.type_mismatch;
+        return drop;
+    }
+    // 只有采信时才改写类别；没采信的板类别保持网络的 argmax，class_source
+    // 也仍是 Network，离线统计才分得清哪一路给的编号。
+    armor.class_id = static_cast<int>(result.armor_class);
+    armor.class_source = ClassSource::Number;
+    armor.number_confidence = static_cast<float>(result.confidence);
+    return false;
+  });
+  return stats;
 }
 
 bool ArmorDetector::ready() const noexcept
 {
-  // backend_ 为空是“默认构造、尚未配置模型”，不是推理出错。
-  return backend_ != nullptr && backend_->ready() && classifier_.ready();
+  // armor_backend_ 为空是“默认构造、尚未配置模型”，不是推理出错。
+  return armor_backend_ != nullptr && armor_backend_->ready();
 }
 
 std::vector<Armor> ArmorDetector::detect(const cv::Mat& image) const
@@ -43,113 +88,155 @@ std::vector<Armor> ArmorDetector::detect(const cv::Mat& image) const
 
 double ArmorDetector::net_aspect_ratio() const noexcept
 {
-  if (!backend_) {
+  if (!armor_backend_) {
     return 1.0;
   }
   // 输入契约是 uint8 NHWC：{N, H, W, C}。
-  const auto& shape = backend_->inputSpec().shape;
+  const auto& shape = armor_backend_->inputSpec().shape;
   if (shape.size() < 3 || shape[1] == 0) {
     return 1.0;
   }
   return static_cast<double>(shape[2]) / static_cast<double>(shape[1]);
 }
 
+std::vector<Light> ArmorDetector::findSideLights(
+  const cv::Mat& image, const cv::Rect& roi, ArmorColor color) const
+{
+  std::vector<Light> lights;
+  if (finder_config_.mode != LightMode::Classic && light_backend_ != nullptr) {
+    // 模型只跑在 light_roi 上：ROI 远小于整图，resize 到网络输入相当于局部
+    // 放大，侧面板上细窄的灯条端点才保得住。
+    const cv::Mat input = image(roi);
+    const PreprocessedImage preprocessed =
+      ImagePreprocessor::run(input, light_backend_->inputSpec(), preprocess_config_);
+    lights = light_decoder_.decode(
+      light_backend_->infer(preprocessed.input), preprocessed.transform, input);
+    const cv::Point2f offset(static_cast<float>(roi.x), static_cast<float>(roi.y));
+    for (Light& light : lights) {
+      light.top += offset;
+      light.bottom += offset;
+      light.center += offset;
+    }
+  }
+
+  // 丢掉判不出颜色的灯条；指定了颜色就只留该颜色。
+  const auto keepColor = [color](std::vector<Light>& candidates) {
+    std::erase_if(candidates, [color](const Light& light) {
+      return light.color == ArmorColor::Unknown ||
+             (color != ArmorColor::Unknown && light.color != color);
+    });
+  };
+  keepColor(lights);
+
+  if (finder_config_.mode != LightMode::Model) {
+    std::vector<Light> classic = findLights(
+      image, roi, finder_config_, light_decoder_.config().color_ratio_threshold);
+    // 先过颜色再合并：颜色判不出的传统斑点（数字笔画、光晕）先被丢掉，不会在
+    // mergeLights 里把旁边真正的模型灯条挤掉。
+    keepColor(classic);
+    lights = mergeLights(
+      std::move(classic), lights, finder_config_.merge_radius, finder_config_.length_agree);
+  }
+  for (std::size_t index = 0; index < lights.size(); ++index) {
+    lights[index].id = index;
+  }
+  return lights;
+}
+
 ArmorFrame ArmorDetector::detectFrame(
   const cv::Mat& image, const std::optional<cv::Rect>& light_roi,
   const std::optional<cv::Rect>& net_roi, ArmorColor color) const
 {
+  last_refine_ = {};
+  last_numbers_ = {};
+  last_records_.clear();
   last_lights_.clear();
-  last_candidates_.clear();
   if (!ready() || image.empty() || image.type() != CV_8UC3) {
     return {};
   }
 
   try {
-    // area 是这一帧两路检测共同的搜索范围：给了 net_roi 就裁剪，缺省或与整图
-    // 相同时是恒等操作。裁剪后再 resize 到网络输入相当于局部放大，远距小目标
-    // 的灯条端点和数字结构能保住。
+    // 网络只跑在 net_roi 上：远距小目标裁剪后再 resize 到网络输入，相当于
+    // 局部放大，保留灯条边缘与数字结构。缺省或与整图相同时是恒等操作。
     const cv::Rect image_rect(0, 0, image.cols, image.rows);
     const cv::Rect focus = net_roi ? (*net_roi & image_rect) : image_rect;
     const bool cropped = focus.area() > 0 && focus != image_rect;
-    const cv::Rect area = cropped ? focus : image_rect;
-    // 丢掉判不出颜色的灯条；指定了颜色就只留该颜色。
-    const auto keepColor = [color](std::vector<Light>& lights) {
-      std::erase_if(lights, [color](const Light& light) {
-        return light.color == ArmorColor::Unknown ||
-               (color != ArmorColor::Unknown && light.color != color);
-      });
-    };
+    const cv::Mat network_input = cropped ? image(focus) : image;
 
-    std::vector<Light> lights;
-    if (finder_config_.mode != LightMode::Classic) {
-      const cv::Mat network_input = image(area);
-      const PreprocessedImage preprocessed = ImagePreprocessor::run(
-        network_input, backend_->inputSpec(), preprocess_config_);
-      const InferenceResult raw_result = backend_->infer(preprocessed.input);
-      lights = decoder_.decode(raw_result, preprocessed.transform, network_input);
-
-      // 模型解出的坐标在裁剪图里，补偏移回原图：抠数字和下游都按原图坐标算。
-      if (cropped) {
-        const cv::Point2f offset(static_cast<float>(focus.x), static_cast<float>(focus.y));
-        for (Light& light : lights) {
-          light.top += offset;
-          light.bottom += offset;
-          light.center += offset;
-        }
-      }
-      keepColor(lights);
-    }
-    if (finder_config_.mode != LightMode::Model) {
-      std::vector<Light> classic = findLights(
-        image, area, finder_config_, decoder_.config().color_ratio_threshold);
-      // 先过颜色再合并：颜色判不出的传统斑点（数字笔画、光晕）先被丢掉，
-      // 不会在 mergeLights 里把旁边真正的模型灯条挤掉。
-      keepColor(classic);
-      lights = mergeLights(
-        std::move(classic), lights, finder_config_.merge_radius, finder_config_.length_agree);
-    }
-    // 合并会改变顺序，重新编号，让 LightPair 里的下标和 id 对得上。
-    for (std::size_t index = 0; index < lights.size(); ++index) {
-      lights[index].id = index;
-    }
-
+    const PreprocessedImage preprocessed =
+      ImagePreprocessor::run(network_input, armor_backend_->inputSpec(), preprocess_config_);
     ArmorFrame frame;
-    const std::vector<LightPair> pairs = matchLights(lights, color, matcher_config_);
-    last_candidates_.reserve(pairs.size());
-    for (const LightPair& pair : pairs) {
-      const Light& left = lights[pair.left];
-      const Light& right = lights[pair.right];
-      NumberResult number = classifier_.classify(image, left, right, pair.large);
-      if (number.verdict == NumberVerdict::Accepted) {
-        Armor armor;
-        armor.corners = {left.top, right.top, right.bottom, left.bottom};
-        armor.center = (left.top + right.top + right.bottom + left.bottom) * 0.25F;
-        armor.class_id = static_cast<int>(number.armor_class);
-        armor.color = left.color;
-        armor.confidence = static_cast<float>(number.confidence);
-        frame.armors.push_back(armor);
+    frame.armors =
+      decoder_.decode(armor_backend_->infer(preprocessed.input), preprocessed.transform);
+
+    // 解码出的角点在裁剪图里，补偏移回原图。精修和下游都在原图坐标系，所以
+    // 必须在精修之前做。
+    if (cropped) {
+      const cv::Point2f offset(static_cast<float>(focus.x), static_cast<float>(focus.y));
+      for (Armor& armor : frame.armors) {
+        for (cv::Point2f& corner : armor.corners) {
+          corner += offset;
+        }
+        for (cv::Point2f& corner : armor.network_corners) {
+          corner += offset;
+        }
+        armor.center += offset;
       }
-      last_candidates_.push_back({pair, std::move(number)});
     }
 
-    // ArmorFrame::lights 给 L3 做端点观测，按 light_roi 再筛一次。
+    // 精修用原图而不是 letterbox 后的网络输入，免得二次引入缩放误差。失败的
+    // 板保留网络角点。
+    last_refine_ =
+      refiner_.refine(image, frame.armors, collect_records_ ? &last_records_ : nullptr);
+
+    // 数字二次分类排在精修之后：抠图用的是精修过的角点，数字区域对得更准；
+    // 判不出的板在这里就被丢掉，不再进 L3 的关联。
+    last_numbers_ = classifyNumbers(image, frame.armors);
+
     if (light_roi) {
       const cv::Rect roi = *light_roi & image_rect;
-      for (const Light& light : lights) {
-        if (roi.contains(light.center)) {
-          frame.lights.push_back(light);
+      if (roi.area() > 0) {
+        last_lights_ = findSideLights(image, roi, color);
+        // 已检出装甲板自己的灯条已经作为板的角点进了观测，不能再以侧边灯条的
+        // 身份进一次；不管是不是正在跟踪的那辆车，都不是“侧边”灯条。
+        for (const Light& light : last_lights_) {
+          const bool owned = std::any_of(
+            frame.armors.begin(), frame.armors.end(), [&](const Armor& armor) {
+              return insideArmor(light, armor, finder_config_.armor_margin);
+            });
+          if (!owned) {
+            frame.lights.push_back(light);
+          }
         }
       }
     }
-    last_lights_ = std::move(lights);
     return frame;
   } catch (const std::exception& error) {
     // 一帧坏图或一次推理失败不该中断主循环，记日志后当这帧没检出。
     L6Telemetry::logError("armor inference failed", error.what());
+    last_refine_ = {};
+    last_numbers_ = {};
+    last_records_.clear();
     last_lights_.clear();
-    last_candidates_.clear();
     return {};
   }
+}
+
+bool insideArmor(const Light& light, const Armor& armor, float margin_by_length)
+{
+  float min_x = std::numeric_limits<float>::max();
+  float min_y = std::numeric_limits<float>::max();
+  float max_x = std::numeric_limits<float>::lowest();
+  float max_y = std::numeric_limits<float>::lowest();
+  for (const cv::Point2f& corner : armor.corners) {
+    min_x = std::min(min_x, corner.x);
+    min_y = std::min(min_y, corner.y);
+    max_x = std::max(max_x, corner.x);
+    max_y = std::max(max_y, corner.y);
+  }
+  const float margin = margin_by_length * static_cast<float>(light.length);
+  return light.center.x >= min_x - margin && light.center.x <= max_x + margin &&
+         light.center.y >= min_y - margin && light.center.y <= max_y + margin;
 }
 
 }  // namespace L2Perception

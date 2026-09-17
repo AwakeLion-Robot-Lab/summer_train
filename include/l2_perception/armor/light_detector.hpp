@@ -4,6 +4,8 @@
 #include "l2_perception/inference/image_preprocessor.hpp"
 #include "l2_perception/inference/inference_result.hpp"
 
+#include <optional>
+#include <string_view>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -11,7 +13,7 @@
 namespace L2Perception
 {
 
-// 一帧里的灯条由哪一路给出。
+// 侧边灯条由哪一路给出。
 //   Model   只跑关键点模型；
 //   Classic 只跑传统二值化；
 //   Hybrid  两路都跑，由 mergeLights 合并。
@@ -20,6 +22,10 @@ enum class LightMode {
   Classic,
   Hybrid
 };
+
+// LightMode 与配置里的名字（model / classic / hybrid）互转，名字无效时返回 nullopt。
+[[nodiscard]] std::string_view lightModeName(LightMode mode) noexcept;
+[[nodiscard]] std::optional<LightMode> parseLightMode(std::string_view name) noexcept;
 
 // 关键点模型的输出契约：Ultralytics YOLOv8n-pose，1 类 light_bar，kpt_shape [2, 3]，
 // 输出 output0 形状 [1, 11, A]，channels-first：
@@ -50,10 +56,12 @@ struct LightFinderConfig
   // 灯条长度下限，单位为 pixel。
   float min_length{4.0F};
   // mergeLights 的判重半径，单位是两根灯条中较长者的长度。同一块板的两根灯条
-  // 中心至少相距 0.8 倍灯长（见 LightMatcherConfig），取 0.5 不会把一对灯条并掉。
+  // 中心至少相距约 2 倍灯长，取 0.5 不会把一对灯条并掉。
   float merge_radius{0.5F};
   // mergeLights 判重之后的长度一致性门限，见该函数。
   float length_agree{0.8F};
+  // 剔除属于已检出装甲板的灯条时，板外接框四周外扩多少倍灯条长度，见 insideArmor。
+  float armor_margin{0.5F};
 };
 
 // 判定一根灯条的颜色：在端点连线周围取一块比灯条略宽的框，累加非饱和、非过暗

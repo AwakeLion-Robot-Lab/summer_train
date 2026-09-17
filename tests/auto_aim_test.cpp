@@ -76,7 +76,7 @@ constexpr double kCostStepDegrees = 0.5;
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
-  "{model m |  | 灯条关键点模型，留空用 auto_aim.yaml 的}"
+  "{model m |  | 整板模型，留空用 auto_aim.yaml 的；给了就按输出名认 layout}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
   "{convention | imu | 录像四元数约定：imu / sp}"
@@ -552,11 +552,12 @@ cv::Mat makeRecognitionPanel(
     const bool filtered =
       enemy_color != L2Perception::ArmorColor::Unknown &&
       armor.color != enemy_color;
+    const bool refined = armor.corner_source == L2Perception::CornerSource::Refined;
     const std::string label = cv::format(
-      "[%zu] %s %s  conf=%.2f%s",
+      "[%zu] %s %s  conf=%.2f  %s%s",
       tile_index + 1, armorColorName(armor.color),
       armorClassName(L2Perception::armorClassFromId(armor.class_id)),
-      armor.confidence, filtered ? "  ignored" : "");
+      armor.confidence, refined ? "refined" : "net", filtered ? "  ignored" : "");
     drawOutlinedText(
       panel, label, tile_rect.tl() + cv::Point{8, 28},
       armorDisplayColor(armor.color), 0.58);
@@ -1107,13 +1108,16 @@ int main(int argc, char** argv)
     // YAML 里调噪声或灯条门限，这里根本看不出变化。
     const auto runtime_config = runtime::loadConfig("config/auto_aim.yaml");
 
-    // 检测器与实机同一个工厂组装，只有模型路径和设备允许命令行覆盖。
+    // 检测器与实机同一个工厂组装，只有模型路径和设备允许命令行覆盖。命令行换了
+    // 模型时 YAML 里的 layout 未必配得上，按模型输出名认。
     runtime::AutoAimConfig detector_config = runtime_config;
-    if (const std::string model = cli.get<std::string>("model"); !model.empty()) {
-      detector_config.inference.model_path = model;
+    const std::string model_override = cli.get<std::string>("model");
+    if (!model_override.empty()) {
+      detector_config.inference.model_path = model_override;
     }
     detector_config.inference.device = cli.get<std::string>("device");
-    const L2Perception::ArmorDetector detector = runtime::makeDetector(detector_config);
+    const L2Perception::ArmorDetector detector =
+      runtime::makeDetector(detector_config, !model_override.empty());
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
@@ -1178,7 +1182,7 @@ int main(int argc, char** argv)
       require(state_csv.is_open(), "无法打开 csv 输出路径: " + csv_path);
       state_csv << "frame,t,state,ndet,nlight,nmatch,armor_ids,jumped,"
                    "xc,yc,zc,vx,vy,vz,yaw_deg,vyaw,r1,r2,h,roll_deg,pitch_deg,"
-                   "nis,nis_dof,roi_x,roi_y,roi_w,roi_h,pairs,accepted\n";
+                   "nis,nis_dof,roi_x,roi_y,roi_w,roi_h,refined,net_kept\n";
       state_csv << std::fixed << std::setprecision(6);
     }
 
@@ -1289,14 +1293,8 @@ int main(int argc, char** argv)
                   << (target ? target->lastNisDof() : 0) << ','
                   << net_roi.x << ',' << net_roi.y << ',' << net_roi.width << ','
                   << net_roi.height << ','
-                  << detector.lastCandidates().size() << ','
-                  << std::count_if(
-                       detector.lastCandidates().begin(), detector.lastCandidates().end(),
-                       [](const L2Perception::ArmorCandidate& candidate) {
-                         return candidate.number.verdict ==
-                                L2Perception::NumberVerdict::Accepted;
-                       })
-                  << '\n';
+                  << detector.lastRefine().refined << ','
+                  << detector.lastRefine().network_kept << '\n';
       }
 
       const auto& observations = diagnostic_pnp_observations;

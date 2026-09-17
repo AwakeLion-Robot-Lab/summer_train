@@ -1,23 +1,22 @@
 # 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
 inference:
   backend: "openvino"
-  # 灯条关键点模型（YOLOv8n-pose，1 类 2 关键点，输出 [1, 11, A]）。装甲板由它
-  # 检出的灯条配对、再经数字分类确认而来，没有整板检测网络。输出形状在启动时
-  # 核对，换成别的模型会直接报错而不是解出垃圾端点。三个导出精度：
-  #   best.onnx       FP32
-  #   best_fp16.onnx  CPU 上与 FP32 同速
-  #   best_int8.onnx  CPU 上约快 2.5 倍，但关键点回归精度塌了：不同录像上灯条长度
-  #                   分位数完全相同（27.6/28.4/35.1 px），数字区域抠歪；低曝光
-  #                   fast_run 上有装甲板的帧 67%（FP32 98%），开头反复重置。别用。
-  # 端点观测的深度线索正是灯条长度，换模型之后必须重跑 track_diag。
-  model_path: "model/light_model/best.onnx"
+  # 整板检测模型。model_path 和下面的 decoder.layout 必须成对修改，已验证的组合：
+  #   model/armor_model/yolov5.xml        -> yolov5_22  （同济，与 sp_vision 的同一份）
+  #   model/armor_model/szu-v5n.xml       -> yolov5_22  （深大 Infantry-v5n）
+  #   model/armor_model/szu-v8n-fp16.onnx -> yolov8_21  （深大 Infantry-v8n）
+  # 输出形状在启动时核对，layout 配错会直接报错。端点观测的深度线索是灯条长度，
+  # 换模型之后必须重跑 track_diag。
+  model_path: "model/armor_model/szu-v5n.xml"
   device: "CPU"
 
   # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
   # 训练/导出时模型期望的颜色顺序。宿主侧输入恒为 uint8 NHWC BGR，
   # 转换在后端内部完成。取值 rgb / bgr。
   #
-  # 必须是 rgb：灯条模型由 ultralytics 训练，输入是 RGB / 255。
+  # 必须是 rgb。sp_vision 的 yolov5.cpp 就是 set_color_format(BGR) +
+  # convert_color(RGB)，深大模型和侧边灯条的关键点模型同理。写成 bgr 会让
+  # 颜色分支判成相反的颜色（红蓝对调），敌我过滤随之反向。
   model_color_order: "rgb"
   # 像素归一化的除数（不是乘数）。255 表示除到 [0, 1]。
   normalization_divisor: 255.0
@@ -48,26 +47,62 @@ inference:
   # 因此这里不给默认值。
   # enable_hyper_threading: false
 
-# 灯条模型解码。
-light_decoder:
-  # 类别分数阈值与 NMS IoU。
-  score_threshold: 0.25
-  nms_iou_threshold: 0.45
-  # 灯条颜色不由网络判：在灯条外扩框里跳过饱和和过暗像素后比较 R/B 能量，
-  # 比值大于它判红、小于它的倒数判蓝，中间判未知（未知的灯条直接丢弃）。
-  color_ratio_threshold: 1.10
+  # ---- 输出契约：和 model_path 成对 ----
+  decoder:
+    # yolov5_22：[1, 25200, 22]，输出名 output，字段为
+    #   0~7 四角点 / 8 objectness logit / 9~12 颜色 / 13~21 九类。
+    # yolov8_21：[1, 21, 6300]，输出名 output0，channels-first，字段为
+    #   0~3 颜色 / 4~12 九类 / 13~20 四角点，没有 objectness 通道，
+    #   置信度取类别分支最大值且已过 sigmoid。
+    layout: "yolov5_22"
+    # 下面四项在 layout 预设之上覆盖，缺省则用预设值。
+    # yolov5_22 预设：0.7 / 0.8 / 0.3 / 0.7（对齐 SP demo）
+    # yolov8_21 预设：0.5 / 0.5 / 0.2 / 0.5（对齐上游部署库）
+    # 两种模型的置信度分布不同（objectness 与类别分数），阈值不要互相照抄。
+    # confidence_threshold: 0.7
+    # minimum_confidence: 0.8
+    # nms_iou_threshold: 0.3
+    # nms_score_threshold: 0.7
 
-# 灯条从哪来：model 只用关键点模型；classic 只用传统二值化；hybrid 传统优先，
-# 模型只补传统没找到的（侧面板上被挡住、过窄的灯条）。
+# 板 ROI 内的传统角点精修（SP-Vision 的做法）。网络给出四点后在板周围跑一次
+# 灰度二值化找灯条，左右两根的端点到网络角点的距离和小于
+# max_endpoint_distance_px 时才替换网络角点，否则保留网络的。角点抖 1 px 在
+# 5 m 处就是单板 yaw 抖好几度，数值要按场地光照实调，用
+# `xmake run armor_refiner_video_test` 看 refined / network_kept 的比例。
+# 默认值取自 sp_vision 的 configs/standard3.yaml。
+refiner:
+  enable: true
+  # 最常动的一个：场地偏暗调低，曝光偏亮调高。取值须在 (0, 255) 内。
+  binary_threshold: 150.0
+  # 灯条筛选：长度下限、与竖直方向的最大夹角、长宽比区间。
+  min_lightbar_length_px: 8.0
+  max_angle_error_deg: 45.0
+  min_lightbar_ratio: 1.5
+  max_lightbar_ratio: 20.0
+  # 传统端点到网络角点的距离和上限。放大会让传统解无条件覆盖网络解，光照不好
+  # 时反而更差。
+  max_endpoint_distance_px: 15.0
+  # 灯条端点用亮度梯度 + PCA 主轴定位，替代 minAreaRect 的二值边界。
+  pca_corner_correction: true
+
+# 侧边灯条：跟踪中在整车预测框（1.6 倍）里找灯条，剔掉属于已检出装甲板的，
+# 剩下的交给 L3 按整车几何关联到邻板上（门限见 ieskf.light_match_*）。整板网络
+# 同时看到两块板时侧面那块常常检不出，补的就是这块。
+# 来源：classic 传统二值化；model 灯条关键点模型；hybrid 传统优先、模型补漏。
 # 传统检测照 FYT：灰度二值化 → 外轮廓 → 最小外接矩形 → 长宽比、倾角筛选，
-# 端点取外接矩形上下边中点；颜色与模型灯条同一套 R/B 判定。
+# 端点取外接矩形上下边中点；颜色两路同一套 R/B 判定。
 light_finder:
-  mode: "hybrid"
-  # 按低曝光录像（fast_run / fast_stop）扫的：100~140 传统单独就能在 97% 以上的
-  # 帧里配出装甲板；240 只剩一半左右。换曝光或场地亮度后要重新扫。
-  # 旧的过曝录像（3m_*）背景海报会过阈，那种画面要调到 240 附近、宽长比放到 0.8。
+  # 四段录像上 model 最好；classic 的二值化阈值是按低曝光录像定的，在过曝的
+  # 3m_* 上比不用侧边灯条还差。
+  mode: "model"
+  # 关键点模型（YOLOv8n-pose，1 类 2 关键点，输出 [1, 11, A]），mode 为 classic
+  # 时不加载。best_int8.onnx 的关键点精度已塌，别用。
+  model_path: "model/light_model/best.onnx"
+  # 按低曝光录像（fast_run / fast_stop）扫的：100~140 能稳定出灯条；旧的过曝
+  # 录像（3m_*）背景海报会过阈，那种画面要调到 240 附近、max_ratio 放到 0.8。
+  # 换曝光或场地亮度后要重新扫。
   binary_threshold: 140
-  # 外接矩形 短边 / 长边，FYT 原值。低曝光下灯条细长，不必放宽。
+  # 外接矩形 短边 / 长边，FYT 原值。
   min_ratio: 0.08
   max_ratio: 0.4
   max_angle_deg: 40.0
@@ -76,26 +111,43 @@ light_finder:
   # 传统灯条这个范围内就算同一根，保留传统的。须小于 0.8。
   merge_radius: 0.5
   # 同一根灯条两路长度 短 / 长 低于它时，认为二值化断开或粘连，换成模型的端点。
-  # 0 表示判成同一根就一律保留传统的。
   length_agree: 0.8
+  # 灯条中心落在某块检出装甲板外接框、外扩这么多倍灯条长度的范围内，就算那块
+  # 板自己的灯条，不再当侧边灯条。3 m 处相邻两块板的灯条相距约 4 倍灯长。
+  armor_margin: 0.5
 
-# 灯条两两配对的几何门限，取自 rm_auto_aim。距离以两灯条平均长度为单位。
-# 这一步只筛「可能是」：相邻两块板的灯条也会配成一对，靠数字分类判 negative 剔掉。
-light_matcher:
-  min_light_length_ratio: 0.7
-  min_small_center_distance: 0.8
-  max_small_center_distance: 3.2
-  min_large_center_distance: 3.2
-  max_large_center_distance: 5.5
-  max_pair_angle_deg: 35.0
+# 侧边灯条关键点模型的解码。颜色比阈值传统检测也用。
+light_decoder:
+  score_threshold: 0.25
+  nms_iou_threshold: 0.45
+  # 灯条颜色不由网络判：在灯条外扩框里跳过饱和和过暗像素后比较 R/B 能量，
+  # 比值大于它判红、小于它的倒数判蓝，中间判未知（未知的灯条直接丢弃）。
+  color_ratio_threshold: 1.10
 
-# 数字分类（rm_auto_aim 的 mlp.onnx）：两灯条之间透视抠数字 → OTSU → MLP。
-# 只负责认出是哪辆车；类别决定整车模型的板数（前哨/基地三板）和 PnP 板型（英雄大板）。
+# 数字二次分类（rm_auto_aim 的 mlp.onnx）：在原图的板 ROI 上把两灯条之间的
+# 数字透视抠出来重判一次类别，判不准的板直接丢掉，不再进 L3。
+# 整板网络的类别是在 416 像素的整图上判的，同一块板的编号会在相邻帧之间跳，
+# 而跟踪按编号筛观测，一跳关联就断。sp_vision 的 yolov8 通路同样是网络只给
+# 颜色和角点、编号交给单独的分类器。
 # 标签文件逐行对应模型输出，只认 1 2 3 4 5 outpost guard base negative。
+#
+# 默认关：mlp 在四段自录上与网络类别 100% 一致（等于不起作用），在 sp demo 上
+# 却把 58% 的检出判成 negative——那块手持哨兵板的图案不在它认识的九类里，
+# drop 之后整辆车都没观测了（跟踪帧 435 -> 98）。换识别模型、或出现编号跳变
+# 影响跟踪时再打开，开之前先用 track_diag 看"数字分类采信/丢弃"两个数。
 number_classifier:
+  enable: false
   model_path: "model/light_model/mlp.onnx"
   label_path: "model/light_model/label.txt"
+  # 没采信这块板时：drop 直接丢掉（sp_vision 的做法），keep 保留网络给的类别。
+  # mlp.onnx 只认 1~5、前哨、哨兵、基地这九类，遇到它没见过的图案（例如这版
+  # sp demo 里那块手持哨兵板）会一路判 negative，drop 会把整辆车的观测都筛掉。
+  on_reject: "drop"
+  # softmax 最大概率低于它就不采信这块板。调高更稳但采信更少。
   min_confidence: 0.7
+  # 两灯条中心距 / 灯条长度 超过它按大板抠图（大板画布更宽）。抠图宽度错了
+  # 等于给 MLP 喂另一个分布的输入。
+  large_center_distance_ratio: 3.2
 
 # L3 PnP 使用的装甲板几何尺寸。
 armor:
@@ -111,6 +163,12 @@ ieskf:
   tracking_thres: 5
   lost_time_thres: 1.5
   lost_time_thres_outpost: 2.0
+  # 相邻两帧间隔超过它就当作断流（相机掉线重连、录像拼接），目标全部复位、
+  # 用当前帧重建。与 sp_vision 的 dt > 0.1 s 判 lost 一致。
+  max_frame_gap_ms: 100
+  # 超过这么久没有成功更新，预测就停止按速度外推、停在原地。TempLost 期间
+  # 匀速外推会把被错关联带偏的速度放大，目标飞出画面后同一块板也关联不回来。
+  temp_lost_predict_ms: 100
 
   # 每帧更新的高斯牛顿迭代次数。
   iteration_num: 5
@@ -132,16 +190,20 @@ ieskf:
   sigma_along_by_length: 0.0
   sigma_perp_by_length: 0.0
   sigma_min_px: 6.32
-  # 独立灯条（纯几何关联、无编号颜色证据）的 sigma 放大系数。
+  # 侧边灯条（纯几何关联、无编号颜色证据）的 sigma 放大系数。
   isolated_light_sigma_scale: 1.4
 
-  # 单完整板 IPPE 左右灯条中心深度差，以及独立灯条关联；与 Awakening
-  # test.yaml 的 armor_tracker 参数逐项对应。
+  # 单完整板 IPPE 左右灯条中心深度差的 sigma（米）。
   armor_lights_depth_diff_sigma: 0.1
+
+  # 侧边灯条关联。没有类别证据，错配比漏配代价高，几道门都是硬拒绝：
+  # 与预测灯条的长度比、角度差（rad），先验点上的马氏距离（4 自由度，
+  # 13.28 为 99% 分位），以及见过 0 号以外的板之后才启用。
   enable_lights_measure: true
   light_match_length_ratio_gate: 0.2
   light_match_angle_gate: 0.2
-  light_match_pos_gate_by_length_ratio: 5.0
+  light_match_chi2_gate: 13.28
+  light_match_require_jumped: true
 
   # 检测四边形与预测装甲板的关联代价。
   match_gate: 200.0

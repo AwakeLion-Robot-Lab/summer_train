@@ -44,6 +44,29 @@ float tiltDegrees(const cv::Point2f& top, const cv::Point2f& bottom)
 
 }  // namespace
 
+std::string_view lightModeName(LightMode mode) noexcept
+{
+  switch (mode) {
+    case LightMode::Model:
+      return "model";
+    case LightMode::Classic:
+      return "classic";
+    case LightMode::Hybrid:
+      return "hybrid";
+  }
+  return "unknown";
+}
+
+std::optional<LightMode> parseLightMode(std::string_view name) noexcept
+{
+  for (const LightMode mode : {LightMode::Model, LightMode::Classic, LightMode::Hybrid}) {
+    if (name == lightModeName(mode)) {
+      return mode;
+    }
+  }
+  return std::nullopt;
+}
+
 ArmorColor lightColor(
   const cv::Mat& image, const cv::Point2f& top, const cv::Point2f& bottom,
   double ratio_threshold)
@@ -115,9 +138,12 @@ void LightDecoder::validate(const std::vector<InferenceOutputSpec>& outputs)
     for (const std::size_t dimension : output->shape) {
       shape += (shape.empty() ? "" : ",") + std::to_string(dimension);
     }
+    // 最常见的来源是整板模型和灯条模型的路径填反了，报错里直接点明两者各归哪项。
     throw std::runtime_error(
       "light model: output must be [1, 11, A] (YOLOv8-pose, 1 class, 2 keypoints); got [" +
-      shape + "]");
+      shape + "]. light_finder.model_path takes a light keypoint model "
+      "(model/light_model/*); whole-armor models (model/armor_model/*) go in "
+      "inference.model_path");
   }
 }
 

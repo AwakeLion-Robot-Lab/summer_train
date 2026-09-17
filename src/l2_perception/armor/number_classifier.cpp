@@ -80,12 +80,30 @@ void NumberClassifier::load(const NumberClassifierConfig& config)
 }
 
 NumberResult NumberClassifier::classify(
-  const cv::Mat& bgr, const Light& left, const Light& right, bool large) const
+  const cv::Mat& bgr, const std::array<cv::Point2f, 4>& corners) const
 {
   NumberResult result;
   if (!ready_) {
     return result;
   }
+
+  // corners 顺序：左上、右上、右下、左下，左右两根灯条各占一侧。
+  const cv::Point2f left_top = corners[0];
+  const cv::Point2f left_bottom = corners[3];
+  const cv::Point2f right_top = corners[1];
+  const cv::Point2f right_bottom = corners[2];
+
+  // 板型按两灯条中心距与灯条长度的比值判，不信网络给的类别：抠图宽度错了
+  // 数字会被拉伸或截断，等于给 MLP 喂另一个分布的输入。
+  const double light_length =
+    0.5 * (cv::norm(left_top - left_bottom) + cv::norm(right_top - right_bottom));
+  if (!(light_length > 1e-3)) {
+    return result;
+  }
+  const double center_distance =
+    cv::norm((left_top + left_bottom) * 0.5F - (right_top + right_bottom) * 0.5F);
+  const bool large = center_distance / light_length > config_.large_center_distance_ratio;
+  result.large = large;
 
   // 透视到固定画布：两灯条的四个端点映到画布两侧，灯条在画布里固定 12 px
   // 长、画布高 28 px，再从中间裁出 20x28。灯条长度归一化之后数字大小也就
@@ -96,7 +114,7 @@ NumberResult NumberClassifier::classify(
   constexpr int kLargeArmorWidth = 54;
   const cv::Size roi_size(20, 28);
 
-  const cv::Point2f lights_vertices[4] = {left.bottom, left.top, right.top, right.bottom};
+  const cv::Point2f lights_vertices[4] = {left_bottom, left_top, right_top, right_bottom};
   const float top_light_y = static_cast<float>((kWarpHeight - kLightLength) / 2 - 1);
   const float bottom_light_y = top_light_y + static_cast<float>(kLightLength);
   const int warp_width = large ? kLargeArmorWidth : kSmallArmorWidth;
@@ -135,8 +153,8 @@ NumberResult NumberClassifier::classify(
   result.number_image = std::move(number_image);
 
   // 三条拒绝理由按顺序判，分开记以便离线工具统计：分到 negative、置信度不够、
-  // 数字对应的板型与配对时按中心距离推出的大小板矛盾。板型由 isLargeArmor
-  // 给出，全项目共用同一份映射。
+  // 数字对应的板型与按灯条间距推出的大小板矛盾。板型由 isLargeArmor 给出，
+  // 全项目共用同一份映射。
   if (labels_[static_cast<std::size_t>(class_point.x)] == kNegativeLabel) {
     result.verdict = NumberVerdict::Negative;
   } else if (confidence < config_.min_confidence) {

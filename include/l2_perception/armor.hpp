@@ -18,8 +18,8 @@ enum class ArmorColor {
 };
 
 // 9 个车辆类别。数值是跨层约定的 class_id（G、1、2、3、4、5、O、Bs、Bb），
-// 由数字分类器的标签映射而来；Armor 里保留 class_id 方便记录，需要语义时
-// 调用 armorClassFromId。
+// 与整板模型类别字段 argmax 的下标一致；Armor 里保留 class_id 方便记录，需要
+// 语义时调用 armorClassFromId。
 enum class ArmorClass : int {
   Guard = 0,      // G，哨兵
   Hero = 1,       // 1，英雄
@@ -44,9 +44,8 @@ constexpr ArmorClass armorClassFromId(int class_id) noexcept
 // 识别类别 → 是否大装甲板。场上只有四板车，大装甲板仅英雄使用：平衡步兵已不存在，
 // 基地虽然有 Bs/Bb 两个类别但装甲板实物都是小板。
 //
-// 未知类别返回 nullopt，不猜板型。L2 的灯条配对用它剔除「数字与两灯条间距
-// 推出的板型矛盾」的候选，L3 的 armorTypeOf 也由它派生——两处必须同一份映射，
-// 否则会出现 L2 当大板放行、L3 却按小板几何做 PnP 的情况。
+// 未知类别返回 nullopt，不猜板型。L3 的 armorTypeOf 由它派生，PnP 和端点
+// 观测的板宽都按这一份映射取。
 constexpr std::optional<bool> isLargeArmor(ArmorClass armor_class) noexcept
 {
   switch (armor_class) {
@@ -69,18 +68,42 @@ constexpr std::optional<bool> isLargeArmor(ArmorClass armor_class) noexcept
   return std::nullopt;
 }
 
-// 由左右两根灯条配出、并经数字分类确认的装甲板。
+// 角点的来源。传统精修只在证据充分时才替换网络角点，下游和离线工具要能
+// 区分两者。
+enum class CornerSource {
+  Network,  // 网络回归的原始角点
+  Refined   // 已由 ROI 内的灯条端点替换
+};
+
+// 类别的来源。二次分类会改写 class_id，下游和离线工具要能区分两者。
+enum class ClassSource {
+  Network,  // 整板网络的类别 argmax
+  Number    // 已由数字分类器重判
+};
+
+// 整板网络检出的装甲板，角点可能已被传统精修替换。
 struct Armor {
   // 顺序固定为：左上、右上、右下、左下；PnP 必须沿用同一顺序。
-  // 四个角点就是左右灯条的上下端点。
+  // 左上/左下是左灯条的上下端点，右上/右下是右灯条的，L3 按此拆成两根灯条。
   std::array<cv::Point2f, 4> corners{};
-  // 四个角点在原图像素坐标系中的几何中心。
+  // 精修前的网络原始角点，顺序同 corners。留着是为了能离线对比两条通路，
+  // 否则无从验证精修是否真有收益。
+  std::array<cv::Point2f, 4> network_corners{};
+  CornerSource corner_source{CornerSource::Network};
+  // 精修角点相对网络角点的最大位移，单位 pixel；未精修时为 0。
+  float corner_shift{0.0F};
+  // 网络角点的几何中心。精修不重算它，与 SP-Vision 同口径。
   cv::Point2f center{};
-  // 车辆类别编号，见 ArmorClass。
+  // 车辆类别编号，见 ArmorClass。二次分类开着时它是数字分类器的结果。
   int class_id{-1};
+  // 网络给出的原始类别，二次分类改写 class_id 之后还能离线对比两路。
+  int network_class_id{-1};
+  ClassSource class_source{ClassSource::Network};
   ArmorColor color{ArmorColor::Unknown};
-  // 数字分类的 softmax 概率。
+  // 网络置信度（yolov5 为 sigmoid 后的 objectness）。
   float confidence{0.0F};
+  // 数字分类器的 softmax 置信度；没跑二次分类时为 0。
+  float number_confidence{0.0F};
 
   Eigen::Vector3d xyz_in_barrel{Eigen::Vector3d::Zero()};  // 单位：m
   Eigen::Vector3d xyz_in_world{Eigen::Vector3d::Zero()};   // 单位：m
@@ -111,12 +134,12 @@ struct Light {
   // 模型的类别分数；传统检出的没有分数，记 1。
   float score{0.0F};
   LightSource source{LightSource::Model};
-  // 在本帧灯条数组里的下标，LightPair 用它指回来。
+  // 在本帧灯条数组里的下标。
   std::size_t id{0};
 };
 
-// 一帧装甲感知的输出：通过数字分类的装甲板，以及交给 L3 做端点观测的灯条。
-// 后者按 detectFrame 的 light_roi 筛过，不一定是配出装甲板的那些。
+// 一帧装甲感知的输出：网络检出的装甲板，以及 light_roi 内不属于任何检出
+// 装甲板的侧边灯条，后者交给 L3 做额外的端点观测。
 struct ArmorFrame {
   std::vector<Armor> armors;
   std::vector<Light> lights;

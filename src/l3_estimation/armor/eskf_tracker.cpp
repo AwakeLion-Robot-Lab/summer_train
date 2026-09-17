@@ -4,6 +4,7 @@
 #include "l6_telemetry/math.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -18,7 +19,8 @@ namespace {
 bool validTrackerConfig(const EskfTrackerConfig & config) noexcept
 {
   return config.tracking_thres > 0 && config.lost_time_thres > 0.0 &&
-         config.lost_time_thres_outpost >= config.lost_time_thres;
+         config.lost_time_thres_outpost >= config.lost_time_thres &&
+         config.max_frame_gap > 0.0 && config.temp_lost_predict_time > 0.0;
 }
 
 }  // namespace
@@ -64,6 +66,7 @@ void EskfTracker::reset() noexcept
   }
   current_ = 0;
   previous_ = 1;
+  last_frame_.reset();
   observations_.clear();
 }
 
@@ -114,16 +117,33 @@ double EskfTracker::lostThreshold(const EskfTarget & target) const noexcept
                                            : tracker_config_.lost_time_thres;
 }
 
+TimePoint EskfTracker::holdFrom(const Slot & slot) const noexcept
+{
+  return slot.last_update + std::chrono::duration_cast<TimePoint::duration>(
+                              std::chrono::duration<double>(
+                                tracker_config_.temp_lost_predict_time));
+}
+
 bool EskfTracker::initTarget(
   Slot& slot, const std::vector<Armor>& candidates, TimePoint timestamp,
-  const Eigen::Isometry3d & camera_in_world)
+  const Eigen::Isometry3d & camera_in_world, std::optional<ArmorName> prefer)
 {
   slot.used_lights.clear();
   if (candidates.empty()) {
     return false;
   }
-  // candidates 已排过序，直接取最靠近图像中心的那块建目标。
-  const Armor& selected = candidates.front();
+  // candidates 已按离图像中心的距离排过序。同一阵营里一个编号只对应一辆车，
+  // 所以有同类别的板时它就是暂丢的那辆车，优先拿它重建。
+  auto selected_it = candidates.begin();
+  if (prefer) {
+    const auto same = std::find_if(candidates.begin(), candidates.end(), [&](const Armor & armor) {
+      return armor.name == *prefer;
+    });
+    if (same != candidates.end()) {
+      selected_it = same;
+    }
+  }
+  const Armor& selected = *selected_it;
   slot.target.reset(selected, target_config_, timestamp, calibration_, camera_in_world);
   slot.lifecycle.state = TrackState::Detecting;
   slot.lifecycle.detect_count = 0;
@@ -147,7 +167,7 @@ bool EskfTracker::updateTarget(
     }
   }
 
-  slot.target.predictEkf(timestamp);
+  slot.target.predictEkf(timestamp, holdFrom(slot));
   const auto matched =
     slot.target.matchArmor(same_name, timestamp, calibration_, camera_in_world);
   const auto matched_lights = slot.target.matchLight(
@@ -217,6 +237,24 @@ std::optional<EskfTarget> EskfTracker::track(
     return std::nullopt;
   }
 
+  // 断流（间隔过长或时间倒退）后旧目标的外推不可信，两个槽都清掉，这一帧按
+  // Lost 重新挑候选初始化。
+  if (last_frame_ &&
+      (timestamp < *last_frame_ ||
+       elapsedSeconds(*last_frame_, timestamp) > tracker_config_.max_frame_gap)) {
+    const bool had_target = buffer_[current_].lifecycle.state != TrackState::Lost;
+    for (auto & slot : buffer_) {
+      slot.lifecycle.reset();
+    }
+    if (had_target) {
+      ++drop_count_;
+      L6Telemetry::logWarn(
+        "EskfTracker: 帧间隔过长，目标复位",
+        std::chrono::duration<double>(timestamp - *last_frame_).count());
+    }
+  }
+  last_frame_ = timestamp;
+
   // L2 -> L3：正常更新只搬类别和四角点，不拿 PnP 成功当入口门限。PnP 只在
   // Lost 初始化和单块完整板求深度差时才跑。
   pnp_solver_.set_R_world_barrel(q_world_barrel);
@@ -244,12 +282,12 @@ std::optional<EskfTarget> EskfTracker::track(
     return *initialization_candidates;
   };
 
-  const auto process = [&](std::size_t index) {
+  const auto process = [&](std::size_t index, std::optional<ArmorName> prefer) {
     Slot & slot = buffer_[index];
     const bool found = (slot.lifecycle.state == TrackState::Lost)
                          ? initTarget(
                              slot, getInitializationCandidates(), timestamp,
-                             camera_in_world)
+                             camera_in_world, prefer)
                          : updateTarget(
                              slot, observations_, lights, timestamp,
                              camera_in_world);
@@ -269,19 +307,37 @@ std::optional<EskfTarget> EskfTracker::track(
 
   // 双缓冲：当前目标进 TempLost 时让另一个槽同时抓新目标，新目标一转成
   // Tracking 就交换上来，不必等当前目标超时。
-  process(current_);
-
   Slot & current = buffer_[current_];
   Slot & previous = buffer_[previous_];
 
+  const bool was_active = current.lifecycle.state != TrackState::Lost;
+  process(current_, std::nullopt);
+
   if (current.lifecycle.state == TrackState::TempLost) {
-    process(previous_);
-    if (previous.lifecycle.state == TrackState::Tracking) {
+    process(previous_, current.target.name);
+    // 当前目标的外推已经停住、又在别处看到了同一辆车：旧预测明显跟不上了，
+    // 直接换成新建的目标。新目标保留 Detecting 状态和计数，连续关联够帧数
+    // 才转 Tracking，L5 在那之前不会开火；换上来只是让输出立刻跟到板上。
+    const bool holding =
+      elapsedSeconds(current.last_update, timestamp) > tracker_config_.temp_lost_predict_time;
+    const bool reacquired = holding &&
+                            previous.lifecycle.state == TrackState::Detecting &&
+                            previous.target.name == current.target.name;
+    if (previous.lifecycle.state == TrackState::Tracking || reacquired) {
       std::swap(current, previous);
       previous.lifecycle.reset();
     }
   } else if (current.lifecycle.state == TrackState::Tracking) {
     previous.lifecycle.reset();
+  }
+
+  // 当前槽本帧刚退回 Lost（Detecting 丢帧、TempLost 超时或发散）：就地拿本帧
+  // 的检测重建，不空等一帧。备用槽的任务随之结束，免得留着一个过期的
+  // Detecting 目标。
+  if (was_active && current.lifecycle.state == TrackState::Lost) {
+    ++drop_count_;
+    previous.lifecycle.reset();
+    process(current_, std::nullopt);
   }
 
   const Slot & active = buffer_[current_];
@@ -314,8 +370,12 @@ std::optional<cv::Rect> EskfTracker::lightBounds(
     return std::nullopt;
   }
 
+  // 与滤波器同一个外推截止：超过 temp_lost_predict_time 没更新就只推到截止时刻。
   EskfTarget predicted = active.target.snapshot();
-  predicted.predict(timestamp);
+  const TimePoint motion_end = std::min(timestamp, holdFrom(active));
+  if (motion_end > predicted.t()) {
+    predicted.predict(motion_end);
+  }
   const Eigen::VectorXd state = predicted.rawState();
   const Eigen::Isometry3d camera_in_world =
     EskfTarget::cameraInWorld(calibration_, *q_world_barrel);

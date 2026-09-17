@@ -58,7 +58,7 @@ L2Perception::ArmorDetector loadDetector(const runtime::AutoAimConfig& config)
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
     L6Telemetry::logError(
-      "light model or number classifier unavailable",
+      "armor model or side-light model unavailable",
       std::string{L2Perception::backendName(config.inference_backend)},
       config.model_path.string(), error.what());
     return {};
@@ -81,7 +81,7 @@ void AutoAimRuntime::run() {
     std::lock_guard<std::mutex> lock(camera_mutex_);
     active_camera_ = camera;
   }
-  // 启动时只加载一次模型；每帧仅执行预处理、推理、配对和数字分类。
+  // 启动时只加载一次模型；每帧仅执行预处理、推理、解码和角点精修。
   L2Perception::ArmorDetector armor_detector =
     loadDetector(auto_aim_config);
 
@@ -194,8 +194,8 @@ void AutoAimRuntime::run() {
               image_pose, timestamp, frame.size(),
               armor_detector.net_aspect_ratio());
           }
-          // 灯条按下位机给的敌方颜色配对和输出：传 Unknown 会把友军灯条也
-          // 配成板、送进 L3 关联。
+          // 侧边灯条按下位机给的敌方颜色筛：传 Unknown 会把友军灯条也送进
+          // L3 关联。装甲板在下面按同一颜色过滤。
           auto perception = armor_detector.detectFrame(
             frame, light_roi, net_roi, enemyArmorColor(state->enemy_color));
           std::erase_if(perception.armors, [&state](const auto& armor) {

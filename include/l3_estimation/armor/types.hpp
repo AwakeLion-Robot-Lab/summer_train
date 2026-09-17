@@ -21,8 +21,8 @@ enum class ArmorType : std::uint8_t {
   Big     // 大装甲板
 };
 
-// 识别类别 → 实际板型。映射本身在 L2 的 isLargeArmor：L2 配对时就要用它
-// 检查数字与板型是否矛盾，这里只换成 L3 的枚举，不另写一份。
+// 识别类别 → 实际板型。映射本身在 L2 的 isLargeArmor，这里只换成 L3 的
+// 枚举，不另写一份。
 //
 // 未知类别返回 nullopt，不猜板型：猜错会同时污染 PnP 几何和火控的角度容差。
 // L3 的 PnpSolver 和 L5 的 FireDecider 共用这一份映射。

@@ -8,6 +8,7 @@
 // 所以收敛断言写在**装甲板集合**上，关联断言写在**相对编号**上。
 
 #include "l3_estimation/armor/eskf_target.hpp"
+#include "l3_estimation/armor/light_measure.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
 #include "l4_planning/armor/planner.hpp"
 #include "l6_telemetry/math.hpp"
@@ -19,6 +20,7 @@
 #include <numbers>
 #include <optional>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace VM = L3Estimation::VehicleModel;
@@ -250,12 +252,29 @@ int main()
       return light;
     };
 
-    // 邻板的灯条没有配成完整板，应当被关联为独立灯条。
+    // 邻板的灯条没有配成完整板，应当被关联为侧边灯条。只有朝向相机的邻板才是
+    // 候选：右邻板取靠近本板的左灯条，左邻板取右灯条。
+    const int count = target.armor_num();
+    const int right_neighbour = (id + 1) % count;
+    const int left_neighbour = (id + count - 1) % count;
+    const bool use_right = facesCamera(truth, right_neighbour, camera);
+    expect(
+      use_right || facesCamera(truth, left_neighbour, camera),
+      "合成场景里应当有一块邻板朝向相机");
     const L2Perception::Light light =
-      makeLight((id + 1) % target.armor_num(), true);
+      makeLight(use_right ? right_neighbour : left_neighbour, use_right);
+
+    // 还没见过 0 号以外的板时，邻板的位置是猜的，侧边灯条一律不关联。
+    expect(
+      target.matchLight(
+        std::vector<L2Perception::Light>{light}, matched, start, calibration, camera)
+        .empty(),
+      "jumped 为假时不应关联侧边灯条");
+    target.jumped = true;
+
     const auto matched_lights = target.matchLight(
       std::vector<L2Perception::Light>{light}, matched, start, calibration, camera);
-    expect(matched_lights.size() == 1, "独立灯条没有关联到预测物理灯条");
+    expect(matched_lights.size() == 1, "侧边灯条没有关联到预测物理灯条");
     expect(
       target.matchLight(
         std::vector<L2Perception::Light>{light}, {}, start, calibration, camera)
@@ -370,7 +389,108 @@ int main()
       "半径被推到了物理范围之外");
   }
 
-  // --- 5. snapshot 不携带滤波器 --------------------------------------
+  // --- 5. 收敛后侧边灯条的卡方门限 ---------------------------------
+  //
+  // 刚初始化时 P 很大，卡方门限几乎不设防，所以先跑到收敛再测：邻板靠近本板
+  // 的那根灯条放行，同一根灯条平移两倍灯长、以及本板自己的灯条都要拒掉。平移
+  // 两倍灯长时两端点距离和是 4 倍灯长，旧的“5 倍灯长”像素门限会放行。
+  {
+    L3Estimation::EskfTarget target;
+    const auto detection =
+      synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
+    target.reset(detection, config, start, calibration, camera);
+
+    State truth_now = truth;
+    const VM::Motion truth_motion{.dt = kDt, .name = kName};
+    auto now = start;
+    const auto advance = [&]() {
+      State next;
+      truth_motion(truth_now.data(), next.data());
+      truth_now = next;
+      now += std::chrono::duration_cast<L3Estimation::TimePoint::duration>(
+        std::chrono::duration<double>(kDt));
+    };
+    for (int step = 0; step < 600; ++step) {
+      advance();
+      std::vector<L3Estimation::Armor> detections;
+      for (int id = 0; id < kArmorNum; ++id) {
+        if (facesCamera(truth_now, id, camera)) {
+          detections.push_back(
+            synthesizeDetection(truth_now, id, calibration, camera, config.armor, now));
+        }
+      }
+      target.predictEkf(now);
+      target.update(target.matchArmor(detections, now, calibration, camera), now,
+                    calibration, camera);
+    }
+    expect(target.jumped && target.converged(), "卡方门限测试前目标应当已收敛");
+
+    // 按真值找最正对的板和另一块朝向相机的板。初始化时认的是真值 0 号板，
+    // 两边编号一致。
+    const auto facing = [&](int id) {
+      const auto pose = VM::armorPose<double>(truth_now.data(), id, kArmorNum, kName);
+      const Eigen::Isometry3d in_camera = camera.inverse() * pose;
+      return (-in_camera.linear().col(0)).dot(-in_camera.translation());
+    };
+    advance();
+    int front = 0;
+    for (int id = 1; id < kArmorNum; ++id) {
+      if (facing(id) > facing(front)) {
+        front = id;
+      }
+    }
+    const int right = (front + 1) % kArmorNum;
+    const int left = (front + kArmorNum - 1) % kArmorNum;
+    const bool side_is_right = facing(right) > facing(left);
+    const int side = side_is_right ? right : left;
+    expect(facing(side) > 0.0, "收敛时刻应当有两块板朝向相机");
+
+    const auto truthLight = [&](int id, bool is_left, float shift_by_length) {
+      L3Estimation::LightContext ctx;
+      ctx.armor_num = kArmorNum;
+      ctx.id = id;
+      ctx.is_left = is_left;
+      ctx.name = kName;
+      ctx.armor_config = config.armor;
+      ctx.camera_in_world = camera;
+      ctx.camera_matrix = calibration.camera_matrix;
+      ctx.distortion_coefficients = calibration.distortion_coefficients;
+      const auto [top, bottom] = L3Estimation::LightMeasure{ctx}.projectedPoints(truth_now);
+      L2Perception::Light light;
+      light.length = cv::norm(top - bottom);
+      const cv::Point2f shift(shift_by_length * static_cast<float>(light.length), 0.0F);
+      light.top = top + shift;
+      light.bottom = bottom + shift;
+      light.center = (light.top + light.bottom) * 0.5F;
+      light.color = L2Perception::ArmorColor::Blue;
+      return light;
+    };
+
+    target.predictEkf(now);
+    const std::vector<L3Estimation::Armor> front_only{
+      synthesizeDetection(truth_now, front, calibration, camera, config.armor, now)};
+    const auto matched = target.matchArmor(front_only, now, calibration, camera);
+    expect(
+      matched.size() == 1 && matched.front().first == front, "正对的板应当关联到自己的编号");
+
+    const auto matchOne = [&](const L2Perception::Light& light) {
+      return target.matchLight(
+        std::vector<L2Perception::Light>{light}, matched, now, calibration, camera);
+    };
+    const auto accepted = matchOne(truthLight(side, side_is_right, 0.0F));
+    expect(
+      accepted.size() == 1 && std::get<0>(accepted.front()) == side &&
+        std::get<1>(accepted.front()) == side_is_right,
+      "收敛后邻板靠近本板的灯条应当关联到那根物理灯条");
+    expect(
+      matchOne(truthLight(side, side_is_right, 2.0F)).empty(),
+      "平移两倍灯长的侧边灯条应当被卡方门限拒掉");
+    expect(
+      matchOne(truthLight(front, !side_is_right, 0.0F)).empty(),
+      "本板自己的灯条不应关联到邻板槽位");
+  }
+
+  // --- 6. snapshot 不携带滤波器 --------------------------------------
   {
     L3Estimation::EskfTarget target;
     const auto detection =

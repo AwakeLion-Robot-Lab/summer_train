@@ -1,5 +1,6 @@
-// findLights 与 mergeLights 的 smoke：不需要模型，在合成图上画几根灯条，逐条
-// 确认端点、形状门限、颜色判定、ROI 限制和两路合并的取舍。
+// 侧边灯条相关的 smoke：不需要模型，在合成图上画几根灯条，逐条确认端点、形状
+// 门限、颜色判定、ROI 限制、两路合并的取舍，以及剔除已检出装甲板自己的灯条。
+#include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/armor/light_detector.hpp"
 
 #include <opencv2/imgproc.hpp>
@@ -147,6 +148,29 @@ int main()
       require(mergeLights(broken, {model[0]}, config.merge_radius, 0.0F)[0].source ==
                 LightSource::Classic,
               "length_agree 0 always keeps the classic light");
+    }
+
+    // insideArmor：板自己的灯条算板的，相邻板的灯条（3 m 处约 4 倍灯长开外）不算。
+    {
+      L2Perception::Armor armor;
+      armor.corners = {
+        cv::Point2f{400.0F, 300.0F}, cv::Point2f{500.0F, 300.0F},
+        cv::Point2f{500.0F, 340.0F}, cv::Point2f{400.0F, 340.0F}};
+      const auto lightAt = [](float x, float y, float length) {
+        Light light;
+        light.center = {x, y};
+        light.top = {x, y - length * 0.5F};
+        light.bottom = {x, y + length * 0.5F};
+        light.length = length;
+        return light;
+      };
+      constexpr float kMargin = 0.5F;
+      require(L2Perception::insideArmor(lightAt(401.0F, 320.0F, 40.0F), armor, kMargin),
+              "the armor's own left light must count as inside");
+      require(L2Perception::insideArmor(lightAt(510.0F, 320.0F, 40.0F), armor, kMargin),
+              "a light within half a length of the box must count as inside");
+      require(!L2Perception::insideArmor(lightAt(660.0F, 320.0F, 40.0F), armor, kMargin),
+              "a neighbour-plate light four lengths away must stay a side light");
     }
 
     std::cout << "light detector smoke test passed\n";

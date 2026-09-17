@@ -12,6 +12,7 @@
 
 #include <opencv2/core/types.hpp>
 
+#include <memory>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -53,13 +54,22 @@ struct EskfTargetConfig
   // 没有数字和板型证据，应当比从装甲板拆出来的灯条更不可信。
   double isolated_light_sigma_scale{1.4};
 
-  // 单块完整板时那一维深度差观测的 sigma（米），以及独立灯条关联的三道门：
-  // 长度比、角度差、中心距离（按灯条长度归一）。
+  // 单块完整板时那一维深度差观测的 sigma（米）。
   double armor_lights_depth_diff_sigma{0.1};
+
+  // 侧边灯条（L2 在跟踪 ROI 里找到、不属于任何检出装甲板的灯条）的关联门限。
+  // 这些灯条没有类别证据，错配比漏配代价高得多，所以几道门都是硬拒绝：
+  //   长度比、角度差  与预测灯条比；
+  //   卡方门限        先验点上的马氏距离 rᵀS⁻¹r，S = H·P·Hᵀ + R，4 自由度；
+  //                   13.28 是 99% 分位。它随距离和滤波器不确定度自动缩放，
+  //                   比固定像素门限严：预测越准，放进来的范围越小；
+  //   require_jumped  见过 0 号以外的板之后才启用，在那之前整车 yaw、第二组
+  //                   半径和高度差几乎不可观测，邻板灯条的预测位置是猜的。
   bool enable_lights_measure{true};
   double light_match_length_ratio_gate{0.2};
   double light_match_angle_gate{0.2};
-  double light_match_pos_gate_by_length_ratio{5.0};
+  double light_match_chi2_gate{13.28};
+  bool light_match_require_jumped{true};
 
   // 装甲板关联的代价权重与门限，代价怎么算见 matchArmor。
   double match_gate{200.0};
@@ -109,7 +119,12 @@ public:
 
   // 把滤波器推进到 timestamp，dt 取与上一帧的实际间隔，掉帧和耗时抖动自然
   // 被吸收。
-  void predictEkf(TimePoint timestamp);
+  //
+  // 给了 hold_from 时，运动只积分到这一刻，之后位置和姿态原地不动，协方差仍按
+  // 完整的 dt 增长。长时间没有观测时，匀速外推出来的位置比"停在最后看到的
+  // 地方"更不可信：速度和角速度只要有一点偏差（错关联一次就够），外推一秒
+  // 就能转出去半圈。
+  void predictEkf(TimePoint timestamp, std::optional<TimePoint> hold_from = std::nullopt);
 
   // 把本帧的候选板关联到整车的各块物理板上：对每个 (观测, 板编号) 组合，把
   // 该板按当前状态投影出四个角点，与观测角点比中心、角度和边长，加权成一个
@@ -119,9 +134,12 @@ public:
     const L1Sensor::CameraCalibration & calibration,
     const Eigen::Isometry3d & camera_in_world) const;
 
-  // 把 ROI 里单独检出的灯条关联到整车的某根物理灯条上：预测各灯条的端点，
-  // 按长度比、角度差、中心距离三道门筛，通过的记下 (板编号, 左右)。
-  // 本帧一块完整板都没关联上时直接返回空。
+  // 把侧边灯条关联到整车的某根物理灯条上。候选只取最正对的那块板及其两块
+  // 邻板靠近它的那根灯条，已配成完整板的板和背对相机的板不参与；按长度比、
+  // 角度差、卡方三道门筛，通过的按马氏距离贪心配对，记下 (板编号, 左右)。
+  // 本帧一块完整板都没关联上、或 require_jumped 时还没见过别的板，直接返回空。
+  //
+  // 卡方门限用滤波器当前的先验协方差，调用前应已 predictEkf(timestamp)。
   std::vector<MatchedLight> matchLight(
     const std::vector<L2Perception::Light>& lights,
     const std::vector<std::pair<int, Armor>>& matched_armors,
@@ -223,6 +241,14 @@ private:
   // 拼一个 LightContext：板编号、左右、板数、板几何加当帧相机位姿与内参。
   LightContext makeContext(
     int id, bool is_left, const L1Sensor::CameraCalibration & calibration,
+    const Eigen::Isometry3d & camera_in_world) const;
+
+  // 把一根灯条的上下端点做成一个四维观测，R 由 lightCov 按灯条方向写出。
+  // isolated 表示侧边灯条，两个 sigma 再乘 isolated_light_sigma_scale。关联门限
+  // 和更新共用它，门限看到的 S 就是更新时真正用的。
+  std::shared_ptr<Filter::ObsBase> lightObs(
+    const cv::Point2f & top, const cv::Point2f & bottom, int id, bool is_left,
+    bool isolated, const L1Sensor::CameraCalibration & calibration,
     const Eigen::Isometry3d & camera_in_world) const;
 
   EskfTargetConfig config_{};

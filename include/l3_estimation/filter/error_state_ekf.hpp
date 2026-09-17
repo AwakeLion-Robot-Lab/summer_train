@@ -236,50 +236,15 @@ public:
     Eigen::MatrixXd k_matrix(N_X, total_dim);
 
     for (int iter = 0; iter < iteration_num_; ++iter) {
-      MatrixX1 x_eval = x_nominal_;
-      inject_state_(delta_iter, x_eval);  // 在当前迭代点线性化
-
+      // 每轮在当前迭代点 x̌ ⊞ δ_iter 重新线性化。
       int offset = 0;
       for (const auto & obs : obs_list) {
         const int d = obs->dim();
 
-        Eigen::VectorXd z_pred;
         Eigen::VectorXd rk;
         Eigen::MatrixXd rk_cov;
-        obs->predict(x_eval, z_pred);
-        obs->residualAndR(z_pred, rk, rk_cov);
-
-        // 中心差分求 H，三处关键：
-        //   扰动加在 δ 上再 ⊞ 进去，求出的才是 ∂z/∂δ，与 P 同一坐标系；
-        //   差的是 residual 而不是 z_pred，观测若带角度这类缠绕分量，归一化
-        //   才进得到导数里，否则预测值分居 ±π 两侧时会差出一个 2π 的假梯度；
-        //   末尾取负，因为 r = z - ẑ，所以 -∂r/∂δ = ∂ẑ/∂δ = H。
-        Eigen::MatrixXd hk(d, N_X);
-        constexpr double kEps = 1e-6;
-        for (int i = 0; i < N_X; ++i) {
-          MatrixX1 delta_plus = delta_iter;
-          MatrixX1 delta_minus = delta_iter;
-          delta_plus[i] += kEps;
-          delta_minus[i] -= kEps;
-
-          MatrixX1 x_plus = x_nominal_;
-          MatrixX1 x_minus = x_nominal_;
-          inject_state_(delta_plus, x_plus);
-          inject_state_(delta_minus, x_minus);
-
-          Eigen::VectorXd z_plus;
-          Eigen::VectorXd z_minus;
-          obs->predict(x_plus, z_plus);
-          obs->predict(x_minus, z_minus);
-
-          Eigen::VectorXd residual_plus;
-          Eigen::VectorXd residual_minus;
-          Eigen::MatrixXd ignored;
-          obs->residualAndR(z_plus, residual_plus, ignored);
-          obs->residualAndR(z_minus, residual_minus, ignored);
-
-          hk.col(i) = -(residual_plus - residual_minus) / (2.0 * kEps);
-        }
+        Eigen::MatrixXd hk;
+        linearize(*obs, delta_iter, rk, rk_cov, hk);
 
         h_matrix.block(offset, 0, d, N_X) = hk;
         residual.segment(offset, d) = rk;
@@ -323,6 +288,17 @@ public:
     return x_nominal_;
   }
 
+  // 单个观测在当前先验点上的创新量 r 和协方差 S = H·P·Hᵀ + R，不改任何状态。
+  // 给关联门限算马氏距离用，调用前应已 predict 到观测时刻。
+  void innovation(
+    const ObsBase & obs, Eigen::VectorXd & residual, Eigen::MatrixXd & covariance) const
+  {
+    Eigen::MatrixXd r_cov;
+    Eigen::MatrixXd h;
+    linearize(obs, delta_x_, residual, r_cov, h);
+    covariance = h * P_delta_ * h.transpose() + r_cov;
+  }
+
   // 最近一次更新在先验点上的创新量和它的协方差，供 NIS 记账与遥测读取。
   const Eigen::VectorXd & lastResidual() const noexcept { return last_residual_; }
   const Eigen::MatrixXd & lastInnovCov() const noexcept
@@ -331,6 +307,49 @@ public:
   }
 
 private:
+  // 在 x̌ ⊞ delta 处求一个观测的残差、R 和 H。H 用中心差分，三处关键：
+  //   扰动加在 δ 上再 ⊞ 进去，求出的才是 ∂z/∂δ，与 P 同一坐标系；
+  //   差的是 residual 而不是 z_pred，观测若带角度这类缠绕分量，归一化才进得到
+  //   导数里，否则预测值分居 ±π 两侧时会差出一个 2π 的假梯度；
+  //   末尾取负，因为 r = z - ẑ，所以 -∂r/∂δ = ∂ẑ/∂δ = H。
+  void linearize(
+    const ObsBase & obs, const MatrixX1 & delta, Eigen::VectorXd & residual,
+    Eigen::MatrixXd & r_cov, Eigen::MatrixXd & h) const
+  {
+    MatrixX1 x_eval = x_nominal_;
+    inject_state_(delta, x_eval);
+    Eigen::VectorXd z_pred;
+    obs.predict(x_eval, z_pred);
+    obs.residualAndR(z_pred, residual, r_cov);
+
+    constexpr double kEps = 1e-6;
+    h.resize(obs.dim(), N_X);
+    for (int i = 0; i < N_X; ++i) {
+      MatrixX1 delta_plus = delta;
+      MatrixX1 delta_minus = delta;
+      delta_plus[i] += kEps;
+      delta_minus[i] -= kEps;
+
+      MatrixX1 x_plus = x_nominal_;
+      MatrixX1 x_minus = x_nominal_;
+      inject_state_(delta_plus, x_plus);
+      inject_state_(delta_minus, x_minus);
+
+      Eigen::VectorXd z_plus;
+      Eigen::VectorXd z_minus;
+      obs.predict(x_plus, z_plus);
+      obs.predict(x_minus, z_minus);
+
+      Eigen::VectorXd residual_plus;
+      Eigen::VectorXd residual_minus;
+      Eigen::MatrixXd ignored;
+      obs.residualAndR(z_plus, residual_plus, ignored);
+      obs.residualAndR(z_minus, residual_minus, ignored);
+
+      h.col(i) = -(residual_plus - residual_minus) / (2.0 * kEps);
+    }
+  }
+
   PredictFunc f_{};
   UpdateQFunc update_Q_{};
   InjectFunc inject_state_{};

@@ -43,8 +43,12 @@ Thumbs.db
 
 # 离线回放录像：单个 avi 数百 MB，records/ 整体 3 GB，不进仓库
 /records/
-/tests/*
-!/tests/daedalus_client_smoke.cpp
+# 测试产物，以及顺手丢进 tests/ 的本地录像。tests/ 下的源码必须跟踪：xmake 按
+# 文件名生成 target，漏掉一个就等于这条链路在别人机器上没有测试。
+# （曾写成 /tests/*，结果每加一个冒烟测试都要 git add -f，实际全被漏掉过。）
+/tests/output/
+/tests/**/*.avi
+/tests/**/*.mp4
 
 # 灯条数据集的准备与清洗脚本。它们是一次性的数据加工工具，依赖 roboflow 导出
 # 的本地目录结构，换台机器就跑不了，不属于视觉程序本身。

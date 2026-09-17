@@ -53,7 +53,7 @@ void drawDetections(
                                ? "red"
                                : detection.color == L2Perception::ArmorColor::Blue ? "blue" : "unknown";
 
-    // 画灯条端点构成的四角点，坐标已从 letterbox 还原到原图。
+    // 画网络（或精修后）的四角点，坐标已从 letterbox 还原到原图。
     for (std::size_t index = 0; index < detection.corners.size(); ++index) {
       const auto& start = detection.corners[index];
       const auto& end = detection.corners[(index + 1) % detection.corners.size()];
@@ -73,8 +73,8 @@ void drawDetections(
 int main(int argc, char** argv)
 {
   try {
-    // 不给模型参数时跑 auto_aim.yaml 里真正配置的那一个；给了参数则只换灯条模型，
-    // 数字分类器和各项门限仍取 YAML。
+    // 不给模型参数时跑 auto_aim.yaml 里真正配置的那一个；给了参数则只换整板
+    // 模型，layout 按模型输出名认，精修参数仍取 YAML。
     const auto runtime_config = runtime::loadConfig("config/auto_aim.yaml");
     const std::filesystem::path model_path = argc < 2
       ? runtime_config.model_path
@@ -100,12 +100,13 @@ int main(int argc, char** argv)
       image = cv::Mat(1080, 1440, CV_8UC3, cv::Scalar(0, 0, 0));
     }
 
-    // 与实机同一个工厂组装：灯条模型 + 数字分类，所以这里量到的就是实机 L2 的整帧耗时。
+    // 与实机同一个工厂组装：整板模型 + 角点精修，量到的就是实机 L2 的整帧耗时。
+    // detect() 不给 light_roi，侧边灯条那一路不参与计时。
     runtime::AutoAimConfig detector_config = runtime_config;
     detector_config.inference.model_path = model_path;
     detector_config.inference.device = device;
     const L2Perception::ArmorDetector armor_detector =
-      runtime::makeDetector(detector_config);
+      runtime::makeDetector(detector_config, argc >= 2);
     require(armor_detector.ready(), "ArmorDetector did not accept the loaded backend");
     const auto detect_frame = [&](const cv::Mat& frame) {
       return armor_detector.detect(frame);

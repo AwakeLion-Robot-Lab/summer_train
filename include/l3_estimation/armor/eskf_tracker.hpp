@@ -31,6 +31,14 @@ struct EskfTrackerConfig
   // 回放倍速不影响判定。前哨转速固定、轨迹规整，可以撑更久。
   double lost_time_thres{1.5};
   double lost_time_thres_outpost{2.0};
+  // 相邻两次 track() 的时间差超过它（秒）就当作断过流：相机掉线重连、回放
+  // 拼接都会这样。两个槽全部复位，用当前帧重建。按旧速度外推这么久没有意义，
+  // 外推出来的目标还会照常交给 L4。
+  double max_frame_gap{0.1};
+  // 距上次成功更新超过它（秒）后，预测不再按速度外推，目标停在这一刻的位置
+  // 和姿态上，协方差照常增长。速度或角速度一旦被错关联带偏，TempLost 期间
+  // 匀速外推能把目标推出画面，按预测位置做的关联也就再也接不上真实的板。
+  double temp_lost_predict_time{0.1};
 };
 
 // 本帧真正作为端点观测送进 IESKF 多观测更新的一根灯条。完整装甲板会拆成
@@ -98,6 +106,10 @@ public:
     return buffer_[current_].used_lights;
   }
 
+  // 当前目标被丢弃的累计次数（超时、发散、Detecting 丢帧、断流）。丢弃后同一帧
+  // 就可能重建，只看 state() 数不出这些，诊断工具按这个计数。
+  std::size_t dropCount() const noexcept { return drop_count_; }
+
   // 本帧全部观测，含被质量门限拒掉的，供 L6 调试显示。
   const std::vector<Armor> & observations() const noexcept { return observations_; }
   std::vector<Eigen::Vector4d> armorPoses() const;
@@ -114,9 +126,11 @@ private:
     std::vector<UsedLight> used_lights;
   };
 
+  // prefer 给定时优先取同类别的候选，没有才退回最靠近图像中心的那块。
   bool initTarget(
     Slot& slot, const std::vector<Armor>& candidates, TimePoint timestamp,
-    const Eigen::Isometry3d & camera_in_world);
+    const Eigen::Isometry3d & camera_in_world,
+    std::optional<ArmorName> prefer = std::nullopt);
   bool updateTarget(
     Slot& slot, const std::vector<Armor>& candidates,
     const std::vector<L2Perception::Light>& lights, TimePoint timestamp,
@@ -137,6 +151,8 @@ private:
   // 最后按离图像中心的距离排序，近的在前。
   std::vector<Armor> initCandidates();
   double lostThreshold(const EskfTarget & target) const noexcept;
+  // 这个槽的运动外推截止时刻：上次成功更新后再过 temp_lost_predict_time。
+  TimePoint holdFrom(const Slot & slot) const noexcept;
 
   L1Sensor::CameraCalibration calibration_;
   ArmorConfig armor_config_;
@@ -148,10 +164,16 @@ private:
 
   // 双缓冲：当前目标进 TempLost 时，另一个槽位同时尝试初始化新目标，新目标
   // 先转成 Tracking 就交换上来。这样切目标或目标被短暂完全遮挡后重新出现都
-  // 能马上接上，不必等当前目标超时。
+  // 能马上接上，不必等当前目标超时。备用槽优先抓与当前目标同类别的板；当前
+  // 目标的外推已经停住（见 temp_lost_predict_time）时，同类别的新目标不必等
+  // 转 Tracking，带着自己的 Detecting 计数直接换上来。
   std::array<Slot, 2> buffer_{};
   std::size_t current_{0};
   std::size_t previous_{1};
+
+  // 上一次 track() 的帧时间，用来判断断流。
+  std::optional<TimePoint> last_frame_;
+  std::size_t drop_count_{0};
 
   std::vector<Armor> observations_;
   int last_match_count_{0};

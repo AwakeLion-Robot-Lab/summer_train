@@ -106,8 +106,42 @@ void normalize(AutoAimConfig& config)
     config.armor.height = armor_defaults.height;
   }
 
-  // 灯条链路的阈值越界不会报错，只会静默失效：分数阈值 >= 1 一根灯条也检不出，
+  // L2 阈值越界不会报错，只会静默失效：置信度阈值 >= 1 一块板也检不出，
   // 颜色比 <= 1 会让红蓝判定区间重叠。
+  // 阈值的回退值取当前 layout 预设的：两种模型的置信度分布不同，不能混用。
+  const bool yolov8 = config.decoder.contract == L2Perception::yolov8Preset().contract;
+  const L2Perception::ArmorDecoderConfig decoder_defaults =
+    yolov8 ? L2Perception::yolov8Preset() : L2Perception::yolov5Preset();
+  for (const auto& [value, fallback] : {
+         std::pair{&config.decoder.confidence_threshold, decoder_defaults.confidence_threshold},
+         std::pair{&config.decoder.minimum_confidence, decoder_defaults.minimum_confidence},
+         std::pair{&config.decoder.nms_iou_threshold, decoder_defaults.nms_iou_threshold},
+         std::pair{&config.decoder.nms_score_threshold, decoder_defaults.nms_score_threshold}}) {
+    if (!(*value >= 0.0F && *value <= 1.0F)) {
+      *value = fallback;
+    }
+  }
+
+  const L2Perception::ArmorRefinerConfig refiner_defaults;
+  if (!(config.refiner.binary_threshold > 0.0 && config.refiner.binary_threshold < 255.0)) {
+    config.refiner.binary_threshold = refiner_defaults.binary_threshold;
+  }
+  if (!positiveFinite(config.refiner.min_lightbar_length_px)) {
+    config.refiner.min_lightbar_length_px = refiner_defaults.min_lightbar_length_px;
+  }
+  if (!positiveFinite(config.refiner.max_endpoint_distance_px)) {
+    config.refiner.max_endpoint_distance_px = refiner_defaults.max_endpoint_distance_px;
+  }
+  if (!(config.refiner.min_lightbar_ratio > 0.0F &&
+        config.refiner.min_lightbar_ratio < config.refiner.max_lightbar_ratio)) {
+    config.refiner.min_lightbar_ratio = refiner_defaults.min_lightbar_ratio;
+    config.refiner.max_lightbar_ratio = refiner_defaults.max_lightbar_ratio;
+  }
+  if (!(config.refiner.max_angle_error_deg > 0.0F &&
+        config.refiner.max_angle_error_deg <= 90.0F)) {
+    config.refiner.max_angle_error_deg = refiner_defaults.max_angle_error_deg;
+  }
+
   const L2Perception::LightDecoderConfig light_decoder_defaults;
   if (!(config.light_decoder.score_threshold > 0.0F &&
         config.light_decoder.score_threshold < 1.0F)) {
@@ -121,34 +155,6 @@ void normalize(AutoAimConfig& config)
         config.light_decoder.color_ratio_threshold > 1.0)) {
     config.light_decoder.color_ratio_threshold =
       light_decoder_defaults.color_ratio_threshold;
-  }
-
-  const L2Perception::LightMatcherConfig light_matcher_defaults;
-  if (!(config.light_matcher.min_light_length_ratio > 0.0F &&
-        config.light_matcher.min_light_length_ratio < 1.0F)) {
-    config.light_matcher.min_light_length_ratio =
-      light_matcher_defaults.min_light_length_ratio;
-  }
-  // 四个间距必须依次不减，否则小板/大板区间会交叉或整个为空。
-  if (!(config.light_matcher.min_small_center_distance > 0.0F &&
-        config.light_matcher.min_small_center_distance <
-          config.light_matcher.max_small_center_distance &&
-        config.light_matcher.max_small_center_distance <=
-          config.light_matcher.min_large_center_distance &&
-        config.light_matcher.min_large_center_distance <
-          config.light_matcher.max_large_center_distance)) {
-    config.light_matcher.min_small_center_distance =
-      light_matcher_defaults.min_small_center_distance;
-    config.light_matcher.max_small_center_distance =
-      light_matcher_defaults.max_small_center_distance;
-    config.light_matcher.min_large_center_distance =
-      light_matcher_defaults.min_large_center_distance;
-    config.light_matcher.max_large_center_distance =
-      light_matcher_defaults.max_large_center_distance;
-  }
-  if (!(config.light_matcher.max_pair_angle_deg > 0.0F &&
-        config.light_matcher.max_pair_angle_deg <= 90.0F)) {
-    config.light_matcher.max_pair_angle_deg = light_matcher_defaults.max_pair_angle_deg;
   }
 
   const L2Perception::LightFinderConfig light_finder_defaults;
@@ -167,18 +173,27 @@ void normalize(AutoAimConfig& config)
   if (!(std::isfinite(config.light_finder.min_length) && config.light_finder.min_length >= 0.0F)) {
     config.light_finder.min_length = light_finder_defaults.min_length;
   }
-  // 判重半径到 0.8 就会把同一块板的左右灯条当成一根，见 LightFinderConfig。
+  // 判重半径不能大到把同一块板的两根灯条并掉。
   if (!(config.light_finder.merge_radius >= 0.0F && config.light_finder.merge_radius < 0.8F)) {
     config.light_finder.merge_radius = light_finder_defaults.merge_radius;
   }
   if (!(config.light_finder.length_agree >= 0.0F && config.light_finder.length_agree <= 1.0F)) {
     config.light_finder.length_agree = light_finder_defaults.length_agree;
   }
+  // 外扩太大会把相邻板的灯条也当成已检出板的（3 m 处两者相距约 4 倍灯长）。
+  if (!(config.light_finder.armor_margin >= 0.0F && config.light_finder.armor_margin < 2.0F)) {
+    config.light_finder.armor_margin = light_finder_defaults.armor_margin;
+  }
 
   const L2Perception::NumberClassifierConfig number_defaults;
+  // 置信度门限落到 [0, 1] 外等于放弃这道筛选或全盘拒绝，两种都不是想要的。
   if (!(config.number_classifier.min_confidence >= 0.0 &&
-        config.number_classifier.min_confidence < 1.0)) {
+        config.number_classifier.min_confidence <= 1.0)) {
     config.number_classifier.min_confidence = number_defaults.min_confidence;
+  }
+  if (!positiveFinite(config.number_classifier.large_center_distance_ratio)) {
+    config.number_classifier.large_center_distance_ratio =
+      number_defaults.large_center_distance_ratio;
   }
 
   // 整车 IESKF：状态机按真实时间计，过程噪声在车体系表达，端点观测的噪声
@@ -196,6 +211,13 @@ void normalize(AutoAimConfig& config)
   config.ieskf_tracker.lost_time_thres_outpost = std::max(
     config.ieskf_tracker.lost_time_thres_outpost,
     config.ieskf_tracker.lost_time_thres);
+  if (!positiveFinite(config.ieskf_tracker.max_frame_gap)) {
+    config.ieskf_tracker.max_frame_gap = ieskf_tracker_defaults.max_frame_gap;
+  }
+  if (!positiveFinite(config.ieskf_tracker.temp_lost_predict_time)) {
+    config.ieskf_tracker.temp_lost_predict_time =
+      ieskf_tracker_defaults.temp_lost_predict_time;
+  }
 
   const L3Estimation::EskfTargetConfig ieskf_target_defaults;
   config.ieskf_target.iteration_num = std::max(config.ieskf_target.iteration_num, 1);
@@ -232,8 +254,8 @@ void normalize(AutoAimConfig& config)
                    ieskf_target_defaults.light_match_length_ratio_gate},
          std::pair{&config.ieskf_target.light_match_angle_gate,
                    ieskf_target_defaults.light_match_angle_gate},
-         std::pair{&config.ieskf_target.light_match_pos_gate_by_length_ratio,
-                   ieskf_target_defaults.light_match_pos_gate_by_length_ratio},
+         std::pair{&config.ieskf_target.light_match_chi2_gate,
+                   ieskf_target_defaults.light_match_chi2_gate},
          std::pair{&config.ieskf_target.match_gate,
                    ieskf_target_defaults.match_gate},
          std::pair{&config.ieskf_target.match_gate_not_all_init,
@@ -430,6 +452,22 @@ AutoAimConfig loadConfig(const std::string& path)
     if (!(config.inference.normalization_divisor > 0.0F)) {
       throw std::runtime_error("inference.normalization_divisor must be positive");
     }
+
+    // 输出契约只能整组由 layout 选；阈值在预设之上覆盖，顺序不能反。
+    const YAML::Node decoder = inference["decoder"];
+    if (decoder && decoder["layout"]) {
+      const std::string layout = decoder["layout"].as<std::string>();
+      const auto preset = L2Perception::decoderPreset(layout);
+      if (!preset) {
+        throw std::runtime_error(
+          "inference.decoder.layout must be 'yolov5_22' or 'yolov8_21'; got " + layout);
+      }
+      config.decoder = *preset;
+    }
+    readValue(decoder, "confidence_threshold", config.decoder.confidence_threshold);
+    readValue(decoder, "minimum_confidence", config.decoder.minimum_confidence);
+    readValue(decoder, "nms_iou_threshold", config.decoder.nms_iou_threshold);
+    readValue(decoder, "nms_score_threshold", config.decoder.nms_score_threshold);
   }
 
   // 三个单列字段是同一份配置的一部分，回填进去，构造 Backend 时只传一个结构体。
@@ -441,42 +479,28 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(armor, "big_width_m", config.armor.big_width);
   readValue(armor, "height_m", config.armor.height);
 
-  const YAML::Node light_decoder = root["light_decoder"];
-  readValue(light_decoder, "score_threshold", config.light_decoder.score_threshold);
-  readValue(light_decoder, "nms_iou_threshold", config.light_decoder.nms_iou_threshold);
-  readValue(
-    light_decoder, "color_ratio_threshold", config.light_decoder.color_ratio_threshold);
-
-  const YAML::Node light_matcher = root["light_matcher"];
-  readValue(
-    light_matcher, "min_light_length_ratio", config.light_matcher.min_light_length_ratio);
-  readValue(
-    light_matcher, "min_small_center_distance",
-    config.light_matcher.min_small_center_distance);
-  readValue(
-    light_matcher, "max_small_center_distance",
-    config.light_matcher.max_small_center_distance);
-  readValue(
-    light_matcher, "min_large_center_distance",
-    config.light_matcher.min_large_center_distance);
-  readValue(
-    light_matcher, "max_large_center_distance",
-    config.light_matcher.max_large_center_distance);
-  readValue(light_matcher, "max_pair_angle_deg", config.light_matcher.max_pair_angle_deg);
+  const YAML::Node refiner = root["refiner"];
+  readValue(refiner, "enable", config.refiner.enable);
+  readValue(refiner, "binary_threshold", config.refiner.binary_threshold);
+  readValue(refiner, "min_lightbar_length_px", config.refiner.min_lightbar_length_px);
+  readValue(refiner, "max_angle_error_deg", config.refiner.max_angle_error_deg);
+  readValue(refiner, "min_lightbar_ratio", config.refiner.min_lightbar_ratio);
+  readValue(refiner, "max_lightbar_ratio", config.refiner.max_lightbar_ratio);
+  readValue(refiner, "max_endpoint_distance_px", config.refiner.max_endpoint_distance_px);
+  readValue(refiner, "pca_corner_correction", config.refiner.pca_corner_correction);
 
   const YAML::Node light_finder = root["light_finder"];
   if (light_finder && light_finder["mode"]) {
     const std::string mode = light_finder["mode"].as<std::string>();
-    if (mode == "model") {
-      config.light_finder.mode = L2Perception::LightMode::Model;
-    } else if (mode == "classic") {
-      config.light_finder.mode = L2Perception::LightMode::Classic;
-    } else if (mode == "hybrid") {
-      config.light_finder.mode = L2Perception::LightMode::Hybrid;
-    } else {
+    const auto parsed = L2Perception::parseLightMode(mode);
+    if (!parsed) {
       throw std::runtime_error(
         "light_finder.mode must be 'model', 'classic' or 'hybrid'; got " + mode);
     }
+    config.light_finder.mode = *parsed;
+  }
+  if (light_finder && light_finder["model_path"]) {
+    config.light_model_path = light_finder["model_path"].as<std::string>();
   }
   readValue(light_finder, "binary_threshold", config.light_finder.binary_threshold);
   readValue(light_finder, "min_ratio", config.light_finder.min_ratio);
@@ -485,24 +509,46 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(light_finder, "min_length_px", config.light_finder.min_length);
   readValue(light_finder, "merge_radius", config.light_finder.merge_radius);
   readValue(light_finder, "length_agree", config.light_finder.length_agree);
+  readValue(light_finder, "armor_margin", config.light_finder.armor_margin);
+
+  const YAML::Node light_decoder = root["light_decoder"];
+  readValue(light_decoder, "score_threshold", config.light_decoder.score_threshold);
+  readValue(light_decoder, "nms_iou_threshold", config.light_decoder.nms_iou_threshold);
+  readValue(
+    light_decoder, "color_ratio_threshold", config.light_decoder.color_ratio_threshold);
 
   const YAML::Node number_classifier = root["number_classifier"];
+  readValue(number_classifier, "enable", config.number_classifier.enable);
   if (number_classifier && number_classifier["model_path"]) {
-    config.number_classifier.model_path =
-      number_classifier["model_path"].as<std::string>();
+    config.number_classifier.model_path = number_classifier["model_path"].as<std::string>();
   }
   if (number_classifier && number_classifier["label_path"]) {
-    config.number_classifier.label_path =
-      number_classifier["label_path"].as<std::string>();
+    config.number_classifier.label_path = number_classifier["label_path"].as<std::string>();
   }
+  if (number_classifier && number_classifier["on_reject"]) {
+    const std::string policy = number_classifier["on_reject"].as<std::string>();
+    if (policy == "drop") {
+      config.number_classifier.on_reject = L2Perception::RejectPolicy::Drop;
+    } else if (policy == "keep") {
+      config.number_classifier.on_reject = L2Perception::RejectPolicy::Keep;
+    } else {
+      throw std::runtime_error(
+        "number_classifier.on_reject must be 'drop' or 'keep'; got " + policy);
+    }
+  }
+  readValue(number_classifier, "min_confidence", config.number_classifier.min_confidence);
   readValue(
-    number_classifier, "min_confidence", config.number_classifier.min_confidence);
+    number_classifier, "large_center_distance_ratio",
+    config.number_classifier.large_center_distance_ratio);
 
   const YAML::Node ieskf = root["ieskf"];
   readValue(ieskf, "tracking_thres", config.ieskf_tracker.tracking_thres);
   readValue(ieskf, "lost_time_thres", config.ieskf_tracker.lost_time_thres);
   readValue(
     ieskf, "lost_time_thres_outpost", config.ieskf_tracker.lost_time_thres_outpost);
+  readMillisecondsAsSeconds(ieskf, "max_frame_gap_ms", config.ieskf_tracker.max_frame_gap);
+  readMillisecondsAsSeconds(
+    ieskf, "temp_lost_predict_ms", config.ieskf_tracker.temp_lost_predict_time);
   readValue(ieskf, "iteration_num", config.ieskf_target.iteration_num);
   readVector3(
     ieskf, "body_acceleration", config.ieskf_target.noise.body_acceleration);
@@ -540,8 +586,10 @@ AutoAimConfig loadConfig(const std::string& path)
     ieskf, "light_match_angle_gate",
     config.ieskf_target.light_match_angle_gate);
   readValue(
-    ieskf, "light_match_pos_gate_by_length_ratio",
-    config.ieskf_target.light_match_pos_gate_by_length_ratio);
+    ieskf, "light_match_chi2_gate", config.ieskf_target.light_match_chi2_gate);
+  readValue(
+    ieskf, "light_match_require_jumped",
+    config.ieskf_target.light_match_require_jumped);
   readValue(ieskf, "match_gate", config.ieskf_target.match_gate);
   readValue(
     ieskf, "match_gate_not_all_init", config.ieskf_target.match_gate_not_all_init);

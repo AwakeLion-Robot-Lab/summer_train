@@ -1,7 +1,8 @@
 #pragma once
 
+#include "l2_perception/armor/armor_decoder.hpp"
+#include "l2_perception/armor/armor_refiner.hpp"
 #include "l2_perception/armor/light_detector.hpp"
-#include "l2_perception/armor/light_matcher.hpp"
 #include "l2_perception/armor/number_classifier.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/armor/eskf_tracker.hpp"
@@ -29,9 +30,8 @@ struct RuntimeSafetyConfig {
 };
 
 struct AutoAimConfig {
-  // 灯条关键点模型。装甲板由灯条配对而来，不再有整板检测网络；灯条是模型
-  // 还是传统二值化找的，由 light_finder.mode 决定。
-  std::filesystem::path model_path{"model/light_model/best.onnx"};
+  // 整板检测模型，输出契约由 decoder 的 layout 指定。
+  std::filesystem::path model_path{"model/armor_model/yolov5.xml"};
   std::string inference_device{"CPU"};
   L2Perception::InferenceBackendKind inference_backend{
     L2Perception::InferenceBackendKind::OpenVino};
@@ -43,13 +43,21 @@ struct AutoAimConfig {
   // 打日志和选后端；其余的只在构造 Backend 时透传，所以整个结构体直接放这。
   L2Perception::InferenceModelConfig inference;
 
-  // 关键点模型的解码阈值与颜色判定。模型输出形状在构造 ArmorDetector 时核对。
-  L2Perception::LightDecoderConfig light_decoder;
-  // 灯条来源（LightMode）和传统检测、两路合并的门限。
+  // 整板模型的输出契约与筛选阈值（inference.decoder），输出形状在构造
+  // ArmorDetector 时核对。
+  L2Perception::ArmorDecoderConfig decoder;
+  // 板 ROI 内的传统角点精修。
+  L2Perception::ArmorRefinerConfig refiner;
+
+  // 侧边灯条：来源（LightMode）、传统检测和两路合并的门限。
   L2Perception::LightFinderConfig light_finder;
-  // 灯条两两配对的几何门限。
-  L2Perception::LightMatcherConfig light_matcher;
-  // 数字分类：认出是哪辆车，进而决定整车模型的板数和 PnP 板型。
+  // 侧边灯条用的关键点模型，light_finder.mode 为 classic 时不加载。推理设备与
+  // 调度参数沿用 inference 里的。
+  std::filesystem::path light_model_path{"model/light_model/best.onnx"};
+  // 关键点模型的解码阈值；颜色判定阈值传统检测也用。
+  L2Perception::LightDecoderConfig light_decoder;
+
+  // 数字二次分类：整板网络的类别在原图 ROI 上重判一次，判不准的板直接丢掉。
   L2Perception::NumberClassifierConfig number_classifier;
 
   L3Estimation::ArmorConfig armor;
