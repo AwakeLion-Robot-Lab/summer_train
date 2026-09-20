@@ -97,6 +97,10 @@ struct LightMatchStats
   // 进了关联但一个候选灯条槽位都没开出来：能看见的板本帧都已配成完整板，
   // 或邻板背对相机。这时侧边灯条本来就无处可去，不算被门毙掉。
   std::size_t frames_no_candidate{0};
+  // 开出来的候选灯条槽位总数，每帧 0~4 个。除以"进了关联且有槽位的帧数"就是
+  // 每帧平均有几个位置能接侧边灯条，也就是采纳数的天花板——一个槽位最多收一
+  // 根。参与率低的时候先看它：槽位本来就只有一个的话，再松门限也多不出来。
+  std::size_t slots{0};
   // 逐 (灯条, 候选槽位) 对的计数，下面几项按门的先后顺序互斥累加。
   std::size_t considered{0};
   std::size_t reject_length{0};
@@ -105,6 +109,8 @@ struct LightMatchStats
   std::size_t passed{0};
   // 贪心配对之后真正返回的根数，必然不大于 passed。
   std::size_t matched{0};
+  // 至少采纳了一根侧边灯条的帧数。
+  std::size_t frames_matched{0};
 };
 
 class EskfTarget

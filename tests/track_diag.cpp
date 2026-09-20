@@ -822,6 +822,10 @@ int main(int argc, char* argv[])
               << "侧边灯条 L3 实际采纳        " << side_light_used << '\n'
               << "  关联跳过帧 无锚板/无候选槽  " << light_stats.frames_skipped
               << " / " << light_stats.frames_no_candidate << '\n'
+              << "  候选槽位 " << light_stats.slots << " 个 / 有槽位帧 "
+              << (frames - light_stats.frames_skipped
+                  - light_stats.frames_no_candidate)
+              << "  采纳到灯条的帧 " << light_stats.frames_matched << '\n'
               << "  过门 " << light_stats.passed << " / " << light_stats.considered
               << "  毙于 长度 " << light_stats.reject_length << " / 角度 "
               << light_stats.reject_angle << " / 卡方 "

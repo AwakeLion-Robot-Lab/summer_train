@@ -402,6 +402,10 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
     return result;
   }
 
+  if (stats != nullptr) {
+    stats->slots += visible_lights.size();
+  }
+
   constexpr double kMaxCost = 1e9;
   const int observation_count = static_cast<int>(lights.size());
   std::vector<std::vector<double>> cost(
@@ -479,6 +483,9 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   }
   if (stats != nullptr) {
     stats->matched += result.size();
+    if (!result.empty()) {
+      ++stats->frames_matched;
+    }
   }
   return result;
 }
