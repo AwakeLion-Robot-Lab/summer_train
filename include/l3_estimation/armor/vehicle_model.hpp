@@ -471,7 +471,7 @@ inline Eigen::Matrix<double, kStateSize, kStateSize> processNoise(
     for (int j = 0; j < 3; ++j) {
       const double value = acceleration_in_world(i, j);
       q(position_index[i], position_index[j]) = 0.25 * dt4 * value;
-      q(position_index[i], velocity_index[j]) = 0.5 * dt3 * value;
+      q(position_index[i], velocity_index[j]) = 0.5 * dt3 * value; 
       q(velocity_index[i], position_index[j]) = 0.5 * dt3 * value;
       q(velocity_index[i], velocity_index[j]) = dt2 * value;
     }

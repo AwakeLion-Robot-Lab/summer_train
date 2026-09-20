@@ -126,6 +126,10 @@ void normalize(AutoAimConfig& config)
   if (!(config.refiner.binary_threshold > 0.0 && config.refiner.binary_threshold < 255.0)) {
     config.refiner.binary_threshold = refiner_defaults.binary_threshold;
   }
+  if (!(config.refiner.color_diff_threshold > 0.0 &&
+        config.refiner.color_diff_threshold < 255.0)) {
+    config.refiner.color_diff_threshold = refiner_defaults.color_diff_threshold;
+  }
   if (!positiveFinite(config.refiner.min_lightbar_length_px)) {
     config.refiner.min_lightbar_length_px = refiner_defaults.min_lightbar_length_px;
   }
@@ -160,6 +164,10 @@ void normalize(AutoAimConfig& config)
   const L2Perception::LightFinderConfig light_finder_defaults;
   if (!(config.light_finder.binary_threshold > 0 && config.light_finder.binary_threshold < 255)) {
     config.light_finder.binary_threshold = light_finder_defaults.binary_threshold;
+  }
+  if (!(config.light_finder.color_diff_threshold > 0 &&
+        config.light_finder.color_diff_threshold < 255)) {
+    config.light_finder.color_diff_threshold = light_finder_defaults.color_diff_threshold;
   }
   if (!(config.light_finder.min_ratio >= 0.0F &&
         config.light_finder.min_ratio < config.light_finder.max_ratio &&
@@ -488,6 +496,8 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(refiner, "max_lightbar_ratio", config.refiner.max_lightbar_ratio);
   readValue(refiner, "max_endpoint_distance_px", config.refiner.max_endpoint_distance_px);
   readValue(refiner, "pca_corner_correction", config.refiner.pca_corner_correction);
+  readValue(refiner, "color_channel_diff", config.refiner.color_channel_diff);
+  readValue(refiner, "color_diff_threshold", config.refiner.color_diff_threshold);
 
   const YAML::Node light_finder = root["light_finder"];
   if (light_finder && light_finder["mode"]) {
@@ -503,6 +513,8 @@ AutoAimConfig loadConfig(const std::string& path)
     config.light_model_path = light_finder["model_path"].as<std::string>();
   }
   readValue(light_finder, "binary_threshold", config.light_finder.binary_threshold);
+  readValue(light_finder, "color_channel_diff", config.light_finder.color_channel_diff);
+  readValue(light_finder, "color_diff_threshold", config.light_finder.color_diff_threshold);
   readValue(light_finder, "min_ratio", config.light_finder.min_ratio);
   readValue(light_finder, "max_ratio", config.light_finder.max_ratio);
   readValue(light_finder, "max_angle_deg", config.light_finder.max_angle_deg);

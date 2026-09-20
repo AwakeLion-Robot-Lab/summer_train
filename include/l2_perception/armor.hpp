@@ -1,7 +1,5 @@
 #pragma once
 
-#include <Eigen/Core>
-
 #include <array>
 #include <cstddef>
 #include <optional>
@@ -105,12 +103,8 @@ struct Armor {
   // 数字分类器的 softmax 置信度；没跑二次分类时为 0。
   float number_confidence{0.0F};
 
-  Eigen::Vector3d xyz_in_barrel{Eigen::Vector3d::Zero()};  // 单位：m
-  Eigen::Vector3d xyz_in_world{Eigen::Vector3d::Zero()};   // 单位：m
-  // 固定顺序为 [yaw, pitch, roll]。
-  Eigen::Vector3d ypr_in_barrel{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d ypr_in_world{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};   // 方位角加距离
+  // 这里不带三维位姿：PnP 是 L3 的事，位姿只存在 L3Estimation::Armor 上。
+  // L2 再挂一份的话，两份迟早会有一份是陈的。
 };
 
 // 这根灯条由哪一路检出，见 LightMode。

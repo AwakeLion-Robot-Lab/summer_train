@@ -83,17 +83,15 @@ struct Armor {
   // L2 检测得到的四角点几何中心，单位为 pixel。
   cv::Point2f center{};
 
-  // 平移量单位均为 meter。
+  // 平移量单位均为 meter。枪管系只是 camera -> world 的中间量，没有下游读
+  // 它，就不落成字段，免得 PnP 失败时留着上一帧的残值。
   Eigen::Vector3d xyz_in_camera{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d xyz_in_barrel{Eigen::Vector3d::Zero()};
   Eigen::Vector3d xyz_in_world{Eigen::Vector3d::Zero()};
   // 固定顺序为 [yaw, pitch, roll]，采用 Rz(yaw)Ry(pitch)Rx(roll)。
   Eigen::Vector3d ypr_in_camera{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d ypr_in_barrel{Eigen::Vector3d::Zero()};
   Eigen::Vector3d ypr_in_world{Eigen::Vector3d::Zero()};
   // [方位角, 俯仰角, 距离]，角度单位为 radian，距离单位为 meter。
   Eigen::Vector3d ypd_in_world{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d ypd_in_barrel{Eigen::Vector3d::Zero()};
 
   // 四个角点的二维像素 RMSE，取自 IPPE 在相机系的原始解，与 yaw 优化无关。
   double reprojection_error{std::numeric_limits<double>::infinity()};

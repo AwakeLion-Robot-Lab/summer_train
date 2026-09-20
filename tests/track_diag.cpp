@@ -25,6 +25,7 @@
 #include "runtime/auto_aim_config.hpp"
 #include "l4_planning/armor/planner.hpp"
 #include "l4_planning/armor/predictor.hpp"
+#include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 
@@ -37,11 +38,13 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <numbers>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -141,39 +144,9 @@ Eigen::Quaterniond toWorldBarrelPose(
   return Eigen::Quaterniond(R_world_barrel);
 }
 
-// 把 world 系的一个点投到像素。overlay.csv 用它输出整车中心的像素位置，
-// 定义与 auto_aim_test 里画十字用的那个完全一致。
-std::optional<cv::Point2d> projectWorldPoint(
-  const Eigen::Vector3d& point_in_world,
-  const L1Sensor::CameraCalibration& calibration,
-  const Eigen::Quaterniond& q_world_barrel)
-{
-  if (!calibration.T_barrel_camera || !point_in_world.allFinite()) {
-    return std::nullopt;
-  }
-  Eigen::Isometry3d T_world_barrel = Eigen::Isometry3d::Identity();
-  T_world_barrel.linear() = q_world_barrel.toRotationMatrix();
-  const Eigen::Vector3d point_in_camera =
-    (T_world_barrel * *calibration.T_barrel_camera).inverse() * point_in_world;
-  if (!point_in_camera.allFinite() || point_in_camera.z() <= 1e-6) {
-    return std::nullopt;
-  }
-  std::vector<cv::Point2d> projected;
-  try {
-    cv::projectPoints(
-      std::vector<cv::Point3d>{
-        {point_in_camera.x(), point_in_camera.y(), point_in_camera.z()}},
-      cv::Vec3d::all(0.0), cv::Vec3d::all(0.0), calibration.camera_matrix,
-      calibration.distortion_coefficients, projected);
-  } catch (const cv::Exception&) {
-    return std::nullopt;
-  }
-  if (projected.size() != 1 || !std::isfinite(projected[0].x) ||
-      !std::isfinite(projected[0].y)) {
-    return std::nullopt;
-  }
-  return projected[0];
-}
+// overlay.csv 的整车中心像素位置直接用叠加层那份投影：实机画十字、
+// auto_aim_test 画十字、这里写 CSV 必须是同一个定义，各写一份迟早会漂。
+using L6Telemetry::projectWorldPoint;
 
 // 一块装甲板在图像上的"框中心"：四个投影角点的均值。这就是屏幕上看到的
 // 那个绿框的中心，和把三维板心单独投一次不完全相等（透视 + 畸变都非线性），
@@ -370,7 +343,11 @@ int main(int argc, char* argv[])
     std::ofstream frame_csv(out_dir / "frame.csv");
     frame_csv << "frame,t,dt,gimbal_yaw_deg,ndet,nmatch,state,"
                  "xc,vx,yc,vy,z,vz,yaw_deg,v_yaw,r1,r2,dz,armor_id,jumped,multi,"
-                 "updated,nis,nis_dof,nlight,res_along_px,res_perp_px,res_depth_m,reset\n";
+                 "updated,nis,nis_dof,nlight,res_along_px,res_perp_px,"
+                 "res_shift_perp_mean,res_shift_perp_rms,"
+                 "res_shift_along_mean,res_shift_along_rms,"
+                 "res_tilt_mean_deg,res_tilt_rms_deg,"
+                 "res_len_mean,res_len_rms,res_depth_m,reset\n";
     frame_csv << std::fixed;
 
     std::ofstream aim_csv(out_dir / "aim.csv");
@@ -407,6 +384,10 @@ int main(int argc, char* argv[])
     std::size_t frames_tracking = 0;
     std::size_t frames_with_det = 0;
     std::size_t double_update_frames = 0;
+    // 侧边灯条这一路真正的产出量。double_update_frames 数的是"同类别装甲板多于
+    // 一块"，跟侧边灯条无关，别拿它当灯条检出量看。
+    std::size_t side_light_total = 0;
+    std::size_t frames_with_side_light = 0;
     std::size_t number_accepted = 0;
     std::size_t number_dropped = 0;
     std::vector<double> ms_l2;
@@ -416,8 +397,22 @@ int main(int argc, char* argv[])
     std::vector<double> hold_pixel_err;
     std::vector<double> nis_values;
     std::vector<double> nis_per_dof;
+    std::size_t refine_hit = 0;
+    std::size_t refine_kept = 0;
+    std::size_t refine_no_bar = 0;
+    std::size_t refine_too_short = 0;
+    std::size_t refine_shift_rej = 0;
+    std::size_t refine_contours = 0;
+    std::size_t refine_bar_kept = 0;
+    std::size_t refine_rej_angle = 0;
+    std::size_t refine_rej_ratio = 0;
+    std::size_t refine_rej_len = 0;
     std::vector<double> res_along_stats;
     std::vector<double> res_perp_stats;
+    // 四个物理通道的逐帧统计，下标与 LightResidual 同序：横移⊥、沿移∥、
+    // 倾角、长度。mean 一列用来看系统偏差，rms 一列看噪声。
+    std::array<std::vector<double>, 4> res_channel_mean;
+    std::array<std::vector<double>, 4> res_channel_rms;
     std::vector<double> vyaws;
     std::vector<double> radii;
     std::optional<Eigen::Vector3d> last_aim_point;
@@ -452,7 +447,11 @@ int main(int argc, char* argv[])
       const cv::Rect net_roi = tracker.netFocusRoi(
         q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio());
       const auto t_l2_begin = std::chrono::steady_clock::now();
-      auto detection_frame = detector.detectFrame(img, light_roi, net_roi);
+      // 敌方颜色必须传进去：侧边灯条按它筛色，findLights 的通道相减也只在
+      // 颜色已知时才启用。不传等于把这条路默认关掉，而且会把友方灯条一起
+      // 喂进滤波器 —— auto_aim_test 一直是传的，两个回放器不能不一致。
+      auto detection_frame =
+        detector.detectFrame(img, light_roi, net_roi, enemy_color);
       const auto t_l2_end = std::chrono::steady_clock::now();
       auto armors = detection_frame.armors;
       std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
@@ -460,6 +459,8 @@ int main(int argc, char* argv[])
       });
       det_total += armors.size();
       if (!armors.empty()) ++frames_with_det;
+      side_light_total += detection_frame.lights.size();
+      if (!detection_frame.lights.empty()) ++frames_with_side_light;
 
       solver.set_R_world_barrel(q_world_barrel);
       const auto t_l3_begin = std::chrono::steady_clock::now();
@@ -491,6 +492,18 @@ int main(int argc, char* argv[])
       }
       if (match_here > 1) ++double_update_frames;
       // 数字二次分类丢掉的板：全局统计，判断门限是不是把有效观测也筛掉了。
+      // 精修的触发比例。判断"换底图之后精修变好了"还是"只是更少触发了"——
+      // 后者等于偷偷关掉功能，两种情况在 pred_px 上长得一模一样。
+      refine_hit += detector.lastRefine().refined;
+      refine_kept += detector.lastRefine().network_kept;
+      refine_no_bar += detector.lastRefine().no_lightbar;
+      refine_too_short += detector.lastRefine().size_skipped;
+      refine_shift_rej += detector.lastRefine().shift_rejected;
+      refine_contours += detector.lastRefine().contour_total;
+      refine_bar_kept += detector.lastRefine().bar_kept;
+      refine_rej_angle += detector.lastRefine().rej_angle;
+      refine_rej_ratio += detector.lastRefine().rej_ratio;
+      refine_rej_len += detector.lastRefine().rej_length;
       number_accepted += detector.lastNumbers().accepted;
       number_dropped += detector.lastNumbers().dropped();
 
@@ -507,6 +520,11 @@ int main(int argc, char* argv[])
       double res_along_px = std::numeric_limits<double>::quiet_NaN();
       double res_perp_px = std::numeric_limits<double>::quiet_NaN();
       double res_depth_m = std::numeric_limits<double>::quiet_NaN();
+      // 与 res_channel_* 同序，倾角一列换成度写进 CSV。
+      std::array<double, 4> res_channel_mean_row{};
+      std::array<double, 4> res_channel_rms_row{};
+      res_channel_mean_row.fill(std::numeric_limits<double>::quiet_NaN());
+      res_channel_rms_row.fill(std::numeric_limits<double>::quiet_NaN());
       int res_light_count = 0;
       // TempLost 这一帧没有观测进入滤波器，残差和 NIS 都是上一帧留下的，
       // 不进统计。
@@ -519,6 +537,18 @@ int main(int argc, char* argv[])
           res_light_count = residual.light_count;
           res_along_stats.push_back(residual.along_rms_px);
           res_perp_stats.push_back(residual.perp_rms_px);
+
+          const std::array<const L3Estimation::EskfTarget::LightResidual::Channel *, 4>
+            channels{&residual.shift_perp, &residual.shift_along, &residual.tilt,
+                     &residual.length};
+          for (std::size_t k = 0; k < channels.size(); ++k) {
+            // 倾角那一路存成度，CSV 和汇总都按度读。
+            const double scale = (k == 2) ? 180.0 / CV_PI : 1.0;
+            res_channel_mean_row[k] = channels[k]->mean * scale;
+            res_channel_rms_row[k] = channels[k]->rms * scale;
+            res_channel_mean[k].push_back(res_channel_mean_row[k]);
+            res_channel_rms[k].push_back(res_channel_rms_row[k]);
+          }
           nis_values.push_back(target->lastNis());
           if (target->lastNisDof() > 0) {
             nis_per_dof.push_back(target->lastNis() / target->lastNisDof());
@@ -557,7 +587,11 @@ int main(int argc, char* argv[])
         for (int column = 0; column < 16; ++column) frame_csv << ',';
       }
       frame_csv << (target ? target->lastNisDof() : 0) << ',' << res_light_count << ','
-                << res_along_px << ',' << res_perp_px << ',' << res_depth_m << ',' << (reset ? 1 : 0) << '\n';
+                << res_along_px << ',' << res_perp_px << ',';
+      for (std::size_t k = 0; k < res_channel_mean_row.size(); ++k) {
+        frame_csv << res_channel_mean_row[k] << ',' << res_channel_rms_row[k] << ',';
+      }
+      frame_csv << res_depth_m << ',' << (reset ? 1 : 0) << '\n';
 
       // 叠加层像素位置：整车中心 + 四块板的框心，外加当帧检出的板心作参照。
       {
@@ -739,6 +773,36 @@ int main(int argc, char* argv[])
     frame_csv.close();
     pred_csv.close();
 
+    // 四个物理通道的汇总。bias 取逐帧 mean 的平均，noise 取逐帧 rms 的
+    // 平方平均，两者分开看：bias 显著非零说明检测器在那一维有系统偏差，
+    // 放大 R 压不住它，得回检测侧修。
+    //
+    // 注意这里是**创新**不是观测噪声：r = z − h(x̌)，协方差是 S = H·P·Hᵀ + R，
+    // 含先验不确定度。所以这几个数能比较各通道的相对权重、能暴露偏差，但
+    // 不能直接当 lightCov 的 sigma 用。要标 R 本身得另外量：拿目标基本静止
+    // 的录像，把每根灯条的四个端点坐标在短窗口内去趋势，残差的经验协方差
+    // 转到灯条系读 sigma 和 rho。
+    const auto channel_report = [&]() {
+      static constexpr std::array<const char *, 4> kNames{
+        "横移⊥ px", "沿移∥ px", "倾角 deg", "长度 px"};
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(4)
+          << "-- 端点创新分四通道（先验点，含先验不确定度，非纯观测噪声）--\n";
+      for (std::size_t k = 0; k < kNames.size(); ++k) {
+        double square_sum = 0.0;
+        for (const double value : res_channel_rms[k]) square_sum += value * value;
+        const double noise = res_channel_rms[k].empty()
+                               ? 0.0
+                               : std::sqrt(square_sum / res_channel_rms[k].size());
+        std::vector<double> abs_mean;
+        abs_mean.reserve(res_channel_mean[k].size());
+        for (const double value : res_channel_mean[k]) abs_mean.push_back(std::abs(value));
+        out << kNames[k] << "  bias " << mean(res_channel_mean[k]) << "  noise "
+            << noise << "  |bias| p90 " << percentile(abs_mean, 0.9) << '\n';
+      }
+      return out.str();
+    };
+
     std::cout << "\n=== " << input << " ===\n"
               << "帧数                        " << frames << '\n'
               << "有检出的帧                  " << frames_with_det << '\n'
@@ -746,8 +810,23 @@ int main(int argc, char* argv[])
               << "Tracking 帧                 " << frames_tracking << '\n'
               << "跟踪丢失/重置次数           " << resets << '\n'
               << "单帧多观测更新的帧          " << double_update_frames << '\n'
+              << "侧边灯条 总数/有灯条的帧    " << side_light_total << " / "
+              << frames_with_side_light << '\n'
               << "数字分类采信/丢弃           " << number_accepted << " / "
               << number_dropped << '\n'
+              << "角点精修 替换/保留网络      " << refine_hit << " / " << refine_kept
+              << "  触发率 "
+              << (refine_hit + refine_kept > 0
+                    ? 100.0 * static_cast<double>(refine_hit) /
+                        static_cast<double>(refine_hit + refine_kept)
+                    : 0.0)
+              << "%\n"
+              << "  其中保留网络的成因  没找到灯条 " << refine_no_bar
+              << " / 灯条太短 " << refine_too_short << " / 端点超门限 "
+              << refine_shift_rej << '\n'
+              << "  轮廓 " << refine_contours << "  过筛 " << refine_bar_kept
+              << "  毙于 角度 " << refine_rej_angle << " / 长宽比 "
+              << refine_rej_ratio << " / 长度 " << refine_rej_len << '\n'
               << "-- 滤波器 --\n"
               << "NIS  mean " << mean(nis_values) << "  p50 " << percentile(nis_values, 0.5)
               << "  p90 " << percentile(nis_values, 0.9)
@@ -766,6 +845,7 @@ int main(int argc, char* argv[])
               << "垂直灯条   mean " << mean(res_perp_stats) << "  p90 "
               << percentile(res_perp_stats, 0.9) << "  max "
               << percentile(res_perp_stats, 1.0) << '\n'
+              << channel_report()
               << "-- 单帧耗时（ms）--\n"
               << "L2 检测  p50 " << percentile(ms_l2, 0.5) << "  p90 "
               << percentile(ms_l2, 0.9) << "  max " << percentile(ms_l2, 1.0) << '\n'

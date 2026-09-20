@@ -52,13 +52,6 @@ double goldenSectionSearch(
   return f1 < f2 ? x1 : x2;
 }
 
-// class_id → 板型，用来选 PnP 物点尺寸；未知类别返回 nullopt，不参与求解。
-// 映射本身在 types.hpp，与 L5 火控共用一份，免得两处各写一遍后悄悄分叉。
-constexpr std::optional<ArmorType>
-armorTypeFromClassId(int class_id) noexcept {
-  return armorTypeOf(L2Perception::armorClassFromId(class_id));
-}
-
 // 生成一块板的四个物点，顺序与图像角点一致（左上、右上、右下、左下）。
 // 构造时算好存起来，yaw 搜索那 140 次重投影就不用反复分配。
 std::vector<cv::Point3f> armorPoints(
@@ -69,12 +62,6 @@ std::vector<cv::Point3f> armorPoints(
           {0.0F, -half_width, half_height},
           {0.0F, -half_width, -half_height},
           {0.0F, half_width, -half_height}};
-}
-
-double spLimitRad(double angle) noexcept {
-  while (angle > CV_PI) angle -= 2.0 * CV_PI;
-  while (angle <= -CV_PI) angle += 2.0 * CV_PI;
-  return angle;
 }
 
 // 由世界系 yaw 拼出 armor -> world 旋转：俯仰取该车型固定的安装倾角，只有
@@ -144,15 +131,6 @@ void resetPnpOutput(Armor &armor) {
   armor.reprojection_error = std::numeric_limits<double>::infinity();
 }
 
-// 3/4/5 号的大板（平衡步兵）不做固定俯仰假设的 yaw 优化。当前板型映射里平衡
-// 步兵已不存在，这条判据恒为假，留着是为了换板型映射时不漏掉这一支。
-bool isBalanceInfantry(const Armor &armor) noexcept {
-  return armor.type == ArmorType::Big &&
-         (armor.name == ArmorName::Infantry3 ||
-          armor.name == ArmorName::Infantry4 ||
-          armor.name == ArmorName::Infantry5);
-}
-
 bool finiteImagePoints(const std::array<cv::Point2f, 4> &points) {
   // 在交给 OpenCV 之前拦掉 NaN 和无穷像素坐标。
   return std::all_of(points.begin(), points.end(),
@@ -165,7 +143,7 @@ bool finiteImagePoints(const std::array<cv::Point2f, 4> &points) {
 
 PnpSolver::PnpSolver(const L1Sensor::CameraCalibration &calibration,
                      ArmorConfig config)
-    : calibration_(calibration), config_(config) {
+    : config_(config) {
   small_armor_points_ = armorPoints(config_.small_width, config_.height);
   big_armor_points_ = armorPoints(config_.big_width, config_.height);
   ready_ = setCalibration(calibration);
@@ -206,7 +184,10 @@ void PnpSolver::single_pnp(Armor &armor) const {
   // 无效输出。
   resetPnpOutput(armor);
 
-  const auto armor_type = armorTypeFromClassId(armor.class_id);
+  // 类别只从 class_id 解一次，板型由它派生：两者同源才不会出现物点尺寸和
+  // 写回类别对不上的情况。
+  const ArmorName name = L2Perception::armorClassFromId(armor.class_id);
+  const auto armor_type = armorTypeOf(name);
   // 四个前提缺一不可：静态标定、曝光时刻的枪管姿态、有效类别、有限角点。
   if (!ready_ || !world_barrel_ready_ || !armor_type ||
       !finiteImagePoints(armor.points)) {
@@ -297,7 +278,6 @@ void PnpSolver::single_pnp(Armor &armor) const {
 
   // 注意这三个是朝向角 [yaw, pitch, roll]。
   const Eigen::Vector3d ypr_in_camera = L6Telemetry::eulers(R_armor2camera, 2, 1, 0);
-  const Eigen::Vector3d ypr_in_barrel = L6Telemetry::eulers(R_armor2barrel, 2, 1, 0);
   const Eigen::Vector3d ypr_in_world = L6Telemetry::eulers(R_armor2world, 2, 1, 0);
   // 注意这个是方位角 [方位, 俯仰, 距离]。
   const Eigen::Vector3d ypd_in_world = L6Telemetry::xyz2ypd(xyz_in_world);
@@ -310,24 +290,17 @@ void PnpSolver::single_pnp(Armor &armor) const {
   }
 
   // 全部通过检查后一次性写回 armor，不暴露半成品观测。
-  armor.name = L2Perception::armorClassFromId(armor.class_id);
+  armor.name = name;
   armor.type = *armor_type;
   // 位置
   armor.xyz_in_camera = xyz_in_camera;
-  armor.xyz_in_barrel = xyz_in_barrel;
   armor.xyz_in_world = xyz_in_world;
   // 姿态
   armor.ypr_in_camera = ypr_in_camera;
-  armor.ypr_in_barrel = ypr_in_barrel;
   armor.ypr_in_world = ypr_in_world;
 
   armor.ypd_in_world = ypd_in_world;
   armor.reprojection_error = reprojection_error;
-
-  // 平衡步兵跳过 yaw 优化，保留 IPPE 的原始姿态。
-  if (isBalanceInfantry(armor)) {
-    return;
-  }
 
   optimize_yaw(armor);
 }
@@ -335,8 +308,8 @@ void PnpSolver::single_pnp(Armor &armor) const {
 std::optional<double> PnpSolver::lights_depth_diff(
   const Armor& armor) const
 {
-  const auto armor_type = armorTypeFromClassId(armor.class_id);
   const ArmorName name = L2Perception::armorClassFromId(armor.class_id);
+  const auto armor_type = armorTypeOf(name);
   if (!ready_ || !armor_type || !finiteImagePoints(armor.points)) {
     return std::nullopt;
   }
@@ -467,13 +440,13 @@ void PnpSolver::optimize_yaw(Armor &armor) const {
   // 保留先遇到的。
   const double barrel_yaw =
     L6Telemetry::eulers(R_barrel2world_, 2, 1, 0)[0];
-  const double yaw0 = spLimitRad(
+  const double yaw0 = L6Telemetry::limit_rad(
     barrel_yaw - kYawSearchRangeDegrees / 2.0 * CV_PI / 180.0);
 
   double min_error = 1e10;
   double best_yaw = armor.ypr_in_world[0];
   for (int index = 0; index < kYawSearchRangeDegrees; ++index) {
-    const double yaw = spLimitRad(yaw0 + index * CV_PI / 180.0);
+    const double yaw = L6Telemetry::limit_rad(yaw0 + index * CV_PI / 180.0);
     const double error = yaw_cost(armor, yaw);
     if (error < min_error) {
       min_error = error;

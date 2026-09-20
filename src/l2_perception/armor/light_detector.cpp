@@ -221,17 +221,34 @@ std::vector<Light> LightDecoder::decode(
 
 std::vector<Light> findLights(
   const cv::Mat& image, const cv::Rect& roi, const LightFinderConfig& config,
-  double color_ratio_threshold)
+  double color_ratio_threshold, ArmorColor color)
 {
   const cv::Rect area = roi & cv::Rect(0, 0, image.cols, image.rows);
   if (image.empty() || image.type() != CV_8UC3 || area.area() <= 0) {
     return {};
   }
 
-  cv::Mat gray;
-  cv::cvtColor(image(area), gray, cv::COLOR_BGR2GRAY);
+  // 底图与阈值必须配套，见 LightFinderConfig 的两个键。
+  const bool color_diff = config.color_channel_diff && color != ArmorColor::Unknown;
+  cv::Mat base;
+  if (color_diff) {
+    cv::Mat blue;
+    cv::Mat red;
+    cv::extractChannel(image(area), blue, 0);
+    cv::extractChannel(image(area), red, 2);
+    // 饱和减法：白色背景和过曝白核都被压到 0。
+    if (color == ArmorColor::Blue) {
+      cv::subtract(blue, red, base);
+    } else {
+      cv::subtract(red, blue, base);
+    }
+  } else {
+    cv::cvtColor(image(area), base, cv::COLOR_BGR2GRAY);
+  }
   cv::Mat binary;
-  cv::threshold(gray, binary, config.binary_threshold, 255, cv::THRESH_BINARY);
+  cv::threshold(
+    base, binary, color_diff ? config.color_diff_threshold : config.binary_threshold, 255,
+    cv::THRESH_BINARY);
   std::vector<std::vector<cv::Point>> contours;
   cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
 

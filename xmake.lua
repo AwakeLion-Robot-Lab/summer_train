@@ -267,6 +267,7 @@ local gated_tests = {
     openvino_armor_smoke     = "use_openvino",
     auto_aim_test            = "use_openvino",
     track_diag               = "use_openvino",
+    light_noise              = "use_openvino",
     armor_refiner_video_test = "use_openvino",
     serial_worker_smoke      = "linux",
 }

@@ -45,6 +45,17 @@ struct ArmorRefinerConfig
   // 在几何筛选之后、选灯条之前执行，所以 max_endpoint_distance_px 那道门限
   // 看到的也是修正后的端点。
   bool pca_corner_correction{true};
+
+  // 二值化与梯度搜索的底图：false 是灰度（sp_vision 原版），true 是颜色差分
+  // （蓝板 B−R、红板 R−B，取该板自己的 Armor::color，Unknown 时退回灰度）。
+  //
+  // 默认 true，回放实测的结论，八段全过，见 auto_aim.yaml 的 refiner 注释。
+  // 机理：灯条过曝后核心 B=R=255，差分归零，所以差分图切到的是灯条彩色的
+  // 边缘而不是饱和白核——白核边界是曝光的产物，彩色边缘才接近真实发光边界。
+  //
+  // 阈值语义与灰度完全不同，单独给一个键，不复用 binary_threshold。
+  bool color_channel_diff{true};
+  double color_diff_threshold{50.0};
 };
 
 // 一次 refine() 的统计。
@@ -52,6 +63,19 @@ struct RefineStats
 {
   std::size_t refined{0};
   std::size_t network_kept{0};
+  // network_kept 的三种成因，用来区分"精修提了个坏建议被门限拦下"和"传统
+  // 检测在这张底图上压根没找到灯条"——两者的触发率一样低，含义完全相反。
+  std::size_t no_lightbar{0};
+  std::size_t size_skipped{0};
+  std::size_t shift_rejected{0};
+  // no_lightbar 再往下拆：二值图里一共找到几个轮廓、各道形状筛选各毙掉几个。
+  // 区分"底图上根本没有连通域"和"有连通域但形状不像灯条"——差分图把灯条切成
+  // 空心环时属于后者，调阈值能救；属于前者就只能换底图。
+  std::size_t contour_total{0};
+  std::size_t rej_angle{0};
+  std::size_t rej_ratio{0};
+  std::size_t rej_length{0};
+  std::size_t bar_kept{0};
 };
 
 // 单块装甲板的判定明细，供离线回放叠加显示。
@@ -73,6 +97,12 @@ struct RefineRecord
   float aspect_ratio{0.0F};
   float lightbar_length{0.0F};
   float corner_shift{0.0F};
+  // 二值图里的轮廓数和各道形状筛选的毙掉数，见 RefineStats 同名字段。
+  std::size_t contour_total{0};
+  std::size_t rej_angle{0};
+  std::size_t rej_ratio{0};
+  std::size_t rej_length{0};
+  std::size_t bar_kept{0};
 };
 
 // 在网络检出的板 ROI 内跑一次 SP-Vision 的传统灯条检测，找到可信的左右两根

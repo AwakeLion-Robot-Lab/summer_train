@@ -32,7 +32,7 @@ struct EskfTargetConfig
 
   // 每次更新做几步高斯牛顿。观测模型强非线性（透视除法 + 畸变），迭代比单次
   // 线性化明显更稳。
-  int iteration_num{5};
+  int iteration_num{8};
 
   // 端点观测噪声，单位 px。每个端点的误差拆成沿灯条、垂直灯条两个方向，
   // sigma 取「系数 × 灯条像素长度」与 sigma_min_px 的较大值。垂直方向决定
@@ -49,6 +49,7 @@ struct EskfTargetConfig
   double sigma_along_by_length{0.0};
   double sigma_perp_by_length{0.0};
   double sigma_min_px{6.32};
+
 
   // 独立灯条的两个 sigma 再乘上它。这些灯条没配成完整板、只靠几何关联，
   // 没有数字和板型证据，应当比从装甲板拆出来的灯条更不可信。
@@ -193,12 +194,37 @@ public:
   int lastNisDof() const noexcept { return last_nis_dof_; }
 
   // 最近一次更新的端点创新量（先验点上），投到每根灯条自己的坐标系里分方向
-  // 取 RMS，单位 px。
+  // 单位 px（倾角为 rad）。
   //
   // 读法：沿灯条分量大，多半是深度（灯条长度）或高度偏了；垂直分量大，是
   // 横向位置或灯条倾角（姿态）偏了。
   struct LightResidual
   {
+    // 一个通道的统计量。mean 有符号，看的是系统偏差；rms 看的是噪声。两者
+    // 必须分开：只看 RMS 分不出「检测器有偏」和「检测器抖」，而这两种病的
+    // 治法完全不同——前者要在检测侧修，后者才该动 R。
+    struct Channel
+    {
+      double mean{0.0};
+      double rms{0.0};
+    };
+
+    // 把每根灯条两个端点的残差 r_top / r_bot 投到灯条方向 e 和法向 n 上，
+    // 再折成四个互相正交的物理通道。L 为该灯条的像素长度：
+    //   shift_perp  = (r_top·n + r_bot·n) / 2   整根灯条横向平移，px
+    //   shift_along = (r_top·e + r_bot·e) / 2   整根灯条沿自身平移，px
+    //   tilt        = (r_top·n − r_bot·n) / L   灯条倾角，rad
+    //   length      = (r_bot·e − r_top·e)       灯条长度，px
+    // 拆成这四维是因为它们互相正交、各自有物理意义：哪一维偏了直接对应
+    // 哪个环节有问题。端点级的平方和把符号吃掉，看不出偏差。
+    Channel shift_perp{};
+    Channel shift_along{};
+    Channel tilt{};
+    Channel length{};
+
+    // 端点级的 RMS，单位 px。等价于上面四个通道的重新组合（沿灯条方向有
+    // along_rms² = shift_along.rms² + length.rms²/4），保留是因为历史 A/B
+    // 记录用的就是这两个数。
     double along_rms_px{0.0};
     double perp_rms_px{0.0};
     // 单板深度差观测的残差，单位米。本帧没有该观测时为 0。

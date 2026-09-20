@@ -37,6 +37,7 @@
 #include <numeric>
 #include <numbers>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -72,6 +73,163 @@ constexpr double kDirectionStepThreshold = 0.05 * kDegToRad;
 constexpr double kSearchRangeDegrees = 360.0;
 // 画图采样比求解器的 1 度枚举更细，不参与求解。
 constexpr double kCostStepDegrees = 0.5;
+
+// 逐层耗时。量的是"这台机器跑完一帧算法要多久"，纯 CPU 墙钟，和实机的端到端
+// 延迟不是一回事——后者的分解在 L4Planning::Delay 里（曝光、串口往返、飞行
+// 时间都不在这儿），两者不要混着看。
+//
+// 同一段在一帧里可以 lap 多次、累加成一条样本：绘图散在检测后、跟踪后、显示
+// 前三处，不累加就分不清"绘图总共花了多少"。
+class StageClock
+{
+public:
+  using Clock = std::chrono::steady_clock;
+
+  struct Stage
+  {
+    std::string name;
+    double frame{0.0};
+    std::vector<double> ms;
+    // 仅回放才有的开销（诊断 PnP、面板、imshow），不计入管线合计。
+    bool replay_only{false};
+    // L2 内部的分项：已经含在所在层里了，单独列出来但不重复计入合计。
+    bool sub{false};
+  };
+
+  void tick() noexcept { mark_ = Clock::now(); }
+
+  void lap(std::string_view name, bool replay_only = false)
+  {
+    const auto now = Clock::now();
+    Stage& stage = slot(name, replay_only, false);
+    stage.frame +=
+      std::chrono::duration<double, std::milli>(now - mark_).count();
+    mark_ = now;
+  }
+
+  // 记一段别处已经量好的耗时，不动 mark_。给 L2 内部的分项用。
+  void add(std::string_view name, double ms)
+  {
+    slot(name, false, true).frame += ms;
+  }
+
+  // 一帧结束：把每段这一帧的累计值落成一条样本。
+  void flush()
+  {
+    for (Stage& stage : stages_) {
+      stage.ms.push_back(stage.frame);
+      stage.frame = 0.0;
+    }
+  }
+
+  const std::vector<Stage>& stages() const noexcept { return stages_; }
+
+private:
+  Stage& slot(std::string_view name, bool replay_only, bool sub)
+  {
+    for (Stage& stage : stages_) {
+      if (stage.name == name) {
+        return stage;
+      }
+    }
+    stages_.push_back(Stage{std::string{name}, 0.0, {}, replay_only, sub});
+    return stages_.back();
+  }
+
+  Clock::time_point mark_{Clock::now()};
+  std::vector<Stage> stages_;
+};
+
+// 就地排序取分位，调用方给的是副本。
+double msPercentile(std::vector<double> values, double ratio)
+{
+  if (values.empty()) {
+    return 0.0;
+  }
+  const std::size_t index = std::min(
+    values.size() - 1,
+    static_cast<std::size_t>(ratio * static_cast<double>(values.size())));
+  std::nth_element(values.begin(), values.begin() + index, values.end());
+  return values[index];
+}
+
+// setw 数的是字节，中文一个字三字节两列宽，直接 setw 会把表格排歪。
+std::string padCol(const std::string& text, std::size_t width)
+{
+  std::size_t shown = 0;
+  for (const char character : text) {
+    // UTF-8 续字节 10xxxxxx 不占列；其余非 ASCII 首字节按两列算。
+    const auto byte = static_cast<unsigned char>(character);
+    if ((byte & 0xC0) == 0x80) {
+      continue;
+    }
+    shown += byte < 0x80 ? 1 : 2;
+  }
+  return text + std::string(width > shown ? width - shown : 1, ' ');
+}
+
+void printStageTiming(const StageClock& clock)
+{
+  double pipeline_mean = 0.0;
+  for (const auto& stage : clock.stages()) {
+    if (!stage.replay_only && !stage.sub && !stage.ms.empty()) {
+      pipeline_mean +=
+        std::accumulate(stage.ms.begin(), stage.ms.end(), 0.0) /
+        static_cast<double>(stage.ms.size());
+    }
+  }
+
+  const auto row = [&](const StageClock::Stage& stage) {
+    if (stage.ms.empty()) {
+      return;
+    }
+    const double mean =
+      std::accumulate(stage.ms.begin(), stage.ms.end(), 0.0) /
+      static_cast<double>(stage.ms.size());
+    std::cout << "  " << padCol(stage.name, 18)
+              << std::right << std::fixed << std::setprecision(2)
+              << std::setw(8) << mean
+              << std::setw(8) << msPercentile(stage.ms, 0.5)
+              << std::setw(8) << msPercentile(stage.ms, 0.9)
+              << std::setw(9) << *std::max_element(stage.ms.begin(), stage.ms.end());
+    if (!stage.replay_only && pipeline_mean > 0.0) {
+      std::cout << std::setw(8) << std::setprecision(1)
+                << 100.0 * mean / pipeline_mean << '%';
+    }
+    std::cout << '\n';
+  };
+
+  std::cout << "\n-- 逐层耗时 ms（CPU 墙钟，不是实机端到端延迟）--\n"
+            << "  " << padCol("段", 18)
+            << std::right << std::setw(8) << "mean" << std::setw(8) << "p50"
+            << std::setw(8) << "p90" << std::setw(9) << "max"
+            << std::setw(8) << "占比" << '\n';
+  for (const auto& stage : clock.stages()) {
+    if (!stage.replay_only) {
+      row(stage);
+    }
+  }
+  std::cout << "  " << padCol("管线合计", 18)
+            << std::right << std::fixed << std::setprecision(2)
+            << std::setw(8) << pipeline_mean
+            << "   （" << std::setprecision(1)
+            << (pipeline_mean > 0.0 ? 1000.0 / pipeline_mean : 0.0)
+            << " fps 上限）\n";
+
+  bool has_replay_only = false;
+  for (const auto& stage : clock.stages()) {
+    has_replay_only = has_replay_only || (stage.replay_only && !stage.ms.empty());
+  }
+  if (has_replay_only) {
+    std::cout << "  -- 以下仅回放，实机管线里没有，不计入合计 --\n";
+    for (const auto& stage : clock.stages()) {
+      if (stage.replay_only) {
+        row(stage);
+      }
+    }
+  }
+  std::cout << std::defaultfloat;
+}
 
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
@@ -745,6 +903,125 @@ cv::Mat makeUsedLightPanel(
   return panel;
 }
 
+// 侧边灯条专用面板：把 light_roi 放大铺满，画出这一帧的全部灯条候选，并把
+// "进了 L3" 和 "被判成已检出装甲板自己的灯条而丢掉" 两类分开。
+//
+// 之所以要单独一个窗口：灯条模型只在 light_roi 里跑，而 ROI 在整图上只占很
+// 小一块，压在 reprojection 上根本看不清端点。另外 used lights 面板画的是
+// 滤波器实际消费的量（含装甲板自己的两根），跟"侧边灯条检出了没有"不是同
+// 一个问题——后者要连被丢掉的候选一起看才判得出来。
+cv::Mat makeSideLightPanel(
+  const cv::Mat& source,
+  const std::vector<L2Perception::Light>& candidates,
+  const std::vector<L2Perception::Light>& kept,
+  const std::optional<cv::Rect>& light_roi)
+{
+  // light_roi 是整车框扩出来的，通常又宽又扁（3 m 处约 4:1），固定的方形面板
+  // 会把放大倍率卡在宽度上、下半张全是黑边。所以面板宽度固定、高度跟着 ROI
+  // 的宽高比走，倍率上限 6 是免得目标很近时糊成马赛克。
+  constexpr int kPanelWidth = 1100;
+  constexpr int kHeaderHeight = 76;
+  constexpr double kMaxZoom = 6.0;
+
+  // kept 保留了 lastLights() 里的下标，靠 id 回查哪些候选活了下来。
+  std::set<std::size_t> kept_ids;
+  for (const auto& light : kept) {
+    kept_ids.insert(light.id);
+  }
+
+  const cv::Rect image_rect(0, 0, source.cols, source.rows);
+  const cv::Rect roi = light_roi ? (*light_roi & image_rect) : cv::Rect{};
+
+  const int content_width = kPanelWidth - 24;
+  const double scale = roi.area() > 0
+    ? std::min(kMaxZoom, static_cast<double>(content_width) / roi.width)
+    : 1.0;
+  const cv::Size resized_size{
+    std::max(1, static_cast<int>(std::round(roi.width * scale))),
+    std::max(1, static_cast<int>(std::round(roi.height * scale)))};
+  const int panel_height = roi.area() > 0
+    ? kHeaderHeight + std::clamp(resized_size.height, 180, 620) + 12
+    : 200;
+  cv::Mat panel(panel_height, kPanelWidth, CV_8UC3, cv::Scalar{24, 24, 24});
+
+  drawOutlinedText(
+    panel,
+    cv::format(
+      "side lights  candidates=%zu  to L3=%zu  dropped(owned by armor)=%zu",
+      candidates.size(), kept.size(), candidates.size() - kept.size()),
+    {12, 28}, {255, 255, 255}, 0.58);
+  drawOutlinedText(
+    panel,
+    "solid=to L3 (color=bar color)   gray=dropped   filled dot=top   M=model C=classic",
+    {12, 57}, {180, 180, 180}, 0.46);
+
+  if (roi.area() <= 0) {
+    drawOutlinedText(
+      panel, "no light roi this frame (target not tracked)", {28, 140},
+      {120, 120, 120}, 0.68);
+    return panel;
+  }
+
+  const cv::Rect content(
+    12, kHeaderHeight, content_width, panel_height - kHeaderHeight - 12);
+  cv::Mat resized;
+  cv::resize(source(roi), resized, resized_size, 0.0, 0.0, cv::INTER_NEAREST);
+  const cv::Rect destination(
+    content.x + (content.width - resized.cols) / 2,
+    content.y + (content.height - resized.rows) / 2,
+    resized.cols, resized.rows);
+  resized.copyTo(panel(destination));
+  cv::rectangle(panel, destination, {70, 70, 70}, 1);
+  drawOutlinedText(
+    panel, cv::format("roi %dx%d  x%.1f", roi.width, roi.height, scale),
+    {destination.x + 6, destination.y + 18}, {150, 150, 150}, 0.44);
+
+  const auto panelPoint = [&](const cv::Point2f& point) {
+    return cv::Point{
+      destination.x + static_cast<int>(std::round((point.x - roi.x) * scale)),
+      destination.y + static_cast<int>(std::round((point.y - roi.y) * scale))};
+  };
+
+  if (candidates.empty()) {
+    drawOutlinedText(
+      panel, "the light model returned nothing in this roi",
+      {destination.x + 10, destination.y + destination.height - 12},
+      {0, 255, 255}, 0.55);
+    return panel;
+  }
+
+  for (const auto& light : candidates) {
+    if (!std::isfinite(light.top.x) || !std::isfinite(light.top.y) ||
+        !std::isfinite(light.bottom.x) || !std::isfinite(light.bottom.y)) {
+      continue;
+    }
+    const bool to_l3 = kept_ids.count(light.id) != 0;
+    const cv::Scalar color =
+      to_l3 ? armorDisplayColor(light.color) : cv::Scalar{110, 110, 110};
+    const cv::Point top = panelPoint(light.top);
+    const cv::Point bottom = panelPoint(light.bottom);
+    cv::line(panel, top, bottom, color, to_l3 ? 3 : 1, cv::LINE_AA);
+    cv::circle(panel, top, to_l3 ? 6 : 3, color, cv::FILLED, cv::LINE_AA);
+    cv::circle(panel, bottom, to_l3 ? 6 : 3, color, 2, cv::LINE_AA);
+    // 灯条在 ROI 里挨得近，标签压在一起就读不出来了：按 id 交替放在上下端点
+    // 外侧，再按 id % 3 错开一行。
+    const int stagger = static_cast<int>(light.id % 3) * 15;
+    const cv::Point anchor = (light.id % 2) == 0
+      ? top + cv::Point{10, -10 - stagger}
+      : bottom + cv::Point{10, 22 + stagger};
+    drawOutlinedText(
+      panel,
+      cv::format(
+        "#%zu %c %.2f L=%.0f %.0fdeg", light.id,
+        light.source == L2Perception::LightSource::Model ? 'M' : 'C',
+        static_cast<double>(light.score), light.length,
+        static_cast<double>(light.tilt_angle_deg)),
+      anchor, color, 0.44);
+  }
+
+  return panel;
+}
+
 // 与 PnpSolver::armor_reprojection_error 定义一致：把装甲板按给定世界系
 // yaw 重投影，取四个对应角点的像素距离之和。
 double yawCost(
@@ -1153,6 +1430,7 @@ int main(int argc, char** argv)
 
     cv::Mat img;
     PoseSample pose;
+    StageClock clock;
     const auto t0 = std::chrono::steady_clock::now();
     std::size_t frames = 0;
     std::size_t observation_frames = 0;
@@ -1205,6 +1483,7 @@ int main(int argc, char** argv)
       if (end_index > 0 && frame_index > end_index) {
         break;
       }
+      clock.tick();
       video.read(img);
       if (img.empty()) {
         break;
@@ -1219,6 +1498,7 @@ int main(int argc, char** argv)
           "录像分辨率与标定不一致");
       }
       ++frames;
+      clock.lap("L1 回放读帧");
 
       const auto timestamp =
         t0 + std::chrono::microseconds(static_cast<long long>(pose.seconds * 1e6));
@@ -1233,12 +1513,26 @@ int main(int argc, char** argv)
       // 远距小目标裁剪后再 resize 相当于局部放大。目标丢失时它自动退化为整图。
       const cv::Rect net_roi = tracker.netFocusRoi(
         q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio());
+      clock.lap("L3 ROI 先验");
       L2Perception::ArmorFrame detection_frame =
         detector.detectFrame(img, light_roi, net_roi, enemy_color);
+      clock.lap("L2 检测");
+      {
+        // L2 常年占掉管线九成，只报总数没法定位是网络、精修还是侧边灯条那一路
+        // 贵。这些分项已经含在"L2 检测"里，不重复计入合计。
+        const L2Perception::DetectTiming& t = detector.lastTiming();
+        clock.add("  ├ 预处理", t.preprocess);
+        clock.add("  ├ 整板推理", t.infer);
+        clock.add("  ├ 解码", t.decode);
+        clock.add("  ├ 角点精修", t.refine);
+        clock.add("  ├ 数字分类", t.number);
+        clock.add("  └ 侧边灯条", t.side_light);
+      }
       const std::vector<L2Perception::Armor> recognized_armors =
         detection_frame.armors;
       const cv::Mat recognition_panel =
         makeRecognitionPanel(img, recognized_armors, enemy_color);
+      clock.lap("绘图/显示", true);
       auto& armors = detection_frame.armors;
       std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
         return enemy_color != L2Perception::ArmorColor::Unknown &&
@@ -1249,8 +1543,15 @@ int main(int argc, char** argv)
       const auto target = tracker.track(
         armors, detection_frame.lights, q_world_barrel, timestamp);
       const auto& used_lights = tracker.usedLights();
+      clock.lap("L3 跟踪");
       const cv::Mat used_light_panel = makeUsedLightPanel(
         img, used_lights, detection_frame.lights.size());
+      // lastLights() 是颜色过滤后、剔除已检出装甲板自己的灯条之前的全部候选，
+      // detection_frame.lights 是真正交给 L3 的那批，两者一起画才看得出侧边
+      // 灯条是"没检出"还是"检出了但被判给了某块板"。
+      const cv::Mat side_light_panel = makeSideLightPanel(
+        img, detector.lastLights(), detection_frame.lights, light_roi);
+      clock.lap("绘图/显示", true);
       const auto target_armor_poses = tracker.armorPoses();
       const std::optional<FilterEstimate> filter_estimate = target
         ? std::optional<FilterEstimate>{target->estimate()}
@@ -1269,6 +1570,7 @@ int main(int argc, char** argv)
           solver.single_pnp(diagnostic_pnp_observations.back());
         }
       }
+      clock.lap("诊断 PnP", true);
       if (state_csv.is_open()) {
         state_csv << frame_index << ','
                   << std::chrono::duration<double>(timestamp.time_since_epoch()).count()
@@ -1355,8 +1657,10 @@ int main(int argc, char** argv)
       // SP 的离线 auto_aim_test 以 to_now=false 调 Aimer，固定使用
       // 0.005 s 检测耗时，再叠加 Aimer 的高/低速延迟。
       const auto plan_time = timestamp;
+      clock.lap("CSV 导出", true);
       const auto plan =
         tracker.plan(planner, target, robot_state, plan_time, false);
+      clock.lap("L4 规划");
       const int plan_armor_id =
         plan.fire.has_value() ? plan.fire->armor_id : -1;
 
@@ -1398,6 +1702,7 @@ int main(int argc, char** argv)
 
       const auto fire_decision = fire_decider.decide(fire_input);
       const auto command = controller.makeCommand(plan, fire_decision);
+      clock.lap("L5 火控");
 
       if (plan.valid()) {
         ++plan_valid_frames;
@@ -1471,6 +1776,32 @@ int main(int argc, char** argv)
 
         // IESKF 消费的就是上面检测框的左右灯条端点，不再把 PnP 位姿框冒充成
         // 滤波观测；PnP 在这条路径只负责冷启动与候选有效性检查。
+      }
+
+      // 侧边灯条画在原图上：单独的 side lights 窗口看端点，这里看它到底长在
+      // 车的哪一侧。黄色实线是进了 L3 的，灰色细线是被判给某块已检出装甲板、
+      // 因而没有重复进观测的候选。虚线框是灯条模型的搜索区 light_roi。
+      if (light_roi) {
+        cv::rectangle(img, *light_roi, {90, 90, 90}, 1, cv::LINE_AA);
+      }
+      {
+        std::set<std::size_t> to_l3;
+        for (const auto& light : detection_frame.lights) {
+          to_l3.insert(light.id);
+        }
+        for (const auto& light : detector.lastLights()) {
+          if (!std::isfinite(light.top.x) || !std::isfinite(light.bottom.x)) {
+            continue;
+          }
+          const bool used = to_l3.count(light.id) != 0;
+          const cv::Scalar color =
+            used ? cv::Scalar{0, 255, 255} : cv::Scalar{120, 120, 120};
+          const cv::Point top = toPixel(light.top);
+          const cv::Point bottom = toPixel(light.bottom);
+          cv::line(img, top, bottom, color, used ? 3 : 1, cv::LINE_AA);
+          cv::circle(img, top, used ? 5 : 3, color, cv::FILLED, cv::LINE_AA);
+          cv::circle(img, bottom, used ? 5 : 3, color, 2, cv::LINE_AA);
+        }
       }
 
       // 绿色是当前估计器展开的全部物理装甲板，和 sp_vision 画的是同一个量：
@@ -1718,8 +2049,12 @@ int main(int argc, char** argv)
       }
       cv::imshow("recognition roi", recognition_panel);
       cv::imshow("used lights", used_light_panel);
+      cv::imshow("side lights", side_light_panel);
       cv::resize(img, img, {}, 0.5, 0.5);  // 显示时缩小图片尺寸
       cv::imshow("reprojection", img);
+      // waitKey 是人机交互的等待，和算法耗时无关，必须排除在外。
+      clock.lap("绘图/显示", true);
+      clock.flush();
       const int key = cv::waitKey(wait_ms);
       if (key == 'q' || key == 27) {
         break;
@@ -1730,6 +2065,7 @@ int main(int argc, char** argv)
     }
 
     cv::destroyAllWindows();
+    printStageTiming(clock);
     std::cout << "\n回放结束\n"
               << "估计器: ieskf+endpoint" << '\n'
               << "帧数: " << frames << '\n'

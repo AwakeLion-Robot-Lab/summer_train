@@ -175,7 +175,7 @@ void AutoAimRuntime::run() {
     if (!serial_started || !state) {
       stopAimSession();
     } else {
-      switch (state->mode) {
+      switch (L1Sensor::WorkMode::AutoAim) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
           const auto image_pose = serial.gimbalPoseAt(timestamp);

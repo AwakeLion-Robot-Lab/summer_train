@@ -55,6 +55,27 @@ Lightbar makeLightbar(const cv::RotatedRect& rotated_rect)
 }
 
 
+// 二值化与梯度搜索共用的底图：灰度，或颜色差分（蓝板 B−R、红板 R−B）。
+// 饱和减法，所以白色背景和白色泛光被压到 0；颜色未知时退回灰度，不猜方向。
+cv::Mat makeBaseImage(const cv::Mat& bgr_roi, ArmorColor color, bool color_diff)
+{
+  cv::Mat base;
+  if (!color_diff || color == ArmorColor::Unknown) {
+    cv::cvtColor(bgr_roi, base, cv::COLOR_BGR2GRAY);
+    return base;
+  }
+  cv::Mat blue;
+  cv::Mat red;
+  cv::extractChannel(bgr_roi, blue, 0);
+  cv::extractChannel(bgr_roi, red, 2);
+  if (color == ArmorColor::Blue) {
+    cv::subtract(blue, red, base);
+  } else {
+    cv::subtract(red, blue, base);
+  }
+  return base;
+}
+
 // 灯条端点的亮度梯度修正，做法同 awakening 的 correct_corners（源自
 // sp_vision_25）。
 //
@@ -280,22 +301,41 @@ bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord*
   }
 
   const cv::Mat armor_roi = bgr_img(bounding_box);
-  cv::Mat gray_img;
-  cv::cvtColor(armor_roi, gray_img, cv::COLOR_BGR2GRAY);
+  // 底图和阈值必须配套：灰度用 binary_threshold，差分用 color_diff_threshold。
+  const bool color_diff = config_.color_channel_diff && armor.color != ArmorColor::Unknown;
+  const cv::Mat gray_img = makeBaseImage(armor_roi, armor.color, config_.color_channel_diff);
   cv::Mat binary_img;
-  cv::threshold(gray_img, binary_img, config_.binary_threshold, 255.0, cv::THRESH_BINARY);
+  cv::threshold(
+    gray_img, binary_img,
+    color_diff ? config_.color_diff_threshold : config_.binary_threshold, 255.0,
+    cv::THRESH_BINARY);
 
   std::vector<std::vector<cv::Point>> contours;
   cv::findContours(binary_img, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
 
   const double max_angle_error = static_cast<double>(config_.max_angle_error_deg) / 57.3;
   std::list<Lightbar> lightbars;
+  if (record != nullptr) {
+    record->contour_total = contours.size();
+  }
   for (const auto& contour : contours) {
     Lightbar lightbar = makeLightbar(cv::minAreaRect(contour));
     const bool angle_ok = lightbar.angle_error < max_angle_error;
     const bool ratio_ok =
         lightbar.ratio > config_.min_lightbar_ratio && lightbar.ratio < config_.max_lightbar_ratio;
     const bool length_ok = lightbar.length > config_.min_lightbar_length_px;
+    if (record != nullptr) {
+      // 只记第一条不过的筛选，免得一个轮廓被重复计数。
+      if (!angle_ok) {
+        ++record->rej_angle;
+      } else if (!ratio_ok) {
+        ++record->rej_ratio;
+      } else if (!length_ok) {
+        ++record->rej_length;
+      } else {
+        ++record->bar_kept;
+      }
+    }
     if (angle_ok && ratio_ok && length_ok) {
       // 亮度梯度修正端点。放在筛选之后是因为它比 minAreaRect 贵得多，
       // 没必要在明显不是灯条的轮廓上花；放在选灯条之前是为了让端点距离门限
@@ -397,14 +437,25 @@ RefineStats ArmorRefiner::refine(const cv::Mat& image, std::vector<Armor>& armor
   for (Armor& armor : armors) {
     RefineRecord record;
     record.network_corners = armor.corners;
-    RefineRecord* record_ptr = records != nullptr ? &record : nullptr;
-
-    if (detectOne(armor, image, record_ptr)) {
+    // 无条件填 record：它是栈上的，代价可忽略，而 stats 的成因分解要靠它。
+    if (detectOne(armor, image, &record)) {
       ++stats.refined;
       record.verdict = RefineVerdict::Refined;
     } else {
       ++stats.network_kept;
       record.verdict = RefineVerdict::NetworkKept;
+      if (record.shift_rejected) {
+        ++stats.shift_rejected;
+      } else if (record.size_skipped) {
+        ++stats.size_skipped;
+      } else {
+        ++stats.no_lightbar;
+      }
+      stats.contour_total += record.contour_total;
+      stats.rej_angle += record.rej_angle;
+      stats.rej_ratio += record.rej_ratio;
+      stats.rej_length += record.rej_length;
+      stats.bar_kept += record.bar_kept;
     }
 
     if (records != nullptr) {

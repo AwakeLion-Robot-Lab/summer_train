@@ -3,6 +3,7 @@
 #include "l6_telemetry/logger.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <limits>
 #include <stdexcept>
@@ -130,7 +131,7 @@ std::vector<Light> ArmorDetector::findSideLights(
 
   if (finder_config_.mode != LightMode::Model) {
     std::vector<Light> classic = findLights(
-      image, roi, finder_config_, light_decoder_.config().color_ratio_threshold);
+      image, roi, finder_config_, light_decoder_.config().color_ratio_threshold, color);
     // 先过颜色再合并：颜色判不出的传统斑点（数字笔画、光晕）先被丢掉，不会在
     // mergeLights 里把旁边真正的模型灯条挤掉。
     keepColor(classic);
@@ -151,9 +152,19 @@ ArmorFrame ArmorDetector::detectFrame(
   last_numbers_ = {};
   last_records_.clear();
   last_lights_.clear();
+  last_timing_ = {};
   if (!ready() || image.empty() || image.type() != CV_8UC3) {
     return {};
   }
+
+  // 逐段计时。用 steady_clock 与全工程一致；开销是每帧十来次 now()，可忽略。
+  auto mark = std::chrono::steady_clock::now();
+  const auto lap = [&mark]() {
+    const auto now = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(now - mark).count();
+    mark = now;
+    return ms;
+  };
 
   try {
     // 网络只跑在 net_roi 上：远距小目标裁剪后再 resize 到网络输入，相当于
@@ -165,9 +176,12 @@ ArmorFrame ArmorDetector::detectFrame(
 
     const PreprocessedImage preprocessed =
       ImagePreprocessor::run(network_input, armor_backend_->inputSpec(), preprocess_config_);
+    last_timing_.preprocess = lap();
+    const InferenceResult armor_result = armor_backend_->infer(preprocessed.input);
+    last_timing_.infer = lap();
     ArmorFrame frame;
-    frame.armors =
-      decoder_.decode(armor_backend_->infer(preprocessed.input), preprocessed.transform);
+    frame.armors = decoder_.decode(armor_result, preprocessed.transform);
+    last_timing_.decode = lap();
 
     // 解码出的角点在裁剪图里，补偏移回原图。精修和下游都在原图坐标系，所以
     // 必须在精修之前做。
@@ -188,10 +202,12 @@ ArmorFrame ArmorDetector::detectFrame(
     // 板保留网络角点。
     last_refine_ =
       refiner_.refine(image, frame.armors, collect_records_ ? &last_records_ : nullptr);
+    last_timing_.refine = lap();
 
     // 数字二次分类排在精修之后：抠图用的是精修过的角点，数字区域对得更准；
     // 判不出的板在这里就被丢掉，不再进 L3 的关联。
     last_numbers_ = classifyNumbers(image, frame.armors);
+    last_timing_.number = lap();
 
     if (light_roi) {
       const cv::Rect roi = *light_roi & image_rect;
@@ -210,6 +226,7 @@ ArmorFrame ArmorDetector::detectFrame(
         }
       }
     }
+    last_timing_.side_light = lap();
     return frame;
   } catch (const std::exception& error) {
     // 一帧坏图或一次推理失败不该中断主循环，记日志后当这帧没检出。
@@ -218,6 +235,7 @@ ArmorFrame ArmorDetector::detectFrame(
     last_numbers_ = {};
     last_records_.clear();
     last_lights_.clear();
+    last_timing_ = {};
     return {};
   }
 }

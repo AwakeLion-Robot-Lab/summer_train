@@ -62,6 +62,17 @@ struct LightFinderConfig
   float length_agree{0.8F};
   // 剔除属于已检出装甲板的灯条时，板外接框四周外扩多少倍灯条长度，见 insideArmor。
   float armor_margin{0.5F};
+
+  // 二值化底图换成颜色差分（蓝 B−R、红 R−B），与 ArmorRefiner 同一套做法和
+  // 同一个理由：过曝灯条的核心 R≈G≈B，灰度阈值切到的是饱和白核，白核大小
+  // 由曝光决定；差分图里白核归零，切到的是接近真实发光边界的彩色边缘。
+  // lightColor 的注释早就写着"颜色只留在边缘光晕里"，这里只是把二值化也
+  // 挪到同一个依据上。
+  //
+  // 要目标颜色才有减的方向，findLights 的 color 为 Unknown 时退回灰度。
+  bool color_channel_diff{true};
+  // color_channel_diff 生效时的阈值，语义与 binary_threshold 完全不同。
+  int color_diff_threshold{50};
 };
 
 // 判定一根灯条的颜色：在端点连线周围取一块比灯条略宽的框，累加非饱和、非过暗
@@ -97,12 +108,16 @@ private:
   LightDecoderConfig config_;
 };
 
-// 传统灯条检测：在 roi 内灰度二值化 → 取外轮廓 → 最小外接矩形 → 按 y 排序角点
+// 传统灯条检测：在 roi 内二值化 → 取外轮廓 → 最小外接矩形 → 按 y 排序角点
 // 取上下短边中点作端点 → 按长度、长宽比、倾角筛选 → lightColor 判颜色。
 // 返回的坐标在原图上，source 字段为 Classic。
+//
+// color 是要找的目标颜色，只用来决定差分方向；Unknown 时退回灰度二值化，
+// 所以缺省参数下行为与引入 color_channel_diff 之前完全一致。筛完之后仍由
+// lightColor 独立判色，这里不拿 color 去认定结果。
 [[nodiscard]] std::vector<Light> findLights(
   const cv::Mat& image, const cv::Rect& roi, const LightFinderConfig& config,
-  double color_ratio_threshold);
+  double color_ratio_threshold, ArmorColor color = ArmorColor::Unknown);
 
 // 合并两路灯条，传统的在前：每根模型灯条找 merge_radius 内最近的传统灯条，
 // 找不到就追加；找到但两者长度的 短/长 低于 length_agree（二值化把灯条断开

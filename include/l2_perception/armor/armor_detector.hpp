@@ -27,6 +27,19 @@ namespace L2Perception
 // 信息；它们没有类别证据，关联和门限在 L3。PnP、跟踪、开火策略都不在这里。
 // 一帧检测里各环节的配置。分开传是六个位置参数，中间几个还常常要写 {} 占位
 // 才能传到后面的，收成一个结构体后调用点按名字赋值，加新环节也不动签名。
+// detectFrame 一帧里各段的 CPU 墙钟耗时，单位 ms。整块 L2 常年占掉管线九成，
+// 只报一个总数没法定位是网络、精修还是侧边灯条那一路贵，所以拆开。
+struct DetectTiming
+{
+  double preprocess{0.0};
+  double infer{0.0};
+  double decode{0.0};
+  double refine{0.0};
+  double number{0.0};
+  // 侧边灯条整条路：预处理 + 推理 + 解码 + 颜色过滤 + 与已检出板的判重。
+  double side_light{0.0};
+};
+
 struct ArmorDetectorConfig
 {
   ArmorDecoderConfig decoder{};
@@ -74,6 +87,7 @@ public:
   // 实机保持关闭以免每帧多分配），以及颜色过滤后、剔除已检出装甲板之前的
   // 全部侧边灯条候选。每次 detectFrame 进来先清空。
   const RefineStats& lastRefine() const noexcept { return last_refine_; }
+  const DetectTiming& lastTiming() const noexcept { return last_timing_; }
   const NumberStats& lastNumbers() const noexcept { return last_numbers_; }
   const std::vector<RefineRecord>& lastRecords() const noexcept { return last_records_; }
   const std::vector<Light>& lastLights() const noexcept { return last_lights_; }
@@ -100,6 +114,7 @@ private:
   bool collect_records_{false};
   // detectFrame 对外是 const，这几个快照只供调试读取，所以用 mutable。
   mutable RefineStats last_refine_{};
+  mutable DetectTiming last_timing_{};
   mutable NumberStats last_numbers_{};
   mutable std::vector<RefineRecord> last_records_;
   mutable std::vector<Light> last_lights_;

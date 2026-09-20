@@ -38,11 +38,6 @@ public:
   std::optional<double> lights_depth_diff(
     const Armor& armor) const;
 
-  // 校验并替换相机标定：检查内参、畸变长度、静态外参的正交性，通过后拆出
-  // camera -> barrel 的 R 和 t 缓存起来。失败返回 false 并保持 ready() 为 false。
-  [[nodiscard]] bool setCalibration(
-    const L1Sensor::CameraCalibration& calibration);
-
   // 把世界系里位姿已知的一块板重投影成四个像素角点，顺序同样是 TL/TR/BR/BL。
   // 标定或枪管姿态缺失时返回空数组。
   std::vector<cv::Point2f> reproject_armor(
@@ -52,8 +47,14 @@ public:
     ArmorName name) const;
 
 private:
+  // 校验并接收相机标定：检查内参、畸变长度、静态外参的正交性，通过后拆出
+  // camera -> barrel 的 R 和 t 缓存起来。失败返回 false 并保持 ready() 为
+  // false，同时不落下这份非法标定。只在构造时调用一次。
+  [[nodiscard]] bool setCalibration(
+    const L1Sensor::CameraCalibration& calibration);
+
   // 以枪管 yaw 为中心、左右各 70° 按 1° 步长枚举，取 yaw_cost 最小的一个写回
-  // armor。3/4/5 号的大板跳过这一步，保留 IPPE 原始 yaw。
+  // armor，IPPE 的原始 yaw 留在 yaw_raw 里。
   void optimize_yaw(Armor& armor) const;
 
   // 给定世界系 yaw 时四个角点的重投影距离之和。重投影不可用时返回无穷大，

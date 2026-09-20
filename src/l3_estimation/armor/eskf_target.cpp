@@ -187,6 +187,7 @@ void EskfTarget::predictEkf(TimePoint timestamp, std::optional<TimePoint> hold_f
   }
   const double dt = std::chrono::duration<double>(timestamp - t_).count();
   double motion_dt = dt;
+  // 预测时长不能超过 hold_from：hold_from 之后的外推不可信，滤波器也不该再往前推进。
   if (hold_from) {
     const double until_hold = std::chrono::duration<double>(*hold_from - t_).count();
     motion_dt = std::min(dt, std::max(until_hold, 0.0));
@@ -502,12 +503,16 @@ int EskfTarget::update(
   // 检测到的灯条方向，诊断时拿它把端点残差投到灯条坐标系。
   std::vector<Eigen::Vector2d> directions;
   directions.reserve(matched.size() * 2 + matched_lights.size());
+  // 与 directions 一一对应的灯条像素长度，用来把倾角残差化成角度。
+  std::vector<double> lengths;
+  lengths.reserve(matched.size() * 2 + matched_lights.size());
 
   const auto addLight = [&](const cv::Point2f & top, const cv::Point2f & bottom, int id,
                             bool is_left, bool isolated) {
     observations.push_back(
       lightObs(top, bottom, id, is_left, isolated, calibration, camera_in_world));
     directions.push_back(lightDirection(top, bottom));
+    lengths.push_back(cv::norm(top - bottom));
   };
 
   for (const auto & [id, armor] : matched) {
@@ -564,27 +569,59 @@ int EskfTarget::update(
     }
   }
 
-  // 把每根灯条两个端点的残差投到该灯条的方向 e 和法向 n 上，分方向累加。
+  // 把每根灯条两个端点的残差投到该灯条的方向 e 和法向 n 上，再折成四个正交
+  // 的物理通道（定义见 LightResidual）。mean 和 rms 都记：mean 反映检测器的
+  // 系统偏差，rms 反映噪声——偏差要回检测侧修，放大 R 压不住。
   last_light_residual_ = LightResidual{};
-  if (innovation.size() >= light_count * kLightMeasureSize) {
+  if (light_count > 0 && innovation.size() >= light_count * kLightMeasureSize) {
     double along_sq = 0.0;
     double perp_sq = 0.0;
+    // 下标与 LightResidual 的四个通道同序：横移⊥、沿移∥、倾角、长度。
+    std::array<double, 4> sum{};
+    std::array<double, 4> sum_sq{};
+
     for (int i = 0; i < light_count; ++i) {
       const int base = i * kLightMeasureSize;
       const Eigen::Vector2d & e = directions[i];
       const Eigen::Vector2d n(-e.y(), e.x());
-      for (const int point : {endpoint::TOP_U, endpoint::BOTTOM_U}) {
-        const Eigen::Vector2d r = innovation.segment<2>(base + point);
-        along_sq += r.dot(e) * r.dot(e);
-        perp_sq += r.dot(n) * r.dot(n);
+      const Eigen::Vector2d r_top = innovation.segment<2>(base + endpoint::TOP_U);
+      const Eigen::Vector2d r_bottom =
+        innovation.segment<2>(base + endpoint::BOTTOM_U);
+
+      const double top_along = r_top.dot(e);
+      const double bottom_along = r_bottom.dot(e);
+      const double top_perp = r_top.dot(n);
+      const double bottom_perp = r_bottom.dot(n);
+
+      along_sq += top_along * top_along + bottom_along * bottom_along;
+      perp_sq += top_perp * top_perp + bottom_perp * bottom_perp;
+
+      // 长度为 0 的灯条不该出现在这里，真出现了就把倾角记 0，别除出 inf。
+      const double length = lengths[i];
+      const std::array<double, 4> channel{
+        (top_perp + bottom_perp) / 2.0,
+        (top_along + bottom_along) / 2.0,
+        length > 1e-6 ? (top_perp - bottom_perp) / length : 0.0,
+        bottom_along - top_along};
+      for (std::size_t k = 0; k < channel.size(); ++k) {
+        sum[k] += channel[k];
+        sum_sq[k] += channel[k] * channel[k];
       }
     }
-    if (light_count > 0) {
-      const double samples = 2.0 * light_count;
-      last_light_residual_.along_rms_px = std::sqrt(along_sq / samples);
-      last_light_residual_.perp_rms_px = std::sqrt(perp_sq / samples);
-      last_light_residual_.light_count = light_count;
+
+    const double samples = static_cast<double>(light_count);
+    const std::array<LightResidual::Channel *, 4> out{
+      &last_light_residual_.shift_perp, &last_light_residual_.shift_along,
+      &last_light_residual_.tilt, &last_light_residual_.length};
+    for (std::size_t k = 0; k < out.size(); ++k) {
+      out[k]->mean = sum[k] / samples;
+      out[k]->rms = std::sqrt(sum_sq[k] / samples);
     }
+
+    last_light_residual_.along_rms_px = std::sqrt(along_sq / (2.0 * samples));
+    last_light_residual_.perp_rms_px = std::sqrt(perp_sq / (2.0 * samples));
+    last_light_residual_.light_count = light_count;
+
     const int depth_index = light_count * kLightMeasureSize;
     if (has_depth_diff && depth_index < innovation.size()) {
       last_light_residual_.depth_diff_m = innovation[depth_index];
