@@ -339,7 +339,7 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   const std::vector<L2Perception::Light>& lights,
   const std::vector<std::pair<int, Armor>>& matched_armors,
   TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
-  const Eigen::Isometry3d& camera_in_world) const
+  const Eigen::Isometry3d& camera_in_world, LightMatchStats* stats) const
 {
   std::vector<MatchedLight> result;
   const bool is_base =
@@ -349,6 +349,9 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   if (!config_.enable_lights_measure || is_base || matched_armors.empty() ||
       lights.empty() || !initialized_ || !filter_ ||
       (config_.light_match_require_jumped && !jumped)) {
+    if (stats != nullptr) {
+      ++stats->frames_skipped;
+    }
     return result;
   }
 
@@ -393,6 +396,9 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
   addVisible(closest_id, true);
 
   if (visible_lights.empty()) {
+    if (stats != nullptr) {
+      ++stats->frames_no_candidate;
+    }
     return result;
   }
 
@@ -411,8 +417,15 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
       return kMaxCost + 1.0;
     }
 
+    if (stats != nullptr) {
+      ++stats->considered;
+    }
+
     const double length_error = std::abs(light.length - predicted_length);
     if (length_error > predicted_length * config_.light_match_length_ratio_gate) {
+      if (stats != nullptr) {
+        ++stats->reject_length;
+      }
       return kMaxCost + 1.0;
     }
 
@@ -423,6 +436,9 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
     const double angle_error =
       std::abs(VM::normalizeAngle(light_angle - predicted_angle));
     if (angle_error > config_.light_match_angle_gate) {
+      if (stats != nullptr) {
+        ++stats->reject_angle;
+      }
       return kMaxCost + 1.0;
     }
 
@@ -438,7 +454,13 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
     }
     const double distance = innovation.dot(llt.solve(innovation));
     if (!(distance <= config_.light_match_chi2_gate)) {
+      if (stats != nullptr) {
+        ++stats->reject_chi2;
+      }
       return kMaxCost + 1.0;
+    }
+    if (stats != nullptr) {
+      ++stats->passed;
     }
     return distance;
   };
@@ -454,6 +476,9 @@ std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
          cost, observation_count, static_cast<int>(visible_lights.size()), kMaxCost)) {
     const auto& [id, is_left, unused] = visible_lights[candidate];
     result.emplace_back(id, is_left, lights[observation]);
+  }
+  if (stats != nullptr) {
+    stats->matched += result.size();
   }
   return result;
 }

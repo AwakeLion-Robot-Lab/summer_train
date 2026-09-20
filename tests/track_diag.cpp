@@ -388,6 +388,9 @@ int main(int argc, char* argv[])
     // 一块"，跟侧边灯条无关，别拿它当灯条检出量看。
     std::size_t side_light_total = 0;
     std::size_t frames_with_side_light = 0;
+    // L3 真正吃下去的那些：过了 matchLight 全部门限、进了 updateMulti 的
+    // 独立灯条。与上面 L2 的检出量一起看，才知道关联门限收紧了多少。
+    std::size_t side_light_used = 0;
     std::size_t number_accepted = 0;
     std::size_t number_dropped = 0;
     std::vector<double> ms_l2;
@@ -467,6 +470,9 @@ int main(int argc, char* argv[])
       const auto target = tracker.track(
         armors, detection_frame.lights, q_world_barrel, timestamp);
       const auto t_l3_end = std::chrono::steady_clock::now();
+      for (const auto& used : tracker.usedLights()) {
+        if (used.isolated) ++side_light_used;
+      }
       ms_l2.push_back(std::chrono::duration<double, std::milli>(t_l2_end - t_l2_begin).count());
       ms_l3.push_back(std::chrono::duration<double, std::milli>(t_l3_end - t_l3_begin).count());
       const auto& observations = tracker.observations();
@@ -803,6 +809,7 @@ int main(int argc, char* argv[])
       return out.str();
     };
 
+    const auto& light_stats = tracker.lightMatchStats();
     std::cout << "\n=== " << input << " ===\n"
               << "帧数                        " << frames << '\n'
               << "有检出的帧                  " << frames_with_det << '\n'
@@ -812,6 +819,13 @@ int main(int argc, char* argv[])
               << "单帧多观测更新的帧          " << double_update_frames << '\n'
               << "侧边灯条 总数/有灯条的帧    " << side_light_total << " / "
               << frames_with_side_light << '\n'
+              << "侧边灯条 L3 实际采纳        " << side_light_used << '\n'
+              << "  关联跳过帧 无锚板/无候选槽  " << light_stats.frames_skipped
+              << " / " << light_stats.frames_no_candidate << '\n'
+              << "  过门 " << light_stats.passed << " / " << light_stats.considered
+              << "  毙于 长度 " << light_stats.reject_length << " / 角度 "
+              << light_stats.reject_angle << " / 卡方 "
+              << light_stats.reject_chi2 << '\n'
               << "数字分类采信/丢弃           " << number_accepted << " / "
               << number_dropped << '\n'
               << "角点精修 替换/保留网络      " << refine_hit << " / " << refine_kept

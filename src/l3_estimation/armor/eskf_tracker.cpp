@@ -171,7 +171,8 @@ bool EskfTracker::updateTarget(
   const auto matched =
     slot.target.matchArmor(same_name, timestamp, calibration_, camera_in_world);
   const auto matched_lights = slot.target.matchLight(
-    lights, matched, timestamp, calibration_, camera_in_world);
+    lights, matched, timestamp, calibration_, camera_in_world,
+    &light_match_stats_);
 
   std::optional<double> depth_difference;
   if (matched.size() == 1) {

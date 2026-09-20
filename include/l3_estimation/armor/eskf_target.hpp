@@ -72,6 +72,7 @@ struct EskfTargetConfig
   double light_match_chi2_gate{13.28};
   bool light_match_require_jumped{true};
 
+
   // 装甲板关联的代价权重与门限，代价怎么算见 matchArmor。
   double match_gate{200.0};
   // 还没见过 0 号以外的板时改用这个更宽的门限：那时整车 yaw、第二组半径和
@@ -85,6 +86,25 @@ struct EskfTargetConfig
   double initial_radius{0.26};
   double initial_radius_outpost{0.2765};
   double initial_radius_base{0.3205};
+};
+
+// matchLight 各道门毙掉了多少根侧边灯条，累计值。门限只看最终采纳数是调不
+// 动的：采纳数为零时，不知道是候选板槽位根本没开出来，还是某一道门收太紧。
+struct LightMatchStats
+{
+  // 整帧没进关联：开关关着、目标是基地、本帧没关联上完整板，或 jumped 未满足。
+  std::size_t frames_skipped{0};
+  // 进了关联但一个候选灯条槽位都没开出来：能看见的板本帧都已配成完整板，
+  // 或邻板背对相机。这时侧边灯条本来就无处可去，不算被门毙掉。
+  std::size_t frames_no_candidate{0};
+  // 逐 (灯条, 候选槽位) 对的计数，下面几项按门的先后顺序互斥累加。
+  std::size_t considered{0};
+  std::size_t reject_length{0};
+  std::size_t reject_angle{0};
+  std::size_t reject_chi2{0};
+  std::size_t passed{0};
+  // 贪心配对之后真正返回的根数，必然不大于 passed。
+  std::size_t matched{0};
 };
 
 class EskfTarget
@@ -141,11 +161,14 @@ public:
   // 本帧一块完整板都没关联上、或 require_jumped 时还没见过别的板，直接返回空。
   //
   // 卡方门限用滤波器当前的先验协方差，调用前应已 predictEkf(timestamp)。
+  //
+  // stats 非空时逐道门累加拒绝数，供 track_diag 打印；不影响关联结果。
   std::vector<MatchedLight> matchLight(
     const std::vector<L2Perception::Light>& lights,
     const std::vector<std::pair<int, Armor>>& matched_armors,
     TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
-    const Eigen::Isometry3d& camera_in_world) const;
+    const Eigen::Isometry3d& camera_in_world,
+    LightMatchStats* stats = nullptr) const;
 
   // 把关联好的板各拆成左右两根灯条的端点观测，做一次多观测更新，返回观测
   // 块数。

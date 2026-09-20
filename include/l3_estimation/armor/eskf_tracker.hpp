@@ -106,6 +106,10 @@ public:
     return buffer_[current_].used_lights;
   }
 
+  // matchLight 各道门的累计拒绝数，从进程开始一直累加，不随目标复位清零。
+  // 侧边灯条采纳数为零时，靠它区分“候选槽位没开出来”和“某道门太紧”。
+  const LightMatchStats& lightMatchStats() const noexcept { return light_match_stats_; }
+
   // 当前目标被丢弃的累计次数（超时、发散、Detecting 丢帧、断流）。丢弃后同一帧
   // 就可能重建，只看 state() 数不出这些，诊断工具按这个计数。
   std::size_t dropCount() const noexcept { return drop_count_; }
@@ -178,6 +182,7 @@ private:
   std::vector<Armor> observations_;
   int last_match_count_{0};
   std::string last_matched_ids_;
+  LightMatchStats light_match_stats_{};
 };
 
 }  // namespace L3Estimation
