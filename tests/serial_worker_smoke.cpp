@@ -154,6 +154,7 @@ std::vector<std::uint8_t> makeStatePacket(
   packet.data.pitch = pitch;
   packet.data.yaw = yaw;
   packet.data.bullet_speed = 23.0F;
+  packet.data.heat = 42.0F;
   packet.data.enemy_color = 1;
   packet.data.mode = 1;
 
@@ -282,6 +283,11 @@ int main()
         if (result == 0 && !state) {
           std::cerr << "SerialWorker did not parse the injected state\n";
           result = 10;
+        }
+
+        if (result == 0 && state->heat != 42.0) {
+          std::cerr << "SerialWorker did not preserve the received heat\n";
+          result = 13;
         }
 
         if (result == 0) {

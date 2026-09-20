@@ -51,6 +51,7 @@ std::vector<std::uint8_t> makeStatePacket(
   packet.data.pitch = pitch;
   packet.data.roll = 0.1F;
   packet.data.bullet_speed = 23.0F;
+  packet.data.heat = 42.0F;
   packet.data.enemy_color = 1;
   packet.data.mode = 1;
 
@@ -80,23 +81,50 @@ std::uint8_t txSequence(std::span<const std::uint8_t> bytes)
   return packet.frame_header.seq;
 }
 
+std::vector<std::uint8_t> makeUnsupportedPacket(std::uint8_t seq)
+{
+  constexpr std::size_t payload_size = 28;
+  Protocol::HeaderFrame header_frame{};
+  header_frame.sof = 0xA0;
+  header_frame.data_length = payload_size;
+  header_frame.seq = seq;
+  header_frame.cmd_id = 0x0021;
+
+  const auto header = std::span{
+    reinterpret_cast<const std::uint8_t*>(&header_frame),
+    offsetof(Protocol::HeaderFrame, crc8)};
+  header_frame.crc8 = crc8(header);
+
+  std::vector<std::uint8_t> bytes(
+    sizeof(header_frame) + payload_size + sizeof(std::uint16_t), 0);
+  std::memcpy(bytes.data(), &header_frame, sizeof(header_frame));
+
+  const auto checksum = crc16(
+    std::span<const std::uint8_t>{bytes}.first(bytes.size() - 2));
+  bytes[bytes.size() - 2] = static_cast<std::uint8_t>(checksum & 0xFF);
+  bytes[bytes.size() - 1] = static_cast<std::uint8_t>(checksum >> 8);
+  return bytes;
+}
+
 }  // namespace
 
 int main()
 {
-  static_assert(sizeof(Protocol::RxPayload) == 18);
+  static_assert(sizeof(Protocol::RxPayload) == 22);
 
   const auto first = makeStatePacket(10, 1.0F, 2.0F);
-  const auto second = makeStatePacket(11, 3.0F, 4.0F);
+  const auto unsupported = makeUnsupportedPacket(11);
+  const auto second = makeStatePacket(12, 3.0F, 4.0F);
 
   std::vector<std::uint8_t> merged = first;
+  merged.insert(merged.end(), unsupported.begin(), unsupported.end());
   merged.insert(merged.end(), second.begin(), second.end());
 
   Protocol protocol;
   const auto states = protocol.feed(merged);
   if (states.size() != 2 || states[0].rpy.yaw != 1.0 ||
       states[1].rpy.yaw != 3.0 || states[1].rpy.pitch != 4.0 ||
-      states[1].bullet_speed != 23.0) {
+      states[1].bullet_speed != 23.0 || states[1].heat != 42.0) {
     std::cerr << "SerialProtocol did not drain concatenated packets\n";
     return 1;
   }

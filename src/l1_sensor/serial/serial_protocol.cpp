@@ -93,20 +93,23 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       continue;
     }
 
+    // 下位机的 seq 对所有帧型统一递增，因此合法但未支持的帧也必须参与
+    // 丢包检测；否则每收到一帧 0x21，下一帧 0x02 都会被误报为丢包。
+    if (packet_loss_check_enable_) {
+      checkPacketLoss(header.seq);
+    }
+
     if (header.cmd_id == kRxCmdId && header.data_length == sizeof(RxPayload) &&
         frame_size == sizeof(RxPacket)) {
       RxPacket packet;
       std::memcpy(&packet, packet_bytes.data(), sizeof(packet));
-      if (packet_loss_check_enable_) {
-        checkPacketLoss(header.seq);
-      }
       rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
       states.push_back(toRobotState(packet));
       continue;
     }
 
-    L6Telemetry::logDebug("serial protocol ignored unsupported frame",
-                          static_cast<int>(header.cmd_id));
+    // 现场下位机持续发送本实现暂不消费的 0x21 帧。它已经通过两级 CRC，
+    // 静默跳过即可，避免约 90 Hz 的调试日志淹没真正的通信故障。
     rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
   }
 
@@ -225,9 +228,13 @@ bool SerialProtocol::checkPacketLoss(std::uint8_t seq) {
 
   const auto dropped = static_cast<std::uint8_t>(seq - expected);
   dropped_packet_count_ += dropped;
-  L6Telemetry::logWarn("serial rx packet lost", static_cast<int>(dropped),
-                       "last", static_cast<int>(last_rx_seq_), "current",
-                       static_cast<int>(seq));
+  // 现场下位机每约 21 个 seq 会固定空转一个号。单号跳空保留在累计计数中，
+  // 但不逐条刷屏；一次连续跳过多个号才作为异常告警。
+  if (dropped > 1) {
+    L6Telemetry::logWarn("serial rx packet lost", static_cast<int>(dropped),
+                         "last", static_cast<int>(last_rx_seq_), "current",
+                         static_cast<int>(seq));
+  }
   last_rx_seq_ = seq;
   return true;
 }
@@ -239,6 +246,7 @@ RobotState SerialProtocol::toRobotState(const RxPacket &packet) {
   state.rpy.yaw = packet.data.yaw;
   state.rpy.pitch = packet.data.pitch;
   state.bullet_speed = packet.data.bullet_speed;
+  state.heat = packet.data.heat;
   state.timestamp = std::chrono::steady_clock::now();
 
   switch (packet.data.enemy_color) {

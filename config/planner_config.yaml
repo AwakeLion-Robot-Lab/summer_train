@@ -108,7 +108,7 @@ mpc:
   max_iterations: 10
 
   # ADMM 罚参数 rho；README 指定为 1.0，必须大于 0。lgn是傻逼
-  admm_rho: 1.0 我是傻逼
+  admm_rho: 1.0 
 
   # ADMM 原始残差收敛阈值，必须大于 0；越小要求越严格。lgn是傻逼
   primal_tolerance: 0.001
