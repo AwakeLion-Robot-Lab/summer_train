@@ -903,17 +903,22 @@ cv::Mat makeUsedLightPanel(
   return panel;
 }
 
-// 侧边灯条专用面板：把 light_roi 放大铺满，画出这一帧的全部灯条候选，并把
-// "进了 L3" 和 "被判成已检出装甲板自己的灯条而丢掉" 两类分开。
+// 侧边灯条专用面板：把 light_roi 放大铺满，画出这一帧的全部灯条候选，按
+// "滤波器采纳了" / "进了 L3 但被 matchLight 毙掉" / "被判成已检出装甲板自己
+// 的灯条而丢掉" 三档分开。
 //
 // 之所以要单独一个窗口：灯条模型只在 light_roi 里跑，而 ROI 在整图上只占很
 // 小一块，压在 reprojection 上根本看不清端点。另外 used lights 面板画的是
 // 滤波器实际消费的量（含装甲板自己的两根），跟"侧边灯条检出了没有"不是同
 // 一个问题——后者要连被丢掉的候选一起看才判得出来。
+//
+// 中间那一档是这里唯一的看点：交给 L3 的候选里大半会被 matchLight 的长度门
+// 和角度门毙掉，只看"进了 L3"会把检出量当成采纳量。
 cv::Mat makeSideLightPanel(
   const cv::Mat& source,
   const std::vector<L2Perception::Light>& candidates,
   const std::vector<L2Perception::Light>& kept,
+  const std::vector<L3Estimation::UsedLight>& update_lights,
   const std::optional<cv::Rect>& light_roi)
 {
   // light_roi 是整车框扩出来的，通常又宽又扁（3 m 处约 4:1），固定的方形面板
@@ -923,10 +928,17 @@ cv::Mat makeSideLightPanel(
   constexpr int kHeaderHeight = 76;
   constexpr double kMaxZoom = 6.0;
 
-  // kept 保留了 lastLights() 里的下标，靠 id 回查哪些候选活了下来。
+  // kept 和 UsedLight::light_id 都保留了 lastLights() 里的下标，靠 id 回查
+  // 哪些候选活到了 L3、哪些又活过了 matchLight 的门限。
   std::set<std::size_t> kept_ids;
   for (const auto& light : kept) {
     kept_ids.insert(light.id);
+  }
+  std::set<std::size_t> used_ids;
+  for (const auto& light : update_lights) {
+    if (light.isolated) {
+      used_ids.insert(light.light_id);
+    }
   }
 
   const cv::Rect image_rect(0, 0, source.cols, source.rows);
@@ -947,12 +959,15 @@ cv::Mat makeSideLightPanel(
   drawOutlinedText(
     panel,
     cv::format(
-      "side lights  candidates=%zu  to L3=%zu  dropped(owned by armor)=%zu",
-      candidates.size(), kept.size(), candidates.size() - kept.size()),
+      "side lights  candidates=%zu  to L3=%zu  used by filter=%zu  "
+      "dropped(owned by armor)=%zu",
+      candidates.size(), kept.size(), used_ids.size(),
+      candidates.size() - kept.size()),
     {12, 28}, {255, 255, 255}, 0.58);
   drawOutlinedText(
     panel,
-    "solid=to L3 (color=bar color)   gray=dropped   filled dot=top   M=model C=classic",
+    "thick=used by IESKF   thin=to L3 but rejected by matchLight   "
+    "gray=owned by armor   filled dot=top",
     {12, 57}, {180, 180, 180}, 0.46);
 
   if (roi.area() <= 0) {
@@ -996,13 +1011,20 @@ cv::Mat makeSideLightPanel(
       continue;
     }
     const bool to_l3 = kept_ids.count(light.id) != 0;
-    const cv::Scalar color =
-      to_l3 ? armorDisplayColor(light.color) : cv::Scalar{110, 110, 110};
+    const bool used = used_ids.count(light.id) != 0;
+    // 被 matchLight 毙掉的那一档压暗而不是变灰：灰色留给"根本没进 L3"，两者
+    // 的原因完全不同，颜色要分得开。
+    const cv::Scalar bar = armorDisplayColor(light.color);
+    const cv::Scalar color = used ? bar
+      : to_l3 ? cv::Scalar{bar[0] * 0.45, bar[1] * 0.45, bar[2] * 0.45}
+              : cv::Scalar{110, 110, 110};
+    const int thickness = used ? 3 : 1;
+    const int radius = used ? 6 : 3;
     const cv::Point top = panelPoint(light.top);
     const cv::Point bottom = panelPoint(light.bottom);
-    cv::line(panel, top, bottom, color, to_l3 ? 3 : 1, cv::LINE_AA);
-    cv::circle(panel, top, to_l3 ? 6 : 3, color, cv::FILLED, cv::LINE_AA);
-    cv::circle(panel, bottom, to_l3 ? 6 : 3, color, 2, cv::LINE_AA);
+    cv::line(panel, top, bottom, color, thickness, cv::LINE_AA);
+    cv::circle(panel, top, radius, color, cv::FILLED, cv::LINE_AA);
+    cv::circle(panel, bottom, radius, color, 2, cv::LINE_AA);
     // 灯条在 ROI 里挨得近，标签压在一起就读不出来了：按 id 交替放在上下端点
     // 外侧，再按 id % 3 错开一行。
     const int stagger = static_cast<int>(light.id % 3) * 15;
@@ -1012,8 +1034,8 @@ cv::Mat makeSideLightPanel(
     drawOutlinedText(
       panel,
       cv::format(
-        "#%zu L=%.0f %.0fdeg", light.id, light.length,
-        static_cast<double>(light.tilt_angle_deg)),
+        "#%zu L=%.0f %.0fdeg%s", light.id, light.length,
+        static_cast<double>(light.tilt_angle_deg), used ? " IN" : ""),
       anchor, color, 0.44);
   }
 
@@ -1548,7 +1570,8 @@ int main(int argc, char** argv)
       // detection_frame.lights 是真正交给 L3 的那批，两者一起画才看得出侧边
       // 灯条是"没检出"还是"检出了但被判给了某块板"。
       const cv::Mat side_light_panel = makeSideLightPanel(
-        img, detector.lastLights(), detection_frame.lights, light_roi);
+        img, detector.lastLights(), detection_frame.lights, used_lights,
+        light_roi);
       clock.lap("绘图/显示", true);
       const auto target_armor_poses = tracker.armorPoses();
       const std::optional<FilterEstimate> filter_estimate = target
@@ -1777,28 +1800,34 @@ int main(int argc, char** argv)
       }
 
       // 侧边灯条画在原图上：单独的 side lights 窗口看端点，这里看它到底长在
-      // 车的哪一侧。黄色实线是进了 L3 的，灰色细线是被判给某块已检出装甲板、
-      // 因而没有重复进观测的候选。虚线框是灯条模型的搜索区 light_roi。
+      // 车的哪一侧。只画滤波器真正吃下去的那几根——过了 matchLight 的长度、
+      // 角度、卡方三道门，且这一帧 updateMulti 成功——标注关联到的物理板编号
+      // 和左右。交给 L3 的候选大半会被门限毙掉，把它们一起画在原图上等于把
+      // "检出了" 当成 "用上了"；被毙掉的和被判给已检出装甲板的都去 side
+      // lights 窗口里看。灰框是灯条模型的搜索区 light_roi。
       if (light_roi) {
         cv::rectangle(img, *light_roi, {90, 90, 90}, 1, cv::LINE_AA);
       }
       {
-        std::set<std::size_t> to_l3;
-        for (const auto& light : detection_frame.lights) {
-          to_l3.insert(light.id);
-        }
-        for (const auto& light : detector.lastLights()) {
+        const cv::Scalar light_color{0, 255, 255};
+        for (const auto& light : used_lights) {
+          if (!light.isolated) {
+            continue;
+          }
           if (!std::isfinite(light.top.x) || !std::isfinite(light.bottom.x)) {
             continue;
           }
-          const bool used = to_l3.count(light.id) != 0;
-          const cv::Scalar color =
-            used ? cv::Scalar{0, 255, 255} : cv::Scalar{120, 120, 120};
           const cv::Point top = toPixel(light.top);
           const cv::Point bottom = toPixel(light.bottom);
-          cv::line(img, top, bottom, color, used ? 3 : 1, cv::LINE_AA);
-          cv::circle(img, top, used ? 5 : 3, color, cv::FILLED, cv::LINE_AA);
-          cv::circle(img, bottom, used ? 5 : 3, color, 2, cv::LINE_AA);
+          cv::line(img, top, bottom, light_color, 3, cv::LINE_AA);
+          cv::circle(img, top, 5, light_color, cv::FILLED, cv::LINE_AA);
+          cv::circle(img, bottom, 5, light_color, 2, cv::LINE_AA);
+          drawOutlinedText(
+            img,
+            cv::format(
+              "#%zu id=%d %c", light.light_id, light.armor_id,
+              light.is_left ? 'L' : 'R'),
+            top + cv::Point{8, -8}, light_color, 0.5);
         }
       }
 

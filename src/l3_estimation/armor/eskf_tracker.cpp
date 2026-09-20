@@ -206,7 +206,7 @@ bool EskfTracker::updateTarget(
     }
     for (const auto& [id, is_left, light] : matched_lights) {
       slot.used_lights.push_back(
-        {light.top, light.bottom, id, is_left, true});
+        {light.top, light.bottom, id, is_left, true, light.id});
     }
     slot.last_update = timestamp;
   }

@@ -51,6 +51,10 @@ struct UsedLight
   int armor_id{-1};
   bool is_left{false};
   bool isolated{false};
+  // isolated 为 true 时，是这根灯条在本帧 L2 侧边灯条候选数组（lastLights）
+  // 里的下标，调试显示靠它把“滤波器真正吃下去的”回查到检出候选上；来自装甲
+  // 板角点的那两根没有下标，恒为 0。
+  std::size_t light_id{0};
 };
 
 class EskfTracker
