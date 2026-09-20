@@ -28,6 +28,12 @@ option("use_openvino")
     set_description("Enable the optional OpenVINO inference backend")
 option_end()
 
+option("openvino_root")
+    set_default("/opt/intel/openvino_2024.6.0")
+    set_showmenu(true)
+    set_description("OpenVINO install prefix (the directory containing runtime/)")
+option_end()
+
 option("use_tensorrt")
     set_default(false)
     set_showmenu(true)
@@ -89,7 +95,11 @@ target("newvision")
             -- SP-Vision 固定使用 /opt/intel/openvino_2024.6.0。模型推理的最后几个
             -- ulp 会随 Runtime 版本变化，而 SP 的 1 度离散 yaw 搜索会放大这种差异，
             -- 所以本机存在同一 SDK 时优先与 SP 链接同一版本；其他机器再回退 pkg-config。
-            local sp_openvino_runtime = "/opt/intel/openvino_2024.6.0/runtime"
+            --
+            -- 换版本用 xmake f --openvino_root=/path/to/openvino（目录下要有
+            -- runtime/），换完所有离线基线都要重跑：ulp 级差异会一路传到 pred_px。
+            local sp_openvino_runtime = path.join(get_config("openvino_root") or
+                "/opt/intel/openvino_2024.6.0", "runtime")
             local sp_openvino_include = path.join(sp_openvino_runtime, "include")
             local sp_openvino_lib = path.join(sp_openvino_runtime, "lib", "intel64")
             if os.isdir(sp_openvino_include) and os.isfile(path.join(sp_openvino_lib, "libopenvino.so")) then
