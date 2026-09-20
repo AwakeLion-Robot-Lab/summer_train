@@ -99,11 +99,11 @@ SelectionResult Planner::selectArmor(
     };
   const auto finish =
     [this](const ArmorCandidate* candidate,
-           bool tracking_ready,
+           bool tracked_ready,
            SelectionReason reason) {
       SelectionResult result;
       result.phase = tracking_state_.phase;
-      result.tracking_ready = tracking_ready;
+      result.tracked_ready = tracked_ready;
       result.reason = reason;
       if (candidate != nullptr) {
         result.selected = *candidate;

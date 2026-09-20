@@ -37,7 +37,7 @@ struct AimOverlayInput
 };
 
 // 在原图上画：检测角点、送入滤波器的单板重投影与朝向箭头、EKF 展开的整车、
-// Plan 的命中板，以及一行状态文字。就地修改 image。
+// Plan 的命中板、fire_feasible 时的当前装甲板，以及一行状态文字。就地修改 image。
 void drawAimOverlay(
   cv::Mat& image, const AimOverlayInput& input,
   const L3Estimation::PnpSolver& solver,
@@ -45,6 +45,9 @@ void drawAimOverlay(
 
 // 以下是叠加层的组成部件，离线回放另外还要画代价曲线和外推框，所以单独导出。
 cv::Point toPixel(const cv::Point2f& point);
+
+// 在图像几何中心画小红点，用于相机实时画面和离线回放的对齐参考。
+void drawImageCenter(cv::Mat& image);
 
 void drawOutlinedText(
   cv::Mat& image, const std::string& text, cv::Point origin,

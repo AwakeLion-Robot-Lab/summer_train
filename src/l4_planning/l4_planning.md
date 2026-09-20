@@ -448,7 +448,7 @@ max_lost_frames 宽限期内保持当前装甲板 ID 并禁止开火；连续失
       - 其次选择预进入区内价值最高的其他有效装甲板；
       - 直接开始切换，不进行三帧价值优势确认；
       - 都不存在时执行 resetTracking()，清除目标缓存并进入 Unlocked；
-      - 返回的 AimPlan 同时设置 tracking=false、target_id=-1。
+      - 返回的 AimPlan 同时设置 tracked=false、target_id=-1。
 
 未锁定：
 
@@ -488,7 +488,7 @@ max_lost_frames 宽限期内保持当前装甲板 ID 并禁止开火；连续失
       std::optional<ArmorCandidate> selected;
 
       ArmorTrackingPhase phase{ArmorTrackingPhase::Unlocked};
-      bool tracking_ready{false}; // 稳定锁定且本周期观测可支持跟踪
+      bool tracked_ready{false}; // 稳定锁定且本周期观测可支持跟踪
       bool valid{false};
 
       SelectionReason reason{
@@ -539,7 +539,7 @@ MPC接收AimPlan继承的AimReference理想瞄准目标，求解后仍输出同�
       int target_id{-1};           // 当前锁定的目标车辆ID，-1表示未锁定
       int armor_id{-1};            // 当前输出装甲板ID，-1表示未锁定
       TimePoint impact_time{};     // 预计弹丸命中装甲板的时刻
-      bool tracking{false};        // 是否在追踪
+      bool tracked{false};         // 是否已持有可用的目标快照
 
       Eigen::Vector3d aim_point_barrel{
           Eigen::Vector3d::Zero()}; // 枪管坐标系下的瞄准点，单位m
@@ -575,14 +575,14 @@ MPC接收AimPlan继承的AimReference理想瞄准目标，求解后仍输出同�
       std::vector<AimSample> samples; // MPC轨迹，按execute_time升序排列
       bool using_MPC{false};       // false直接使用继承的参考量，true使用samples
 
-      ArmorTrackingPhase tracking_phase{ArmorTrackingPhase::Unlocked};
+      ArmorTrackingPhase tracked_phase{ArmorTrackingPhase::Unlocked};
       bool fire_permitted{false};  // 稳定跟踪、位于射击窗口内且弹道有效
       bool valid{false};           // 规划结果是否有效
   };
 
 给l5的火控为：
 plan.fire_permitted =
-    selection.tracking_ready
+    selection.tracked_ready
     && selected.within_firing_window;
 
 

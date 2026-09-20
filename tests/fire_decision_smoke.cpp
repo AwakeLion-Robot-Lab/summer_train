@@ -40,7 +40,7 @@ L5Control::FireInput makeInput()
     L3Estimation::ArmorName::Infantry3, 4.0, 0.0, 0.2);
   input.track_state = L3Estimation::TrackState::Tracking;
   input.plan.valid = true;
-  input.plan.tracking = true;
+  input.plan.tracked = true;
   input.plan.fire_permitted = true;
   input.plan.armor_id = 0;
   input.plan.impact_time = input.target->t();

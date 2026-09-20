@@ -54,6 +54,7 @@ namespace {
 // 叠加层的绘制统一在 L6，实机 runtime 和这里共用同一份，
 // 否则两边会漂——回放里看着对的东西实机上可能画错。
 using L6Telemetry::drawFilterInputArmors;
+using L6Telemetry::drawImageCenter;
 using L6Telemetry::isFilterInputArmor;
 using L6Telemetry::drawOutlinedText;
 using L6Telemetry::drawVehicle;
@@ -1106,12 +1107,22 @@ int main(int argc, char** argv)
           img, target_armor_poses, armor_type, target->name, solver,
           {0, 255, 0}, 2, overlay_shift);
 
-        // 红色是 Plan 直接保存的命中时刻实体板，对应 sp_vision 的
-        // debug_aim_point；不再靠 armor_id 和延迟在回放层重复重建。
+        // Plan 的命中时刻预测板始终画红框。
         if (plan.valid && planned_armor_pose) {
           drawVehicle(
             img, {*planned_armor_pose}, armor_type, target->name, solver,
             {0, 0, 255}, 2, overlay_shift);
+        }
+
+        // fire_feasible 时，紫框画在 L3 当前时刻的选中装甲板上，
+        // 与红框的命中时刻预测位姿分开。
+        if (fire_decision.fire_feasible && plan.armor_id >= 0) {
+          const auto selected = static_cast<std::size_t>(plan.armor_id);
+          if (selected < target_armor_poses.size()) {
+            drawVehicle(
+              img, {target_armor_poses[selected]}, armor_type, target->name,
+              solver, {255, 0, 255}, 2, overlay_shift);
+          }
         }
       }
 
@@ -1277,7 +1288,7 @@ int main(int argc, char** argv)
       // L4 -> L5：这才是真正决定下位机动作的一组量。
       // cmd_yaw 是 world 系绝对方位角，和 gimbal_yaw 同一个基准，可以直接相减。
       data["plan_valid"] = plan.valid ? 1 : 0;
-      data["plan_tracking_phase"] = static_cast<int>(plan.tracking_phase);
+      data["plan_tracked_phase"] = static_cast<int>(plan.tracked_phase);
       data["plan_armor_id"] = plan_armor_id;
       data["plan_aim_on_armor"] = planned_armor_pose &&
           (plan.aim_point_world - planned_armor_pose->head<3>()).norm() < 1e-9
@@ -1335,6 +1346,7 @@ int main(int argc, char** argv)
       }
       (void)plotter.send(data);
 
+      drawImageCenter(img);
       if (show_plot) {
         cv::imshow(
           "pnp cost",

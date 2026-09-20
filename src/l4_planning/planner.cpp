@@ -271,8 +271,8 @@ AimPlan Planner::plan(
   const L3Estimation::TargetState& target_state = *last_target_;
   tracking_state_.robot_id = target_state.robot_id;
   plan.target_id = target_state.robot_id;
-  plan.tracking = true;
-  plan.tracking_phase = tracking_state_.phase;
+  plan.tracked = true;
+  plan.tracked_phase = tracking_state_.phase;
 
   // 图像/滤波时刻到规划时刻的耗时由时间戳计算，标定的出膛延迟由
   // context.latency 提供，两者均由 LatencyCompensator 统一校验。
@@ -577,9 +577,9 @@ AimPlan Planner::plan(
       : robot_state.timestamp;
   const SelectionResult selection =
     selectArmor(selection_request, selection_time, config);
-  plan.tracking_phase = selection.phase;
+  plan.tracked_phase = selection.phase;
   if (selection.phase == ArmorTrackingPhase::Unlocked) {
-    plan.tracking = false;
+    plan.tracked = false;
     plan.target_id = -1;
   }
   if (!selection.valid || !selection.selected.has_value()) {
@@ -597,7 +597,7 @@ AimPlan Planner::plan(
   plan.pitch = selected.ballistic.pitch;
   plan.fly_time = selected.ballistic.fly_time;
   plan.fire_permitted =
-    selection.tracking_ready
+    selection.tracked_ready
     && selected.within_firing_window;
   plan.valid = true;
 

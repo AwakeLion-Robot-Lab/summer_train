@@ -287,7 +287,8 @@ void AutoAimRuntime::run() {
               controller.lastDecision(), command.has_value()));
           }
           if (overlay_solver && tracker &&
-              frame_index % auto_aim_config.debug.overlay_every == 0) {
+              (controller.lastDecision().fire_feasible ||
+               frame_index % auto_aim_config.debug.overlay_every == 0)) {
             overlay_solver->set_R_world_barrel(image_pose);
             L6Telemetry::drawAimOverlay(
               frame,
@@ -324,6 +325,7 @@ void AutoAimRuntime::run() {
     ++frame_index;
     /******************************* debug ********************************/
     if (overlay_enabled) {
+      L6Telemetry::drawImageCenter(frame);
       cv::imshow("auto_aim", frame);
       const int key = cv::waitKey(1);
       if (key == 27 || key == 'q' || key == 'Q') {
@@ -448,7 +450,7 @@ nlohmann::json telemetryFrame(
 
   // aim: L4 规划出的云台目标姿态。**与 gimbal/ 分开**，两者同图即跟随误差。
   data["aim"]["valid"] = plan.valid ? 1 : 0;
-  data["aim"]["tracking_phase"] = static_cast<int>(plan.tracking_phase);
+  data["aim"]["tracked_phase"] = static_cast<int>(plan.tracked_phase);
   data["aim"]["fire_permitted"] = plan.fire_permitted ? 1 : 0;
   if (plan.valid) {
     const double command_yaw = plan.using_MPC && !plan.samples.empty()

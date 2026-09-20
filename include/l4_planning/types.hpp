@@ -77,7 +77,7 @@ struct AimReference {
   int target_id{-1};
   int armor_id{-1};
   TimePoint impact_time{};
-  bool tracking{false};
+  bool tracked{false};
 
   Eigen::Vector3d aim_point_barrel{Eigen::Vector3d::Zero()};
   Eigen::Vector3d aim_point_world{Eigen::Vector3d::Zero()};
@@ -122,7 +122,7 @@ struct AimPlan : AimReference {
   std::vector<AimSample> samples;
 
   bool using_MPC{false};       // false：直接参考；true：已生成 MPC samples
-  ArmorTrackingPhase tracking_phase{ArmorTrackingPhase::Unlocked};
+  ArmorTrackingPhase tracked_phase{ArmorTrackingPhase::Unlocked};
   bool fire_permitted{false};  // 稳定跟踪、位于射击窗口内且弹道有效
   bool valid{false};           // 规划结果是否有效
 };

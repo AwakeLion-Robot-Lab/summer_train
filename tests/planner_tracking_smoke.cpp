@@ -84,14 +84,14 @@ int main()
 
   const L4Planning::AimPlan first = run_observed(0.0);
   if (!first.valid || first.armor_id != 0 || first.fire_permitted
-      || first.tracking_phase != L4Planning::ArmorTrackingPhase::Stabilizing) {
+      || first.tracked_phase != L4Planning::ArmorTrackingPhase::Stabilizing) {
     std::cerr << "initial armor should enter stabilizing phase\n";
     return 1;
   }
 
   const L4Planning::AimPlan locked = run_observed(0.0);
   if (!locked.valid || locked.armor_id != 0 || !locked.fire_permitted
-      || locked.tracking_phase != L4Planning::ArmorTrackingPhase::Tracking) {
+      || locked.tracked_phase != L4Planning::ArmorTrackingPhase::Tracking) {
     std::cerr << "initial armor did not become locked\n";
     return 2;
   }
@@ -105,7 +105,7 @@ int main()
     context);
   if (!repeated_timestamp.valid || repeated_timestamp.armor_id != 0
       || repeated_timestamp.fire_permitted
-      || repeated_timestamp.tracking_phase
+      || repeated_timestamp.tracked_phase
            != L4Planning::ArmorTrackingPhase::Tracking) {
     std::cerr << "repeated observation timestamp was treated as fresh\n";
     return 9;
@@ -115,7 +115,7 @@ int main()
   const L4Planning::AimPlan retained = run_observed(kPi / 2.0);
   if (!retained.valid || retained.armor_id == 0
       || retained.fire_permitted
-      || retained.tracking_phase
+      || retained.tracked_phase
            != L4Planning::ArmorTrackingPhase::Stabilizing) {
     std::cerr << "out-of-window armor did not switch immediately\n";
     return 3;
@@ -124,7 +124,7 @@ int main()
   if (!retained_again.valid
       || retained_again.armor_id != retained.armor_id
       || !retained_again.fire_permitted
-      || retained_again.tracking_phase
+      || retained_again.tracked_phase
            != L4Planning::ArmorTrackingPhase::Tracking) {
     std::cerr << "higher-scored armor did not finish relocking\n";
     return 4;
@@ -147,7 +147,7 @@ int main()
   }
 
   const L4Planning::AimPlan lost = run_missing();
-  if (lost.valid || lost.tracking
+  if (lost.valid || lost.tracked
       || planner.trackingState().phase
            != L4Planning::ArmorTrackingPhase::Unlocked) {
     std::cerr << "tracking was not released after the loss limit\n";
@@ -178,7 +178,7 @@ int main()
   (void)run_threshold(0.0);
   const L4Planning::AimPlan threshold_locked = run_threshold(0.0);
   if (!threshold_locked.valid || threshold_locked.armor_id != 0
-      || threshold_locked.tracking_phase
+      || threshold_locked.tracked_phase
            != L4Planning::ArmorTrackingPhase::Tracking) {
     std::cerr << "threshold test did not establish the initial lock\n";
     return 7;
@@ -188,7 +188,7 @@ int main()
     run_threshold(kPi / 2.0);
   if (!threshold_switched.valid || threshold_switched.armor_id == 0
       || threshold_switched.fire_permitted
-      || threshold_switched.tracking_phase
+      || threshold_switched.tracked_phase
            != L4Planning::ArmorTrackingPhase::Stabilizing) {
     std::cerr << "leaving the window did not force an immediate switch\n";
     return 8;

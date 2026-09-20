@@ -86,7 +86,7 @@ struct SelectionResult {
   std::optional<ArmorCandidate> selected;
   ArmorTrackingPhase phase{ArmorTrackingPhase::Unlocked};
   // 已完成稳定锁定，且本周期观测足以支持跟踪；不包含射击窗口判断。
-  bool tracking_ready{false};
+  bool tracked_ready{false};
   bool valid{false};
   SelectionReason reason{SelectionReason::NoCandidate};
 };

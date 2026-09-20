@@ -71,21 +71,21 @@ selection:
 
   # 装甲板法线偏角不小于 bad 时，正对程度评分为 0。
   # 必须大于 facing_angle_good_deg。
-  facing_angle_bad_deg: 25.0
+  facing_angle_bad_deg: 60.0
 
   # 普通车辆装甲板沿旋转方向进入射击窗口前侧的角度，单位 deg。
   normal_enter_angle_deg: 60.0
 
   # 普通车辆装甲板离开射击窗口后侧的角度，单位 deg。
   # 必须不大于 normal_enter_angle_deg。
-  normal_leave_angle_deg: 40.0
+  normal_leave_angle_deg: 45.0
 
   # 前哨站装甲板射击窗口的进入角，单位 deg。
   outpost_enter_angle_deg: 70.0
 
   # 前哨站装甲板射击窗口的离开角，单位 deg。
   # 必须不大于 outpost_enter_angle_deg。
-  outpost_leave_angle_deg: 30.0
+  outpost_leave_angle_deg: 40.0
 
   # 候选装甲板总评分的三项权重，均须非负且总和必须为 1。
   score_weights:

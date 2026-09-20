@@ -49,11 +49,12 @@ void drawAimOverlay(
   if (input.target) {
     const auto type = L3Estimation::armorTypeOf(input.target->name)
                         .value_or(L3Estimation::ArmorType::Small);
+    const auto current_armors = input.target->armor_xyza_list();
     // 绿色：EKF 展开的全部物理装甲板，直接压在图像上，贴不贴板可以目视判断。
     drawVehicle(
-      image, input.target->armor_xyza_list(), type, input.target->name, solver,
+      image, current_armors, type, input.target->name, solver,
       {0, 255, 0}, 2);
-    // 红色：Plan 选中的命中时刻实体板，它领先绿框是延迟补偿的正常结果。
+    // 红色：Plan 选中的命中时刻预测板。
     if (input.plan.valid && input.plan.armor_id >= 0 &&
         input.plan.impact_time >= input.target->t()) {
       L3Estimation::TrackedTarget predicted = *input.target;
@@ -64,6 +65,18 @@ void drawAimOverlay(
         drawVehicle(
           image, {predicted_armors[selected]}, type, input.target->name, solver,
           {0, 0, 255}, 2);
+      }
+    }
+
+    // 紫色：只表示本帧 fire_feasible，画在 L3 当前时刻的
+    // 装甲板位姿上，不再与红色的命中时刻预测位姿绑定。
+    // 使用 fire_feasible 而不是 shoot，使总开火开关关闭时仍能可视化判定结果。
+    if (input.fire.fire_feasible && input.plan.armor_id >= 0) {
+      const auto selected = static_cast<std::size_t>(input.plan.armor_id);
+      if (selected < current_armors.size()) {
+        drawVehicle(
+          image, {current_armors[selected]}, type, input.target->name, solver,
+          {255, 0, 255}, 2);
       }
     }
   }
@@ -89,6 +102,16 @@ cv::Point toPixel(const cv::Point2f& point)
   return {
     static_cast<int>(std::lround(point.x)),
     static_cast<int>(std::lround(point.y))};
+}
+
+void drawImageCenter(cv::Mat& image)
+{
+  if (image.empty()) {
+    return;
+  }
+  cv::circle(
+    image, {image.cols / 2, image.rows / 2}, 3, {0, 0, 255}, cv::FILLED,
+    cv::LINE_AA);
 }
 
 void drawOutlinedText(

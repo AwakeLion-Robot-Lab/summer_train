@@ -202,9 +202,9 @@ fire:
   # 只把装甲板中心区域视为可命中；0.6 表示使用板面宽、高的中央 60%。
   hit_margin_ratio: 0.6
   # 根据板宽和距离算出的 yaw 容差下限，单位 degree。
-  min_yaw_tolerance_deg: 0.5
+  min_yaw_tolerance_deg: 1.0
   # 根据板高和距离算出的 pitch 容差下限，单位 degree。
-  min_pitch_tolerance_deg: 0.5
+  min_pitch_tolerance_deg: 1.0
 
 # runtime 只管相邻命令跳变，不会修改 L4 预测结果。
 runtime:
@@ -216,11 +216,13 @@ runtime:
 #
 # 画的内容：蓝框=L2 网络原始角点，绿框+绿箭头=真正送进滤波器的单板 PnP，
 # 绿色整车=EKF 展开的全部物理板，红框=Plan 选中的命中时刻板，
+# 紫框=fire_feasible 为 true 时选中装甲板的当前位姿，
+# 画面中心的小红点=图像几何中心，
 # 顶部一行=跟踪状态 / 计划状态 / 第一条开火拒绝原因。
 debug:
   overlay: true
-  # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
-  overlay_every: 1
+  # 普通帧每 N 帧画一次；fire_feasible=true 的帧始终绘制。
+  overlay_every: 20
 
   # PlotJuggler 曲线遥测，UDP 发到 plot_host:plot_port。与 overlay 分开开关：
   # 上车标定 planning.send_to_control_ms 时机器上没有显示器，要的正好是曲线。
