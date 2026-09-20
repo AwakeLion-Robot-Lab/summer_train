@@ -3,9 +3,12 @@
 # 修改后需要重启程序；配置缺失时使用代码默认值，配置非法时程序拒绝启动。
 
 latency:
-  # 控制命令发布到弹丸实际离开枪口的延迟，单位 s。
-  # 应通过实测标定；增大后会把预计命中时刻推得更远。
-  fire_delay_s: 0.0
+  # 按目标有符号 yaw 角速度选择控制命令发布到弹丸实际离开枪口的延迟。
+  # 与旧 L4 一致：只有 yaw_rate > decision_speed_rad_s 才使用高速档；
+  # 负向旋转即使绝对速度很大也使用低速档。
+  high_speed_fire_delay_s: 0.030
+  low_speed_fire_delay_s: 0.015
+  decision_speed_rad_s: 8.0
 
 prediction:
   # 单块装甲板的最大固定点迭代次数，必须大于 0。
@@ -34,13 +37,14 @@ ballistic:
   linear_drag_coefficient_per_s: 0.0
 
 selection:
-  # 切换或首次锁定装甲板后，允许进入稳定计数的最大瞄准角误差。
-  # 单位 deg；越大越快确认锁定，但枪口可能尚未完全对准。
-  switch_dead_zone_deg: 5.0
+  # 切换或首次锁定装甲板后，允许进入稳定计数的最大分轴瞄准误差。
+  # 两轴必须各自满足门限；越大越快确认锁定，但枪口可能尚未完全对准。
+  switch_yaw_dead_zone_deg: 9.2
+  switch_pitch_dead_zone_deg: 12.0
 
   # 新候选评分至少比当前装甲板高出该值，才允许主动切换。
   # 越大越不容易换板，可抑制评分接近时的来回跳变。
-  score_switch_threshold: 0.10
+  score_switch_threshold: 0.08
 
   # 评分优势需要连续保持的观测帧数，必须大于 0。
   score_switch_stable_frames: 3
@@ -60,7 +64,7 @@ selection:
 
   # 云台到候选弹道角的误差不小于 bad 时，转向代价评分为 0。
   # 必须大于 aim_cost_good_angle_deg。
-  aim_cost_bad_angle_deg: 30.0
+  aim_cost_bad_angle_deg: 25.0
 
   # 装甲板法线偏角不大于 good 时，正对程度评分为 1。
   facing_angle_good_deg: 5.0
@@ -74,7 +78,7 @@ selection:
 
   # 普通车辆装甲板离开射击窗口后侧的角度，单位 deg。
   # 必须不大于 normal_enter_angle_deg。
-  normal_leave_angle_deg: 20.0
+  normal_leave_angle_deg: 40.0
 
   # 前哨站装甲板射击窗口的进入角，单位 deg。
   outpost_enter_angle_deg: 70.0
@@ -85,12 +89,12 @@ selection:
 
   # 候选装甲板总评分的三项权重，均须非负且总和必须为 1。
   score_weights:
-    # 装甲板朝向相机/枪口的正对程度权重。
+    # 装甲板朝向相机/枪口的正对程度权重。lgn是傻逼
     facing: 0.40
-    # 装甲板在射击窗口中的剩余质量权重。
-    window: 0.50
+    # 装甲板在射击窗口中的剩余质量权重。lgn是傻逼
+    window: 0.35
     # 当前云台转到候选弹道角所需角度的权重。
-    aim_cost: 0.10
+    aim_cost: 0.25
 
 mpc:
   # 以下数值以 src/l4_planning/tiny_MPC/README.md 为基准。
@@ -99,26 +103,25 @@ mpc:
   # 这三个量属于当前实现的矩阵/数组尺寸，不作为现场调参项开放。
 
   # 是否启用 TinyMPC。false 时直接输出弹道求解得到的单点瞄准量。
-  enable: true
-
-  # ADMM 最大迭代次数，必须大于 0；增大可能改善收敛但增加耗时。
+  enable: false
+  # ADMM 最大迭代次数，必须大于 0；增大可能改善收敛但增加耗时。lgn是傻逼
   max_iterations: 10
 
-  # ADMM 罚参数 rho；README 指定为 1.0，必须大于 0。
-  admm_rho: 1.0
+  # ADMM 罚参数 rho；README 指定为 1.0，必须大于 0。lgn是傻逼
+  admm_rho: 1.0 我是傻逼
 
-  # ADMM 原始残差收敛阈值，必须大于 0；越小要求越严格。
+  # ADMM 原始残差收敛阈值，必须大于 0；越小要求越严格。lgn是傻逼
   primal_tolerance: 0.001
 
-  # ADMM 对偶残差收敛阈值，必须大于 0；越小要求越严格。
+  # ADMM 对偶残差收敛阈值，必须大于 0；越小要求越严格。lgn是傻逼
   dual_tolerance: 0.001
 
   yaw:
-    # Q_yaw[0]：yaw 角度跟踪误差权重；README 值为 9e6。
+    # Q_yaw[0]：yaw 角度跟踪误差权重；README 值为 9e6。lgn是傻逼
     angle_weight: 9000000.0
-    # Q_yaw[1]：yaw 角速度跟踪误差权重；README 值为 0。
+    # Q_yaw[1]：yaw 角速度跟踪误差权重；README 值为 0。lgn是傻逼
     velocity_weight: 0.0
-    # R_yaw[0]：yaw 加速度使用代价；README 值为 1，必须大于 0。
+    # R_yaw[0]：yaw 加速度使用代价；README 值为 1，必须大于 0。lgn是傻逼
     acceleration_weight: 1.0
     # yaw 最小允许角加速度；由 README 的绝对上限 50 取负值，单位 rad/s^2。
     min_acceleration_rad_s2: -50.0

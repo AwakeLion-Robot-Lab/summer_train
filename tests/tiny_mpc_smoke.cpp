@@ -145,7 +145,8 @@ int main()
   Planner planner;
   PlannerContext context;
   context.config.lock_stable_frames = 1;
-  context.config.switch_dead_zone = 180.0;
+  context.config.switch_yaw_dead_zone = 180.0;
+  context.config.switch_pitch_dead_zone = 180.0;
   context.config.mpc_max_iterations = 10;
   context.planning_time = TimePoint{2s};
   L1Sensor::RobotState robot;

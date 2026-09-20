@@ -65,9 +65,14 @@ constexpr double kPi = 3.14159265358979323846;
   const ArmorCandidate& candidate,
   const PlannerConfig& config) noexcept
 {
-  const double threshold = config.switch_dead_zone * kPi / 180.0;
-  return std::isfinite(candidate.aim_angle_error)
-         && candidate.aim_angle_error <= threshold;
+  const double yaw_threshold =
+    config.switch_yaw_dead_zone * kPi / 180.0;
+  const double pitch_threshold =
+    config.switch_pitch_dead_zone * kPi / 180.0;
+  return std::isfinite(candidate.aim_yaw_error)
+         && std::isfinite(candidate.aim_pitch_error)
+         && candidate.aim_yaw_error <= yaw_threshold
+         && candidate.aim_pitch_error <= pitch_threshold;
 }
 
 [[nodiscard]] bool selectableWindow(

@@ -49,7 +49,9 @@ struct ArmorCandidate {
   double fly_time_error{0.0};     // 相邻两次飞行时间之差，s
   double position_error{0.0};     // 相邻两次预测位置之差，m
   double angle_error{0.0};        // 相邻两次瞄准角的二维误差，rad
-  double aim_angle_error{0.0};    // 当前云台到候选弹道角的合成角差，rad
+  double aim_yaw_error{0.0};      // 当前云台到候选弹道 yaw 的角差，rad
+  double aim_pitch_error{0.0};    // 当前云台到候选弹道 pitch 的角差，rad
+  double aim_angle_error{0.0};    // 两轴合成角差，rad；仅用于候选评分
   double relative_yaw_rate{0.0};  // 装甲板法线相对目标方位的角速度，rad/s
   double phase_angle{0.0};        // 沿旋转方向递增的窗口相位，rad
   double remaining_window_time{0.0}; // 到离开射击窗口的预计时间，s

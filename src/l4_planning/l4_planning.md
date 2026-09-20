@@ -87,7 +87,7 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 一、预测dt后装甲板的位姿：  使用迭代拦截法预测装甲板的未来位置
 
 1  latency_compensator 延迟补偿器计算系统延迟：
-系统出枪延迟 =（命令发布时间戳 - 图像时间戳）+ 命令发布到弹丸离开枪口的标定时间。
+系统出枪延迟 =（命令发布时间戳 - 图像时间戳）+ 按目标 yaw 角速度动态选择的出膛延迟。
 struct Delay
 {
   TimePoint camera_timestamp;
@@ -97,9 +97,10 @@ struct Delay
 
 delay=(command_timestamp-camera_timestamp)+fire_delay
 
-其中 `fire_delay` 存放在 `LatencyConfig` 中，由标定参数提供。规划器向
-`LatencyCompensator` 传入图像时间戳和命令时间戳，补偿器负责构造并校验
-本次使用的 `Delay`。
+`LatencyConfig` 保存高低速两档延迟和有符号 yaw 角速度分界。只有
+`target.yaw_rate > decision_speed` 时使用高速档，其余情况使用低速档。
+规划器向 `LatencyCompensator` 传入图像时间戳、命令时间戳和目标 yaw 角速度，
+补偿器负责选择档位、构造并校验本次使用的 `Delay`。
   struct LatencyResult
   {
       Delay delay;
@@ -170,7 +171,8 @@ struct PlannerConfig
   double gravity{9.80665};
   bool enable_air_resistance{false};
   double linear_drag_coefficient{0.0};  // s^-1
-  double switch_dead_zone{5.0};         // degree
+  double switch_yaw_dead_zone{5.0};     // degree
+  double switch_pitch_dead_zone{5.0};   // degree
   double rotation_rate_dead_zone{0.05}; // rad/s
   int lock_stable_frames{3};
   double aim_cost_good_angle{5.0};      // degree
@@ -315,6 +317,9 @@ yaw_error = abs(normalize_angle(candidate.ballistic.yaw - robot_state.rpy.yaw))
 pitch_error = abs(candidate.ballistic.pitch - robot_state.rpy.pitch)
 aim_angle_error = hypot(yaw_error, pitch_error)
 
+`aim_angle_error` 只用于 `Q_aim_cost` 软评分。首次锁板和换板确认不再使用
+合成圆形门限，而是分别要求 `yaw_error <= switch_yaw_dead_zone` 和
+`pitch_error <= switch_pitch_dead_zone`，避免一轴的固定偏差挤占另一轴余量。
 
 使用 PlannerConfig 中的两个角度阈值平滑归一化：
 good_angle_rad = aim_cost_good_angle * pi / 180

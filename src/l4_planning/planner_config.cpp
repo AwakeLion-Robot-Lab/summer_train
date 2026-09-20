@@ -50,7 +50,8 @@ void validate(const PlannerTuning& tuning)
     && finitePositive(config.gravity)
     && (!config.enable_air_resistance
         || finitePositive(config.linear_drag_coefficient))
-    && finiteNonNegative(config.switch_dead_zone)
+    && finiteNonNegative(config.switch_yaw_dead_zone)
+    && finiteNonNegative(config.switch_pitch_dead_zone)
     && finiteNonNegative(config.score_switch_threshold)
     && config.score_switch_stable_frames > 0
     && finiteNonNegative(config.rotation_rate_dead_zone)
@@ -104,7 +105,22 @@ PlannerTuning loadPlannerTuning(const std::string& config_path)
   PlannerConfig& config = tuning.planner;
 
   const YAML::Node latency = root["latency"];
-  readOptional(latency, "fire_delay_s", tuning.latency.fire_delay);
+  // 兼容旧的单一 fire_delay_s：先同时写入两档，再由新字段分别覆盖。
+  if (latency && latency["fire_delay_s"]) {
+    const double legacy_fire_delay = latency["fire_delay_s"].as<double>();
+    tuning.latency.high_speed_fire_delay = legacy_fire_delay;
+    tuning.latency.low_speed_fire_delay = legacy_fire_delay;
+  }
+  readOptional(
+    latency,
+    "high_speed_fire_delay_s",
+    tuning.latency.high_speed_fire_delay);
+  readOptional(
+    latency,
+    "low_speed_fire_delay_s",
+    tuning.latency.low_speed_fire_delay);
+  readOptional(
+    latency, "decision_speed_rad_s", tuning.latency.decision_speed);
 
   const YAML::Node prediction = root["prediction"];
   readOptional(prediction, "max_iterations", config.max_iterations);
@@ -127,7 +143,21 @@ PlannerTuning loadPlannerTuning(const std::string& config_path)
     config.linear_drag_coefficient);
 
   const YAML::Node selection = root["selection"];
-  readOptional(selection, "switch_dead_zone_deg", config.switch_dead_zone);
+  // 兼容旧配置：单一门限同时作为两轴默认值；新分轴字段可分别覆盖。
+  if (selection && selection["switch_dead_zone_deg"]) {
+    const double legacy_dead_zone =
+      selection["switch_dead_zone_deg"].as<double>();
+    config.switch_yaw_dead_zone = legacy_dead_zone;
+    config.switch_pitch_dead_zone = legacy_dead_zone;
+  }
+  readOptional(
+    selection,
+    "switch_yaw_dead_zone_deg",
+    config.switch_yaw_dead_zone);
+  readOptional(
+    selection,
+    "switch_pitch_dead_zone_deg",
+    config.switch_pitch_dead_zone);
   readOptional(
     selection, "score_switch_threshold", config.score_switch_threshold);
   readOptional(

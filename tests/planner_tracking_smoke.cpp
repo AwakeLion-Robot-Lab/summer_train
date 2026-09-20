@@ -62,7 +62,8 @@ int main()
   L4Planning::PlannerContext context;
   context.config.lock_stable_frames = 2;
   // 本测试只验证选择状态机，放宽枪口到候选弹道角的稳定阈值。
-  context.config.switch_dead_zone = 180.0;
+  context.config.switch_yaw_dead_zone = 180.0;
+  context.config.switch_pitch_dead_zone = 180.0;
   context.config.max_lost_frames = 3;
 
   L1Sensor::RobotState robot_state;
@@ -157,7 +158,8 @@ int main()
   L4Planning::Planner threshold_planner;
   L4Planning::PlannerContext threshold_context;
   threshold_context.config.lock_stable_frames = 2;
-  threshold_context.config.switch_dead_zone = 180.0;
+  threshold_context.config.switch_yaw_dead_zone = 180.0;
+  threshold_context.config.switch_pitch_dead_zone = 180.0;
   threshold_context.config.score_switch_threshold = 1.0;
   L1Sensor::RobotState threshold_robot = robot_state;
   auto threshold_time = L4Planning::TimePoint{2s};

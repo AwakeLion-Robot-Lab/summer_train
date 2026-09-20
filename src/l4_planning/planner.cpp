@@ -100,8 +100,10 @@ constexpr double kEnteringWindowLeadAngle = 10.0 * kPi / 180.0;
          && config.position_tolerance > 0.0
          && std::isfinite(config.angle_tolerance)
          && config.angle_tolerance >= 0.0
-         && std::isfinite(config.switch_dead_zone)
-         && config.switch_dead_zone >= 0.0
+         && std::isfinite(config.switch_yaw_dead_zone)
+         && config.switch_yaw_dead_zone >= 0.0
+         && std::isfinite(config.switch_pitch_dead_zone)
+         && config.switch_pitch_dead_zone >= 0.0
          && std::isfinite(config.score_switch_threshold)
          && config.score_switch_threshold >= 0.0
          && config.score_switch_stable_frames > 0
@@ -276,7 +278,7 @@ AimPlan Planner::plan(
   // context.latency 提供，两者均由 LatencyCompensator 统一校验。
   const LatencyCompensator latency_compensator{context.latency};
   const LatencyResult latency = latency_compensator.calculate(
-    target_state.timestamp, robot_state.timestamp);
+    target_state.timestamp, robot_state.timestamp, target_state.yaw_rate);
   if (!latency.valid) {
     return plan;
   }
@@ -516,12 +518,12 @@ AimPlan Planner::plan(
         / (facing_angle_bad - facing_angle_good);
       const double facing_quality =
         1.0 - smoothstep(normalized_facing_angle);
-      const double aim_yaw_error = std::abs(normalizeAngle(
+      candidate.aim_yaw_error = std::abs(normalizeAngle(
         candidate.ballistic.yaw - robot_state.rpy.yaw));
-      const double aim_pitch_error =
+      candidate.aim_pitch_error =
         std::abs(candidate.ballistic.pitch - robot_state.rpy.pitch);
       candidate.aim_angle_error =
-        std::hypot(aim_yaw_error, aim_pitch_error);
+        std::hypot(candidate.aim_yaw_error, candidate.aim_pitch_error);
       const double aim_cost_good_angle =
         config.aim_cost_good_angle * kPi / 180.0;
       const double aim_cost_bad_angle =

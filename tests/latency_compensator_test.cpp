@@ -15,13 +15,27 @@ int main()
 
   const auto camera_time = L4Planning::TimePoint{100ms};//相机时间辍
   const auto command_time = camera_time + 6ms;//命令时间辍
-  const L4Planning::LatencyCompensator compensator{{0.010}};//弹丸出射延迟
+  L4Planning::LatencyConfig config;
+  config.high_speed_fire_delay = 0.030;
+  config.low_speed_fire_delay = 0.015;
+  config.decision_speed = 8.0;
+  const L4Planning::LatencyCompensator compensator{config};
 
   const auto result = compensator.calculate(camera_time, command_time);
   if (!result.valid ||
       std::abs(result.delay.beforeFire() - 0.006) > 1e-12 ||
-      std::abs(result.delay.total() - 0.016) > 1e-12) {
+      std::abs(result.delay.total() - 0.021) > 1e-12) {
     return 1;
+  }
+
+  const auto high_speed =
+    compensator.calculate(camera_time, command_time, 8.1);
+  const auto negative_high_speed =
+    compensator.calculate(camera_time, command_time, -9.0);
+  if (!high_speed.valid || !negative_high_speed.valid
+      || std::abs(high_speed.delay.fire_delay - 0.030) > 1e-12
+      || std::abs(negative_high_speed.delay.fire_delay - 0.015) > 1e-12) {
+    return 4;
   }
 
   if (compensator.calculate({{}, command_time, 0.010}).valid ||
@@ -36,7 +50,9 @@ int main()
     return 2;
   }
 
-  const L4Planning::LatencyCompensator invalid_config{{-0.001}};
+  L4Planning::LatencyConfig invalid_latency = config;
+  invalid_latency.low_speed_fire_delay = -0.001;
+  const L4Planning::LatencyCompensator invalid_config{invalid_latency};
   if (invalid_config.calculate(camera_time, command_time).valid) {
     return 3;
   }

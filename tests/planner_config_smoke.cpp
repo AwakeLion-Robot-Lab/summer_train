@@ -13,7 +13,12 @@ int main()
   if (planner.max_iterations != 20
       || planner.fly_time_tolerance != std::chrono::microseconds{200}
       || std::abs(planner.position_tolerance - 0.005) > 1e-12
-      || !planner.enable_mpc
+      || std::abs(tuning.latency.high_speed_fire_delay - 0.030) > 1e-12
+      || std::abs(tuning.latency.low_speed_fire_delay - 0.015) > 1e-12
+      || std::abs(tuning.latency.decision_speed - 8.0) > 1e-12
+      || std::abs(planner.switch_yaw_dead_zone - 9.2) > 1e-12
+      || std::abs(planner.switch_pitch_dead_zone - 12.0) > 1e-12
+      || planner.enable_mpc
       || planner.mpc_max_iterations != 10
       || planner.mpc_admm_rho != 1.0
       || planner.min_yaw_acceleration != -50.0

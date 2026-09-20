@@ -3,9 +3,20 @@
 #include "l4_planning/types.hpp"
 
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace L4Planning {
+
+double LatencyConfig::fireDelay(double target_yaw_rate) const noexcept
+{
+  if (!ready() || !std::isfinite(target_yaw_rate)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return target_yaw_rate > decision_speed
+    ? high_speed_fire_delay
+    : low_speed_fire_delay;
+}
 
 LatencyCompensator::LatencyCompensator(LatencyConfig config)
   : config_(std::move(config))
@@ -16,11 +27,22 @@ LatencyResult LatencyCompensator::calculate(
   TimePoint camera_timestamp,
   TimePoint command_timestamp) const noexcept
 {
+  return calculate(camera_timestamp, command_timestamp, 0.0);
+}
+
+LatencyResult LatencyCompensator::calculate(
+  TimePoint camera_timestamp,
+  TimePoint command_timestamp,
+  double target_yaw_rate) const noexcept
+{
   if (!config_.ready()) {
     return {};
   }
   return calculate(
-    Delay{camera_timestamp, command_timestamp, config_.fire_delay});
+    Delay{
+      camera_timestamp,
+      command_timestamp,
+      config_.fireDelay(target_yaw_rate)});
 }
 
 LatencyResult LatencyCompensator::calculate(const Delay& delay) const noexcept

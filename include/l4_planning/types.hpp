@@ -139,7 +139,9 @@ struct PlannerConfig {
   // 有效线性阻力系数 k，单位 s^-1，需要通过实弹落点标定。
   double linear_drag_coefficient{0.0};
 
-  double switch_dead_zone{5.0};  // degree
+  // 切换或首次锁板时，yaw/pitch 分轴判断是否已经到位，单位 degree。
+  double switch_yaw_dead_zone{5.0};
+  double switch_pitch_dead_zone{5.0};
   // Tracking 状态下，仅当其他装甲板的评分至少高出该值时才主动切换。
   double score_switch_threshold{0.10};
   // 同一候选的评分优势连续满足阈值达到该帧数后才主动切换。
