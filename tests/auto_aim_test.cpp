@@ -903,6 +903,19 @@ cv::Mat makeUsedLightPanel(
   return panel;
 }
 
+// 一根被采纳的侧边灯条，配上它关联到的那块物理板在模型里对应的那根预测灯条。
+// ROI 面板把两者画在一起，才能目视判断关联对不对：正常时两根基本重合，差出
+// 一整根灯条的间距通常意味着关联到了隔壁那块板，或者左右配反了。
+//
+// 预测灯条取本帧更新之后的状态（后验），画出来的是残差而不是关联时用的先验
+// 偏差。关联错了的话后验会被这根观测拖着走，残差照样看得出来。
+struct SideLightMatch
+{
+  std::size_t light_id{0};
+  cv::Point2f top{};
+  cv::Point2f bottom{};
+};
+
 // 侧边灯条专用面板：把 light_roi 放大铺满，画出这一帧的全部灯条候选，按
 // "滤波器采纳了" / "进了 L3 但被 matchLight 毙掉" / "被判成已检出装甲板自己
 // 的灯条而丢掉" 三档分开。
@@ -919,6 +932,7 @@ cv::Mat makeSideLightPanel(
   const std::vector<L2Perception::Light>& candidates,
   const std::vector<L2Perception::Light>& kept,
   const std::vector<L3Estimation::UsedLight>& update_lights,
+  const std::vector<SideLightMatch>& matches,
   const std::optional<cv::Rect>& light_roi)
 {
   // light_roi 是整车框扩出来的，通常又宽又扁（3 m 处约 4:1），固定的方形面板
@@ -966,8 +980,8 @@ cv::Mat makeSideLightPanel(
     {12, 28}, {255, 255, 255}, 0.58);
   drawOutlinedText(
     panel,
-    "thick=used by IESKF   thin=to L3 but rejected by matchLight   "
-    "gray=owned by armor   filled dot=top",
+    "thick=used by IESKF   thin=rejected by matchLight   gray=owned by armor   "
+    "green=model prediction, d=endpoint residual",
     {12, 57}, {180, 180, 180}, 0.46);
 
   if (roi.area() <= 0) {
@@ -1037,6 +1051,39 @@ cv::Mat makeSideLightPanel(
         "#%zu L=%.0f %.0fdeg%s", light.id, light.length,
         static_cast<double>(light.tilt_angle_deg), used ? " IN" : ""),
       anchor, color, 0.44);
+  }
+
+  // 模型预测的那根灯条：绿色，与整车叠加层同色。细灰线把观测端点连到对应的
+  // 预测端点，两根重合时连线缩成一点；d 是两个端点距离的平均值。
+  const cv::Scalar predicted_color{0, 255, 0};
+  for (const auto& match : matches) {
+    if (!std::isfinite(match.top.x) || !std::isfinite(match.top.y) ||
+        !std::isfinite(match.bottom.x) || !std::isfinite(match.bottom.y)) {
+      continue;
+    }
+    const cv::Point top = panelPoint(match.top);
+    const cv::Point bottom = panelPoint(match.bottom);
+    cv::line(panel, top, bottom, predicted_color, 2, cv::LINE_AA);
+    cv::circle(panel, top, 5, predicted_color, cv::FILLED, cv::LINE_AA);
+    cv::circle(panel, bottom, 5, predicted_color, 2, cv::LINE_AA);
+
+    const auto observed = std::find_if(
+      candidates.begin(), candidates.end(),
+      [&](const L2Perception::Light& light) {
+        return light.id == match.light_id;
+      });
+    if (observed == candidates.end()) {
+      continue;
+    }
+    cv::line(panel, panelPoint(observed->top), top, {190, 190, 190}, 1, cv::LINE_AA);
+    cv::line(
+      panel, panelPoint(observed->bottom), bottom, {190, 190, 190}, 1, cv::LINE_AA);
+    const double residual = 0.5 *
+      (cv::norm(observed->top - match.top) +
+       cv::norm(observed->bottom - match.bottom));
+    drawOutlinedText(
+      panel, cv::format("d=%.1f", residual), bottom + cv::Point{9, 17},
+      predicted_color, 0.44);
   }
 
   return panel;
@@ -1564,16 +1611,45 @@ int main(int argc, char** argv)
         armors, detection_frame.lights, q_world_barrel, timestamp);
       const auto& used_lights = tracker.usedLights();
       clock.lap("L3 跟踪");
+      const auto target_armor_poses = tracker.armorPoses();
       const cv::Mat used_light_panel = makeUsedLightPanel(
         img, used_lights, detection_frame.lights.size());
+
+      // 每根采纳的侧边灯条关联到哪块板的哪一侧，都记在 UsedLight 里；按这个
+      // 编号把模型展开的那块板重投影回来，取同一侧的两个角点，就是它本该长的
+      // 位置。角点顺序左上、右上、右下、左下，左灯条是 0/3，右灯条是 1/2。
+      std::vector<SideLightMatch> side_light_matches;
+      if (target) {
+        const auto side_armor_type =
+          L3Estimation::armorTypeOf(target->name).value_or(
+            L3Estimation::ArmorType::Small);
+        for (const auto& used : used_lights) {
+          if (!used.isolated || used.armor_id < 0) {
+            continue;
+          }
+          const auto armor_index = static_cast<std::size_t>(used.armor_id);
+          if (armor_index >= target_armor_poses.size()) {
+            continue;
+          }
+          const Eigen::Vector4d& xyza = target_armor_poses[armor_index];
+          const auto corners = solver.reproject_armor(
+            xyza.head<3>(), xyza[3], side_armor_type, target->name);
+          if (corners.size() != 4) {
+            continue;
+          }
+          side_light_matches.push_back(
+            {used.light_id, used.is_left ? corners[0] : corners[1],
+             used.is_left ? corners[3] : corners[2]});
+        }
+      }
+
       // lastLights() 是颜色过滤后、剔除已检出装甲板自己的灯条之前的全部候选，
       // detection_frame.lights 是真正交给 L3 的那批，两者一起画才看得出侧边
       // 灯条是"没检出"还是"检出了但被判给了某块板"。
       const cv::Mat side_light_panel = makeSideLightPanel(
         img, detector.lastLights(), detection_frame.lights, used_lights,
-        light_roi);
+        side_light_matches, light_roi);
       clock.lap("绘图/显示", true);
-      const auto target_armor_poses = tracker.armorPoses();
       const std::optional<FilterEstimate> filter_estimate = target
         ? std::optional<FilterEstimate>{target->estimate()}
         : std::nullopt;
