@@ -1,5 +1,5 @@
-// 侧边灯条相关的 smoke：不需要模型，在合成图上画几根灯条，逐条确认端点、形状
-// 门限、颜色判定、ROI 限制、两路合并的取舍，以及剔除已检出装甲板自己的灯条。
+// 侧边灯条相关的 smoke：在合成图上画几根灯条，逐条确认端点、形状门限、颜色
+// 判定、ROI 限制，以及剔除已检出装甲板自己的灯条。
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/armor/light_detector.hpp"
 
@@ -18,8 +18,6 @@ using L2Perception::ArmorColor;
 using L2Perception::findLights;
 using L2Perception::Light;
 using L2Perception::LightFinderConfig;
-using L2Perception::LightSource;
-using L2Perception::mergeLights;
 
 void require(bool condition, const std::string& message)
 {
@@ -46,18 +44,6 @@ void drawLight(
   };
   fill(8.0F, halo);
   fill(0.0F, {255, 255, 255});
-}
-
-// 构造一根竖直灯条，source 保持默认的 Model。
-Light modelLight(float x, float y, float length)
-{
-  Light light;
-  light.center = {x, y};
-  light.top = {x, y - length * 0.5F};
-  light.bottom = {x, y + length * 0.5F};
-  light.length = length;
-  light.color = ArmorColor::Blue;
-  return light;
 }
 
 const Light* nearest(const std::vector<Light>& lights, cv::Point2f point)
@@ -94,7 +80,7 @@ int main()
     drawLight(image, {400.0F, 300.0F}, 40.0F, 6.0F, 90.0F, blue);
 
     const std::vector<Light> lights =
-      findLights(image, cv::Rect(0, 0, image.cols, image.rows), config, 1.10);
+      findLights(image, cv::Rect(0, 0, image.cols, image.rows), config);
     require(lights.size() == 2, "expected exactly the two upright lights, got " +
                                   std::to_string(lights.size()));
 
@@ -105,7 +91,6 @@ int main()
     require(upright->top.y < upright->bottom.y, "top must be above bottom");
     require(upright->tilt_angle_deg < 2.0F, "upright light tilt");
     require(upright->color == ArmorColor::Blue, "blue halo must classify as blue");
-    require(upright->source == LightSource::Classic, "finder lights are classic");
 
     const Light* tilted = nearest(lights, {300.0F, 100.0F});
     require(std::abs(tilted->tilt_angle_deg - 20.0F) < 2.0F, "tilted light angle");
@@ -114,40 +99,10 @@ int main()
     // ROI 之外的灯条不找；返回坐标仍在原图上。
     {
       const std::vector<Light> in_roi =
-        findLights(image, cv::Rect(250, 50, 100, 100), config, 1.10);
+        findLights(image, cv::Rect(250, 50, 100, 100), config);
       require(in_roi.size() == 1, "roi must limit the search");
       require(cv::norm(in_roi.front().center - cv::Point2f{300.0F, 100.0F}) < 1.0,
               "roi result must be in full-image coordinates");
-    }
-
-    // 合并：离传统灯条近的模型灯条丢掉，远的补进来，传统的排在前面。
-    {
-      std::vector<Light> classic{modelLight(100.0F, 100.0F, 40.0F)};
-      classic[0].source = LightSource::Classic;
-      const std::vector<Light> model{
-        modelLight(104.0F, 101.0F, 42.0F), modelLight(180.0F, 100.0F, 40.0F)};
-      const std::vector<Light> merged =
-        mergeLights(classic, model, config.merge_radius, config.length_agree);
-      require(merged.size() == 2, "duplicate model light must be dropped");
-      require(merged[0].source == LightSource::Classic, "agreeing classic light must be kept");
-      require(cv::norm(merged[1].center - cv::Point2f{180.0F, 100.0F}) < 1e-3,
-              "missing light must come from the model");
-
-      // 同一块板的两根灯条中心至少相距 0.8 倍灯长，不能被判成同一根。
-      const std::vector<Light> close{modelLight(133.0F, 100.0F, 40.0F)};
-      require(mergeLights(classic, close, config.merge_radius, config.length_agree).size() == 2,
-              "a light 0.8 lengths away is a different light");
-
-      // 传统灯条只剩一半长（二值化断开），换成模型的。
-      std::vector<Light> broken{modelLight(100.0F, 95.0F, 20.0F)};
-      broken[0].source = LightSource::Classic;
-      const std::vector<Light> fixed =
-        mergeLights(broken, {model[0]}, config.merge_radius, config.length_agree);
-      require(fixed.size() == 1 && fixed[0].source == LightSource::Model,
-              "a broken classic light must be replaced by the model light");
-      require(mergeLights(broken, {model[0]}, config.merge_radius, 0.0F)[0].source ==
-                LightSource::Classic,
-              "length_agree 0 always keeps the classic light");
     }
 
     // insideArmor：板自己的灯条算板的，相邻板的灯条（3 m 处约 4 倍灯长开外）不算。

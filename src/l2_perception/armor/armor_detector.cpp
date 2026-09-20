@@ -13,13 +13,10 @@ namespace L2Perception
 {
 
 ArmorDetector::ArmorDetector(
-  std::unique_ptr<IInferenceBackend> armor_backend, ArmorDetectorConfig config,
-  std::unique_ptr<IInferenceBackend> light_backend)
+  std::unique_ptr<IInferenceBackend> armor_backend, ArmorDetectorConfig config)
   : armor_backend_(std::move(armor_backend))
-  , light_backend_(std::move(light_backend))
   , decoder_(std::move(config.decoder))
   , refiner_(std::move(config.refiner))
-  , light_decoder_(std::move(config.light_decoder))
   , finder_config_(std::move(config.finder))
   , preprocess_config_(std::move(config.preprocess))
 {
@@ -27,14 +24,6 @@ ArmorDetector::ArmorDetector(
     throw std::invalid_argument("ArmorDetector: armor model backend is not loaded");
   }
   decoder_.validate(probeOutputSpecs(*armor_backend_));
-
-  if (finder_config_.mode != LightMode::Classic) {
-    if (light_backend_ == nullptr || !light_backend_->ready()) {
-      throw std::invalid_argument(
-        "ArmorDetector: light_finder.mode needs the light model, but it is not loaded");
-    }
-    LightDecoder::validate(probeOutputSpecs(*light_backend_));
-  }
 
   // 模型或标签有问题就在启动阶段抛，别等到每帧把类别判成另一辆车。
   if (config.number.enable) {
@@ -103,41 +92,15 @@ double ArmorDetector::net_aspect_ratio() const noexcept
 std::vector<Light> ArmorDetector::findSideLights(
   const cv::Mat& image, const cv::Rect& roi, ArmorColor color) const
 {
-  std::vector<Light> lights;
-  if (finder_config_.mode != LightMode::Classic && light_backend_ != nullptr) {
-    // 模型只跑在 light_roi 上：ROI 远小于整图，resize 到网络输入相当于局部
-    // 放大，侧面板上细窄的灯条端点才保得住。
-    const cv::Mat input = image(roi);
-    const PreprocessedImage preprocessed =
-      ImagePreprocessor::run(input, light_backend_->inputSpec(), preprocess_config_);
-    lights = light_decoder_.decode(
-      light_backend_->infer(preprocessed.input), preprocessed.transform, input);
-    const cv::Point2f offset(static_cast<float>(roi.x), static_cast<float>(roi.y));
-    for (Light& light : lights) {
-      light.top += offset;
-      light.bottom += offset;
-      light.center += offset;
-    }
-  }
+  std::vector<Light> lights = findLights(image, roi, finder_config_, color);
 
-  // 丢掉判不出颜色的灯条；指定了颜色就只留该颜色。
-  const auto keepColor = [color](std::vector<Light>& candidates) {
-    std::erase_if(candidates, [color](const Light& light) {
-      return light.color == ArmorColor::Unknown ||
-             (color != ArmorColor::Unknown && light.color != color);
-    });
-  };
-  keepColor(lights);
+  // 丢掉判不出颜色的灯条；指定了颜色就只留该颜色。判不出颜色的多是数字笔画
+  // 和光晕，留着会被 L3 当成灯条去关联。
+  std::erase_if(lights, [color](const Light& light) {
+    return light.color == ArmorColor::Unknown ||
+           (color != ArmorColor::Unknown && light.color != color);
+  });
 
-  if (finder_config_.mode != LightMode::Model) {
-    std::vector<Light> classic = findLights(
-      image, roi, finder_config_, light_decoder_.config().color_ratio_threshold, color);
-    // 先过颜色再合并：颜色判不出的传统斑点（数字笔画、光晕）先被丢掉，不会在
-    // mergeLights 里把旁边真正的模型灯条挤掉。
-    keepColor(classic);
-    lights = mergeLights(
-      std::move(classic), lights, finder_config_.merge_radius, finder_config_.length_agree);
-  }
   for (std::size_t index = 0; index < lights.size(); ++index) {
     lights[index].id = index;
   }

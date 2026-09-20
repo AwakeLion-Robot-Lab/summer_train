@@ -146,21 +146,6 @@ void normalize(AutoAimConfig& config)
     config.refiner.max_angle_error_deg = refiner_defaults.max_angle_error_deg;
   }
 
-  const L2Perception::LightDecoderConfig light_decoder_defaults;
-  if (!(config.light_decoder.score_threshold > 0.0F &&
-        config.light_decoder.score_threshold < 1.0F)) {
-    config.light_decoder.score_threshold = light_decoder_defaults.score_threshold;
-  }
-  if (!(config.light_decoder.nms_iou_threshold > 0.0F &&
-        config.light_decoder.nms_iou_threshold <= 1.0F)) {
-    config.light_decoder.nms_iou_threshold = light_decoder_defaults.nms_iou_threshold;
-  }
-  if (!(std::isfinite(config.light_decoder.color_ratio_threshold) &&
-        config.light_decoder.color_ratio_threshold > 1.0)) {
-    config.light_decoder.color_ratio_threshold =
-      light_decoder_defaults.color_ratio_threshold;
-  }
-
   const L2Perception::LightFinderConfig light_finder_defaults;
   if (!(config.light_finder.binary_threshold > 0 && config.light_finder.binary_threshold < 255)) {
     config.light_finder.binary_threshold = light_finder_defaults.binary_threshold;
@@ -182,15 +167,13 @@ void normalize(AutoAimConfig& config)
     config.light_finder.min_length = light_finder_defaults.min_length;
   }
   // 判重半径不能大到把同一块板的两根灯条并掉。
-  if (!(config.light_finder.merge_radius >= 0.0F && config.light_finder.merge_radius < 0.8F)) {
-    config.light_finder.merge_radius = light_finder_defaults.merge_radius;
-  }
-  if (!(config.light_finder.length_agree >= 0.0F && config.light_finder.length_agree <= 1.0F)) {
-    config.light_finder.length_agree = light_finder_defaults.length_agree;
-  }
   // 外扩太大会把相邻板的灯条也当成已检出板的（3 m 处两者相距约 4 倍灯长）。
   if (!(config.light_finder.armor_margin >= 0.0F && config.light_finder.armor_margin < 2.0F)) {
     config.light_finder.armor_margin = light_finder_defaults.armor_margin;
+  }
+  if (!(std::isfinite(config.light_finder.color_ratio_threshold) &&
+        config.light_finder.color_ratio_threshold > 1.0)) {
+    config.light_finder.color_ratio_threshold = light_finder_defaults.color_ratio_threshold;
   }
 
   const L2Perception::NumberClassifierConfig number_defaults;
@@ -500,18 +483,6 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(refiner, "color_diff_threshold", config.refiner.color_diff_threshold);
 
   const YAML::Node light_finder = root["light_finder"];
-  if (light_finder && light_finder["mode"]) {
-    const std::string mode = light_finder["mode"].as<std::string>();
-    const auto parsed = L2Perception::parseLightMode(mode);
-    if (!parsed) {
-      throw std::runtime_error(
-        "light_finder.mode must be 'model', 'classic' or 'hybrid'; got " + mode);
-    }
-    config.light_finder.mode = *parsed;
-  }
-  if (light_finder && light_finder["model_path"]) {
-    config.light_model_path = light_finder["model_path"].as<std::string>();
-  }
   readValue(light_finder, "binary_threshold", config.light_finder.binary_threshold);
   readValue(light_finder, "color_channel_diff", config.light_finder.color_channel_diff);
   readValue(light_finder, "color_diff_threshold", config.light_finder.color_diff_threshold);
@@ -519,15 +490,10 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(light_finder, "max_ratio", config.light_finder.max_ratio);
   readValue(light_finder, "max_angle_deg", config.light_finder.max_angle_deg);
   readValue(light_finder, "min_length_px", config.light_finder.min_length);
-  readValue(light_finder, "merge_radius", config.light_finder.merge_radius);
-  readValue(light_finder, "length_agree", config.light_finder.length_agree);
   readValue(light_finder, "armor_margin", config.light_finder.armor_margin);
-
-  const YAML::Node light_decoder = root["light_decoder"];
-  readValue(light_decoder, "score_threshold", config.light_decoder.score_threshold);
-  readValue(light_decoder, "nms_iou_threshold", config.light_decoder.nms_iou_threshold);
   readValue(
-    light_decoder, "color_ratio_threshold", config.light_decoder.color_ratio_threshold);
+    light_finder, "color_ratio_threshold", config.light_finder.color_ratio_threshold);
+
 
   const YAML::Node number_classifier = root["number_classifier"];
   readValue(number_classifier, "enable", config.number_classifier.enable);

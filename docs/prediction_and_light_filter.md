@@ -244,7 +244,9 @@ z_depth = 左灯条中心的相机深度 - 右灯条中心的相机深度
 
 整板网络同时看到两块板时，侧面那块常常检不出，侧边灯条补的就是这块信息。
 
-**来源（L2）。** 跟踪中 `EskfTracker::lightRoi()` 给出整车预测框放大 1.6 倍的 ROI，`ArmorDetector::detectFrame()` 在其中找灯条，来源由 `light_finder.mode` 决定：`classic` 传统灰度二值化，`model` 灯条关键点模型，`hybrid` 传统优先、模型补漏。随后剔掉中心落在任一检出装甲板外接框（外扩 `armor_margin` 倍灯长）内的灯条：它们已经作为板的角点进了观测。剩下的放进 `ArmorFrame::lights`。
+**来源（L2）。** 跟踪中 `EskfTracker::lightRoi()` 给出整车预测框放大 1.6 倍的 ROI，`ArmorDetector::detectFrame()` 在其中用 `findLights()` 的传统二值化找灯条（灰度或颜色差分二值化 → 外轮廓 → 最小外接矩形 → 长度/长宽比/倾角筛选 → `lightColor` 判色）。随后剔掉中心落在任一检出装甲板外接框（外扩 `armor_margin` 倍灯长）内的灯条：它们已经作为板的角点进了观测。剩下的放进 `ArmorFrame::lights`。
+
+> 曾经还有一路 YOLOv8n-pose 灯条关键点模型（`light_finder.mode` 的 `model` / `hybrid`）。2026-09-19 在八段录像上 A/B 后删掉了：灯条产出量传统检测不输模型、预测精度各赢四段且 p50 差都在 0.6 px 以内，而模型让 L2 单帧从 7.2 ms 涨到 20.7 ms。数据见 `config/auto_aim.yaml` 的 `light_finder` 注释。
 
 **关联（L3，`matchLight()`）。** 侧边灯条没有类别证据，错配比漏配代价高，门限都是硬拒绝：
 
@@ -543,7 +545,6 @@ t_hit = target.t() + before_fire + fly_time
 | `sigma_along_by_length`、`sigma_perp_by_length`、`sigma_min_px` | 端点沿灯条、垂直灯条两个方向的像素噪声，默认是 rmcs 的常数 6.32 px；垂直方向同时决定对灯条倾角（近正对时的 yaw）的信任程度 |
 | `isolated_light_sigma_scale` | 侧边灯条两个 sigma 的放大系数 |
 | `light_match_chi2_gate`、`light_match_require_jumped` | 侧边灯条关联的卡方门限与启用条件，见 6.4 节 |
-| `light_finder.mode` | 侧边灯条来源：classic / model / hybrid |
 | `number_classifier.enable` | 数字二次分类，默认关。mlp.onnx 只认 1~5、前哨、哨兵、基地九类：在四段自录上它与网络的类别 100% 一致（等于不起作用），在 sp demo 上却把 58% 的检出判成 negative（那块手持哨兵板的图案不在它的九类里），`on_reject: drop` 会连着整辆车的观测一起筛掉。换了识别模型或场地出现编号跳变时再开，开之前先用 track_diag 看"数字分类采信/丢弃" |
 | 关联板号反复变化、车体姿态突跳 | 先检查完整板的几何关联与角点质量 |
 | 端点残差沿灯条／垂直灯条分量偏大 | 前者偏尺度（深度、高度），后者偏横向位置和姿态；这些量耦合，不能一项残差唯一定位原因 |

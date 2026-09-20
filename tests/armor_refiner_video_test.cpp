@@ -173,7 +173,6 @@ int main(int argc, char** argv)
     config.refiner.binary_threshold = threshold_override;
   }
   config.inference.device = device;
-  config.light_finder.mode = L2Perception::LightMode::Classic;
   const bool model_overridden = !model.empty();
   if (model_overridden) {
     config.inference.model_path = model;

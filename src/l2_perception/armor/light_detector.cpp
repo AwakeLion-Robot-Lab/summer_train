@@ -3,36 +3,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <span>
-#include <stdexcept>
-#include <string>
-#include <utility>
 
-#include <opencv2/dnn/dnn.hpp>
 #include <opencv2/imgproc.hpp>
 
 namespace L2Perception
 {
 namespace
 {
-
-constexpr const char* kOutputName = "output0";
-constexpr int kScoreChannel = 4;
-constexpr int kKeypointBase = 5;
-constexpr std::size_t kChannels = 11;  // 4 box + 1 score + 2 x (x, y, v)
-
-// 按名字取输出；导出时改过名的单输出模型退回唯一的那个，多输出且没有 output0
-// 时返回 nullptr 交给调用方报错。
-template <typename Output>
-const Output* pickOutput(const std::vector<Output>& outputs)
-{
-  for (const Output& output : outputs) {
-    if (output.name == kOutputName) {
-      return &output;
-    }
-  }
-  return outputs.size() == 1 ? &outputs.front() : nullptr;
-}
 
 // 端点连线与图像竖直方向的夹角，单位为度。分母取绝对值下限避免灯条水平时除零。
 float tiltDegrees(const cv::Point2f& top, const cv::Point2f& bottom)
@@ -43,29 +20,6 @@ float tiltDegrees(const cv::Point2f& top, const cv::Point2f& bottom)
 }
 
 }  // namespace
-
-std::string_view lightModeName(LightMode mode) noexcept
-{
-  switch (mode) {
-    case LightMode::Model:
-      return "model";
-    case LightMode::Classic:
-      return "classic";
-    case LightMode::Hybrid:
-      return "hybrid";
-  }
-  return "unknown";
-}
-
-std::optional<LightMode> parseLightMode(std::string_view name) noexcept
-{
-  for (const LightMode mode : {LightMode::Model, LightMode::Classic, LightMode::Hybrid}) {
-    if (name == lightModeName(mode)) {
-      return mode;
-    }
-  }
-  return std::nullopt;
-}
 
 ArmorColor lightColor(
   const cv::Mat& image, const cv::Point2f& top, const cv::Point2f& bottom,
@@ -122,106 +76,9 @@ ArmorColor lightColor(
   return ArmorColor::Unknown;
 }
 
-LightDecoder::LightDecoder(LightDecoderConfig config) : config_(std::move(config))
-{
-}
-
-void LightDecoder::validate(const std::vector<InferenceOutputSpec>& outputs)
-{
-  const InferenceOutputSpec* output = pickOutput(outputs);
-  if (output == nullptr) {
-    throw std::runtime_error(
-      "light model: expected an output named output0 or exactly one output");
-  }
-  if (output->shape.size() != 3 || output->shape[0] != 1 || output->shape[1] != kChannels) {
-    std::string shape;
-    for (const std::size_t dimension : output->shape) {
-      shape += (shape.empty() ? "" : ",") + std::to_string(dimension);
-    }
-    // 最常见的来源是整板模型和灯条模型的路径填反了，报错里直接点明两者各归哪项。
-    throw std::runtime_error(
-      "light model: output must be [1, 11, A] (YOLOv8-pose, 1 class, 2 keypoints); got [" +
-      shape + "]. light_finder.model_path takes a light keypoint model "
-      "(model/light_model/*); whole-armor models (model/armor_model/*) go in "
-      "inference.model_path");
-  }
-}
-
-std::vector<Light> LightDecoder::decode(
-  const InferenceResult& result, const ImageTransform& transform,
-  const cv::Mat& source) const
-{
-  const InferenceTensor* tensor = pickOutput(result.outputs);
-  if (tensor == nullptr || tensor->shape.size() != 3 || tensor->shape[1] != kChannels ||
-      !tensor->isConsistent()) {
-    throw std::runtime_error("light model: output does not match the validated contract");
-  }
-
-  const std::size_t anchors = tensor->shape[2];
-  const std::span<const float> values = tensor->values();
-  // channels-first：第 c 通道第 a 个 anchor 在 values[c * anchors + a]。
-  const auto at = [&](int channel, std::size_t anchor) {
-    return values[static_cast<std::size_t>(channel) * anchors + anchor];
-  };
-
-  // 先按分数筛出候选框，picked 记住每个候选对应的 anchor，NMS 之后才好回查关键点。
-  std::vector<cv::Rect> boxes;
-  std::vector<float> scores;
-  std::vector<std::size_t> picked;
-  for (std::size_t anchor = 0; anchor < anchors; ++anchor) {
-    const float score = at(kScoreChannel, anchor);
-    if (!(score >= config_.score_threshold)) {
-      continue;
-    }
-    const float cx = at(0, anchor);
-    const float cy = at(1, anchor);
-    const float width = at(2, anchor);
-    const float height = at(3, anchor);
-    boxes.emplace_back(
-      static_cast<int>(std::lround(cx - width * 0.5F)),
-      static_cast<int>(std::lround(cy - height * 0.5F)),
-      static_cast<int>(std::lround(width)), static_cast<int>(std::lround(height)));
-    scores.push_back(score);
-    picked.push_back(anchor);
-  }
-
-  std::vector<int> keep;
-  if (!boxes.empty()) {
-    cv::dnn::NMSBoxes(boxes, scores, config_.score_threshold, config_.nms_iou_threshold, keep);
-  }
-
-  std::vector<Light> lights;
-  lights.reserve(keep.size());
-  for (const int index : keep) {
-    const std::size_t anchor = picked[static_cast<std::size_t>(index)];
-    // 两个关键点映射回 source 坐标系后，按图像 y 定上下，不按训练时的关键点
-    // 编号：云台有 roll 时语义上的「上端点」会翻到下面，图像 y 是确定的。
-    cv::Point2f top = transform.modelToSource(
-      {at(kKeypointBase + 0, anchor), at(kKeypointBase + 1, anchor)});
-    cv::Point2f bottom = transform.modelToSource(
-      {at(kKeypointBase + 3, anchor), at(kKeypointBase + 4, anchor)});
-    if (bottom.y < top.y) {
-      std::swap(top, bottom);
-    }
-
-    Light light;
-    light.top = top;
-    light.bottom = bottom;
-    light.center = (top + bottom) * 0.5F;
-    light.length = cv::norm(top - bottom);
-    light.tilt_angle_deg = tiltDegrees(top, bottom);
-    light.score = scores[static_cast<std::size_t>(index)];
-    light.source = LightSource::Model;
-    light.color = lightColor(source, top, bottom, config_.color_ratio_threshold);
-    light.id = lights.size();
-    lights.push_back(light);
-  }
-  return lights;
-}
-
 std::vector<Light> findLights(
   const cv::Mat& image, const cv::Rect& roi, const LightFinderConfig& config,
-  double color_ratio_threshold, ArmorColor color)
+  ArmorColor color)
 {
   const cv::Rect area = roi & cv::Rect(0, 0, image.cols, image.rows);
   if (image.empty() || image.type() != CV_8UC3 || area.area() <= 0) {
@@ -289,49 +146,11 @@ std::vector<Light> findLights(
     light.center = (top + bottom) * 0.5F;
     light.length = length;
     light.tilt_angle_deg = tilt_deg;
-    // 传统检测没有分数，记 1 以免下游按分数排序时排在模型灯条后面。
-    light.score = 1.0F;
-    light.source = LightSource::Classic;
-    light.color = lightColor(image, top, bottom, color_ratio_threshold);
+    light.color = lightColor(image, top, bottom, config.color_ratio_threshold);
     light.id = lights.size();
     lights.push_back(light);
   }
   return lights;
-}
-
-std::vector<Light> mergeLights(
-  std::vector<Light> classic, const std::vector<Light>& model, float merge_radius,
-  float length_agree)
-{
-  // 只和传入时就在的传统灯条比，不和后面追加进来的模型灯条比：模型输出已经过 NMS。
-  const std::size_t classic_count = classic.size();
-  std::vector<bool> replaced(classic_count, false);
-  for (const Light& candidate : model) {
-    std::size_t nearest = classic_count;
-    double nearest_distance = 0.0;
-    for (std::size_t index = 0; index < classic_count; ++index) {
-      const Light& existing = classic[index];
-      const double distance = cv::norm(candidate.center - existing.center);
-      const double reach = merge_radius * std::max(existing.length, candidate.length);
-      if (distance < reach && (nearest == classic_count || distance < nearest_distance)) {
-        nearest = index;
-        nearest_distance = distance;
-      }
-    }
-    if (nearest == classic_count) {
-      classic.push_back(candidate);
-      continue;
-    }
-    // 判成同一根但长度对不上：二值化把灯条断成了碎块，或者和光晕、背景粘在
-    // 一起，这根传统灯条的端点不能用，换成模型的。每根最多被换一次。
-    const double shorter = std::min(classic[nearest].length, candidate.length);
-    const double longer = std::max(classic[nearest].length, candidate.length);
-    if (!replaced[nearest] && longer > 0.0 && shorter / longer < length_agree) {
-      classic[nearest] = candidate;
-      replaced[nearest] = true;
-    }
-  }
-  return classic;
 }
 
 }  // namespace L2Perception

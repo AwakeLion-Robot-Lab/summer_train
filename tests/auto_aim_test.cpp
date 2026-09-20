@@ -1012,9 +1012,7 @@ cv::Mat makeSideLightPanel(
     drawOutlinedText(
       panel,
       cv::format(
-        "#%zu %c %.2f L=%.0f %.0fdeg", light.id,
-        light.source == L2Perception::LightSource::Model ? 'M' : 'C',
-        static_cast<double>(light.score), light.length,
+        "#%zu L=%.0f %.0fdeg", light.id, light.length,
         static_cast<double>(light.tilt_angle_deg)),
       anchor, color, 0.44);
   }

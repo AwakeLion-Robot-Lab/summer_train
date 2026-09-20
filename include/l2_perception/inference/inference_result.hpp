@@ -12,7 +12,7 @@ namespace L2Perception
 
 // 后端中立的 float32 输出张量。
 // 例如形状 {1, 14, 8400} 只说明三个维度的大小；第 0 行是不是 x 坐标，
-// 必须由 LightDecoder（或 BuffDecoder）根据实际模型约定解释。
+// 必须由 ArmorDecoder（或 BuffDecoder）根据实际模型约定解释。
 class InferenceTensor
 {
 public:

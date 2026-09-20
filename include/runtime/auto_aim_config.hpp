@@ -49,13 +49,8 @@ struct AutoAimConfig {
   // 板 ROI 内的传统角点精修。
   L2Perception::ArmorRefinerConfig refiner;
 
-  // 侧边灯条：来源（LightMode）、传统检测和两路合并的门限。
+  // 侧边灯条：传统二值化检测的门限与判色阈值。这一路不走网络。
   L2Perception::LightFinderConfig light_finder;
-  // 侧边灯条用的关键点模型，light_finder.mode 为 classic 时不加载。推理设备与
-  // 调度参数沿用 inference 里的。
-  std::filesystem::path light_model_path{"model/light_model/best.onnx"};
-  // 关键点模型的解码阈值；颜色判定阈值传统检测也用。
-  L2Perception::LightDecoderConfig light_decoder;
 
   // 数字二次分类：整板网络的类别在原图 ROI 上重判一次，判不准的板直接丢掉。
   L2Perception::NumberClassifierConfig number_classifier;

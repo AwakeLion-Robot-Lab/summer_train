@@ -107,14 +107,9 @@ struct Armor {
   // L2 再挂一份的话，两份迟早会有一份是陈的。
 };
 
-// 这根灯条由哪一路检出，见 LightMode。
-enum class LightSource {
-  Model,
-  Classic
-};
-
-// 检出的单根灯条，坐标都在原图像素系。它不带车辆编号，只有端点观测要用的
-// 上下端点和几何量；属于哪块装甲板、是左灯还是右灯，由 L3 按整车预测关联。
+// 检出的单根灯条，坐标都在原图像素系，由 findLights 的传统二值化给出。它不带
+// 车辆编号，只有端点观测要用的上下端点和几何量；属于哪块装甲板、是左灯还是
+// 右灯，由 L3 按整车预测关联。
 struct Light {
   // center 是 top 与 bottom 的中点，top 按图像 y 定，恒在 bottom 上方。
   cv::Point2f center{};
@@ -125,9 +120,6 @@ struct Light {
   double length{0.0};
   // 端点连线偏离竖直方向的角度，单位为度。
   float tilt_angle_deg{0.0F};
-  // 模型的类别分数；传统检出的没有分数，记 1。
-  float score{0.0F};
-  LightSource source{LightSource::Model};
   // 在本帧灯条数组里的下标。
   std::size_t id{0};
 };

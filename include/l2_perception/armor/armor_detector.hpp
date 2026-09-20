@@ -19,9 +19,8 @@ namespace L2Perception
 // L2 装甲检测的编排层，一帧分两部分：
 //   装甲板  整板网络（同济 yolov5 等）→ 解码 → 板 ROI 内传统精修角点 →
 //          数字二次分类（可关）；
-//   侧边灯条  只在 L3 给出 light_roi 时，在其中按 LightMode 用传统二值化或
-//            灯条关键点模型找灯条，剔掉属于已检出装甲板的，交给 L3 做额外的
-//            端点观测。
+//   侧边灯条  只在 L3 给出 light_roi 时，在其中用传统二值化（findLights）找
+//            灯条，剔掉属于已检出装甲板的，交给 L3 做额外的端点观测。
 //
 // 整板网络召回高，但同时看到两块板时侧面那块常常检不出，侧边灯条补的就是这块
 // 信息；它们没有类别证据，关联和门限在 L3。PnP、跟踪、开火策略都不在这里。
@@ -36,7 +35,7 @@ struct DetectTiming
   double decode{0.0};
   double refine{0.0};
   double number{0.0};
-  // 侧边灯条整条路：预处理 + 推理 + 解码 + 颜色过滤 + 与已检出板的判重。
+  // 侧边灯条整条路：二值化 + 轮廓筛选 + 判色 + 与已检出板的判重。
   double side_light{0.0};
 };
 
@@ -45,7 +44,6 @@ struct ArmorDetectorConfig
   ArmorDecoderConfig decoder{};
   ArmorRefinerConfig refiner{};
   LightFinderConfig finder{};
-  LightDecoderConfig light_decoder{};
   ImagePreprocessConfig preprocess{};
   NumberClassifierConfig number{};
 };
@@ -58,11 +56,9 @@ public:
   ArmorDetector() = default;
 
   // armor_backend 必须已加载整板模型，构造时按 config.decoder 核对一次输出形状，
-  // 不符就抛异常，免得每帧解出垃圾角点。light_backend 是侧边灯条用的关键点
-  // 模型，config.finder.mode 为 Classic 时可以为空，否则必须已加载并通过核对。
+  // 不符就抛异常，免得每帧解出垃圾角点。侧边灯条不走网络，没有第二个后端。
   ArmorDetector(
-    std::unique_ptr<IInferenceBackend> armor_backend, ArmorDetectorConfig config,
-    std::unique_ptr<IInferenceBackend> light_backend = nullptr);
+    std::unique_ptr<IInferenceBackend> armor_backend, ArmorDetectorConfig config);
 
   bool ready() const noexcept;
   // 整图检测一帧，只要装甲板，等价于 detectFrame(image).armors。
@@ -104,10 +100,8 @@ private:
     const cv::Mat& image, const cv::Rect& roi, ArmorColor color) const;
 
   std::unique_ptr<IInferenceBackend> armor_backend_;
-  std::unique_ptr<IInferenceBackend> light_backend_;
   ArmorDecoder decoder_{};
   ArmorRefiner refiner_{};
-  LightDecoder light_decoder_{};
   NumberClassifier classifier_{};
   LightFinderConfig finder_config_{};
   ImagePreprocessConfig preprocess_config_{};
