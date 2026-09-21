@@ -2,22 +2,16 @@
 
 #include "l6_telemetry/math.hpp"
 
-#include <Eigen/Cholesky>
-
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <limits>
+#include <cstddef>
+#include <utility>
 
 namespace L3Estimation {
 
 namespace VM = VehicleModel;
 
 namespace {
-
-// 装甲板四角在图像上的顺序：左上、右上、右下、左下。预测侧也按这个顺序由
-// 左右灯条的端点拼出来，两边不一致的话四边形代价算的是两个不同形状。
-constexpr int kCorners = 4;
 
 double initialRadiusFor(ArmorName name, const EskfTargetConfig & config)
 {
@@ -30,19 +24,6 @@ double initialRadiusFor(ArmorName name, const EskfTargetConfig & config)
   return config.initial_radius;
 }
 
-// 算一块板正对相机的程度：板的 x 轴指向车心，朝外的法向是 -axis_x，它与
-// 「板 → 相机」方向的点积越大，板越正对。
-double facingScore(const Eigen::Isometry3d & armor_in_camera)
-{
-  const Eigen::Vector3d front_normal = -armor_in_camera.linear().col(0);
-  return front_normal.dot(-armor_in_camera.translation());
-}
-
-double segmentAngle(const cv::Point2f & from, const cv::Point2f & to)
-{
-  return std::atan2(to.y - from.y, to.x - from.x);
-}
-
 }  // namespace
 
 EskfTarget::EskfTarget(
@@ -50,7 +31,6 @@ EskfTarget::EskfTarget(
   double height_offset, Eigen::Vector3d velocity, EskfTargetConfig config)
 {
   config_ = config;
-  armor_config_ = config.armor;
   name = target_name;
   armor_type = armorTypeOf(target_name).value_or(ArmorType::Small);
 
@@ -79,14 +59,9 @@ EskfTarget::EskfTarget(
 }
 
 void EskfTarget::reset(
-  const Armor & armor, const EskfTargetConfig & config, TimePoint timestamp,
-  const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera_in_world)
+  const Armor & armor, const EskfTargetConfig & config, TimePoint timestamp)
 {
-  (void)calibration;
-  (void)camera_in_world;
-
   config_ = config;
-  armor_config_ = config.armor;
   name = armor.name;
   armor_type = armor.type;
 
@@ -167,19 +142,6 @@ void EskfTarget::reset(
   last_light_residual_ = LightResidual{};
 }
 
-// 相机光学系在世界系下的位姿：由 camera -> barrel 的静态外参左乘当帧的
-// barrel -> world 旋转得到，世界系原点取枪管原点。
-Eigen::Isometry3d EskfTarget::cameraInWorld(
-  const L1Sensor::CameraCalibration & calibration, const Eigen::Quaterniond & q_world_barrel)
-{
-  Eigen::Isometry3d barrel_in_world = Eigen::Isometry3d::Identity();
-  barrel_in_world.linear() = q_world_barrel.toRotationMatrix();
-  if (!calibration.T_barrel_camera) {
-    return barrel_in_world;
-  }
-  return barrel_in_world * (*calibration.T_barrel_camera);
-}
-
 void EskfTarget::predictEkf(TimePoint timestamp, std::optional<TimePoint> hold_from)
 {
   if (!filter_) {
@@ -206,345 +168,27 @@ void EskfTarget::predictEkf(TimePoint timestamp, std::optional<TimePoint> hold_f
   t_ = timestamp;
 }
 
-LightContext EskfTarget::makeContext(
-  int id, bool is_left, const L1Sensor::CameraCalibration & calibration,
-  const Eigen::Isometry3d & camera_in_world) const
-{
-  LightContext ctx;
-  ctx.armor_num = armor_num();
-  ctx.id = id;
-  ctx.is_left = is_left;
-  ctx.name = name;
-  ctx.armor_config = armor_config_;
-  ctx.camera_in_world = camera_in_world;
-  ctx.camera_matrix = calibration.camera_matrix;
-  ctx.distortion_coefficients = calibration.distortion_coefficients;
-  return ctx;
-}
-
-std::pair<cv::Point2f, cv::Point2f> EskfTarget::predictLight(
-  int id, bool is_left, const Eigen::VectorXd & state,
-  const L1Sensor::CameraCalibration & calibration,
-  const Eigen::Isometry3d & camera_in_world) const
-{
-  const LightMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
-  return measure.projectedPoints(state);
-}
-
-std::vector<std::pair<int, Armor>> EskfTarget::matchArmor(
-  const std::vector<Armor> & armors, TimePoint timestamp,
-  const L1Sensor::CameraCalibration & calibration,
-  const Eigen::Isometry3d & camera_in_world) const
-{
-  std::vector<std::pair<int, Armor>> result;
-  if (armors.empty() || !initialized_) {
-    return result;
-  }
-
-  constexpr double kMaxCost = 1e9;
-  const int count = armor_num();
-
-  // 先把状态外推到本帧曝光时刻，再拿预测位置做关联。
-  EskfTarget predicted = snapshot();
-  predicted.predict(timestamp);
-  const Eigen::VectorXd state = predicted.x_;
-
-  // 可见性筛选：按正对相机的程度排序，只留最正对的三块。四板车最多同时看到
-  // 两块半，取三留了余量。这只是几何近似，判的是板朝不朝着你，不判它有没有
-  // 被车身自己挡住。
-  std::vector<std::pair<double, int>> facing;
-  facing.reserve(count);
-  for (int id = 0; id < count; ++id) {
-    const auto pose_in_world = VM::armorPose<double>(state.data(), id, count, name);
-    const Eigen::Isometry3d pose_in_camera = camera_in_world.inverse() * pose_in_world;
-    facing.emplace_back(facingScore(pose_in_camera), id);
-  }
-  std::sort(facing.begin(), facing.end(), [](const auto & a, const auto & b) {
-    return a.first > b.first;
-  });
-
-  std::vector<int> candidates;
-  const std::size_t visible_count = std::min<std::size_t>(3, facing.size());
-  for (std::size_t i = 0; i < visible_count; ++i) {
-    candidates.push_back(facing[i].second);
-  }
-
-  const int observation_count = static_cast<int>(armors.size());
-  const double gate = jumped ? config_.match_gate : config_.match_gate_not_all_init;
-
-  std::vector<std::vector<double>> cost(
-    observation_count, std::vector<double>(candidates.size(), kMaxCost + 1.0));
-
-  for (int j = 0; j < observation_count; ++j) {
-    const std::array<cv::Point2f, kCorners> & measured = armors[j].points;
-
-    for (std::size_t i = 0; i < candidates.size(); ++i) {
-      const int id = candidates[i];
-      const auto left = predicted.predictLight(id, true, state, calibration, camera_in_world);
-      const auto right =
-        predicted.predictLight(id, false, state, calibration, camera_in_world);
-
-      // 拼出预测四边形，顺序与检测角点一致：左上、右上、右下、左下。
-      const std::array<cv::Point2f, kCorners> predicted_corners{
-        left.first, right.first, right.second, left.second};
-
-      // 代价是四边形与四边形的差异，三项各描述一个自由度：
-      //   中心误差 —— 整体位置
-      //   边角度误差 —— 姿态
-      //   周长比例误差 —— 距离缩放
-      cv::Point2f predicted_center(0.0F, 0.0F);
-      cv::Point2f measured_center(0.0F, 0.0F);
-      for (int k = 0; k < kCorners; ++k) {
-        predicted_center += predicted_corners[k];
-        measured_center += measured[k];
-      }
-      predicted_center *= 0.25F;
-      measured_center *= 0.25F;
-      const double center_error = cv::norm(predicted_center - measured_center);
-
-      double angle_error = 0.0;
-      double predicted_perimeter = 0.0;
-      double measured_perimeter = 0.0;
-      for (int k = 0; k < kCorners; ++k) {
-        const int next = (k + 1) % kCorners;
-        angle_error += std::abs(L6Telemetry::limit_rad(
-          segmentAngle(predicted_corners[k], predicted_corners[next]) -
-          segmentAngle(measured[k], measured[next])));
-        predicted_perimeter += cv::norm(predicted_corners[k] - predicted_corners[next]);
-        measured_perimeter += cv::norm(measured[k] - measured[next]);
-      }
-      const double side_length_error =
-        predicted_perimeter > 1e-6
-          ? std::abs(predicted_perimeter - measured_perimeter) / predicted_perimeter
-          : kMaxCost;
-
-      const double total = config_.weight_center_error * center_error +
-                           config_.weight_angle_error * angle_error +
-                           config_.weight_side_length_error * side_length_error;
-
-      if (std::isfinite(total) && total < gate) {
-        cost[j][i] = total;
-      }
-    }
-  }
-
-  for (const auto & [observation, candidate] :
-       greedyMatch(cost, observation_count, static_cast<int>(candidates.size()), kMaxCost)) {
-    result.emplace_back(candidates[candidate], armors[observation]);
-  }
-  return result;
-}
-
-std::vector<EskfTarget::MatchedLight> EskfTarget::matchLight(
-  const std::vector<L2Perception::Light>& lights,
-  const std::vector<std::pair<int, Armor>>& matched_armors,
-  TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
-  const Eigen::Isometry3d& camera_in_world, LightMatchStats* stats) const
-{
-  std::vector<MatchedLight> result;
-  const bool is_base =
-    name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
-  // 本帧至少关联上一块完整板才做：没有完整板做锚，侧边灯条的编号和左右归属
-  // 几乎是猜的。基地的板不绕转，整车预测也约束不了它的灯条位置。
-  if (!config_.enable_lights_measure || is_base || matched_armors.empty() ||
-      lights.empty() || !initialized_ || !filter_ ||
-      (config_.light_match_require_jumped && !jumped)) {
-    if (stats != nullptr) {
-      ++stats->frames_skipped;
-    }
-    return result;
-  }
-
-  EskfTarget predicted = snapshot();
-  predicted.predict(timestamp);
-  const Eigen::VectorXd state = predicted.x_;
-  const int count = armor_num();
-
-  std::vector<double> facing(count, 0.0);
-  for (int id = 0; id < count; ++id) {
-    const Eigen::Isometry3d pose_in_world =
-      VM::armorPose<double>(state.data(), id, count, name);
-    facing[id] = facingScore(camera_in_world.inverse() * pose_in_world);
-  }
-  const int closest_id = static_cast<int>(
-    std::max_element(facing.begin(), facing.end()) - facing.begin());
-
-  using PredictedLight =
-    std::tuple<int, bool, std::pair<cv::Point2f, cv::Point2f>>;
-  std::vector<PredictedLight> visible_lights;
-  visible_lights.reserve(4);
-  const auto matchedPlate = [&matched_armors](int id) {
-    return std::any_of(
-      matched_armors.begin(), matched_armors.end(),
-      [id](const std::pair<int, Armor>& matched) { return matched.first == id; });
-  };
-  const auto addVisible = [&](int id, bool is_left) {
-    // 已配成完整板的板，两根灯条本帧都由 update() 从板的角点拆出来，不再需要
-    // 侧边灯条补位；背对相机的板看不到灯条，槽位留着只会招来错配。
-    if (matchedPlate(id) || !(facing[id] > 0.0)) {
-      return;
-    }
-    visible_lights.emplace_back(
-      id, is_left,
-      predicted.predictLight(id, is_left, state, calibration, camera_in_world));
-  };
-
-  // 候选限定在最正对那块板的左右灯条，加上相邻两块板靠近它的各一根。
-  addVisible((closest_id + count - 1) % count, false);
-  addVisible((closest_id + 1) % count, true);
-  addVisible(closest_id, false);
-  addVisible(closest_id, true);
-
-  if (visible_lights.empty()) {
-    if (stats != nullptr) {
-      ++stats->frames_no_candidate;
-    }
-    return result;
-  }
-
-  if (stats != nullptr) {
-    stats->slots += visible_lights.size();
-  }
-
-  constexpr double kMaxCost = 1e9;
-  const int observation_count = static_cast<int>(lights.size());
-  std::vector<std::vector<double>> cost(
-    observation_count,
-    std::vector<double>(visible_lights.size(), kMaxCost + 1.0));
-
-  const auto lightCost = [&](const L2Perception::Light& light,
-                             const PredictedLight& candidate) -> double {
-    const auto& [id, is_left, endpoints] = candidate;
-    const auto& [top, bottom] = endpoints;
-    const double predicted_length = cv::norm(top - bottom);
-    if (!(predicted_length > 1e-6)) {
-      return kMaxCost + 1.0;
-    }
-
-    if (stats != nullptr) {
-      ++stats->considered;
-    }
-
-    const double length_error = std::abs(light.length - predicted_length);
-    if (length_error > predicted_length * config_.light_match_length_ratio_gate) {
-      if (stats != nullptr) {
-        ++stats->reject_length;
-      }
-      return kMaxCost + 1.0;
-    }
-
-    // 角度取 atan2(Δx, Δy)，预测和检测同一约定，差值再折回 (-π, π]。
-    const double predicted_angle = std::atan2(top.x - bottom.x, top.y - bottom.y);
-    const double light_angle =
-      std::atan2(light.top.x - light.bottom.x, light.top.y - light.bottom.y);
-    const double angle_error =
-      std::abs(VM::normalizeAngle(light_angle - predicted_angle));
-    if (angle_error > config_.light_match_angle_gate) {
-      if (stats != nullptr) {
-        ++stats->reject_angle;
-      }
-      return kMaxCost + 1.0;
-    }
-
-    // 马氏距离用的 S 与这根灯条若被采纳时真正进更新的那份一致。
-    const auto obs = lightObs(
-      light.top, light.bottom, id, is_left, true, calibration, camera_in_world);
-    Eigen::VectorXd innovation;
-    Eigen::MatrixXd innovation_covariance;
-    filter_->innovation(*obs, innovation, innovation_covariance);
-    const Eigen::LLT<Eigen::MatrixXd> llt(innovation_covariance);
-    if (llt.info() != Eigen::Success) {
-      return kMaxCost + 1.0;
-    }
-    const double distance = innovation.dot(llt.solve(innovation));
-    if (!(distance <= config_.light_match_chi2_gate)) {
-      if (stats != nullptr) {
-        ++stats->reject_chi2;
-      }
-      return kMaxCost + 1.0;
-    }
-    if (stats != nullptr) {
-      ++stats->passed;
-    }
-    return distance;
-  };
-
-  for (int observation = 0; observation < observation_count; ++observation) {
-    for (std::size_t candidate = 0; candidate < visible_lights.size(); ++candidate) {
-      cost[observation][candidate] =
-        lightCost(lights[observation], visible_lights[candidate]);
-    }
-  }
-
-  for (const auto& [observation, candidate] : greedyMatch(
-         cost, observation_count, static_cast<int>(visible_lights.size()), kMaxCost)) {
-    const auto& [id, is_left, unused] = visible_lights[candidate];
-    result.emplace_back(id, is_left, lights[observation]);
-  }
-  if (stats != nullptr) {
-    stats->matched += result.size();
-    if (!result.empty()) {
-      ++stats->frames_matched;
-    }
-  }
-  return result;
-}
-
-std::shared_ptr<EskfTarget::Filter::ObsBase> EskfTarget::lightObs(
-  const cv::Point2f & top, const cv::Point2f & bottom, int id, bool is_left, bool isolated,
-  const L1Sensor::CameraCalibration & calibration,
-  const Eigen::Isometry3d & camera_in_world) const
-{
-  const LightMeasure measure{makeContext(id, is_left, calibration, camera_in_world)};
-  const double length = cv::norm(top - bottom);
-  const double scale = isolated ? config_.isolated_light_sigma_scale : 1.0;
-  const double sigma_along =
-    std::max(config_.sigma_min_px, config_.sigma_along_by_length * length) * scale;
-  const double sigma_perp =
-    std::max(config_.sigma_min_px, config_.sigma_perp_by_length * length) * scale;
-  const LightCov r_cov = lightCov(top, bottom, sigma_along, sigma_perp);
-
-  return Filter::makeObs<kLightMeasureSize>(
-    toLight(top, bottom), measure, [r_cov](const LightVector &) { return r_cov; },
-    [](const LightVector & z_pred, const LightVector & z_obs) {
-      return LightMeasure::residual<double>(z_pred, z_obs);
-    });
-}
-
 int EskfTarget::update(
-  const std::vector<std::pair<int, Armor>> & matched, TimePoint timestamp,
-  const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera_in_world)
-{
-  return update(matched, {}, std::nullopt, timestamp, calibration, camera_in_world);
-}
-
-int EskfTarget::update(
-  const std::vector<std::pair<int, Armor>>& matched,
-  const std::vector<MatchedLight>& matched_lights,
-  const std::optional<double>& lights_depth_diff, TimePoint timestamp,
-  const L1Sensor::CameraCalibration& calibration,
-  const Eigen::Isometry3d& camera_in_world)
+  const std::vector<MatchedArmor> & matched, const std::vector<MatchedLight> & matched_lights,
+  const std::optional<double> & lights_depth_diff, TimePoint timestamp, const ObsContext & ctx)
 {
   if (matched.empty() || !filter_) {
     return 0;
   }
 
-  std::vector<std::shared_ptr<Filter::ObsBase>> observations;
   // 观测块的排布固定为 [灯条 4×n][深度差 0 或 1]：灯条在前、连续排放，更新后
-  // 按下标就能把扁平残差拆回每根灯条。directions 与灯条块一一对应，记的是
-  // 检测到的灯条方向，诊断时拿它把端点残差投到灯条坐标系。
-  std::vector<Eigen::Vector2d> directions;
-  directions.reserve(matched.size() * 2 + matched_lights.size());
-  // 与 directions 一一对应的灯条像素长度，用来把倾角残差化成角度。
-  std::vector<double> lengths;
-  lengths.reserve(matched.size() * 2 + matched_lights.size());
+  // 按下标就能把扁平残差拆回每根灯条。axes 与灯条块一一对应，记的是检测到的
+  // 灯条方向和长度，诊断时拿它把端点残差投到灯条坐标系。
+  std::vector<VehicleObs> observations;
+  std::vector<LightAxis> axes;
+  const std::size_t light_capacity = matched.size() * 2 + matched_lights.size();
+  observations.reserve(light_capacity + 1);
+  axes.reserve(light_capacity);
 
   const auto addLight = [&](const cv::Point2f & top, const cv::Point2f & bottom, int id,
                             bool is_left, bool isolated) {
-    observations.push_back(
-      lightObs(top, bottom, id, is_left, isolated, calibration, camera_in_world));
-    directions.push_back(lightDirection(top, bottom));
-    lengths.push_back(cv::norm(top - bottom));
+    observations.push_back(lightObs(ctx, top, bottom, id, is_left, isolated));
+    axes.push_back(LightAxis{lightDirection(top, bottom), cv::norm(top - bottom)});
   };
 
   for (const auto & [id, armor] : matched) {
@@ -558,107 +202,31 @@ int EskfTarget::update(
     addLight(armor.points[1], armor.points[2], id, false, false);
   }
 
-  for (const auto& [id, is_left, light] : matched_lights) {
+  for (const auto & [id, is_left, light] : matched_lights) {
     addLight(light.top, light.bottom, id, is_left, true);
   }
-  const int light_count = static_cast<int>(directions.size());
 
   // 只有一块完整板时，纯重投影观测在斜视方向容易退化，这里补一维 IPPE 给的
   // 左右灯条中心深度差；绝对位姿仍然不写进观测。
-  bool has_depth_diff = false;
-  if (matched.size() == 1 && lights_depth_diff &&
-      std::isfinite(*lights_depth_diff)) {
-    const int id = matched.front().first;
-    const DepthDiffMeasure measure{
-      makeContext(id, true, calibration, camera_in_world)};
-    DepthDiffVector z;
-    z[0] = *lights_depth_diff;
-
-    Eigen::Matrix<double, kDepthDiffMeasureSize, kDepthDiffMeasureSize> r_cov;
-    r_cov.setZero();
-    const double sigma = config_.armor_lights_depth_diff_sigma;
-    r_cov(0, 0) = sigma * sigma / 2.0;
-
-    observations.push_back(Filter::makeObs<kDepthDiffMeasureSize>(
-      z, measure, [r_cov](const DepthDiffVector&) { return r_cov; },
-      [](const DepthDiffVector& z_pred, const DepthDiffVector& z_obs) {
-        return DepthDiffMeasure::residual<double>(z_pred, z_obs);
-      }));
-    has_depth_diff = true;
+  const bool has_depth_diff =
+    matched.size() == 1 && lights_depth_diff && std::isfinite(*lights_depth_diff);
+  if (has_depth_diff) {
+    observations.push_back(makeDepthObs(
+      ctx, matched.front().first, *lights_depth_diff,
+      config_.armor_lights_depth_diff_sigma));
   }
 
   x_ = filter_->updateMulti(observations);
   t_ = timestamp;
 
-  // NIS = rᵀ S⁻¹ r，r 和 S 都取先验线性化点上的（滤波器在第 0 轮迭代记下）。
+  // 先验线性化点上的创新量（滤波器在第 0 轮迭代记下），两个诊断量都从它来。
+  // NIS 算不出来时保留上一次的值，不要填 0——0 会被读成"这一帧一致性极好"。
   const Eigen::VectorXd & innovation = filter_->lastResidual();
-  const Eigen::MatrixXd & innovation_covariance = filter_->lastInnovCov();
-  if (innovation.size() > 0 && innovation_covariance.rows() == innovation.size()) {
-    const Eigen::LLT<Eigen::MatrixXd> llt(innovation_covariance);
-    if (llt.info() == Eigen::Success) {
-      last_nis_ = innovation.dot(llt.solve(innovation));
-      last_nis_dof_ = static_cast<int>(innovation.size());
-    }
+  if (const auto nis = chi2(innovation, filter_->lastInnovCov())) {
+    last_nis_ = *nis;
+    last_nis_dof_ = static_cast<int>(innovation.size());
   }
-
-  // 把每根灯条两个端点的残差投到该灯条的方向 e 和法向 n 上，再折成四个正交
-  // 的物理通道（定义见 LightResidual）。mean 和 rms 都记：mean 反映检测器的
-  // 系统偏差，rms 反映噪声——偏差要回检测侧修，放大 R 压不住。
-  last_light_residual_ = LightResidual{};
-  if (light_count > 0 && innovation.size() >= light_count * kLightMeasureSize) {
-    double along_sq = 0.0;
-    double perp_sq = 0.0;
-    // 下标与 LightResidual 的四个通道同序：横移⊥、沿移∥、倾角、长度。
-    std::array<double, 4> sum{};
-    std::array<double, 4> sum_sq{};
-
-    for (int i = 0; i < light_count; ++i) {
-      const int base = i * kLightMeasureSize;
-      const Eigen::Vector2d & e = directions[i];
-      const Eigen::Vector2d n(-e.y(), e.x());
-      const Eigen::Vector2d r_top = innovation.segment<2>(base + endpoint::TOP_U);
-      const Eigen::Vector2d r_bottom =
-        innovation.segment<2>(base + endpoint::BOTTOM_U);
-
-      const double top_along = r_top.dot(e);
-      const double bottom_along = r_bottom.dot(e);
-      const double top_perp = r_top.dot(n);
-      const double bottom_perp = r_bottom.dot(n);
-
-      along_sq += top_along * top_along + bottom_along * bottom_along;
-      perp_sq += top_perp * top_perp + bottom_perp * bottom_perp;
-
-      // 长度为 0 的灯条不该出现在这里，真出现了就把倾角记 0，别除出 inf。
-      const double length = lengths[i];
-      const std::array<double, 4> channel{
-        (top_perp + bottom_perp) / 2.0,
-        (top_along + bottom_along) / 2.0,
-        length > 1e-6 ? (top_perp - bottom_perp) / length : 0.0,
-        bottom_along - top_along};
-      for (std::size_t k = 0; k < channel.size(); ++k) {
-        sum[k] += channel[k];
-        sum_sq[k] += channel[k] * channel[k];
-      }
-    }
-
-    const double samples = static_cast<double>(light_count);
-    const std::array<LightResidual::Channel *, 4> out{
-      &last_light_residual_.shift_perp, &last_light_residual_.shift_along,
-      &last_light_residual_.tilt, &last_light_residual_.length};
-    for (std::size_t k = 0; k < out.size(); ++k) {
-      out[k]->mean = sum[k] / samples;
-      out[k]->rms = std::sqrt(sum_sq[k] / samples);
-    }
-
-    last_light_residual_.along_rms_px = std::sqrt(along_sq / (2.0 * samples));
-    last_light_residual_.perp_rms_px = std::sqrt(perp_sq / (2.0 * samples));
-    last_light_residual_.light_count = light_count;
-
-    const int depth_index = light_count * kLightMeasureSize;
-    if (has_depth_diff && depth_index < innovation.size()) {
-      last_light_residual_.depth_diff_m = innovation[depth_index];
-    }
-  }
+  last_light_residual_ = analyzeLight(innovation, axes, has_depth_diff);
 
   // 拿更新后的整车 yaw 给前哨转向投一票。
   const Eigen::Matrix3d rotation = VM::vehicleRotation<double>(x_.data(), name);
@@ -669,6 +237,54 @@ int EskfTarget::update(
     converged_ = true;
   }
   return static_cast<int>(observations.size());
+}
+
+ObsContext EskfTarget::obsContext(
+  const L1Sensor::CameraCalibration & calibration,
+  const Eigen::Isometry3d & camera_in_world) const
+{
+  ObsContext ctx;
+  ctx.name = name;
+  ctx.armor_num = armor_num();
+  ctx.armor = config_.armor;
+  ctx.camera_in_world = camera_in_world;
+  ctx.camera_matrix = calibration.camera_matrix;
+  ctx.distortion_coefficients = calibration.distortion_coefficients;
+  return ctx;
+}
+
+Eigen::VectorXd EskfTarget::stateAt(TimePoint timestamp) const
+{
+  EskfTarget predicted = snapshot();
+  predicted.predict(timestamp);
+  return predicted.x_;
+}
+
+std::pair<double, double> EskfTarget::lightSigma(double length, bool isolated) const
+{
+  const double scale = isolated ? config_.isolated_light_sigma_scale : 1.0;
+  return {
+    std::max(config_.sigma_min_px, config_.sigma_along_by_length * length) * scale,
+    std::max(config_.sigma_min_px, config_.sigma_perp_by_length * length) * scale};
+}
+
+VehicleObs EskfTarget::lightObs(
+  const ObsContext & ctx, const cv::Point2f & top, const cv::Point2f & bottom, int id,
+  bool is_left, bool isolated) const
+{
+  const auto [sigma_along, sigma_perp] = lightSigma(cv::norm(top - bottom), isolated);
+  return makeLightObs(ctx, top, bottom, id, is_left, sigma_along, sigma_perp);
+}
+
+std::optional<double> EskfTarget::mahalanobis(const VehicleObs & obs) const
+{
+  if (!filter_ || !obs) {
+    return std::nullopt;
+  }
+  Eigen::VectorXd innovation;
+  Eigen::MatrixXd covariance;
+  filter_->innovation(*obs, innovation, covariance);
+  return chi2(innovation, covariance);
 }
 
 Eigen::VectorXd EskfTarget::ekf_x() const
@@ -737,7 +353,6 @@ EskfTarget EskfTarget::snapshot() const
 {
   EskfTarget copy;
   copy.config_ = config_;
-  copy.armor_config_ = armor_config_;
   copy.x_ = x_;
   copy.t_ = t_;
   copy.name = name;

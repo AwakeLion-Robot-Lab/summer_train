@@ -2,10 +2,13 @@
 
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l2_perception/armor.hpp"
-#include "l3_estimation/tracking/association.hpp"
+#include "l3_estimation/armor/armor_matcher.hpp"
+#include "l3_estimation/armor/armor_observation.hpp"
 #include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/armor/pnp_solver.hpp"
+#include "l3_estimation/armor/track_roi.hpp"
 #include "l3_estimation/armor/types.hpp"
+#include "l3_estimation/tracking/association.hpp"
 
 #include <Eigen/Geometry>
 
@@ -16,12 +19,14 @@
 
 // 误差状态整车跟踪器：管一个（双缓冲下是两个）整车目标的生命周期，把每帧的
 // 装甲板和灯条关联到目标上去做 IESKF 更新。
+//
+// 这一层只管"哪个目标、活着还是死了"。关联怎么算在 armor_matcher，滤波怎么走
+// 在 EskfTarget，ROI 怎么画在 track_roi。
 namespace L3Estimation {
 
 // L2 -> L3 的显式转换：只搬类别、颜色、四角点、置信度这些检测字段，位姿留空
 // 由调用方用当帧的 PnpSolver 填。
-Armor toObservation(
-  const L2Perception::Armor& detection, TimePoint timestamp);
+Armor toObservation(const L2Perception::Armor & detection, TimePoint timestamp);
 
 struct EskfTrackerConfig
 {
@@ -52,7 +57,7 @@ struct UsedLight
   bool is_left{false};
   bool isolated{false};
   // isolated 为 true 时，是这根灯条在本帧 L2 侧边灯条候选数组（lastLights）
-  // 里的下标，调试显示靠它把“滤波器真正吃下去的”回查到检出候选上；来自装甲
+  // 里的下标，调试显示靠它把"滤波器真正吃下去的"回查到检出候选上；来自装甲
   // 板角点的那两根没有下标，恒为 0。
   std::size_t light_id{0};
 };
@@ -67,9 +72,9 @@ public:
   bool ready() const noexcept { return ready_; }
   TrackState state() const noexcept { return buffer_[current_].lifecycle.state; }
 
-  // 处理一帧：把检测转成观测并补 PnP → Lost 时挑候选初始化，否则关联并更新
-  // → 推进状态机 → 返回当前目标的快照。q_world_barrel 必须对应 timestamp
-  // 这一时刻的枪管姿态。Lost 或初始化失败返回空，TempLost 返回纯预测状态。
+  // 处理一帧：把检测转成观测 → Lost 时挑候选初始化，否则关联并更新 → 推进
+  // 状态机 → 返回当前目标的快照。q_world_barrel 必须对应 timestamp 这一时刻
+  // 的枪管姿态。Lost 或初始化失败返回空，TempLost 返回纯预测状态。
   //
   // 第二个重载多收一组独立灯条，它们会作为额外的端点观测参与同一次更新。
   std::optional<EskfTarget> track(
@@ -77,42 +82,38 @@ public:
     const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp);
 
   std::optional<EskfTarget> track(
-    const std::vector<L2Perception::Armor>& detections,
-    const std::vector<L2Perception::Light>& lights,
-    const std::optional<Eigen::Quaterniond>& q_world_barrel,
-    TimePoint timestamp);
+    const std::vector<L2Perception::Armor> & detections,
+    const std::vector<L2Perception::Light> & lights,
+    const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp);
 
-  // 独立灯条的搜索 ROI：把整车全部灯条的预测包围框放大 1.6 倍。只在
-  // Tracking/TempLost、开了独立灯条观测、且目标不是基地时返回。
+  // 独立灯条的搜索 ROI。只在 Tracking/TempLost、开了独立灯条观测、且目标不是
+  // 基地时返回；形状见 Roi::light。
   std::optional<cv::Rect> lightRoi(
-    const std::optional<Eigen::Quaterniond>& q_world_barrel,
-    TimePoint timestamp, const cv::Size& image_size) const;
+    const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
+    const cv::Size & image_size) const;
 
-  // 送给网络的检测 ROI。同样从预测包围框出发，但比 lightRoi 多三步：按
-  // target_wh_ratio（网络输入宽高比）修正形状以减少 letterbox 填充、扩成方形、
-  // 再随距上次更新的时长线性膨胀，超时退化为整图。
-  //
-  // 目标不可聚焦时返回整图而不是空，调用方拿到的永远是一个能直接用的矩形。
+  // 送给网络的检测 ROI，形状见 Roi::net。目标不可聚焦时返回整图而不是空，
+  // 调用方拿到的永远是一个能直接用的矩形。
   cv::Rect netFocusRoi(
-    const std::optional<Eigen::Quaterniond>& q_world_barrel, TimePoint timestamp,
-    const cv::Size& image_size, double target_wh_ratio = 1.0) const;
+    const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
+    const cv::Size & image_size, double target_wh_ratio = 1.0) const;
 
   // 本帧关联到的完整装甲板数量，以及关联到的物理板编号（形如 "0|2"）。
   // 关联在编号间来回跳会让整车 yaw 每帧偏 2π/N，是抖动最常见的来源，所以这
   // 两项要能逐帧导出比对。
   int lastMatchCount() const noexcept { return last_match_count_; }
-  const std::string& lastMatchedIds() const noexcept { return last_matched_ids_; }
+  const std::string & lastMatchedIds() const noexcept { return last_matched_ids_; }
 
-  // 最近一帧真正进了 updateMulti 的灯条。初始化帧、无关联帧和纯预测帧都是
-  // 空的，免得把“检测候选”误画成“已用于更新”。
-  const std::vector<UsedLight>& usedLights() const noexcept
+  // 最近一帧真正进了 update 的灯条。初始化帧、无关联帧和纯预测帧都是空的，
+  // 免得把"检测候选"误画成"已用于更新"。
+  const std::vector<UsedLight> & usedLights() const noexcept
   {
     return buffer_[current_].used_lights;
   }
 
   // matchLight 各道门的累计拒绝数，从进程开始一直累加，不随目标复位清零。
-  // 侧边灯条采纳数为零时，靠它区分“候选槽位没开出来”和“某道门太紧”。
-  const LightMatchStats& lightMatchStats() const noexcept { return light_match_stats_; }
+  // 侧边灯条采纳数为零时，靠它区分"候选槽位没开出来"和"某道门太紧"。
+  const LightMatchStats & lightMatchStats() const noexcept { return light_match_stats_; }
 
   // 当前目标被丢弃的累计次数（超时、发散、Detecting 丢帧、断流）。丢弃后同一帧
   // 就可能重建，只看 state() 数不出这些，诊断工具按这个计数。
@@ -134,30 +135,54 @@ private:
     std::vector<UsedLight> used_lights;
   };
 
+  // 一帧里与槽位无关的输入，拼一次传给两个槽。
+  struct Frame
+  {
+    TimePoint timestamp{};
+    Eigen::Isometry3d camera_in_world{Eigen::Isometry3d::Identity()};
+    const std::vector<L2Perception::Light> * lights{nullptr};
+  };
+
+  // --- track() 的各个步骤，按调用顺序排 ----------------------------------
+
+  // 清掉上一帧留下的逐帧量。早退路径也要先走这一步，免得下游读到隔帧的结果。
+  void clearFrame() noexcept;
+  // 断流（间隔过长或时间倒退）后旧目标的外推不可信，两个槽都清掉，这一帧按
+  // Lost 重新挑候选初始化。
+  void dropOnGap(TimePoint timestamp);
+  // L2 -> L3：正常更新只搬类别和四角点，不拿 PnP 成功当入口门限。PnP 只在
+  // Lost 初始化和单块完整板求深度差时才跑。
+  void readDetections(
+    const std::vector<L2Perception::Armor> & detections, TimePoint timestamp,
+    const std::optional<Eigen::Quaterniond> & q_world_barrel);
+  // 推进一个槽一帧：初始化或更新 → 状态机 → 发散检查。返回本帧是否关联上。
+  bool advance(Slot & slot, const Frame & frame, std::optional<ArmorName> prefer);
+  // 双缓冲：当前目标进 TempLost 时让另一个槽同时抓新目标，新目标一转成
+  // Tracking 就交换上来，不必等当前目标超时。
+  void runBackup(const Frame & frame);
+
   // prefer 给定时优先取同类别的候选，没有才退回最靠近图像中心的那块。
   bool initTarget(
-    Slot& slot, const std::vector<Armor>& candidates, TimePoint timestamp,
-    const Eigen::Isometry3d & camera_in_world,
-    std::optional<ArmorName> prefer = std::nullopt);
-  bool updateTarget(
-    Slot& slot, const std::vector<Armor>& candidates,
-    const std::vector<L2Perception::Light>& lights, TimePoint timestamp,
-    const Eigen::Isometry3d & camera_in_world);
+    Slot & slot, const std::vector<Armor> & candidates, const Frame & frame,
+    std::optional<ArmorName> prefer);
+  bool updateTarget(Slot & slot, const Frame & frame);
 
-  // 把当前目标预测到 timestamp，投影出所有装甲板的灯条端点，取包围盒并与
-  // 图像相交。两个 ROI 都从这里出发。目标未初始化、不在跟踪态或已超时时返回
-  // 空；require_light_measurements 再额外要求开了独立灯条观测且目标不是基地。
-  std::optional<cv::Rect> lightBounds(
-    const std::optional<Eigen::Quaterniond>& q_world_barrel, TimePoint timestamp,
-    const cv::Size& image_size, bool require_light_measurements) const;
+  // 本帧的初始化候选，按需算一次、缓存到帧末。正常 Tracking 一次 PnP 都不跑；
+  // 当前槽恰好在这一帧转进 TempLost 时，紧接着处理备用槽还能当帧完成初始化，
+  // 不用白等一帧。
+  const std::vector<Armor> & initCandidates();
 
   // 观测可用性的两道门：前者要求类别、颜色这些语义字段齐全，后者再要求
   // 这一帧的 PnP 真的解出了位姿。
-  bool semanticUsable(const Armor& armor) const noexcept;
-  bool pnpUsable(const Armor& armor) const noexcept;
-  // 挑出能用来初始化新目标的观测：过语义门 → 逐个做 single_pnp → 过 PnP 门，
-  // 最后按离图像中心的距离排序，近的在前。
-  std::vector<Armor> initCandidates();
+  bool semanticUsable(const Armor & armor) const noexcept;
+  bool pnpUsable(const Armor & armor) const noexcept;
+
+  // ROI 的状态机门限。不在跟踪态、未初始化或已超时时返回空；
+  // require_light_measurements 再额外要求开了独立灯条观测且目标不是基地。
+  std::optional<Roi::Focus> roiFocus(
+    const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
+    bool require_light_measurements) const;
+
   double lostThreshold(const EskfTarget & target) const noexcept;
   // 这个槽的运动外推截止时刻：上次成功更新后再过 temp_lost_predict_time。
   TimePoint holdFrom(const Slot & slot) const noexcept;
@@ -183,9 +208,12 @@ private:
   std::optional<TimePoint> last_frame_;
   std::size_t drop_count_{0};
 
+  // 以下都是逐帧量，每帧由 clearFrame() 清空。
   std::vector<Armor> observations_;
+  std::optional<std::vector<Armor>> init_candidates_;
   int last_match_count_{0};
   std::string last_matched_ids_;
+  // 这一项例外：跨帧累加，不随目标复位清零。
   LightMatchStats light_match_stats_{};
 };
 

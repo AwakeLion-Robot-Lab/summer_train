@@ -1,25 +1,24 @@
 #pragma once
 
 #include "l1_sensor/camera/camera_calibration.hpp"
-#include "l3_estimation/tracking/association.hpp"
+#include "l3_estimation/armor/armor_observation.hpp"
+#include "l3_estimation/armor/light_residual.hpp"
 #include "l3_estimation/armor/types.hpp"
-#include "l3_estimation/armor/light_measure.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
-#include "l3_estimation/filter/error_state_ekf.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
 #include <opencv2/core/types.hpp>
 
-#include <memory>
 #include <optional>
-#include <tuple>
-#include <utility>
 #include <vector>
 
-// 误差状态整车目标：一辆车的状态、它的迭代 ESEKF，以及把观测关联到这辆车上
-// 的那几步。
+// 误差状态整车目标：一辆车的状态，加它的迭代 ESEKF。
+//
+// 这个类只负责"状态怎么走、观测怎么吸收"。把观测挂到哪块板上是 armor_matcher
+// 的事，观测怎么投影是 armor_observation 的事，残差怎么读是 light_residual 的
+// 事——分开之后这里从头到尾只有一条线：reset → predictEkf → update。
 namespace L3Estimation {
 
 // 整车 ESEKF 的全部旋钮：过程噪声在 VehicleModel::NoiseConfig 里，这里是观测
@@ -88,37 +87,14 @@ struct EskfTargetConfig
   double initial_radius_base{0.3205};
 };
 
-// matchLight 各道门毙掉了多少根侧边灯条，累计值。门限只看最终采纳数是调不
-// 动的：采纳数为零时，不知道是候选板槽位根本没开出来，还是某一道门收太紧。
-struct LightMatchStats
-{
-  // 整帧没进关联：开关关着、目标是基地、本帧没关联上完整板，或 jumped 未满足。
-  std::size_t frames_skipped{0};
-  // 进了关联但一个候选灯条槽位都没开出来：能看见的板本帧都已配成完整板，
-  // 或邻板背对相机。这时侧边灯条本来就无处可去，不算被门毙掉。
-  std::size_t frames_no_candidate{0};
-  // 开出来的候选灯条槽位总数，每帧 0~4 个。除以"进了关联且有槽位的帧数"就是
-  // 每帧平均有几个位置能接侧边灯条，也就是采纳数的天花板——一个槽位最多收一
-  // 根。参与率低的时候先看它：槽位本来就只有一个的话，再松门限也多不出来。
-  std::size_t slots{0};
-  // 逐 (灯条, 候选槽位) 对的计数，下面几项按门的先后顺序互斥累加。
-  std::size_t considered{0};
-  std::size_t reject_length{0};
-  std::size_t reject_angle{0};
-  std::size_t reject_chi2{0};
-  std::size_t passed{0};
-  // 贪心配对之后真正返回的根数，必然不大于 passed。
-  std::size_t matched{0};
-  // 至少采纳了一根侧边灯条的帧数。
-  std::size_t frames_matched{0};
-};
-
 class EskfTarget
 {
 public:
-  using Filter = ErrorStateEkf<VehicleModel::kStateSize, VehicleModel::Motion>;
+  using Filter = VehicleFilter;
   using State = Eigen::Matrix<double, VehicleModel::kStateSize, 1>;
-  using MatchedLight = std::tuple<int, bool, L2Perception::Light>;
+  // 诊断量已经搬到 light_residual.hpp，别名留着是因为 track_diag 按
+  // EskfTarget::LightResidual::Channel 写死了列。
+  using LightResidual = L3Estimation::LightResidual;
 
   // 状态维度，下游遥测和单测按这个数读状态。
   static constexpr int kStateSize = VehicleModel::kStateSize;
@@ -136,13 +112,11 @@ public:
     Eigen::Vector3d velocity = Eigen::Vector3d::Zero(),
     EskfTargetConfig config = {});
 
+  // --- 一帧的三步：reset 或 predictEkf，然后 update ----------------------
+
   // 用第一块观测到的板初始化：由板的世界系位姿沿板法向退一个半径反推旋转
   // 中心，其余状态取先验，然后建立滤波器。
-  //
-  // camera_in_world 必须是该帧曝光时刻的相机光学系位姿。
-  void reset(
-    const Armor & armor, const EskfTargetConfig & config, TimePoint timestamp,
-    const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera_in_world);
+  void reset(const Armor & armor, const EskfTargetConfig & config, TimePoint timestamp);
 
   // 把滤波器推进到 timestamp，dt 取与上一帧的实际间隔，掉帧和耗时抖动自然
   // 被吸收。
@@ -153,50 +127,47 @@ public:
   // 就能转出去半圈。
   void predictEkf(TimePoint timestamp, std::optional<TimePoint> hold_from = std::nullopt);
 
-  // 把本帧的候选板关联到整车的各块物理板上：对每个 (观测, 板编号) 组合，把
-  // 该板按当前状态投影出四个角点，与观测角点比中心、角度和边长，加权成一个
-  // 代价，再用 greedyMatch 在门限内贪心配对。返回 (物理板编号, 观测) 对。
-  std::vector<std::pair<int, Armor>> matchArmor(
-    const std::vector<Armor> & armors, TimePoint timestamp,
+  // 吸收本帧的全部观测：完整板各拆成左右两根灯条，独立灯条各加一根（sigma
+  // 乘上放大系数），每根一个四维端点观测；matched 恰好一块且传入了深度差时
+  // 再加一维 depth_diff 观测，最后一起送进迭代更新。返回观测块数。
+  int update(
+    const std::vector<MatchedArmor> & matched,
+    const std::vector<MatchedLight> & matched_lights,
+    const std::optional<double> & lights_depth_diff, TimePoint timestamp,
+    const ObsContext & ctx);
+
+  // 只有完整板可用时的简写。
+  int update(
+    const std::vector<MatchedArmor> & matched, TimePoint timestamp, const ObsContext & ctx)
+  {
+    return update(matched, {}, std::nullopt, timestamp, ctx);
+  }
+
+  // --- 关联要用的只读接口 -------------------------------------------------
+
+  // 本帧的观测上下文：这辆车的几何配上当帧的相机位姿和内参。
+  ObsContext obsContext(
     const L1Sensor::CameraCalibration & calibration,
     const Eigen::Isometry3d & camera_in_world) const;
 
-  // 把侧边灯条关联到整车的某根物理灯条上。候选只取最正对的那块板及其两块
-  // 邻板靠近它的那根灯条，已配成完整板的板和背对相机的板不参与；按长度比、
-  // 角度差、卡方三道门筛，通过的按马氏距离贪心配对，记下 (板编号, 左右)。
-  // 本帧一块完整板都没关联上、或 require_jumped 时还没见过别的板，直接返回空。
+  // 按运动模型外推到 timestamp 的状态副本，滤波器不动。
   //
-  // 卡方门限用滤波器当前的先验协方差，调用前应已 predictEkf(timestamp)。
-  //
-  // stats 非空时逐道门累加拒绝数，供 track_diag 打印；不影响关联结果。
-  std::vector<MatchedLight> matchLight(
-    const std::vector<L2Perception::Light>& lights,
-    const std::vector<std::pair<int, Armor>>& matched_armors,
-    TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
-    const Eigen::Isometry3d& camera_in_world,
-    LightMatchStats* stats = nullptr) const;
+  // 一帧里关联的每一步都该用同一份，不要各自再外推一次：Motion 在 dt=0 时也会
+  // 跑 clamp（前哨半径钉死、超界的高度差和角速度归零），反复外推不是恒等。
+  Eigen::VectorXd stateAt(TimePoint timestamp) const;
 
-  // 把关联好的板各拆成左右两根灯条的端点观测，做一次多观测更新，返回观测
-  // 块数。
-  int update(
-    const std::vector<std::pair<int, Armor>> & matched, TimePoint timestamp,
-    const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera_in_world);
+  // 把一根灯条的上下端点做成一个四维观测，sigma 按本目标的配置算。关联门限和
+  // 更新共用它，门限看到的 S 就是更新时真正用的。
+  VehicleObs lightObs(
+    const ObsContext & ctx, const cv::Point2f & top, const cv::Point2f & bottom, int id,
+    bool is_left, bool isolated) const;
 
-  // 完整更新入口：完整板各拆成两根灯条，独立灯条各加一根（sigma 乘上放大
-  // 系数），每根一个四维端点观测；matched 恰好一块且传入了深度差时再加一维
-  // depth_diff 观测，最后一起送进迭代更新。返回观测块数。
-  int update(
-    const std::vector<std::pair<int, Armor>>& matched,
-    const std::vector<MatchedLight>& matched_lights,
-    const std::optional<double>& lights_depth_diff,
-    TimePoint timestamp, const L1Sensor::CameraCalibration& calibration,
-    const Eigen::Isometry3d& camera_in_world);
+  // 这个观测落在滤波器先验上的马氏距离平方。没有滤波器或 S 不正定时返回空。
+  std::optional<double> mahalanobis(const VehicleObs & obs) const;
 
-  // 由状态投影出某块板某条灯条的上下端点像素坐标。关联、ROI 和叠加层都用它。
-  std::pair<cv::Point2f, cv::Point2f> predictLight(
-    int id, bool is_left, const Eigen::VectorXd & state,
-    const L1Sensor::CameraCalibration & calibration,
-    const Eigen::Isometry3d & camera_in_world) const;
+  const EskfTargetConfig & config() const noexcept { return config_; }
+  // 合成目标不带滤波器，只能外推不能更新。
+  bool hasFilter() const noexcept { return filter_.has_value(); }
 
   // --- L3 → L4 契约 -------------------------------------------------------
 
@@ -216,59 +187,17 @@ public:
   // 任一半径跑出物理范围就算发散，调用方据此丢弃目标。
   bool diverged() const;
 
-  // 最近一次更新的归一化创新平方（NIS）和它的自由度，取先验点上的创新量。
-  // 观测维数随本帧关联到的灯条根数变（每根 4 维），所以自由度要一并给出才能
-  // 和卡方门限比。滤波器一致时 NIS 的期望值等于自由度。
+  // --- 诊断量，取自最近一次 update -----------------------------------------
+
+  // 归一化创新平方（NIS）和它的自由度，取先验点上的创新量。观测维数随本帧
+  // 关联到的灯条根数变（每根 4 维），所以自由度要一并给出才能和卡方门限比。
+  // 滤波器一致时 NIS 的期望值等于自由度。
   double lastNis() const noexcept { return last_nis_; }
   int lastNisDof() const noexcept { return last_nis_dof_; }
-
-  // 最近一次更新的端点创新量（先验点上），投到每根灯条自己的坐标系里分方向
-  // 单位 px（倾角为 rad）。
-  //
-  // 读法：沿灯条分量大，多半是深度（灯条长度）或高度偏了；垂直分量大，是
-  // 横向位置或灯条倾角（姿态）偏了。
-  struct LightResidual
-  {
-    // 一个通道的统计量。mean 有符号，看的是系统偏差；rms 看的是噪声。两者
-    // 必须分开：只看 RMS 分不出「检测器有偏」和「检测器抖」，而这两种病的
-    // 治法完全不同——前者要在检测侧修，后者才该动 R。
-    struct Channel
-    {
-      double mean{0.0};
-      double rms{0.0};
-    };
-
-    // 把每根灯条两个端点的残差 r_top / r_bot 投到灯条方向 e 和法向 n 上，
-    // 再折成四个互相正交的物理通道。L 为该灯条的像素长度：
-    //   shift_perp  = (r_top·n + r_bot·n) / 2   整根灯条横向平移，px
-    //   shift_along = (r_top·e + r_bot·e) / 2   整根灯条沿自身平移，px
-    //   tilt        = (r_top·n − r_bot·n) / L   灯条倾角，rad
-    //   length      = (r_bot·e − r_top·e)       灯条长度，px
-    // 拆成这四维是因为它们互相正交、各自有物理意义：哪一维偏了直接对应
-    // 哪个环节有问题。端点级的平方和把符号吃掉，看不出偏差。
-    Channel shift_perp{};
-    Channel shift_along{};
-    Channel tilt{};
-    Channel length{};
-
-    // 端点级的 RMS，单位 px。等价于上面四个通道的重新组合（沿灯条方向有
-    // along_rms² = shift_along.rms² + length.rms²/4），保留是因为历史 A/B
-    // 记录用的就是这两个数。
-    double along_rms_px{0.0};
-    double perp_rms_px{0.0};
-    // 单板深度差观测的残差，单位米。本帧没有该观测时为 0。
-    double depth_diff_m{0.0};
-    // 参与本次更新的灯条根数（完整板拆出的 + 独立的）。
-    int light_count{0};
-  };
+  // 端点创新按物理通道的分解，含义见 LightResidual。
   const LightResidual & lastLightResidual() const noexcept { return last_light_residual_; }
 
-  // 由相机标定的 camera -> barrel 外参和当帧枪管姿态合成相机光学系在世界系
-  // 的位姿。世界系原点取枪管原点，与 PnpSolver 的约定一致。
-  static Eigen::Isometry3d cameraInWorld(
-    const L1Sensor::CameraCalibration & calibration,
-    const Eigen::Quaterniond & q_world_barrel);
-  bool converged() const noexcept { return converged_; }
+  // --- 身份与状态标志 -----------------------------------------------------
 
   ArmorName name{ArmorName::Unknown};
   ArmorType armor_type{ArmorType::Small};
@@ -278,36 +207,20 @@ public:
   int last_id{0};
 
   bool initialized() const noexcept { return initialized_; }
+  bool converged() const noexcept { return converged_; }
 
   // 前哨转向投票器的当前判定，给遥测和调试看。
-  VehicleModel::Voter::Direction outpostDirection() const noexcept
-  {
-    return voter_.direction;
-  }
-  bool lightsEnabled() const noexcept
-  {
-    return config_.enable_lights_measure;
-  }
+  VehicleModel::Voter::Direction outpostDirection() const noexcept { return voter_.direction; }
+  bool lightsEnabled() const noexcept { return config_.enable_lights_measure; }
 
   // 不含滤波器的轻量副本，下游随便外推都不会污染滤波器状态。
   EskfTarget snapshot() const;
 
 private:
-  // 拼一个 LightContext：板编号、左右、板数、板几何加当帧相机位姿与内参。
-  LightContext makeContext(
-    int id, bool is_left, const L1Sensor::CameraCalibration & calibration,
-    const Eigen::Isometry3d & camera_in_world) const;
-
-  // 把一根灯条的上下端点做成一个四维观测，R 由 lightCov 按灯条方向写出。
-  // isolated 表示侧边灯条，两个 sigma 再乘 isolated_light_sigma_scale。关联门限
-  // 和更新共用它，门限看到的 S 就是更新时真正用的。
-  std::shared_ptr<Filter::ObsBase> lightObs(
-    const cv::Point2f & top, const cv::Point2f & bottom, int id, bool is_left,
-    bool isolated, const L1Sensor::CameraCalibration & calibration,
-    const Eigen::Isometry3d & camera_in_world) const;
+  // 一根灯条的两个 sigma（沿灯条、垂直灯条），单位 px。
+  std::pair<double, double> lightSigma(double length, bool isolated) const;
 
   EskfTargetConfig config_{};
-  ArmorConfig armor_config_{};
 
   State x_{State::Zero()};
   TimePoint t_{};

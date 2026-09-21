@@ -10,6 +10,8 @@
 #include <numbers>
 #include <limits>
 #include <optional>
+#include <tuple>
+#include <utility>
 
 namespace L3Estimation {
 
@@ -113,5 +115,12 @@ struct ArmorConfig {
 
 // 跨层接口使用的语义别名。
 using ArmorObservation = Armor;
+
+// 关联的产物，关联器产出、滤波器消费。放在这里而不是关联器头文件里，是为了让
+// EskfTarget::update 能只依赖类型、不依赖关联怎么做出来的。
+//
+// 第一项都是整车的物理板编号；灯条还要记左右，因为一根侧边灯条只对应半块板。
+using MatchedArmor = std::pair<int, Armor>;
+using MatchedLight = std::tuple<int, bool, L2Perception::Light>;
 
 }  // namespace L3Estimation

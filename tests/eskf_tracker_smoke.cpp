@@ -75,7 +75,7 @@ std::vector<L2Perception::Armor> synthesizeFrame(
   const L3Estimation::ArmorConfig & armor_config)
 {
   const Eigen::Isometry3d camera =
-    L3Estimation::EskfTarget::cameraInWorld(calibration, kBarrelPose);
+    L3Estimation::cameraInWorld(calibration, kBarrelPose);
 
   std::vector<L2Perception::Armor> frame;
   for (int id = 0; id < kArmorNum; ++id) {
@@ -125,7 +125,7 @@ L2Perception::Light lightOfPlate(
   ctx.name = kName;
   ctx.armor_config = armor_config;
   ctx.camera_in_world =
-    L3Estimation::EskfTarget::cameraInWorld(calibration, kBarrelPose);
+    L3Estimation::cameraInWorld(calibration, kBarrelPose);
   ctx.camera_matrix = calibration.camera_matrix;
   ctx.distortion_coefficients = calibration.distortion_coefficients;
 
@@ -143,7 +143,7 @@ L2Perception::Light lightOfPlate(
 std::vector<int> facingIds(const State& x, const L1Sensor::CameraCalibration& calibration)
 {
   const Eigen::Isometry3d camera =
-    L3Estimation::EskfTarget::cameraInWorld(calibration, kBarrelPose);
+    L3Estimation::cameraInWorld(calibration, kBarrelPose);
   std::vector<int> ids;
   for (int id = 0; id < kArmorNum; ++id) {
     const auto pose_in_world = VM::armorPose<double>(x.data(), id, kArmorNum, kName);
@@ -295,7 +295,7 @@ int main()
       expect(side_facing.size() == 2, "侧边灯条测试帧应当有两块板朝向相机");
       if (side_facing.size() == 2) {
         const Eigen::Isometry3d camera =
-          L3Estimation::EskfTarget::cameraInWorld(calibration, kBarrelPose);
+          L3Estimation::cameraInWorld(calibration, kBarrelPose);
         const auto facing = [&](int id) {
           const auto pose = VM::armorPose<double>(truth.data(), id, kArmorNum, kName);
           const Eigen::Isometry3d in_camera = camera.inverse() * pose;

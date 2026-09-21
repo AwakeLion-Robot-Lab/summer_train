@@ -33,7 +33,7 @@ flowchart TD
 | 观测更新 | 这根灯条的实测端点与预测端点差多少，整车状态该怎样修正？ | `LightMeasure`、`updateMulti()` |
 | 时间外推 | 按刚刚估计的运动状态，过一段时间整车会在哪里？ | `VehicleModel::Motion`、`EskfTarget::predict()` |
 
-源码入口：[eskf_tracker.cpp](../src/l3_estimation/armor/eskf_tracker.cpp)、[eskf_target.cpp](../src/l3_estimation/armor/eskf_target.cpp)。
+源码入口：[eskf_tracker.cpp](../src/l3_estimation/armor/eskf_tracker.cpp)（生命周期）、[armor_matcher.cpp](../src/l3_estimation/armor/armor_matcher.cpp)（关联）、[eskf_target.cpp](../src/l3_estimation/armor/eskf_target.cpp)（滤波）。
 
 ## 2. 滤波器里面保存的是什么
 
@@ -585,9 +585,10 @@ NIS 的计算形式是 `eᵀ S⁻¹ e`，`e` 和 `S` 都取 `updateMulti()` 第 
 | 1 | [light_measure.hpp](../include/l3_estimation/armor/light_measure.hpp)：`toLight()`、`lightCov()` | 两个端点怎样排成观测，`R` 怎样按灯条方向写出 |
 | 2 | 同文件：`projectPointsOf()`、`operator()`、`residual()` | 整车状态怎样产生预测端点，再算残差 |
 | 3 | [vehicle_model.hpp](../include/l3_estimation/armor/vehicle_model.hpp)：`armorPose()`、`Motion` | 装甲板几何与时间推进模型 |
-| 4 | [eskf_target.cpp](../src/l3_estimation/armor/eskf_target.cpp)：`update()` 内的 `addLight` | 观测对象和 `R` 怎样组装，哪些观测参与更新 |
+| 4 | [eskf_target.cpp](../src/l3_estimation/armor/eskf_target.cpp)：`update()`、`lightObs()`；[armor_observation.hpp](../include/l3_estimation/armor/armor_observation.hpp)：`makeLightObs()` | 哪些观测参与更新，`R` 的 sigma 怎样按配置算出、观测对象怎样组装 |
 | 5 | [error_state_ekf.hpp](../include/l3_estimation/filter/error_state_ekf.hpp)：`updateMulti()` | 堆叠 `H/R`，迭代求 `δ`，更新 `P` |
-| 6 | [eskf_tracker.cpp](../src/l3_estimation/armor/eskf_tracker.cpp)：`updateTarget()` | 预测、关联、深度差和更新的调用顺序 |
-| 7 | [planner.cpp](../src/l4_planning/armor/planner.cpp)：`planTarget()` | 如何把滤波得到的运动状态用于命中预测 |
+| 6 | [armor_matcher.cpp](../src/l3_estimation/armor/armor_matcher.cpp)：`matchArmor()`、`matchLight()` | 关联代价、三道灯条门限和贪心配对 |
+| 7 | [eskf_tracker.cpp](../src/l3_estimation/armor/eskf_tracker.cpp)：`updateTarget()` | 预测、关联、深度差和更新的调用顺序 |
+| 8 | [planner.cpp](../src/l4_planning/armor/planner.cpp)：`planTarget()` | 如何把滤波得到的运动状态用于命中预测 |
 
 已有的 [ESEKF 与 UVL 移植笔记](esekf_uvl_port.md) 包含更长的数学与上游实现拆解。其中李群、状态、流形和滤波器几节仍然适用；第 5 节的 UVL 观测已被本文第 3、4、7 节的端点观测取代。

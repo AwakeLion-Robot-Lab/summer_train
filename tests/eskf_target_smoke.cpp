@@ -7,6 +7,7 @@
 // 注意整车模型对 yaw 有 2π/N 的对称性：滤波器的"0 号板"未必是真值的 0 号板，
 // 所以收敛断言写在**装甲板集合**上，关联断言写在**相对编号**上。
 
+#include "l3_estimation/armor/armor_matcher.hpp"
 #include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/armor/light_measure.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
@@ -128,6 +129,27 @@ L3Estimation::Armor synthesizeDetection(
   return armor;
 }
 
+// 按 EskfTracker 的做法关联：外推到本帧的状态和本帧观测上下文各拼一次，
+// 装甲板和灯条两步共用。
+std::vector<L3Estimation::MatchedArmor> matchArmorAt(
+  const L3Estimation::EskfTarget & target, const std::vector<L3Estimation::Armor> & armors,
+  L3Estimation::TimePoint timestamp, const L1Sensor::CameraCalibration & calibration,
+  const Eigen::Isometry3d & camera)
+{
+  return L3Estimation::matchArmor(
+    target, target.stateAt(timestamp), target.obsContext(calibration, camera), armors);
+}
+
+std::vector<L3Estimation::MatchedLight> matchLightAt(
+  const L3Estimation::EskfTarget & target, const std::vector<L2Perception::Light> & lights,
+  const std::vector<L3Estimation::MatchedArmor> & matched, L3Estimation::TimePoint timestamp,
+  const L1Sensor::CameraCalibration & calibration, const Eigen::Isometry3d & camera)
+{
+  return L3Estimation::matchLight(
+    target, target.stateAt(timestamp), target.obsContext(calibration, camera), lights,
+    matched);
+}
+
 }  // namespace
 
 int main()
@@ -146,7 +168,7 @@ int main()
     L3Estimation::EskfTarget target;
     const auto detection =
       synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
-    target.reset(detection, config, start, calibration, camera);
+    target.reset(detection, config, start);
 
     expect(target.initialized(), "reset 后应当已初始化");
     expect(!target.jumped, "reset 后 jumped 必须为 false");
@@ -181,7 +203,7 @@ int main()
     L3Estimation::EskfTarget from_other;
     const auto other_detection =
       synthesizeDetection(truth, 2, calibration, camera, config.armor, start);
-    from_other.reset(other_detection, config, start, calibration, camera);
+    from_other.reset(other_detection, config, start);
     const auto poses = from_other.armor_xyza_list();
     expect(poses.size() == static_cast<std::size_t>(kArmorNum), "板位姿列表长度错");
     double best = std::numeric_limits<double>::max();
@@ -196,7 +218,7 @@ int main()
     L3Estimation::EskfTarget target;
     const auto detection =
       synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
-    target.reset(detection, config, start, calibration, camera);
+    target.reset(detection, config, start);
 
     // 同一时刻、同一状态下合成所有可见板的检测。
     std::vector<L3Estimation::Armor> detections;
@@ -211,7 +233,7 @@ int main()
     }
     expect(detections.size() >= 2, "合成场景里应当至少有两块板可见");
 
-    const auto matched = target.matchArmor(detections, start, calibration, camera);
+    const auto matched = matchArmorAt(target, detections, start, calibration, camera);
     expect(matched.size() == detections.size(), "关联数量与可见板数不符");
 
     // 初始化时假设看到的是 0 号板，所以关联结果应当与真值编号一致。
@@ -233,16 +255,16 @@ int main()
     L3Estimation::EskfTarget target;
     const auto detection =
       synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
-    target.reset(detection, config, start, calibration, camera);
+    target.reset(detection, config, start);
 
-    const auto matched = target.matchArmor(
-      std::vector<L3Estimation::Armor>{detection}, start, calibration, camera);
+    const auto matched = matchArmorAt(
+      target, std::vector<L3Estimation::Armor>{detection}, start, calibration, camera);
     expect(matched.size() == 1, "单板场景应当关联到一块完整板");
 
     const int id = matched.empty() ? 0 : matched.front().first;
     const auto makeLight = [&](int plate_id, bool is_left) {
-      const auto predicted_light = target.predictLight(
-        plate_id, is_left, target.rawState(), calibration, camera);
+      const auto predicted_light =
+        target.obsContext(calibration, camera).project(plate_id, is_left, target.rawState());
       L2Perception::Light light;
       light.top = predicted_light.first;
       light.bottom = predicted_light.second;
@@ -266,27 +288,26 @@ int main()
 
     // 还没见过 0 号以外的板时，邻板的位置是猜的，侧边灯条一律不关联。
     expect(
-      target.matchLight(
-        std::vector<L2Perception::Light>{light}, matched, start, calibration, camera)
+      matchLightAt(
+        target, std::vector<L2Perception::Light>{light}, matched, start, calibration, camera)
         .empty(),
       "jumped 为假时不应关联侧边灯条");
     target.jumped = true;
 
-    const auto matched_lights = target.matchLight(
-      std::vector<L2Perception::Light>{light}, matched, start, calibration, camera);
+    const auto matched_lights = matchLightAt(
+      target, std::vector<L2Perception::Light>{light}, matched, start, calibration, camera);
     expect(matched_lights.size() == 1, "侧边灯条没有关联到预测物理灯条");
     expect(
-      target.matchLight(
-        std::vector<L2Perception::Light>{light}, {}, start, calibration, camera)
+      matchLightAt(
+        target, std::vector<L2Perception::Light>{light}, {}, start, calibration, camera)
         .empty(),
       "没有完整板关联时不应启用独立灯条关联");
 
     // 已经配成完整板的那根灯条，本帧会由板的角点拆出来当观测，不能再算一次。
     expect(
-      target
-        .matchLight(
-          std::vector<L2Perception::Light>{makeLight(id, true)}, matched, start,
-          calibration, camera)
+      matchLightAt(
+        target, std::vector<L2Perception::Light>{makeLight(id, true)}, matched, start,
+        calibration, camera)
         .empty(),
       "完整板自己的灯条不应再关联为独立灯条");
 
@@ -303,7 +324,8 @@ int main()
       target.rawState().data(), depth_difference_data);
 
     const int observation_blocks = target.update(
-      matched, matched_lights, depth_difference_data[0], start, calibration, camera);
+      matched, matched_lights, depth_difference_data[0], start,
+      target.obsContext(calibration, camera));
     expect(
       observation_blocks == 4,
       "单完整板 + 独立灯条 + 深度差应产生四个观测块");
@@ -327,7 +349,7 @@ int main()
     L3Estimation::EskfTarget target;
     const auto detection =
       synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
-    target.reset(detection, config, start, calibration, camera);
+    target.reset(detection, config, start);
 
     State truth_now = truth;
     const VM::Motion truth_motion{.dt = kDt, .name = kName};
@@ -350,8 +372,8 @@ int main()
       }
 
       target.predictEkf(now);
-      const auto matched = target.matchArmor(detections, now, calibration, camera);
-      target.update(matched, now, calibration, camera);
+      const auto matched = matchArmorAt(target, detections, now, calibration, camera);
+      target.update(matched, now, target.obsContext(calibration, camera));
     }
 
     expect(target.jumped, "跑完 600 帧后应当已经见过 0 号以外的板");
@@ -398,7 +420,7 @@ int main()
     L3Estimation::EskfTarget target;
     const auto detection =
       synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
-    target.reset(detection, config, start, calibration, camera);
+    target.reset(detection, config, start);
 
     State truth_now = truth;
     const VM::Motion truth_motion{.dt = kDt, .name = kName};
@@ -420,8 +442,9 @@ int main()
         }
       }
       target.predictEkf(now);
-      target.update(target.matchArmor(detections, now, calibration, camera), now,
-                    calibration, camera);
+      target.update(
+        matchArmorAt(target, detections, now, calibration, camera), now,
+        target.obsContext(calibration, camera));
     }
     expect(target.jumped && target.converged(), "卡方门限测试前目标应当已收敛");
 
@@ -469,13 +492,13 @@ int main()
     target.predictEkf(now);
     const std::vector<L3Estimation::Armor> front_only{
       synthesizeDetection(truth_now, front, calibration, camera, config.armor, now)};
-    const auto matched = target.matchArmor(front_only, now, calibration, camera);
+    const auto matched = matchArmorAt(target, front_only, now, calibration, camera);
     expect(
       matched.size() == 1 && matched.front().first == front, "正对的板应当关联到自己的编号");
 
     const auto matchOne = [&](const L2Perception::Light& light) {
-      return target.matchLight(
-        std::vector<L2Perception::Light>{light}, matched, now, calibration, camera);
+      return matchLightAt(
+        target, std::vector<L2Perception::Light>{light}, matched, now, calibration, camera);
     };
     const auto accepted = matchOne(truthLight(side, side_is_right, 0.0F));
     expect(
@@ -495,7 +518,7 @@ int main()
     L3Estimation::EskfTarget target;
     const auto detection =
       synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
-    target.reset(detection, config, start, calibration, camera);
+    target.reset(detection, config, start);
 
     // reset 之后速度与角速度都是零，外推不改变任何东西，测不出隔离性。先跑
     // 几十帧让状态动起来。
@@ -517,8 +540,9 @@ int main()
         }
       }
       target.predictEkf(now);
-      target.update(target.matchArmor(detections, now, calibration, camera), now,
-                    calibration, camera);
+      target.update(
+        matchArmorAt(target, detections, now, calibration, camera), now,
+        target.obsContext(calibration, camera));
     }
     expect(
       std::abs(target.rawState()[VM::idx::VYAW]) > 0.5,
