@@ -54,6 +54,7 @@ end
 target("newvision")
     set_kind("static")
     add_files("src/**/*.cpp")
+    add_files("include/l4_planning/planner_config.cpp")
     add_files("tools/camera_sdk/hikrobot/hikrobot.cpp")
     add_files("tools/camera_sdk/mindvision/mindvision.cpp")
     add_files("tools/serial/src/serial.cc")

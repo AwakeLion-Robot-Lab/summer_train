@@ -14,7 +14,7 @@ enum class ArmorType {
   Large
 };
 
-// 将一份 L3 车辆状态预测到绝对命中时刻。
+// 将一份 L3 车辆状态预测到绝对命中时刻。实机快照附带 EKF 副本。
 struct PredictionRequest {
   L3Estimation::TargetState target; // L3 发布时刻的整车状态
   TimePoint target_time{};          // 需要预测到的绝对时刻
@@ -44,7 +44,7 @@ struct PredictionResult {
 
 class Predictor {
 public:
-  // 使用匀速、匀角速度模型将车辆状态向前预测 dt 秒。
+  // 有 EKF 副本时调用它的 predict()；纯数值状态仍按相同运动模型外推。
   L3Estimation::TargetState predict(const L3Estimation::TargetState& target, double dt) const;
   // 预测到绝对时刻，并生成四块装甲板的位置、速度和朝向。
   [[nodiscard]] PredictionResult predict(const PredictionRequest& request) const;

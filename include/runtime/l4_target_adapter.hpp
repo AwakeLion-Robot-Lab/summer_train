@@ -7,8 +7,7 @@
 
 namespace runtime {
 
-// Convert the target branch's mutable 13-state EKF object into the preserved
-// L4 planner's immutable 11-state input snapshot.
+// Copy the L3 filter into L4's snapshot so planning can predict on a copy.
 [[nodiscard]] std::optional<L3Estimation::TargetState> toL4TargetState(
   const std::optional<L3Estimation::TrackedTarget>& target) noexcept;
 

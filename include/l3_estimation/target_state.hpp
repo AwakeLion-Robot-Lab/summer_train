@@ -4,8 +4,11 @@
 
 #include <array>
 #include <chrono>
+#include <memory>
 
 namespace L3Estimation {
+
+class TrackedTarget;
 
 // Stable, read-only snapshot consumed by the preserved L4 planner.
 // The first eleven entries match TrackedTarget's state layout exactly.
@@ -42,6 +45,8 @@ struct TargetState {
   std::array<double, 3> three_armor_height_offsets{0.0, 0.0, 0.0};
   StateCovariance covariance{StateCovariance::Identity()};
   std::chrono::steady_clock::time_point timestamp{};
+  // L4 每次预测先复制此滤波器，再调用 predict()；L3 状态不受影响。
+  std::shared_ptr<const TrackedTarget> filter_state;
 };
 
 }  // namespace L3Estimation

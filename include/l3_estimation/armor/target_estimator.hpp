@@ -20,8 +20,8 @@ struct HeightOffsets
 // 整车 EKF，前十一维对齐 sp_vision 的 auto_aim::Target，末两维是三板车的
 // 板间高度差，完整顺序见 kStateSize 处。
 //
-// 本类型**就是** L3 交给 L4 的对象：Tracker::track() 返回它的副本，L4 在副本
-// 上 predict(dt) 外推再用 armor_xyza_list() 展开。所以没有独立的跨层快照类型。
+// Tracker::track() 返回它的副本。L4 的快照也保存一份副本，预测时只推进
+// 副本的 EKF，保留 Tracker 内部滤波器的观测时刻状态。
 class TrackedTarget
 {
 public:

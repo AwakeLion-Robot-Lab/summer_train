@@ -1,6 +1,7 @@
 #include "l3_estimation/armor/types.hpp"
 #include "l3_estimation/armor/target_estimator.hpp"
 #include "l4_planning/types.hpp"
+#include "l4_planning/predictor.hpp"
 #include "l5_control/reject_reason.hpp"
 #include "l6_telemetry/auto_aim_trace.hpp"
 #include "runtime/auto_aim_config.hpp"
@@ -92,6 +93,32 @@ int main()
       L5Control::toString(trace.fire.reasons.front()) != "shoot_disabled") {
     std::cerr << "AimTrace data contract is incorrect\n";
     return 6;
+  }
+
+  // L4 的命中时刻预测应与 L3 EKF 副本的 predict() 一致，且不推进原目标。
+  L3Estimation::TrackedTarget observed(
+    observation, timestamp, 0.2, 4,
+    Eigen::VectorXd::Ones(L3Estimation::TrackedTarget::kStateSize));
+  const auto snapshot = runtime::toL4TargetState(observed);
+  if (!snapshot || !snapshot->filter_state) {
+    std::cerr << "L4 snapshot is missing its EKF copy\n";
+    return 7;
+  }
+  auto expected = observed;
+  const auto impact_time = timestamp + std::chrono::milliseconds{50};
+  expected.predict(impact_time);
+  const auto predicted = L4Planning::Predictor{}.predict({*snapshot, impact_time});
+  const auto expected_armor = expected.armor_xyza_list();
+  if (!predicted.valid || predicted.armor_candidates.size() != expected_armor.size() ||
+      (predicted.predicted_vehicle.covariance -
+       expected.ekf().P.topLeftCorner<
+         L3Estimation::STATE_DIM, L3Estimation::STATE_DIM>()).norm() > 1e-10 ||
+      (predicted.armor_candidates.front().position_world -
+       expected_armor.front().head<3>()).norm() > 1e-10 ||
+      observed.t() != timestamp ||
+      (observed.ekf_x() - snapshot->filter_state->ekf_x()).norm() > 1e-12) {
+    std::cerr << "L4 prediction must use an isolated copy of the L3 EKF\n";
+    return 8;
   }
 
   std::cout << "Auto aim data types smoke test passed\n";

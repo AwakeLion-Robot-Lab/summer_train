@@ -1,11 +1,14 @@
 #include "l4_planning/predictor.hpp"
 
+#include "l3_estimation/armor/target_estimator.hpp"
 #include "l3_estimation/target_state.hpp"
 #include "l4_planning/types.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <memory>
 
 namespace L4Planning {
 
@@ -54,6 +57,39 @@ constexpr double kPi = 3.14159265358979323846;
            : ArmorType::Small;
 }
 
+[[nodiscard]] L3Estimation::TargetState predictFilter(
+  const L3Estimation::TargetState& target, TimePoint prediction_time)
+{
+  auto predicted = target;
+  auto filter = std::make_shared<L3Estimation::TrackedTarget>(*target.filter_state);
+  filter->predict(prediction_time);
+  const auto& state = filter->ekf().x;
+  const auto& covariance = filter->ekf().P;
+  if (state.size() != L3Estimation::TrackedTarget::kStateSize ||
+      covariance.rows() != L3Estimation::TrackedTarget::kStateSize ||
+      covariance.cols() != L3Estimation::TrackedTarget::kStateSize) {
+    predicted.center.setConstant(std::numeric_limits<double>::quiet_NaN());
+    return predicted;
+  }
+  predicted.center = {state[L3Estimation::XC], state[L3Estimation::YC],
+                      state[L3Estimation::ZC]};
+  predicted.velocity = {state[L3Estimation::VX], state[L3Estimation::VY],
+                        state[L3Estimation::VZ]};
+  predicted.yaw = state[L3Estimation::YAW];
+  predicted.yaw_rate = state[L3Estimation::YAW_RATE];
+  predicted.radius = state[L3Estimation::RADIUS];
+  predicted.radius_offset = state[L3Estimation::RADIUS_OFFSET];
+  predicted.height_offset = state[L3Estimation::HEIGHT_OFFSET];
+  if (predicted.armor_count == 3) {
+    predicted.three_armor_height_offsets = {0.0, state[11], state[12]};
+  }
+  predicted.covariance = covariance.topLeftCorner<
+    L3Estimation::STATE_DIM, L3Estimation::STATE_DIM>();
+  predicted.timestamp = prediction_time;
+  predicted.filter_state = std::move(filter);
+  return predicted;
+}
+
 }  // namespace
 
 L3Estimation::TargetState Predictor::predict(const L3Estimation::TargetState& target, double dt) const
@@ -61,6 +97,19 @@ L3Estimation::TargetState Predictor::predict(const L3Estimation::TargetState& ta
   auto predicted = target;
   if (!std::isfinite(dt)) {
     return predicted;
+  }
+
+  if (predicted.filter_state && dt >= 0.0) {
+    const auto prediction_time = target.timestamp +
+      std::chrono::duration_cast<TimePoint::duration>(
+        std::chrono::duration<double>(dt));
+    return predictFilter(target, prediction_time);
+  }
+
+  // TinyMPC 的居中轨迹需要回推到观测之前。回推不使用 EKF 过程噪声，
+  // 否则负 dt 会生成负的协方差项；随后沿用数值状态向前采样。
+  if (dt < 0.0) {
+    predicted.filter_state.reset();
   }
 
   // 与 L3 EKF 相同的匀速、匀角速度状态转移模型。
@@ -87,21 +136,23 @@ L3Estimation::TargetState Predictor::predict(const L3Estimation::TargetState& ta
 PredictionResult Predictor::predict(const PredictionRequest& request) const
 {
   PredictionResult result;
-  result.predicted_vehicle = request.target;
   if (!validTargetState(request.target)
       || request.target_time < request.target.timestamp) {
+    result.predicted_vehicle = request.target;
     return result;
   }
 
   const double dt = std::chrono::duration<double>(
     request.target_time - request.target.timestamp).count();
   if (!std::isfinite(dt)) {
+    result.predicted_vehicle = request.target;
     return result;
   }
 
-  result.predicted_vehicle = predict(request.target, dt);
-  // duration<double> 到 steady_clock::duration 的转换可能有舍入；对外结果应
-  // 精确标记为调用者请求的绝对命中时刻。
+  result.predicted_vehicle = request.target.filter_state
+    ? predictFilter(request.target, request.target_time)
+    : predict(request.target, dt);
+  // 对外结果精确标记为调用者请求的绝对命中时刻。
   result.predicted_vehicle.timestamp = request.target_time;
   if (!validTargetState(result.predicted_vehicle)) {
     return result;

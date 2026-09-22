@@ -24,8 +24,8 @@ int main()
       || planner.min_yaw_acceleration != -50.0
       || planner.max_pitch_acceleration != 100.0
       || tuning.armor_score_weights.facing_weight != 0.40
-      || tuning.armor_score_weights.window_weight != 0.50
-      || tuning.armor_score_weights.aim_cost_weight != 0.10) {
+      || tuning.armor_score_weights.window_weight != 0.35
+      || tuning.armor_score_weights.aim_cost_weight != 0.25) {
     std::cerr << "Planner YAML fields were not loaded correctly\n";
     return 1;
   }
