@@ -461,11 +461,6 @@ public:
       q_world_barrel, timestamp, image_size, target_wh_ratio);
   }
 
-  const std::vector<L3Estimation::Armor>& observations() const noexcept
-  {
-    return tracker_.observations();
-  }
-
   std::vector<Eigen::Vector4d> armorPoses() const
   {
     return tracker_.armorPoses();
@@ -1663,7 +1658,7 @@ int main(int argc, char** argv)
         diagnostic_pnp_observations.reserve(armors.size());
         for (const auto& armor : armors) {
           diagnostic_pnp_observations.push_back(
-            L3Estimation::toObservation(armor, timestamp));
+            L3Estimation::toObservation(armor));
           solver.single_pnp(diagnostic_pnp_observations.back());
         }
       }

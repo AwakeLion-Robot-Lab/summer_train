@@ -32,7 +32,6 @@ EskfTarget::EskfTarget(
 {
   config_ = config;
   name = target_name;
-  armor_type = armorTypeOf(target_name).value_or(ArmorType::Small);
 
   x_.setZero();
   x_[VM::idx::CX] = x;
@@ -63,7 +62,6 @@ void EskfTarget::reset(
 {
   config_ = config;
   name = armor.name;
-  armor_type = armor.type;
 
   const double radius = initialRadiusFor(name, config_);
 
@@ -356,7 +354,6 @@ EskfTarget EskfTarget::snapshot() const
   copy.x_ = x_;
   copy.t_ = t_;
   copy.name = name;
-  copy.armor_type = armor_type;
   copy.jumped = jumped;
   copy.last_id = last_id;
   copy.initialized_ = initialized_;

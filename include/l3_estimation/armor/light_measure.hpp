@@ -165,8 +165,8 @@ inline Eigen::Vector2d lightDirection(const cv::Point2f & top, const cv::Point2f
 // 两个 sigma 相等时退化为各向同性，e 不再起作用。
 //
 // 块间为零是实测之后的选择，不是偷懒——上下端点的误差物理上确实相关（细亮斑
-// 横向整体平移），但把这个相关写进 R 在 pred_px 上不划算，数据见 auto_aim.yaml
-// 的 sigma_min_px 注释。别再重新推导一遍，那条链子很容易长出来。
+// 横向整体平移），但把这个相关写进 R 在 pred_px 上不划算，数据见
+// docs/replay_ab_log.md 的端点观测噪声一节。别再重新推导一遍，那条链子很容易长出来。
 inline LightCov lightCov(
   const cv::Point2f & top, const cv::Point2f & bottom, double sigma_along,
   double sigma_perp)

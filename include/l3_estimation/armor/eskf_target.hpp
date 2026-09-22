@@ -200,7 +200,6 @@ public:
   // --- 身份与状态标志 -----------------------------------------------------
 
   ArmorName name{ArmorName::Unknown};
-  ArmorType armor_type{ArmorType::Small};
   // 是否关联到过 0 号以外的板。粘滞，一旦为真就不再复位。为 false 时整车
   // yaw、第二组半径和高度差几乎不可观测，L4 只瞄正在观测的那块板。
   bool jumped{false};
@@ -209,8 +208,6 @@ public:
   bool initialized() const noexcept { return initialized_; }
   bool converged() const noexcept { return converged_; }
 
-  // 前哨转向投票器的当前判定，给遥测和调试看。
-  VehicleModel::Voter::Direction outpostDirection() const noexcept { return voter_.direction; }
   bool lightsEnabled() const noexcept { return config_.enable_lights_measure; }
 
   // 不含滤波器的轻量副本，下游随便外推都不会污染滤波器状态。

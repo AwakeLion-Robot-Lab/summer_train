@@ -33,15 +33,14 @@ public:
 
   using UpdateQFunc = std::function<MatrixXX()>;
   using InjectFunc = std::function<void(const MatrixX1 &, MatrixX1 &)>;
-  using BoxMinusFunc = std::function<void(const MatrixX1 &, const MatrixX1 &, MatrixX1 &)>;
   using InjectJetFunc = std::function<void(const JetMatrixX1 &, JetMatrixX1 &)>;
   using BoxMinusJetFunc =
     std::function<void(const JetMatrixX1 &, const JetMatrixX1 &, JetMatrixX1 &)>;
 
   ErrorStateEkf() = default;
 
-  // inject 和 box_minus 要传泛型可调用体：它们会同时被 double 和 Jet 实例化，
-  // 前者用于推进名义状态，后者用于求 F。
+  // inject 要传泛型可调用体：它同时被 double 和 Jet 实例化，前者用于注入更新
+  // 和求 H，后者用于求 F。box_minus 只在求 F 时用到，只实例化 Jet 版。
   template <class Inject, class BoxMinus>
   ErrorStateEkf(
     const PredictFunc & f, const UpdateQFunc & update_q, const Inject & inject,
@@ -52,25 +51,11 @@ public:
     setBoxMinus(box_minus);
   }
 
-  void setState(const MatrixX1 & x0) noexcept
-  {
-    x_nominal_ = x0;
-    delta_x_.setZero();
-  }
+  void setState(const MatrixX1 & x0) noexcept { x_nominal_ = x0; }
 
   void setUpdateQ(const UpdateQFunc & update_q) { update_Q_ = update_q; }
   void setPredictFunc(const PredictFunc & f) { f_ = f; }
   void setIterationNum(int n) { iteration_num_ = std::max(1, n); }
-
-  // 选 updateMulti 里用哪种迭代式，默认教科书形式：
-  //
-  //   教科书（Bell & Cathey）：δ ← K·(r + H·δ)   每轮把 δ 重新锚回先验
-  //   累加式：                 δ ← δ + K·r       每轮只累加高斯牛顿步
-  //
-  // 两者差 (I − KH)·δ。迭代次数一多，累加式的偏差会复利放大：3m_run_fast 上
-  // 迭代次数从 1 升到 5，车心帧间跳变的 p99 从 0.126 m 单调恶化到 0.326 m。
-  // 详见 docs/iterated_ekf.md。
-  void setTextbook(bool enabled) { textbook_iteration_ = enabled; }
 
   template <class Inject>
   void setInject(const Inject & inject)
@@ -82,7 +67,6 @@ public:
   template <class BoxMinus>
   void setBoxMinus(const BoxMinus & box_minus)
   {
-    box_minus_state_ = box_minus;
     box_minus_state_jet_ = box_minus;
   }
 
@@ -126,16 +110,12 @@ public:
     JetMatrixX1 delta_pred_jet;
     box_minus_state_jet_(x_nominal_jet, x_pert_pred_jet, delta_pred_jet);
 
+    MatrixXX F;
     for (int i = 0; i < N_X; ++i) {
-      F_.row(i) = delta_pred_jet[i].v.transpose();
+      F.row(i) = delta_pred_jet[i].v.transpose();
     }
 
-    // 正常流程里 delta_x_ 在每次更新末尾清零，这一行乘的是零向量；留着是为了
-    // 支持“连预测多次再更新一次”的用法。
-    delta_x_ = F_ * delta_x_;
-
-    Q_ = update_Q_();
-    P_delta_ = F_ * P_delta_ * F_.transpose() + Q_;
+    P_delta_ = F * P_delta_ * F.transpose() + update_Q_();
     P_delta_ = 0.5 * (P_delta_ + P_delta_.transpose());  // 强制对称，抗数值漂移
 
     return x_nominal_;
@@ -231,7 +211,8 @@ public:
     Eigen::VectorXd residual(total_dim);
     Eigen::MatrixXd r_matrix = Eigen::MatrixXd::Zero(total_dim, total_dim);
 
-    MatrixX1 delta_iter = delta_x_;
+    // δ 不跨帧保存：每次更新末尾都已注入名义状态，所以迭代总是从 δ = 0 出发。
+    MatrixX1 delta_iter = MatrixX1::Zero();
     MatrixXX p_iter = P_delta_;  // 迭代中不更新
     Eigen::MatrixXd k_matrix(N_X, total_dim);
 
@@ -264,18 +245,16 @@ public:
       const Eigen::MatrixXd pht = p_iter * h_matrix.transpose();
       k_matrix = ldlt.solve(pht.transpose()).transpose();  // K = P Hᵀ S⁻¹
 
-      if (textbook_iteration_) {
-        // 教科书形式：每轮把 δ 重新锚回先验，迭代才真正是在同一个 MAP 目标上
-        // 做高斯牛顿，而不是把先验项反复计入。
-        delta_iter = k_matrix * (residual + h_matrix * delta_iter);
-      } else {
-        // 累加式，保留以便与旧结果对拍。
-        delta_iter.noalias() += k_matrix * residual;
-      }
+      // 教科书形式（Bell & Cathey）：每轮把 δ 重新锚回先验，迭代才真正是在同一
+      // 个 MAP 目标上做高斯牛顿，而不是把先验项反复计入。
+      //
+      // 不要改回累加式 δ ← δ + K·r：两者差 (I − KH)·δ，迭代次数一多偏差复利放大，
+      // 3m_run_fast 上迭代次数从 1 升到 5，车心帧间跳变的 p99 从 0.126 m 单调恶化
+      // 到 0.326 m。详见 docs/iterated_ekf.md。
+      delta_iter = k_matrix * (residual + h_matrix * delta_iter);
     }
 
     inject_state_(delta_iter, x_nominal_);
-    delta_x_.setZero();
 
     // Joseph 形式，对任意 K 都保持半正定。迭代 EKF 用的是最后一轮的 K，本来
     // 就不是最优增益，所以这里不是可选优化而是必需。
@@ -295,7 +274,7 @@ public:
   {
     Eigen::MatrixXd r_cov;
     Eigen::MatrixXd h;
-    linearize(obs, delta_x_, residual, r_cov, h);
+    linearize(obs, MatrixX1::Zero(), residual, r_cov, h);
     covariance = h * P_delta_ * h.transpose() + r_cov;
   }
 
@@ -353,22 +332,16 @@ private:
   PredictFunc f_{};
   UpdateQFunc update_Q_{};
   InjectFunc inject_state_{};
-  BoxMinusFunc box_minus_state_{};
   InjectJetFunc inject_state_jet_{};
   BoxMinusJetFunc box_minus_state_jet_{};
 
-  MatrixXX F_{MatrixXX::Zero()};
-  MatrixXX Q_{MatrixXX::Zero()};
-
   MatrixX1 x_nominal_{MatrixX1::Zero()};
-  MatrixX1 delta_x_{MatrixX1::Zero()};
   MatrixXX P_delta_{MatrixXX::Identity()};
 
   Eigen::VectorXd last_residual_{};
   Eigen::MatrixXd last_innovation_covariance_{};
 
   int iteration_num_{1};
-  bool textbook_iteration_{true};
 };
 
 }  // namespace L3Estimation

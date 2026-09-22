@@ -56,12 +56,12 @@ std::vector<std::pair<int, int>> greedyMatch(
   return result;
 }
 
-// 状态机的状态与两个计数器，由 updateFsm 维护。
+// 状态机的状态与 Detecting 的确认计数，由 updateFsm 维护。TempLost 的超时按
+// 真实时间算，由调用方传入，不在这里数丢帧。
 struct TrackLifecycle
 {
   TrackState state{TrackState::Lost};
   int detect_count{0};
-  int lost_count{0};
 
   bool isTracking() const noexcept
   {
@@ -72,7 +72,6 @@ struct TrackLifecycle
   {
     state = TrackState::Lost;
     detect_count = 0;
-    lost_count = 0;
   }
 };
 
@@ -104,14 +103,12 @@ inline void updateFsm(
     case TrackState::Tracking:
       if (!found) {
         lifecycle.state = TrackState::TempLost;
-        lifecycle.lost_count = 0;
       }
       break;
 
     case TrackState::TempLost:
       if (found) {
         lifecycle.state = TrackState::Tracking;
-        lifecycle.lost_count = 0;
         break;
       }
       if (lost_time > lost_time_thres) {

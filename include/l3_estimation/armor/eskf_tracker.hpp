@@ -12,7 +12,6 @@
 
 #include <Eigen/Geometry>
 
-#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -26,7 +25,7 @@ namespace L3Estimation {
 
 // L2 -> L3 的显式转换：只搬类别、颜色、四角点、置信度这些检测字段，位姿留空
 // 由调用方用当帧的 PnpSolver 填。
-Armor toObservation(const L2Perception::Armor & detection, TimePoint timestamp);
+Armor toObservation(const L2Perception::Armor & detection);
 
 struct EskfTrackerConfig
 {
@@ -70,7 +69,7 @@ public:
     EskfTrackerConfig tracker_config = {}, EskfTargetConfig target_config = {});
 
   bool ready() const noexcept { return ready_; }
-  TrackState state() const noexcept { return buffer_[current_].lifecycle.state; }
+  TrackState state() const noexcept { return active_.lifecycle.state; }
 
   // 处理一帧：把检测转成观测 → Lost 时挑候选初始化，否则关联并更新 → 推进
   // 状态机 → 返回当前目标的快照。q_world_barrel 必须对应 timestamp 这一时刻
@@ -106,10 +105,7 @@ public:
 
   // 最近一帧真正进了 update 的灯条。初始化帧、无关联帧和纯预测帧都是空的，
   // 免得把"检测候选"误画成"已用于更新"。
-  const std::vector<UsedLight> & usedLights() const noexcept
-  {
-    return buffer_[current_].used_lights;
-  }
+  const std::vector<UsedLight> & usedLights() const noexcept { return active_.used_lights; }
 
   // matchLight 各道门的累计拒绝数，从进程开始一直累加，不随目标复位清零。
   // 侧边灯条采纳数为零时，靠它区分"候选槽位没开出来"和"某道门太紧"。
@@ -119,8 +115,6 @@ public:
   // 就可能重建，只看 state() 数不出这些，诊断工具按这个计数。
   std::size_t dropCount() const noexcept { return drop_count_; }
 
-  // 本帧全部观测，含被质量门限拒掉的，供 L6 调试显示。
-  const std::vector<Armor> & observations() const noexcept { return observations_; }
   std::vector<Eigen::Vector4d> armorPoses() const;
 
   void reset() noexcept;
@@ -135,12 +129,17 @@ private:
     std::vector<UsedLight> used_lights;
   };
 
-  // 一帧里与槽位无关的输入，拼一次传给两个槽。
+  // 一帧里与槽位无关的输入，以及由它派生、只活到帧末的量，拼一次传给两个槽。
+  // 放在这里而不是成员变量里，就不用每帧手动清空，也不会被下一帧读到。
   struct Frame
   {
     TimePoint timestamp{};
     Eigen::Isometry3d camera_in_world{Eigen::Isometry3d::Identity()};
+    // 本帧检测转成的观测，只搬了类别和角点，没跑 PnP。
+    std::vector<Armor> armors;
     const std::vector<L2Perception::Light> * lights{nullptr};
+    // initCandidates() 的缓存，第一次用到时才算。
+    std::optional<std::vector<Armor>> init_candidates;
   };
 
   // --- track() 的各个步骤，按调用顺序排 ----------------------------------
@@ -150,16 +149,11 @@ private:
   // 断流（间隔过长或时间倒退）后旧目标的外推不可信，两个槽都清掉，这一帧按
   // Lost 重新挑候选初始化。
   void dropOnGap(TimePoint timestamp);
-  // L2 -> L3：正常更新只搬类别和四角点，不拿 PnP 成功当入口门限。PnP 只在
-  // Lost 初始化和单块完整板求深度差时才跑。
-  void readDetections(
-    const std::vector<L2Perception::Armor> & detections, TimePoint timestamp,
-    const std::optional<Eigen::Quaterniond> & q_world_barrel);
   // 推进一个槽一帧：初始化或更新 → 状态机 → 发散检查。返回本帧是否关联上。
-  bool advance(Slot & slot, const Frame & frame, std::optional<ArmorName> prefer);
-  // 双缓冲：当前目标进 TempLost 时让另一个槽同时抓新目标，新目标一转成
+  bool advance(Slot & slot, Frame & frame, std::optional<ArmorName> prefer);
+  // 双缓冲：当前目标进 TempLost 时让备用槽同时抓新目标，新目标一转成
   // Tracking 就交换上来，不必等当前目标超时。
-  void runBackup(const Frame & frame);
+  void runBackup(Frame & frame);
 
   // prefer 给定时优先取同类别的候选，没有才退回最靠近图像中心的那块。
   bool initTarget(
@@ -167,10 +161,10 @@ private:
     std::optional<ArmorName> prefer);
   bool updateTarget(Slot & slot, const Frame & frame);
 
-  // 本帧的初始化候选，按需算一次、缓存到帧末。正常 Tracking 一次 PnP 都不跑；
-  // 当前槽恰好在这一帧转进 TempLost 时，紧接着处理备用槽还能当帧完成初始化，
-  // 不用白等一帧。
-  const std::vector<Armor> & initCandidates();
+  // 本帧的初始化候选，按需算一次、缓存在 frame 里。正常 Tracking 一次 PnP 都
+  // 不跑；当前槽恰好在这一帧转进 TempLost 时，紧接着处理备用槽还能当帧完成
+  // 初始化，不用白等一帧。
+  const std::vector<Armor> & initCandidates(Frame & frame);
 
   // 观测可用性的两道门：前者要求类别、颜色这些语义字段齐全，后者再要求
   // 这一帧的 PnP 真的解出了位姿。
@@ -188,7 +182,6 @@ private:
   TimePoint holdFrom(const Slot & slot) const noexcept;
 
   L1Sensor::CameraCalibration calibration_;
-  ArmorConfig armor_config_;
   EskfTrackerConfig tracker_config_;
   EskfTargetConfig target_config_;
   PnpSolver pnp_solver_;
@@ -200,17 +193,16 @@ private:
   // 能马上接上，不必等当前目标超时。备用槽优先抓与当前目标同类别的板；当前
   // 目标的外推已经停住（见 temp_lost_predict_time）时，同类别的新目标不必等
   // 转 Tracking，带着自己的 Detecting 计数直接换上来。
-  std::array<Slot, 2> buffer_{};
-  std::size_t current_{0};
-  std::size_t previous_{1};
+  //
+  // 两个槽的角色固定：换目标交换的是槽的内容，不是哪个槽算"当前"。
+  Slot active_{};
+  Slot backup_{};
 
   // 上一次 track() 的帧时间，用来判断断流。
   std::optional<TimePoint> last_frame_;
   std::size_t drop_count_{0};
 
   // 以下都是逐帧量，每帧由 clearFrame() 清空。
-  std::vector<Armor> observations_;
-  std::optional<std::vector<Armor>> init_candidates_;
   int last_match_count_{0};
   std::string last_matched_ids_;
   // 这一项例外：跨帧累加，不随目标复位清零。

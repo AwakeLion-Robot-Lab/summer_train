@@ -80,6 +80,7 @@ std::vector<MatchedArmor> matchArmor(
   }
 
   const int observation_count = static_cast<int>(armors.size());
+  // 关联门限：如果目标刚跳变过，允许更大的代价；否则用较小的门限。
   const double gate = target.jumped ? config.match_gate : config.match_gate_not_all_init;
 
   std::vector<std::vector<double>> cost(

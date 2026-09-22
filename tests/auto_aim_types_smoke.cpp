@@ -8,13 +8,9 @@
 #include <cmath>
 #include <chrono>
 #include <iostream>
-#include <type_traits>
 
 int main()
 {
-  static_assert(std::is_same_v<
-    L3Estimation::Armor, L3Estimation::ArmorObservation>);
-
   L4Planning::Delay delay;
   delay.image_to_plan = 0.001;
   delay.plan_to_send = 0.002;

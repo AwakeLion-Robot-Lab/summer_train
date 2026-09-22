@@ -101,9 +101,6 @@ struct Armor {
   double confidence{0.0};
   double yaw_raw{0.0};
   double area{0.0};
-
-  // 对应原始图像的曝光时刻。
-  TimePoint timestamp{};
 };
 
 struct ArmorConfig {
@@ -112,9 +109,6 @@ struct ArmorConfig {
   double big_width{0.230};
   double height{0.056};
 };
-
-// 跨层接口使用的语义别名。
-using ArmorObservation = Armor;
 
 // 关联的产物，关联器产出、滤波器消费。放在这里而不是关联器头文件里，是为了让
 // EskfTarget::update 能只依赖类型、不依赖关联怎么做出来的。

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "l1_sensor/camera/camera_calibration.hpp"
-
 #include <chrono>
 #include <cstdint>
 
@@ -20,28 +18,4 @@ enum class TrackState : std::uint8_t {
   TempLost    // 短时丢失，继续输出预测状态
 };
 
-// L3 求解需要的标定。内参和静态外参由 L1 持有，这里只补一个时间同步标志。
-struct AimCalibration {
-  // 内参、畸变参数以及 camera -> barrel 的静态外参。
-  L1Sensor::CameraCalibration camera;
-  // 图像曝光时刻与枪管姿态已经完成时间对齐。
-  bool time_sync_ok{false};
-
-  // 只检查 PnP 要用的两个矩阵在不在，数值是否合法由 PnpSolver::setCalibration 验。
-  bool intrinsicsOk() const noexcept
-  {
-    return !camera.camera_matrix.empty() &&
-           !camera.distortion_coefficients.empty();
-  }
-
-  bool trackingReady() const noexcept
-  {
-    return intrinsicsOk() && camera.barrelExtrinsicsReady() && time_sync_ok;
-  }
-
-  bool fireReady() const noexcept
-  {
-    return trackingReady();
-  }
-};
 }  // namespace L3Estimation

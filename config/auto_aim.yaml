@@ -1,232 +1,111 @@
-# 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
+# 角度写度，时间按键名后缀写 ms / us，加载时换成弧度和秒；缺的键退回结构体默认值。
+# 回放 A/B 的原始数据见 docs/replay_ab_log.md，判好坏一律用 track_diag 的 pred_px。
 inference:
+  # openvino / tensorrt（后者要 xmake f --use_tensorrt=y，目前是桩）。
   backend: "openvino"
-  # 整板检测模型。model_path 和下面的 decoder.layout 必须成对修改，已验证的组合：
-  #   model/armor_model/yolov5.xml        -> yolov5_22  （同济，与 sp_vision 的同一份）
-  #   model/armor_model/szu-v5n.xml       -> yolov5_22  （深大 Infantry-v5n）
-  #   model/armor_model/szu-v8n-fp16.onnx -> yolov8_21  （深大 Infantry-v8n）
-  # 输出形状在启动时核对，layout 配错会直接报错。端点观测的深度线索是灯条长度，
-  # 换模型之后必须重跑 track_diag。
-  model_path: "/home/rm/super/newvision/model/armor_model/armor.xml"
+  # 必须和 decoder.layout 成对改。已验证：yolov5.xml、szu-v5n.xml -> yolov5_22，
+  # szu-v8n-fp16.onnx -> yolov8_21。换模型后要重跑 track_diag。
+  model_path: "/home/rm/super/newvision/model/armor_model/szu-v8n-fp16.onnx"
   device: "CPU"
 
-  # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
-  # 训练/导出时模型期望的颜色顺序。宿主侧输入恒为 uint8 NHWC BGR，
-  # 转换在后端内部完成。取值 rgb / bgr。
-  #
-  # 必须是 rgb。sp_vision 的 yolov5.cpp 就是 set_color_format(BGR) +
-  # convert_color(RGB)，深大模型和侧边灯条的关键点模型同理。写成 bgr 会让
-  # 颜色分支判成相反的颜色（红蓝对调），敌我过滤随之反向。
+  # 模型期望的颜色顺序，必须是 rgb：写成 bgr 会红蓝对调，敌我过滤随之反向。
   model_color_order: "rgb"
-  # 像素归一化的除数（不是乘数）。255 表示除到 [0, 1]。
+  # 像素归一化的除数，255 即除到 [0, 1]。
   normalization_divisor: 255.0
 
-  # ---- 后端调度：只影响算子怎么排，不改变数值结果 ----
-  # 改这几项不需要重新验证识别精度，但必须重新测帧耗时。
-  # 下面三项只有 OpenVINO 的 CPU 插件认识；device 是 GPU 或用 TensorRT 时
-  # 后端会静默跳过。
-  #
-  # 单帧同步链路要的是单次延迟而不是吞吐，正常保持 true。
-  # 改成 false 会按吞吐编译，批量场景更快，自瞄更慢。
+  # 以下几项只影响调度、不改数值，只有 OpenVINO 的 CPU 插件认。
+  # 自瞄要的是单帧延迟而不是吞吐，保持 true。
   latency_hint: true
-  #
-  # 推理线程数，0 表示交给 OpenVINO 自决。
-  #
-  # 的噪声里（默认 10.49 / 8线程+P核 10.34 / 8线程+E核 10.61 / 4线程 13.86）。
-  # 只有线程数少到 4 才明显变慢。所以除非换了模型或换了机器，保持默认即可，
-  # 不必在这里花时间。
+  # 0 表示交给 OpenVINO 自决；少到 4 线程才明显变慢。
   num_threads: 8
-  #
-  # 大小核调度：any（插件默认，P/E 混用）/ pcore（只用性能核）/ ecore（只用能效核）。
-  # ecore 是给"把 P 核让给别的进程"这种取舍用的，不是为了快。
+  # any / pcore / ecore。
   scheduling_core_type: "pcore"
-  #
-  # 超线程。不写这一项表示保持 OpenVINO 默认。
-  # 同一物理核上的两个逻辑线程共享执行单元和 L1/L2，算子级并行下互相抢资源，
-  # 单次延迟往往不降反升，所以关掉它通常和 pcore 一起用。吞吐场景相反，
-  # 因此这里不给默认值。
+  # 不写表示保持 OpenVINO 默认；关掉通常和 pcore 一起用。
   # enable_hyper_threading: false
 
-  # ---- 输出契约：和 model_path 成对 ----
   decoder:
-    # yolov5_22：[1, 25200, 22]，输出名 output，字段为
-    #   0~7 四角点 / 8 objectness logit / 9~12 颜色 / 13~21 九类。
-    # yolov8_21：[1, 21, 6300]，输出名 output0，channels-first，字段为
-    #   0~3 颜色 / 4~12 九类 / 13~20 四角点，没有 objectness 通道，
-    #   置信度取类别分支最大值且已过 sigmoid。
-    layout: "yolov5_22"
-    # 下面四项在 layout 预设之上覆盖，缺省则用预设值。
-    # yolov5_22 预设：0.7 / 0.8 / 0.3 / 0.7（对齐 SP demo）
-    # yolov8_21 预设：0.5 / 0.5 / 0.2 / 0.5（对齐上游部署库）
-    # 两种模型的置信度分布不同（objectness 与类别分数），阈值不要互相照抄。
+    # yolov5_22：[1, 25200, 22]；yolov8_21：[1, 21, 6300]，没有 objectness。
+    layout: "yolov8_21"
+    # 不写就用 layout 的预设（yolov5_22：0.7 / 0.8 / 0.3 / 0.7，
+    # yolov8_21：0.5 / 0.5 / 0.2 / 0.5）。两种模型的置信度分布不同，别互相照抄。
     # confidence_threshold: 0.7
     # minimum_confidence: 0.8
     # nms_iou_threshold: 0.3
     # nms_score_threshold: 0.7
 
-# 板 ROI 内的传统角点精修（SP-Vision 的做法）。网络给出四点后在板周围跑一次
-# 灰度二值化找灯条，左右两根的端点到网络角点的距离和小于
-# max_endpoint_distance_px 时才替换网络角点，否则保留网络的。角点抖 1 px 在
-# 5 m 处就是单板 yaw 抖好几度，数值要按场地光照实调，用
-# `xmake run armor_refiner_video_test` 看 refined / network_kept 的比例。
-# 默认值取自 sp_vision 的 configs/standard3.yaml。
-# ---- 2026-09-19 回放测量。判据一律是 track_diag 的 pred_px，八段录像。----
-#
-# color_channel_diff 从 false 改成 true 的依据（灰度 → 差分）：
-#   长度噪声 8/8 下降 12~47%      pred p50 7/8 改善
-#   长度偏差 7/8 改善，低曝光段基本消失（fast_run −1.86→−0.09，fast_stop −1.78→+0.07）
-#   唯一回退是 fast_stop 的 ≤20px 58.2%→53.2%，但那段 p50 就卡在 19.5 px
-#   的门槛上，同一段的 p90 是改善的（24.91→24.66）。
-#
-# 为什么灰度是错的：灯条过曝后核心 B=R=255，灰度阈值切到的是这个饱和白核，
-# 而白核的大小完全由曝光决定 —— 这正是长度偏差随曝光变化的原因（过曝段
-# −0.9、低曝光段 −1.8）。差分图里白核归零，切到的是灯条彩色边缘，更接近
-# 真实发光边界。实测 gray>240 的像素里 B−R 中位数为 0，而灯条边缘仍有 70~90。
-#
-# 同一轮里查清的另外三件事：
-#  1. 差分带来的"改善"绝大部分是精修不再触发了，不是修得更准。触发率
-#     3m_high 31.8%→0.36%、3m_mid 59.5%→4.3%、fast_stop 79.1%→11.2%。
-#     把"直接关掉精修"当第三个对照拉进来（enable:false，与
-#     max_endpoint_distance_px=2.0 那轮逐位相同，可互相印证）：
-#       长度噪声  关 / 差分 / 灰度
-#       3m_high  1.374 / 1.408 / 1.962      3m_low  0.992 / 1.254 / 2.304
-#       3m_mid   0.957 / 1.195 / 2.204      fast_stop 0.987 / 1.310 / 2.830
-#     pred p50 三者在 ±2% 内打平，长度噪声上 4/4 都是关掉最好。
-#     **结论：精修在现有八段上、在试过的每一种配置下都是净负的。**
-#     留着 enable: true 的唯一理由是它最该起作用的 5 m 工况还没有录像；
-#     真要凭现有证据决定，就该关掉。
-#
-#     差分图上精修失效的机理（成因分解，见 RefineStats）：
-#       3m_high 差分 保留网络 3626 中 没找到灯条 3257（89.8%），不是门限
-#       拦下了坏建议，是传统检测压根没凑够两根灯条。再往下拆到轮廓级：
-#         thr  轮廓  过筛  毙于角度/长宽比/长度      触发率
-#         10   5553    5     401 / 5048 /  99         0%
-#         20   8081  228     649 / 6732 / 472         0%
-#         30   7354  521     429 / 6112 / 292         0%
-#         50   8002 1438     485 / 5862 / 217         0.36%
-#       每一档都是 长宽比 毙掉七到九成，而且阈值**越低越糟**（10 只剩 5 个
-#       轮廓过筛）。所以别再去调 color_diff_threshold 了，那不是瓶颈。
-#       真正的原因：过曝灯条在差分图里核心归零、只剩左右两道彩色窄边，
-#       findContours 拿到的是两条细长条而不是一根灯条，短/长远低于
-#       min_ratio 0.08 —— 要救得先做形态学闭运算把两道边合回去，或者
-#       重定 min_ratio/max_ratio，不是动阈值。
-#  2. pca_corner_correction 关掉能砍掉约一半长度偏差（−1.11→−0.69），说明
-#     correctLightbarEndpoints 取的是跳变内侧那一格亮点而非边沿，每端内缩
-#     约 0.5~1 px。但它不改善噪声，改差分之后这个残留偏差也大幅缩小了。
-#  3. 噪声不是逐帧切换造成的：把 max_endpoint_distance_px 推到 1000（无条件
-#     替换）噪声炸到 7.76、pred p50 从 1.72 升到 8.22。这个门限是在限制损害。
+# 板 ROI 内的传统角点精修（SP-Vision）：传统灯条端点与网络角点的距离和小于
+# max_endpoint_distance_px 才替换网络角点。用 armor_refiner_video_test 看替换比例。
+# 回放结论：在现有八段 3 m 录像上精修是净负的，留着是因为 5 m 工况还没有录像。
 refiner:
   enable: true
-  # 最常动的一个：场地偏暗调低，曝光偏亮调高。取值须在 (0, 255) 内。
+  # 场地偏暗调低、偏亮调高，取值在 (0, 255) 内。
   binary_threshold: 150.0
   # 灯条筛选：长度下限、与竖直方向的最大夹角、长宽比区间。
   min_lightbar_length_px: 8.0
   max_angle_error_deg: 45.0
   min_lightbar_ratio: 1.5
   max_lightbar_ratio: 20.0
-  # 传统端点到网络角点的距离和上限。放大会让传统解无条件覆盖网络解，光照不好
-  # 时反而更差。
+  # 放大会让传统解无条件覆盖网络解，这个门限是在限制损害。
   max_endpoint_distance_px: 15.0
-  # 灯条端点用亮度梯度 + PCA 主轴定位，替代 minAreaRect 的二值边界。
-  pca_corner_correction: true
+  # 端点用亮度梯度 + PCA 主轴定位，替代 minAreaRect 的二值边界。
+  pca_corner_correction: false
+  # 二值化底图用颜色差分而不是灰度：过曝时灰度切到的是饱和白核，长度随曝光变。
   color_channel_diff: true
   color_diff_threshold: 50.0
 
-# 侧边灯条：跟踪中在整车预测框（1.6 倍）里找灯条，剔掉属于已检出装甲板的，
-# 剩下的交给 L3 按整车几何关联到邻板上（门限见 ieskf.light_match_*）。整板网络
-# 同时看到两块板时侧面那块常常检不出，补的就是这块。
-# 来源：classic 传统二值化；model 灯条关键点模型；hybrid 传统优先、模型补漏。
-# 传统检测照 FYT：灰度二值化 → 外轮廓 → 最小外接矩形 → 长宽比、倾角筛选，
-# 端点取外接矩形上下边中点；颜色两路同一套 R/B 判定。
-# 侧边灯条：整板网络漏掉的那块板（同时看到两块板时侧面那块常常检不出）只剩
-# 灯条可用，在 L3 给的 light_roi 里用传统二值化找出来，交给 L3 做额外的端点
-# 观测。这一路不走网络 —— 2026-09-19 在全部八段录像上 A/B 过关键点模型
-# （YOLOv8n-pose）与传统检测（track_diag：开环 100 ms 预测 p50 / 灯条总数）：
-#   录像           灯条关   传统(灯条数)    模型(灯条数)
-#   3m_high         1.876   1.556 (3877)   1.727 (4358)
-#   3m_mid          0.938   1.317 (5364)   1.309 (4421)
-#   3m_low          0.885   0.948 (5836)   1.017 (4252)
-#   fast_stop      19.712  19.452 ( 717)  19.544 ( 727)
-#   fast_run       16.294  16.326 ( 770)  16.361 ( 758)
-#   3m_run_fast     4.693   3.990 (3981)   3.384 (3731)
-#   3m_run_mid      1.846   1.791 (5093)   1.718 (3979)
-#   3m_run_no       1.472   1.391 (3068)   1.206 (2433)
-#   L2 均值 ms        7.2     7.2            20.7
-# 灯条产出量传统的不输模型（八段里五段更多，低曝光的 fast_run / fast_stop 基本
-# 持平），精度各赢四段、p50 差都在 0.6 px 以内，而模型要多花 13.5 ms。所以
-# 模型那一路（LightMode / LightDecoder / mergeLights / light_decoder 配置块）
-# 整个删掉了，model/light_model/ 留着不再被加载。要翻旧账见 git 历史。
-#
-# "灯条关" 那一列是 ieskf.enable_lights_measure=false：侧边灯条本身在静止且
-# 本来就亚像素的 3m_mid / 3m_low 上是负收益（多塞观测只是加噪声），在动目标的
-# 3m_run_* 和 3m_high 上是正收益。八段里帮了五段，所以默认开。
+# 侧边灯条：跟踪中在 L3 给的 light_roi 里用传统二值化找灯条（FYT 做法），剔掉
+# 属于已检出板的，剩下的交给 L3 按整车几何关联到邻板（门限见 ieskf.light_match_*）。
+# 补的是整板网络漏检的侧面那块板。
 light_finder:
-  # 灰度二值化阈值，低曝光画面取 100~140。过曝画面背景（海报之类）也会过阈，
-  # 但多出来的轮廓在后面的长宽比和倾角筛选里就被挡住了，上面八段全程 140 都
-  # 能出灯条。换曝光或场地亮度后要重新扫。
+  # 低曝光画面取 100~140，换曝光或场地后要重扫。
   binary_threshold: 140
-  # 二值化底图换成颜色差分（蓝 B−R、红 R−B）。目标颜色未知时退回灰度，阈值
-  # 语义与 binary_threshold 完全不同，单独给。
-  #
-  # 默认关。差分会把灯条产出量砍掉一大截，过曝录像上尤其狠：3m_mid
-  # 5364 -> 1679、3m_run_mid 5093 -> 1409、3m_run_fast 3981 -> 1643；剩下的
-  # 还进不了关联 —— 3m_mid 和 3m_run_no 开差分之后的预测误差与"侧边灯条整个
-  # 关掉"逐位相同。机制与 refiner 那边同一个：过曝灯条核心 R≈G≈B，差分把白核
-  # 归零后只剩两条细边，min_ratio 0.08 会把它们毙掉。八段里 false 赢六段。
-  color_channel_diff: false
+  # 底图改用颜色差分（蓝 B−R、红 R−B），颜色未知时退回灰度。回放上 false 赢
+  # 六段：过曝灯条差分后只剩两条细边，会被 min_ratio 毙掉。
+  color_channel_diff: true
   color_diff_threshold: 50
   # 外接矩形 短边 / 长边，FYT 原值。
   min_ratio: 0.08
   max_ratio: 0.4
   max_angle_deg: 40.0
   min_length_px: 4.0
-  # 灯条中心落在某块检出装甲板外接框、外扩这么多倍灯条长度的范围内，就算那块
-  # 板自己的灯条，不再当侧边灯条。3 m 处相邻两块板的灯条相距约 4 倍灯长。
+  # 灯条中心落在检出板外接框外扩这么多倍灯长的范围内，就算那块板自己的灯条。
   armor_margin: 0.5
-  # 灯条颜色不由网络判：在灯条外扩框里跳过饱和和过暗像素后比较 R/B 能量，
-  # 比值大于它判红、小于它的倒数判蓝，中间判未知（未知的灯条直接丢弃）。
+  # R/B 能量比大于它判红、小于它的倒数判蓝，中间判未知并丢弃。
   color_ratio_threshold: 1.10
-
 
 number_classifier:
   enable: false
   model_path: "model/light_model/mlp.onnx"
   label_path: "model/light_model/label.txt"
-  # 没采信这块板时：drop 直接丢掉（sp_vision 的做法），keep 保留网络给的类别。
-  # mlp.onnx 只认 1~5、前哨、哨兵、基地这九类，遇到它没见过的图案（例如这版
-  # sp demo 里那块手持哨兵板）会一路判 negative，drop 会把整辆车的观测都筛掉。
+  # 不采信这块板时：drop 丢掉（sp_vision 的做法），keep 保留网络给的类别。
+  # mlp.onnx 只认九类，遇到没见过的图案会一路判 negative，drop 会把整辆车筛掉。
   on_reject: "drop"
-  # softmax 最大概率低于它就不采信这块板。调高更稳但采信更少。
+  # softmax 最大概率低于它就不采信。
   min_confidence: 0.7
-  # 两灯条中心距 / 灯条长度 超过它按大板抠图（大板画布更宽）。抠图宽度错了
-  # 等于给 MLP 喂另一个分布的输入。
+  # 两灯条中心距 / 灯条长度 超过它按大板抠图。
   large_center_distance_ratio: 3.2
 
-# L3 PnP 使用的装甲板几何尺寸。
+# 装甲板几何尺寸（米），PnP 物点和灯条端点观测共用。
 armor:
   small_width_m: 0.135
   big_width_m: 0.230
   height_m: 0.056
 
-# L3 整车估计器：迭代误差状态 EKF + 灯条端点像素观测（rmcs_auto_aim_v2 的
-# 观测，跑在 awakening 的滤波器上）。噪声是靠回放标定的主要旋钮：改完必须重跑
-# `xmake run track_diag` 看端点创新和 NIS，不要凭感觉调。
+# L3 整车估计器：迭代误差状态 EKF + 灯条端点像素观测。改噪声后必须重跑
+# track_diag，不要凭感觉调。
 ieskf:
   # 状态机按录像时间戳计时，不受回放倍速影响。
   tracking_thres: 5
   lost_time_thres: 1.5
   lost_time_thres_outpost: 2.0
-  # 相邻两帧间隔超过它就当作断流（相机掉线重连、录像拼接），目标全部复位、
-  # 用当前帧重建。与 sp_vision 的 dt > 0.1 s 判 lost 一致。
+  # 帧间隔超过它当作断流（相机重连、录像拼接），目标全部复位。
   max_frame_gap_ms: 100
-  # 超过这么久没有成功更新，预测就停止按速度外推、停在原地。TempLost 期间
-  # 匀速外推会把被错关联带偏的速度放大，目标飞出画面后同一块板也关联不回来。
+  # 超过这么久没有成功更新，预测停止外推、停在原地。
   temp_lost_predict_ms: 100
-
   # 每帧更新的高斯牛顿迭代次数。
   iteration_num: 8
 
-  # 车体系过程噪声，数值与 awakening test.yaml 对齐。
+  # 车体系过程噪声，与 awakening test.yaml 对齐。
   body_acceleration: [30.0, 30.0, 1.0]
   yaw_acceleration: 30.0
   outpost_body_acceleration: [1.0, 1.0, 1.0]
@@ -236,124 +115,83 @@ ieskf:
   outpost_height_noise: 1.0e-7
   roll_pitch_noise: 0.1
 
-  # 每个端点的像素 sigma，沿灯条与垂直灯条分开给：
-  #   sigma = max(sigma_min_px, 系数 × 灯条像素长度)
-  # 上下端点互相独立。当前取 rmcs_auto_aim_v2 的常数 R = 40 px²（两个系数为 0）；
-  # 录像都在 3 m，按长度缩放在别的距离上是否更好还没比过。
-  #
-  # ---- 2026-09-19 的三次扫描，判据一律是 track_diag 的 pred_px ----
-  #
-  # 1) 尺度（3m_high，pred p50 / p90 px）：
-  #      1.5  →  3.19 / 6.49      3.0  →  2.27 / 4.42
-  #      6.32 →  1.72 / 3.38     12.0 →  1.52 / 3.08     25.0 → 1.83 / 3.92
-  #    最优在 12 附近，但 6.32→12 只换 12%，而 1.5→6.32 是 46%：已在平台区，
-  #    继续抠这个数收益很小。12 这个点没在激进录像上复查过，别直接搬。
-  #
-  # 2) NIS 在这个系统上不是可优化目标。它随 sigma 减小单调趋近 1（1.5 时
-  #    0.62，6.32 时 0.048），方向与 pred_px 完全相反。原因是 NIS 的一致性
-  #    判据假设观测噪声是白的，而我们的不是：light_noise 去趋势量到的白噪声
-  #    只有 1.18 px，剩下的是慢变相关误差和那个长度偏差。大 R 在这里实际起
-  #    低通作用，压的就是它们。所以 6.32 远大于 1.18 不是配错了。
-  #
-  # 3) 两端点相关（曾经的 rho_along / rho_perp，已回退）：物理上成立——细亮斑
-  #    横向整体平移，上下端点同向。但实测不划算，rho_perp / pred p50（high /
-  #    run_fast）：
-  #      0.0 → 1.718 / 3.600     0.4 → 1.667 / 3.721
-  #      0.8 → 1.718 / 3.832     0.8 且 rho_along=-0.2 → 1.712 / 3.885
-  #    静止段最多 -3%，机动段单调变差（p90 +7%，≤20px 命中率 96.0%→95.0%）。
-  #    形状比尺度次要一个量级。这条推理链很容易重新长出来，别再推一遍。
+  # 端点像素 sigma = max(sigma_min_px, 系数 × 灯条长度)，沿 / 垂直灯条分开给；
+  # 当前是 rmcs 的常数 R = 40 px²。尺度已在平台区，NIS 不是优化目标，两端点
+  # 相关不划算——都扫过了，别再推一遍。
   sigma_along_by_length: 0.0
   sigma_perp_by_length: 0.0
   sigma_min_px: 6.32
-  # 侧边灯条（纯几何关联、无编号颜色证据）的 sigma 放大系数。
+  # 侧边灯条只有几何关联、没有类别证据，sigma 再乘上它。
   isolated_light_sigma_scale: 1.4
-
-  # 单完整板 IPPE 左右灯条中心深度差的 sigma（米）。
+  # 单块完整板时 IPPE 左右灯条深度差的 sigma（米）。
   armor_lights_depth_diff_sigma: 0.1
 
-  # 侧边灯条关联。没有类别证据，错配比漏配代价高，几道门都是硬拒绝：
-  # 与预测灯条的长度比、角度差（rad），先验点上的马氏距离（4 自由度，
-  # 13.28 为 99% 分位），以及见过 0 号以外的板之后才启用。
-  enable_lights_measure: true
+  # 侧边灯条关联，几道门都是硬拒绝：长度比、角度差（rad）、马氏距离（4 自由度，
+  # 13.28 为 99% 分位），以及见过 0 号以外的板之后才启用。回放上帮了八段里的
+  # 五段：动目标正收益，静止的 3m_mid / 3m_low 负收益。
+  enable_lights_measure: false
   light_match_length_ratio_gate: 0.2
   light_match_angle_gate: 0.2
   light_match_chi2_gate: 13.28
   light_match_require_jumped: true
 
-  # 检测四边形与预测装甲板的关联代价。
+  # 装甲板关联代价的门限和权重；not_all_init 是还没见过 0 号以外的板时用的
+  # 更宽门限。
   match_gate: 200.0
   match_gate_not_all_init: 1000.0
   weight_center_error: 5.0
   weight_angle_error: 10.0
   weight_side_length_error: 1.0
 
-  initial_radius: 0.23
+  # 初始半径先验（米）。
+  initial_radius: 0.25
   initial_radius_outpost: 0.2765
   initial_radius_base: 0.3205
 
-# L4 定点规划。根据整车 yaw 角速度选择高、低速发射延迟。
+# L4 规划。
 planning:
-  # 飞行时间与目标命中位置相互影响时，允许进行的最大迭代次数。
-  max_iterations: 10
-  # 相邻两轮飞行时间差小于该值即认为收敛，单位 us；1000 us = 1 ms。
+  # 飞行时间与命中位置互相迭代的次数上限和收敛门限（us）。
+  max_iterations: 15
   fly_time_tolerance_us: 1000
-  # v_yaw > decision_speed_rad_s 时采用的发射延迟，单位 ms。
+  # v_yaw 超过 decision_speed_rad_s 用高速发射延迟，否则（含负向旋转）用低速的。
   high_speed_delay_ms: 30
-  # v_yaw 不超过阈值（包括负向旋转）时采用的发射延迟，单位 ms。
   low_speed_delay_ms: 15
-  # 高、低速延迟的有符号 yaw 角速度分界，单位 rad/s。
   decision_speed_rad_s: 8.0
   #########静止靶须调########
-  # 最终 yaw 命令的固定零偏，单位 degree。
+  # yaw / pitch 固定零偏。pitch 零偏在加上弹道仰角之后才按世界系约定取反。
   yaw_offset_deg: 0.0
-  # 弹道 pitch 的固定零偏，单位 degree；加入弹道仰角后再按世界系约定取反。
   pitch_offset_deg: 0.0
   ##########################
-  # 实测弹速无效时用于继续生成跟随角的回退弹速，单位 m/s。
+  # 实测弹速低于 min_valid 时改用回退弹速，并把 Plan 降级为 TrackOnly、禁止开火。
   fallback_bullet_speed_mps: 23.0
-  # 实测弹速低于该值时使用回退弹速，并把 Plan 降级为 TrackOnly，禁止开火。
   min_valid_bullet_speed_mps: 14.0
-  # 候选板进入角：板面相对视线的误差需小于该值，单位 degree。
-  # 常规车和旋转目标两条选板分支都用它。
+  # 选板的进入角 / 离开角；前哨转速固定、板面更窄，单独一组。
   coming_angle_deg: 60.0
-  # 结合旋转方向排除即将离开可击打区域的装甲板，单位 degree。
   leaving_angle_deg: 20.0
-  # 前哨站转速固定、板面更窄，进入角放宽、离开角收紧，单独配一组。
   outpost_coming_angle_deg: 70.0
   outpost_leaving_angle_deg: 30.0
 
-  # ---- 延迟链的实车标定段 ----
-  # 五段延迟里，image_to_plan 和 plan_to_send 由 runtime 每帧实测，
-  # control_to_fire 用上面的高低速档，fire_to_hit 是弹道飞行时间；
-  # 只有"串口发出 -> 电控执行"这一段测不到，必须在实车上标。
-  #
-  # 不写这一项 = 还没标定：Planner 把计划降级成 TrackOnly，云台照常跟随，
-  # 但 L5 会以 delay_not_calibrated 拒绝开火。验收标完再取消注释。
+  # "串口发出 -> 电控执行"的延迟，只能在实车上标。不写 = 未标定：云台照常跟随，
+  # 但 L5 以 delay_not_calibrated 拒绝开火。验收标完再取消注释。
   # send_to_control_ms: 5.0
 
-# L5 开火闸门。shoot_enable=false 时仍会跟随，但不会发出开火位。
+# L5 开火闸门。
 fire:
-  # 最终发射总开关；关闭时仍计算 fire_feasible，便于无弹调试。
+  # 发射总开关，验收前保持 false；关闭时仍计算 fire_feasible。
   shoot_enable: false
-  # 只把装甲板中心区域视为可命中；0.6 表示使用板面宽、高的中央 60%。
+  # 只把板面中央这个比例视为可命中。
   hit_margin_ratio: 0.6
-  # 根据板宽和距离算出的 yaw 容差下限，单位 degree。
+  # 由板尺寸和距离算出的 yaw / pitch 容差的下限。
   min_yaw_tolerance_deg: 0.5
-  # 根据板高和距离算出的 pitch 容差下限，单位 degree。
   min_pitch_tolerance_deg: 0.5
 
-# runtime 只管相邻命令跳变，不会修改 L4 预测结果。
+# yaw 命令与上一帧相比跳得超过它时，本帧以 command_jump 拒绝开火，命令照发。
 runtime:
   command_jump_deg: 10.0
 
-# 调试叠加层。实机默认全关：cv::imshow 在 1440x1080 上要几毫秒，会计进
-# L4Planning::Delay 的 image_to_plan；而且比赛用的 NUC 上没有显示器，
-# 打开会直接抛。串流调试时把 overlay 改成 true。
-#
-# 画的内容：蓝框=L2 网络原始角点，绿色整车=滤波器展开的全部物理板，
-# 红框=Plan 选中的命中时刻板，
-# 顶部一行=跟踪状态 / 计划状态 / 第一条开火拒绝原因。
+# 调试叠加层。实机要关：imshow 要几毫秒并计进 image_to_plan，NUC 没显示器会直接抛。
+# 蓝框 = L2 原始角点，绿 = 滤波器展开的整车，红框 = 选中的命中板。
 debug:
   overlay: true
-  # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
+  # 每 N 帧画一次。
   overlay_every: 1

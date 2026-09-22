@@ -246,7 +246,7 @@ z_depth = 左灯条中心的相机深度 - 右灯条中心的相机深度
 
 **来源（L2）。** 跟踪中 `EskfTracker::lightRoi()` 给出整车预测框放大 1.6 倍的 ROI，`ArmorDetector::detectFrame()` 在其中用 `findLights()` 的传统二值化找灯条（灰度或颜色差分二值化 → 外轮廓 → 最小外接矩形 → 长度/长宽比/倾角筛选 → `lightColor` 判色）。随后剔掉中心落在任一检出装甲板外接框（外扩 `armor_margin` 倍灯长）内的灯条：它们已经作为板的角点进了观测。剩下的放进 `ArmorFrame::lights`。
 
-> 曾经还有一路 YOLOv8n-pose 灯条关键点模型（`light_finder.mode` 的 `model` / `hybrid`）。2026-09-19 在八段录像上 A/B 后删掉了：灯条产出量传统检测不输模型、预测精度各赢四段且 p50 差都在 0.6 px 以内，而模型让 L2 单帧从 7.2 ms 涨到 20.7 ms。数据见 `config/auto_aim.yaml` 的 `light_finder` 注释。
+> 曾经还有一路 YOLOv8n-pose 灯条关键点模型（`light_finder.mode` 的 `model` / `hybrid`）。2026-09-19 在八段录像上 A/B 后删掉了：灯条产出量传统检测不输模型、预测精度各赢四段且 p50 差都在 0.6 px 以内，而模型让 L2 单帧从 7.2 ms 涨到 20.7 ms。数据见 `docs/replay_ab_log.md` 的侧边灯条一节。
 
 > `findLights()` 的三个几何门（`min_ratio` / `max_angle_deg` / `min_length_px`）保持 FYT 原值，很松：4 px 长、短边只占长边 8% 的斑点也算灯条，检出的大半是数字笔画、光晕和背景轮廓。2026-09-20 在八段录像上扫过两档收紧，结论是**误识别确实多，但不要紧，因为它们全死在 `matchLight` 的门里**：
 >
@@ -441,7 +441,7 @@ J(δ) = δᵀ P_minus⁻¹ δ
 
 第一项约束偏离运动先验的程度，第二项约束图像拟合误差。五轮迭代是在反复改进同一帧的解，而非把这张图当五次独立测量。
 
-代码还保留 `δ += K*e` 的可选分支，但默认 `textbook_iteration_ = true`，当前 `EskfTarget` 没有切换到那个分支。
+累加式 `δ += K*e` 的分支已经从 `ErrorStateEkf` 删掉：它从来没被打开过，而迭代次数一多，它的偏差会复利放大（见 `docs/iterated_ekf.md`）。
 
 ### 8.5 最后怎样写回状态和协方差
 

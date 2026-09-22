@@ -475,20 +475,20 @@ int main(int argc, char* argv[])
       }
       ms_l2.push_back(std::chrono::duration<double, std::milli>(t_l2_end - t_l2_begin).count());
       ms_l3.push_back(std::chrono::duration<double, std::milli>(t_l3_end - t_l3_begin).count());
-      const auto& observations = tracker.observations();
 
       // 观测明细。IESKF 的正常更新只吃类别和角点，不跑 PnP，所以这里只记 L2
       // 侧的几何；与目标同类别的观测多于一块，说明本帧是多板同时更新。
       std::size_t match_here = 0;
-      for (std::size_t index = 0; index < observations.size(); ++index) {
-        const auto& armor = observations[index];
+      for (std::size_t index = 0; index < armors.size(); ++index) {
         const auto& detection = armors[index];
-        if (target && armor.name == target->name) ++match_here;
+        const auto armor = L3Estimation::toObservation(detection);
+        const auto name = L2Perception::armorClassFromId(armor.class_id);
+        if (target && name == target->name) ++match_here;
 
         obs_csv << frame_index << ',' << pose.seconds << ',' << index << ','
                 << armor.class_id << ',' << detection.network_class_id << ','
                 << detection.number_confidence << ','
-                << static_cast<int>(armor.name) << ','
+                << static_cast<int>(name) << ','
                 << armor.confidence << ',' << armor.area << ','
                 << quadWidth(detection.corners) << ',' << quadHeight(detection.corners) << ','
                 << (quadHeight(detection.corners) > 0.0

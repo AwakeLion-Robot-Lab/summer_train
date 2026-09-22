@@ -241,7 +241,6 @@ int main()
     const auto poses = tracker.armorPoses();
     expect(
       poses.size() == static_cast<std::size_t>(kArmorNum), "Tracking 时板位姿列表应当非空");
-    expect(!tracker.observations().empty(), "observations 应当保留本帧观测");
 
     const auto& armor_update_lights = tracker.usedLights();
     expect(!armor_update_lights.empty(), "完整板更新应当发布实际使用的灯条");

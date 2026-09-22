@@ -97,13 +97,11 @@ bool facesCamera(const State & x, int id, const Eigen::Isometry3d & camera)
 // 由真值状态合成一块板的检测：四角来自投影，位姿字段模拟 PnP 的输出。
 L3Estimation::Armor synthesizeDetection(
   const State & x, int id, const L1Sensor::CameraCalibration & calibration,
-  const Eigen::Isometry3d & camera, const L3Estimation::ArmorConfig & armor_config,
-  L3Estimation::TimePoint timestamp)
+  const Eigen::Isometry3d & camera, const L3Estimation::ArmorConfig & armor_config)
 {
   L3Estimation::Armor armor;
   armor.name = kName;
   armor.type = L3Estimation::ArmorType::Small;
-  armor.timestamp = timestamp;
 
   L3Estimation::LightContext ctx;
   ctx.armor_num = kArmorNum;
@@ -167,7 +165,7 @@ int main()
   {
     L3Estimation::EskfTarget target;
     const auto detection =
-      synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
+      synthesizeDetection(truth, 0, calibration, camera, config.armor);
     target.reset(detection, config, start);
 
     expect(target.initialized(), "reset 后应当已初始化");
@@ -202,7 +200,7 @@ int main()
     // 差 π。装甲板集合应当能对上。
     L3Estimation::EskfTarget from_other;
     const auto other_detection =
-      synthesizeDetection(truth, 2, calibration, camera, config.armor, start);
+      synthesizeDetection(truth, 2, calibration, camera, config.armor);
     from_other.reset(other_detection, config, start);
     const auto poses = from_other.armor_xyza_list();
     expect(poses.size() == static_cast<std::size_t>(kArmorNum), "板位姿列表长度错");
@@ -217,7 +215,7 @@ int main()
   {
     L3Estimation::EskfTarget target;
     const auto detection =
-      synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
+      synthesizeDetection(truth, 0, calibration, camera, config.armor);
     target.reset(detection, config, start);
 
     // 同一时刻、同一状态下合成所有可见板的检测。
@@ -228,7 +226,7 @@ int main()
         continue;
       }
       detections.push_back(
-        synthesizeDetection(truth, id, calibration, camera, config.armor, start));
+        synthesizeDetection(truth, id, calibration, camera, config.armor));
       truth_ids.push_back(id);
     }
     expect(detections.size() >= 2, "合成场景里应当至少有两块板可见");
@@ -254,7 +252,7 @@ int main()
   {
     L3Estimation::EskfTarget target;
     const auto detection =
-      synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
+      synthesizeDetection(truth, 0, calibration, camera, config.armor);
     target.reset(detection, config, start);
 
     const auto matched = matchArmorAt(
@@ -348,7 +346,7 @@ int main()
   {
     L3Estimation::EskfTarget target;
     const auto detection =
-      synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
+      synthesizeDetection(truth, 0, calibration, camera, config.armor);
     target.reset(detection, config, start);
 
     State truth_now = truth;
@@ -368,7 +366,7 @@ int main()
           continue;
         }
         detections.push_back(
-          synthesizeDetection(truth_now, id, calibration, camera, config.armor, now));
+          synthesizeDetection(truth_now, id, calibration, camera, config.armor));
       }
 
       target.predictEkf(now);
@@ -419,7 +417,7 @@ int main()
   {
     L3Estimation::EskfTarget target;
     const auto detection =
-      synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
+      synthesizeDetection(truth, 0, calibration, camera, config.armor);
     target.reset(detection, config, start);
 
     State truth_now = truth;
@@ -438,7 +436,7 @@ int main()
       for (int id = 0; id < kArmorNum; ++id) {
         if (facesCamera(truth_now, id, camera)) {
           detections.push_back(
-            synthesizeDetection(truth_now, id, calibration, camera, config.armor, now));
+            synthesizeDetection(truth_now, id, calibration, camera, config.armor));
         }
       }
       target.predictEkf(now);
@@ -491,7 +489,7 @@ int main()
 
     target.predictEkf(now);
     const std::vector<L3Estimation::Armor> front_only{
-      synthesizeDetection(truth_now, front, calibration, camera, config.armor, now)};
+      synthesizeDetection(truth_now, front, calibration, camera, config.armor)};
     const auto matched = matchArmorAt(target, front_only, now, calibration, camera);
     expect(
       matched.size() == 1 && matched.front().first == front, "正对的板应当关联到自己的编号");
@@ -517,7 +515,7 @@ int main()
   {
     L3Estimation::EskfTarget target;
     const auto detection =
-      synthesizeDetection(truth, 0, calibration, camera, config.armor, start);
+      synthesizeDetection(truth, 0, calibration, camera, config.armor);
     target.reset(detection, config, start);
 
     // reset 之后速度与角速度都是零，外推不改变任何东西，测不出隔离性。先跑
@@ -536,7 +534,7 @@ int main()
       for (int id = 0; id < kArmorNum; ++id) {
         if (facesCamera(truth_now, id, camera)) {
           detections.push_back(
-            synthesizeDetection(truth_now, id, calibration, camera, config.armor, now));
+            synthesizeDetection(truth_now, id, calibration, camera, config.armor));
         }
       }
       target.predictEkf(now);

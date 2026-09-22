@@ -49,7 +49,7 @@ struct ArmorRefinerConfig
   // 二值化与梯度搜索的底图：false 是灰度（sp_vision 原版），true 是颜色差分
   // （蓝板 B−R、红板 R−B，取该板自己的 Armor::color，Unknown 时退回灰度）。
   //
-  // 默认 true，回放实测的结论，八段全过，见 auto_aim.yaml 的 refiner 注释。
+  // 默认 true，回放实测的结论，八段全过，见 docs/replay_ab_log.md 的角点精修一节。
   // 机理：灯条过曝后核心 B=R=255，差分归零，所以差分图切到的是灯条彩色的
   // 边缘而不是饱和白核——白核边界是曝光的产物，彩色边缘才接近真实发光边界。
   //
