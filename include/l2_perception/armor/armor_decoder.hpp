@@ -88,10 +88,10 @@ ArmorDecoderConfig yolov8_21DecoderConfig() noexcept;
 // 按名字取预设，名字无效时返回 nullopt 由调用方报错。
 [[nodiscard]] std::optional<ArmorDecoderConfig> armorDecoderPreset(std::string_view name);
 
-// 按探测到的模型输出名取预设。给"模型在运行时才由命令行决定"的离线工具用；
-// 实机 runtime 不猜，契约由 auto_aim.yaml 的 inference.decoder.layout 指定。
-// 认不出就抛，绝不退回默认值——猜错契约只会静默解出垃圾角点。字段数对不对
-// 由 ArmorDecoder::decode() 负责，这里不重复检查。
+// 按探测到的模型输出形状取预设（上游部署库 postprocess_mode=auto 的做法）。给
+// inference.decoder.layout: auto 和"模型在运行时才由命令行决定"的离线工具用；
+// 返回的 output_name 换成模型实际的输出名。认不出就抛，绝不退回默认值——猜错
+// 契约只会静默解出垃圾角点。
 [[nodiscard]] ArmorDecoderConfig armorDecoderConfigFor(
   const std::vector<InferenceOutputSpec>& outputs);
 

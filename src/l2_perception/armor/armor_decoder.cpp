@@ -118,18 +118,27 @@ std::optional<ArmorDecoderConfig> armorDecoderPreset(std::string_view name)
 
 ArmorDecoderConfig armorDecoderConfigFor(const std::vector<InferenceOutputSpec>& outputs)
 {
-  // 按输出名认契约。名字对上就保证 decode() 能找到这个张量，字段数不符会在
-  // 那里报错，所以这里不再验一遍形状。
-  if (outputs.size() == 1) {
-    for (const auto& preset : {yolov5_22DecoderConfig(), yolov8_21DecoderConfig()}) {
-      if (outputs.front().name == preset.contract.output_name) {
+  // 按形状认而不是按输出名：名字随导出方式和 Runtime 版本变（2025.4 从 PyTorch
+  // 直转的 IR 输出没有名字），形状才是契约本身。两种排布的字段维不同，要求候选
+  // 维比字段维大，就不会互相认错；灯条关键点模型 [1, 11, A] 两边都不匹配。
+  if (outputs.size() == 1 && outputs.front().shape.size() == 3 &&
+      outputs.front().shape[0] == 1) {
+    const InferenceOutputSpec& output = outputs.front();
+    const auto& shape = output.shape;
+    for (auto preset : {yolov5_22DecoderConfig(), yolov8_21DecoderConfig()}) {
+      const bool candidates_first =
+        preset.contract.tensor_layout == ArmorTensorLayout::CandidatesByFields;
+      const std::size_t fields = candidates_first ? shape[2] : shape[1];
+      const std::size_t candidates = candidates_first ? shape[1] : shape[2];
+      if (fields == preset.contract.requiredFieldCount() && candidates > fields) {
+        preset.contract.output_name = output.name;
         return preset;
       }
     }
   }
   throw std::runtime_error(
-    "unknown armor model output; expected a single 'output' (yolov5_22) or "
-    "'output0' (yolov8_21)");
+    "unknown armor model output; expected a single [1, N, 22] (yolov5_22) or "
+    "[1, 21, N] (yolov8_21) tensor");
 }
 
 ArmorDecoder::ArmorDecoder(ArmorDecoderConfig config) : config_(std::move(config))
@@ -180,8 +189,10 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
     candidates_first ? output->shape[shape_offset] : output->shape[shape_offset + 1];
   const std::size_t field_count =
     candidates_first ? output->shape[shape_offset + 1] : output->shape[shape_offset];
-  if (field_count < contract.requiredFieldCount()) {
-    throw std::invalid_argument("ArmorDecoder contract exceeds the model output field count");
+  // 要恰好相等而不是够用：字段多出来说明是别的契约，照读只会解出错位的角点。
+  // 例如带逐点可见度的 YOLOv8 [1, 25, N] 能过“够用”，却会把可见度当坐标读。
+  if (field_count != contract.requiredFieldCount()) {
+    throw std::invalid_argument("ArmorDecoder contract does not match the model output field count");
   }
 
   const std::span<const float> output_values = output->values();
