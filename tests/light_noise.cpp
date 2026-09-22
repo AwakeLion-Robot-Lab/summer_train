@@ -55,7 +55,7 @@ namespace {
 
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
-  "{model m |  | 整板模型，留空用 auto_aim.yaml 的；给了就按输出名认 layout}"
+  "{model m |  | 整板模型，留空用 auto_aim.yaml 的；给了就按输出形状认 layout}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
   "{window w | 7 | 去趋势窗口的帧数}"

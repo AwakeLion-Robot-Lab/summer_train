@@ -24,7 +24,7 @@ namespace
 
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
-  "{model m |  | 整板模型，留空用 auto_aim.yaml 的；给了就按输出名认 layout}"
+  "{model m |  | 整板模型，留空用 auto_aim.yaml 的；给了就按输出形状认 layout}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{wait w | 30 | 每帧 waitKey 毫秒，0 表示逐帧手动推进}"
   "{start-index s | 0 | 视频起始帧下标}"

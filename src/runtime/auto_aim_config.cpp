@@ -32,6 +32,20 @@ void readValue(
   }
 }
 
+// 可选项只在键存在且能解析时赋值，“没写”和“写了”要分得开。
+void readValue(const YAML::Node& section, const char* key, std::optional<float>& value)
+{
+  if (!section || !section[key]) {
+    return;
+  }
+
+  try {
+    value = section[key].as<float>();
+  } catch (const YAML::Exception& error) {
+    L6Telemetry::logWarn("auto-aim config invalid field", key, error.what());
+  }
+}
+
 void readMicroseconds(
   const YAML::Node& section,
   const char* key,
@@ -106,22 +120,8 @@ void normalize(AutoAimConfig& config)
     config.armor.height = armor_defaults.height;
   }
 
-  // L2 阈值越界不会报错，只会静默失效：置信度阈值 >= 1 一块板也检不出，
-  // 颜色比 <= 1 会让红蓝判定区间重叠。
-  // 阈值的回退值取当前 layout 预设的：两种模型的置信度分布不同，不能混用。
-  const bool yolov8 = config.decoder.contract == L2Perception::yolov8Preset().contract;
-  const L2Perception::ArmorDecoderConfig decoder_defaults =
-    yolov8 ? L2Perception::yolov8Preset() : L2Perception::yolov5Preset();
-  for (const auto& [value, fallback] : {
-         std::pair{&config.decoder.confidence_threshold, decoder_defaults.confidence_threshold},
-         std::pair{&config.decoder.minimum_confidence, decoder_defaults.minimum_confidence},
-         std::pair{&config.decoder.nms_iou_threshold, decoder_defaults.nms_iou_threshold},
-         std::pair{&config.decoder.nms_score_threshold, decoder_defaults.nms_score_threshold}}) {
-    if (!(*value >= 0.0F && *value <= 1.0F)) {
-      *value = fallback;
-    }
-  }
-
+  // L2 阈值越界不会报错，只会静默失效：颜色比 <= 1 会让红蓝判定区间重叠。
+  // 整板模型的置信度阈值在 applyThresholds 里挡。
   const L2Perception::ArmorRefinerConfig refiner_defaults;
   if (!(config.refiner.binary_threshold > 0.0 && config.refiner.binary_threshold < 255.0)) {
     config.refiner.binary_threshold = refiner_defaults.binary_threshold;
@@ -444,21 +444,29 @@ AutoAimConfig loadConfig(const std::string& path)
       throw std::runtime_error("inference.normalization_divisor must be positive");
     }
 
-    // 输出契约只能整组由 layout 选；阈值在预设之上覆盖，顺序不能反。
+    // 输出契约只能整组由 layout 选；阈值在预设之上覆盖，顺序不能反。auto 时
+    // 预设要等模型加载后才定，这里只记下来，makeDetector 再覆盖一次。
     const YAML::Node decoder = inference["decoder"];
     if (decoder && decoder["layout"]) {
       const std::string layout = decoder["layout"].as<std::string>();
-      const auto preset = L2Perception::decoderPreset(layout);
-      if (!preset) {
-        throw std::runtime_error(
-          "inference.decoder.layout must be 'yolov5_22' or 'yolov8_21'; got " + layout);
+      if (layout == "auto") {
+        config.auto_layout = true;
+      } else {
+        const auto preset = L2Perception::decoderPreset(layout);
+        if (!preset) {
+          throw std::runtime_error(
+            "inference.decoder.layout must be 'auto', 'yolov5_22' or 'yolov8_21'; got " +
+            layout);
+        }
+        config.decoder = *preset;
       }
-      config.decoder = *preset;
     }
-    readValue(decoder, "confidence_threshold", config.decoder.confidence_threshold);
-    readValue(decoder, "minimum_confidence", config.decoder.minimum_confidence);
-    readValue(decoder, "nms_iou_threshold", config.decoder.nms_iou_threshold);
-    readValue(decoder, "nms_score_threshold", config.decoder.nms_score_threshold);
+    DecoderThresholds& thresholds = config.decoder_thresholds;
+    readValue(decoder, "confidence_threshold", thresholds.confidence_threshold);
+    readValue(decoder, "minimum_confidence", thresholds.minimum_confidence);
+    readValue(decoder, "nms_iou_threshold", thresholds.nms_iou_threshold);
+    readValue(decoder, "nms_score_threshold", thresholds.nms_score_threshold);
+    applyThresholds(thresholds, config.decoder);
   }
 
   // 三个单列字段是同一份配置的一部分，回填进去，构造 Backend 时只传一个结构体。
@@ -646,6 +654,22 @@ AutoAimConfig loadConfig(const std::string& path)
     std::string{L2Perception::backendName(config.inference_backend)},
     config.model_path.string(), config.inference_device);
   return config;
+}
+
+void applyThresholds(
+  const DecoderThresholds& thresholds, L2Perception::ArmorDecoderConfig& decoder)
+{
+  // 越界不会报错，只会静默失效：置信度阈值 >= 1 一块板也检不出。越界时保留
+  // 预设值而不是某个固定数：两种模型的置信度分布不同，回退值不能混用。
+  for (const auto& [value, target] : {
+         std::pair{thresholds.confidence_threshold, &decoder.confidence_threshold},
+         std::pair{thresholds.minimum_confidence, &decoder.minimum_confidence},
+         std::pair{thresholds.nms_iou_threshold, &decoder.nms_iou_threshold},
+         std::pair{thresholds.nms_score_threshold, &decoder.nms_score_threshold}}) {
+    if (value && *value >= 0.0F && *value <= 1.0F) {
+      *target = *value;
+    }
+  }
 }
 
 }  // namespace runtime

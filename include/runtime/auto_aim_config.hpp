@@ -12,6 +12,7 @@
 
 #include <filesystem>
 #include <numbers>
+#include <optional>
 #include <string>
 
 namespace runtime {
@@ -27,6 +28,15 @@ struct DebugConfig {
 // 只负责 runtime 胶水层的相邻命令检查，不重复 L3/L4/L5 的业务参数。
 struct RuntimeSafetyConfig {
   double command_jump_threshold{10.0 * std::numbers::pi / 180.0};
+};
+
+// inference.decoder 里显式写出的阈值。layout 为 auto 时预设要等模型加载、按
+// 输出形状认出来之后才定，阈值得在那之后覆盖上去，所以单独留一份。
+struct DecoderThresholds {
+  std::optional<float> confidence_threshold;
+  std::optional<float> minimum_confidence;
+  std::optional<float> nms_iou_threshold;
+  std::optional<float> nms_score_threshold;
 };
 
 struct AutoAimConfig {
@@ -46,6 +56,10 @@ struct AutoAimConfig {
   // 整板模型的输出契约与筛选阈值（inference.decoder），输出形状在构造
   // ArmorDetector 时核对。
   L2Perception::ArmorDecoderConfig decoder;
+  // layout: auto 时为 true：decoder 里的契约作废，makeDetector 按模型输出形状
+  // 选预设，再套上 decoder_thresholds。
+  bool auto_layout{false};
+  DecoderThresholds decoder_thresholds;
   // 板 ROI 内的传统角点精修。
   L2Perception::ArmorRefinerConfig refiner;
 
@@ -66,5 +80,9 @@ struct AutoAimConfig {
 
 // 缺失字段保留各层的安全默认值；特别是 shoot_enable 默认为 false。
 [[nodiscard]] AutoAimConfig loadConfig(const std::string& path);
+
+// 把写了的阈值盖到 decoder 上。越界的值（不在 [0, 1]）丢掉、保留预设的。
+void applyThresholds(
+  const DecoderThresholds& thresholds, L2Perception::ArmorDecoderConfig& decoder);
 
 }  // namespace runtime

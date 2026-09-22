@@ -118,18 +118,27 @@ std::optional<ArmorDecoderConfig> decoderPreset(std::string_view name)
 
 ArmorDecoderConfig decoderFor(const std::vector<InferenceOutputSpec>& outputs)
 {
-  // 按输出名认契约。名字对上就保证 decode() 能找到这个张量，字段数不符会在
-  // 那里报错，所以这里不再验一遍形状。
-  if (outputs.size() == 1) {
-    for (const auto& preset : {yolov5Preset(), yolov8Preset()}) {
-      if (outputs.front().name == preset.contract.output_name) {
+  // 按形状认而不是按输出名：名字随导出方式和 Runtime 版本变（2025.4 从 PyTorch
+  // 直转的 IR 输出没有名字），形状才是契约本身。两种排布的字段维不同，要求候选
+  // 维比字段维大，就不会互相认错；灯条关键点模型 [1, 11, A] 两边都不匹配。
+  if (outputs.size() == 1 && outputs.front().shape.size() == 3 &&
+      outputs.front().shape[0] == 1) {
+    const InferenceOutputSpec& output = outputs.front();
+    const auto& shape = output.shape;
+    for (auto preset : {yolov5Preset(), yolov8Preset()}) {
+      const bool candidates_first =
+        preset.contract.tensor_layout == ArmorTensorLayout::CandidatesByFields;
+      const std::size_t fields = candidates_first ? shape[2] : shape[1];
+      const std::size_t candidates = candidates_first ? shape[1] : shape[2];
+      if (fields == preset.contract.fieldCount() && candidates > fields) {
+        preset.contract.output_name = output.name;
         return preset;
       }
     }
   }
   throw std::runtime_error(
-    "unknown armor model output; expected a single 'output' (yolov5_22) or "
-    "'output0' (yolov8_21)");
+    "unknown armor model output; expected a single [1, N, 22] (yolov5_22) or "
+    "[1, 21, N] (yolov8_21) tensor");
 }
 
 void ArmorDecoder::validate(const std::vector<InferenceOutputSpec>& outputs) const
@@ -169,9 +178,12 @@ void ArmorDecoder::validate(const std::vector<InferenceOutputSpec>& outputs) con
   const std::size_t fields = contract.tensor_layout == ArmorTensorLayout::CandidatesByFields
                                ? shape[offset + 1]
                                : shape[offset];
-  if (fields < contract.fieldCount()) {
+  // 要恰好相等而不是够用：字段多出来说明是别的契约，照读只会解出错位的角点。
+  // 例如带逐点可见度的 YOLOv8 [1, 25, N] 能过“够用”，却会把可见度当坐标读；
+  // 未命名的 yolov5 输出被后端记成 output0 时，候选维 25200 也能过。
+  if (fields != contract.fieldCount()) {
     throw std::runtime_error(
-      "armor model: output has " + std::to_string(fields) + " fields but the layout needs " +
+      "armor model: output has " + std::to_string(fields) + " fields but the layout expects " +
       std::to_string(contract.fieldCount()) + "; got " + describe());
   }
 }

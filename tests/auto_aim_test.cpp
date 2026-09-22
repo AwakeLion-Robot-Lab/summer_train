@@ -234,7 +234,7 @@ void printStageTiming(const StageClock& clock)
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
-  "{model m |  | 整板模型，留空用 auto_aim.yaml 的；给了就按输出名认 layout}"
+  "{model m |  | 整板模型，留空用 auto_aim.yaml 的；给了就按输出形状认 layout}"
   "{device d | CPU | OpenVINO 推理设备}"
   "{enemy | blue | 敌方颜色：red / blue / any}"
   "{convention | imu | 录像四元数约定：imu / sp}"
@@ -1448,7 +1448,7 @@ int main(int argc, char** argv)
     const auto runtime_config = runtime::loadConfig("config/auto_aim.yaml");
 
     // 检测器与实机同一个工厂组装，只有模型路径和设备允许命令行覆盖。命令行换了
-    // 模型时 YAML 里的 layout 未必配得上，按模型输出名认。
+    // 模型时 YAML 里的 layout 未必配得上，按模型输出形状认。
     runtime::AutoAimConfig detector_config = runtime_config;
     const std::string model_override = cli.get<std::string>("model");
     if (!model_override.empty()) {

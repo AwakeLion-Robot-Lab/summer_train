@@ -74,7 +74,7 @@ int main(int argc, char** argv)
 {
   try {
     // 不给模型参数时跑 auto_aim.yaml 里真正配置的那一个；给了参数则只换整板
-    // 模型，layout 按模型输出名认，精修参数仍取 YAML。
+    // 模型，layout 按模型输出形状认，精修参数仍取 YAML。
     const auto runtime_config = runtime::loadConfig("config/auto_aim.yaml");
     const std::filesystem::path model_path = argc < 2
       ? runtime_config.model_path

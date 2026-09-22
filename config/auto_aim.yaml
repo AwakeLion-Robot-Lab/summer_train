@@ -3,10 +3,14 @@
 inference:
   # openvino / tensorrt（后者要 xmake f --use_tensorrt=y，目前是桩）。
   backend: "openvino"
-  # 必须和 decoder.layout 成对改。已验证：yolov5.xml、szu-v5n.xml -> yolov5_22，
-  # szu-v8n-fp16.onnx -> yolov8_21。换模型后要重跑 track_diag。
+  # 已验证：yolov5.xml、szu-v5n.xml -> yolov5_22，szu-v8n-fp16.onnx -> yolov8_21。
+  # 这份 onnx 就是 Models-main 的 Infantry-v8n-fp16-20260726，那边的 IR 在 CPU 上
+  # 输出逐位相同。换模型后要重跑 track_diag。
   model_path: "/home/rm/super/newvision/model/armor_model/szu-v8n-fp16.onnx"
-  device: "CPU"
+  # CPU / GPU（Intel 核显，要装 intel-opencl-icd）。GPU 加载失败会告警并退回 CPU。
+  # i9-13980HX + UHD 核显上整段 L2：CPU 12.9 ms、GPU 10.6 ms；GPU 按 FP16 算，角点差
+  # 不到 0.2 px（网络输入尺度）。回放工具不读这一项，要对齐实机得加 -d=GPU。
+  device: "GPU"
 
   # 模型期望的颜色顺序，必须是 rgb：写成 bgr 会红蓝对调，敌我过滤随之反向。
   model_color_order: "rgb"
@@ -25,9 +29,13 @@ inference:
 
   decoder:
     # yolov5_22：[1, 25200, 22]；yolov8_21：[1, 21, 6300]，没有 objectness。
-    layout: "yolov8_21"
+    # auto 按模型输出形状在两者里选（同上游部署库的 postprocess_mode=auto），
+    # 形状对不上任何一种就启动报错，不会猜。
+    layout: "auto"
     # 不写就用 layout 的预设（yolov5_22：0.7 / 0.8 / 0.3 / 0.7，
-    # yolov8_21：0.5 / 0.5 / 0.2 / 0.5）。两种模型的置信度分布不同，别互相照抄。
+    # yolov8_21：0.5 / 0.5 / 0.2 / 0.5）。两种模型的置信度分布不同，别互相照抄；
+    # auto 时写了的值对选中的哪种都生效。上游 JSON 的 score_threshold 就是
+    # confidence_threshold，NMS IoU 上游写死 0.2。
     # confidence_threshold: 0.7
     # minimum_confidence: 0.8
     # nms_iou_threshold: 0.3

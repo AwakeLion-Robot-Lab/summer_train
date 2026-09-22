@@ -10,8 +10,11 @@ namespace runtime {
 // 回放看到的就是实机跑的链路；工具要换模型或设备时，改一份 config 的副本再
 // 传进来。
 //
-// guess_layout 为 true 时按模型输出名认 decoder 预设（阈值也取预设的），给
-// 命令行临时换模型的离线工具用；实机保持 false，契约只认 inference.decoder。
+// guess_layout 为 true 时按模型输出形状认 decoder 预设（阈值也取预设的），给
+// 命令行临时换模型的离线工具用；实机保持 false。YAML 写 layout: auto 时同样按
+// 形状认，但阈值取 YAML 里写了的。
+//
+// OpenVINO 的非 CPU 设备（GPU）加载失败时记一条警告并退回 CPU。
 //
 // 启动阶段调用。模型缺失或输出契约不符时抛异常，由调用方决定退化还是退出。
 [[nodiscard]] L2Perception::ArmorDetector makeDetector(

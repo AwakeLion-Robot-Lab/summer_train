@@ -83,9 +83,9 @@ ArmorDecoderConfig yolov8Preset() noexcept;
 // 按名字取预设，名字无效时返回 nullopt 由调用方报错。
 [[nodiscard]] std::optional<ArmorDecoderConfig> decoderPreset(std::string_view name);
 
-// 按模型的输出名认预设，给“模型由命令行临时指定”的离线工具用；实机 runtime
-// 不猜，契约由 auto_aim.yaml 的 inference.decoder.layout 指定。认不出就抛，
-// 绝不退回默认值。
+// 按模型的输出形状认预设（上游部署库 postprocess_mode=auto 的做法），给
+// inference.decoder.layout: auto 和“模型由命令行临时指定”的离线工具用。返回的
+// output_name 换成模型实际的输出名。认不出就抛，绝不退回默认值。
 [[nodiscard]] ArmorDecoderConfig decoderFor(const std::vector<InferenceOutputSpec>& outputs);
 
 class ArmorDecoder
@@ -93,7 +93,7 @@ class ArmorDecoder
 public:
   explicit ArmorDecoder(ArmorDecoderConfig config = {});
 
-  // 核对模型输出与契约是否一致：输出名存在、维度和字段数够用。不一致时抛异常，
+  // 核对模型输出与契约是否一致：输出名存在、维度对、字段数恰好相等。不一致时抛异常，
   // 并在消息里点明最常见的原因（layout 与模型不配、或传成了灯条模型）。只在
   // 启动装配检测器时调用一次。
   void validate(const std::vector<InferenceOutputSpec>& outputs) const;
