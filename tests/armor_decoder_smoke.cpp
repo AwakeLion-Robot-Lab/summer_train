@@ -207,13 +207,51 @@ int main()
     require(!L2Perception::armorDecoderPreset("yolov5"),
             "unknown decoder preset name was accepted");
 
-    // 离线工具靠输出名认契约，两条都要认得出来。
+    // layout: auto 和离线工具靠输出形状认契约，两条都要认得出来。
     require(L2Perception::armorDecoderConfigFor({{"output", {1, 25200, 22}}}).contract
               == L2Perception::yolov5_22DecoderConfig().contract,
             "probe did not resolve the yolov5_22 contract");
     require(L2Perception::armorDecoderConfigFor({{"output0", {1, 21, 6300}}}).contract
               == L2Perception::yolov8_21DecoderConfig().contract,
             "probe did not resolve the yolov8_21 contract");
+    // 输出名不参与判断，但要换成模型实际的名字，decode() 才找得到张量。
+    // graph_output_cast_0 是 OpenVINO 2026.3 给 ovc 转换结果改的名。
+    const auto renamed =
+      L2Perception::armorDecoderConfigFor({{"graph_output_cast_0", {1, 21, 6300}}});
+    require(renamed.contract.tensor_layout == L2Perception::ArmorTensorLayout::FieldsByCandidates
+              && renamed.contract.output_name == "graph_output_cast_0",
+            "probe did not resolve a renamed yolov8_21 output");
+    const auto unknown = [](const std::vector<L2Perception::InferenceOutputSpec>& outputs) {
+      try {
+        (void)L2Perception::armorDecoderConfigFor(outputs);
+      } catch (const std::runtime_error&) {
+        return true;
+      }
+      return false;
+    };
+    // 带逐点可见度的 YOLOv8 导出、灯条关键点模型、多输出：一律认不出，不猜。
+    require(unknown({{"output0", {1, 25, 6300}}}), "probe guessed a [1, 25, N] output");
+    require(unknown({{"output0", {1, 11, 8400}}}), "probe guessed a light keypoint model");
+    require(unknown({{"a", {1, 21, 6300}}, {"b", {1, 21, 6300}}}),
+            "probe guessed a multi-output model");
+
+    // 字段多了也是别的契约：[1, 25, N] 照 yolov8_21 读会把可见度当坐标。
+    {
+      L2Perception::InferenceTensor tensor;
+      tensor.name = "output0";
+      tensor.shape = {1, 25, 3};
+      tensor.setOwnedData(std::vector<float>(25 * 3, 0.0F));
+      L2Perception::InferenceResult result;
+      result.outputs.push_back(std::move(tensor));
+      bool rejected = false;
+      try {
+        (void)L2Perception::ArmorDecoder(L2Perception::yolov8_21DecoderConfig())
+          .decode(result, L2Perception::ImageTransform{});
+      } catch (const std::invalid_argument&) {
+        rejected = true;
+      }
+      require(rejected, "decode accepted a [1, 25, N] output under the yolov8_21 layout");
+    }
 
     std::cout << "SP-Vision armor decoder smoke passed\n";
     return 0;

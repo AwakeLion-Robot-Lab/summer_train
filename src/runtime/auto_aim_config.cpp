@@ -11,6 +11,7 @@
 #include <numbers>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace runtime {
 namespace {
@@ -27,6 +28,20 @@ void readValue(
 
   try {
     value = section[key].as<T>();
+  } catch (const YAML::Exception& error) {
+    L6Telemetry::logWarn("auto-aim config invalid field", key, error.what());
+  }
+}
+
+// 可选项只在键存在且能解析时赋值，“没写”和“写了”要分得开。
+void readValue(const YAML::Node& section, const char* key, std::optional<float>& value)
+{
+  if (!section || !section[key]) {
+    return;
+  }
+
+  try {
+    value = section[key].as<float>();
   } catch (const YAML::Exception& error) {
     L6Telemetry::logWarn("auto-aim config invalid field", key, error.what());
   }
@@ -336,23 +351,31 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 
     // 输出契约。layout 选定字段布局（下标由模型导出时定死，不在 YAML 里逐个
     // 手配），随后的阈值才是可调项。配错 layout 不会报错，只会解出垃圾角点。
+    // auto 时预设要等模型加载后按输出形状才定，这里只记下阈值，runtime 再覆盖。
     const YAML::Node decoder = inference["decoder"];
     if (decoder) {
       if (decoder["layout"]) {
         const std::string layout = decoder["layout"].as<std::string>();
-        const auto preset = L2Perception::armorDecoderPreset(layout);
-        if (!preset) {
-          throw std::runtime_error(
-            "inference.decoder.layout must be 'yolov5_22' or 'yolov8_21'; got " + layout);
+        if (layout == "auto") {
+          config.auto_layout = true;
+        } else {
+          const auto preset = L2Perception::armorDecoderPreset(layout);
+          if (!preset) {
+            throw std::runtime_error(
+              "inference.decoder.layout must be 'auto', 'yolov5_22' or 'yolov8_21'; got " +
+              layout);
+          }
+          config.decoder = *preset;
         }
-        config.decoder = *preset;
       }
       // 阈值在预设之后覆盖，顺序不能反。只有筛选策略可以从 YAML 调；
       // 字段布局属于 ArmorTensorContract，只能整组由 layout 选。
-      readValue(decoder, "confidence_threshold", config.decoder.confidence_threshold);
-      readValue(decoder, "minimum_confidence", config.decoder.minimum_confidence);
-      readValue(decoder, "nms_iou_threshold", config.decoder.nms_iou_threshold);
-      readValue(decoder, "nms_score_threshold", config.decoder.nms_score_threshold);
+      DecoderThresholds& thresholds = config.decoder_thresholds;
+      readValue(decoder, "confidence_threshold", thresholds.confidence_threshold);
+      readValue(decoder, "minimum_confidence", thresholds.minimum_confidence);
+      readValue(decoder, "nms_iou_threshold", thresholds.nms_iou_threshold);
+      readValue(decoder, "nms_score_threshold", thresholds.nms_score_threshold);
+      applyThresholds(thresholds, config.decoder);
     }
   }
 
@@ -478,6 +501,22 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     std::string{L2Perception::inferenceBackendName(config.inference_backend)},
     config.model_path.string(), config.inference_device);
   return config;
+}
+
+void applyThresholds(
+  const DecoderThresholds& thresholds, L2Perception::ArmorDecoderConfig& decoder)
+{
+  // 越界不会报错，只会静默失效：置信度阈值 >= 1 一块板也检不出。越界时保留
+  // 预设值而不是某个固定数：两种模型的置信度分布不同，回退值不能混用。
+  for (const auto& [value, target] : {
+         std::pair{thresholds.confidence_threshold, &decoder.confidence_threshold},
+         std::pair{thresholds.minimum_confidence, &decoder.minimum_confidence},
+         std::pair{thresholds.nms_iou_threshold, &decoder.nms_iou_threshold},
+         std::pair{thresholds.nms_score_threshold, &decoder.nms_score_threshold}}) {
+    if (value && *value >= 0.0F && *value <= 1.0F) {
+      *target = *value;
+    }
+  }
 }
 
 }  // namespace runtime

@@ -70,17 +70,44 @@ L2Perception::ArmorDetector makeArmorDetector(
     // 模型路径、设备、颜色顺序、归一化以及后端调度参数全部来自 auto_aim.yaml
     // 的 inference 节点，loadAutoAimConfig 已经把 model_path/device 回填进去。
     // 宿主输入恒为 uint8 NHWC BGR；颜色和归一化转换由具体后端完成。
-    const L2Perception::InferenceModelConfig& model_config = config.inference;
-    backend->load(model_config);
+    L2Perception::InferenceModelConfig model_config = config.inference;
+    try {
+      backend->load(model_config);
+    } catch (const std::exception& error) {
+      // GPU 插件或驱动（intel-opencl-icd）不在时 compile_model 会抛。退回 CPU 还
+      // 能打，空检测器就只能看着，所以 OpenVINO 的非 CPU 设备失败时换 CPU 再试一次。
+      const bool retry =
+        config.inference_backend == L2Perception::InferenceBackendKind::OpenVino &&
+        !model_config.device.starts_with("CPU");
+      if (!retry) {
+        throw;
+      }
+      L6Telemetry::logWarn(
+        "armor model failed on", model_config.device, error.what(), "; falling back to CPU");
+      model_config.device = "CPU";
+      backend->load(model_config);
+    }
+
+    // Decoder 的字段布局跟着 model_path 走：layout: auto 时按模型输出形状选预设，
+    // 再盖上 YAML 写了的阈值。
+    L2Perception::ArmorDecoderConfig decoder = config.decoder;
+    if (config.auto_layout) {
+      decoder = L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
+      runtime::applyThresholds(config.decoder_thresholds, decoder);
+    }
+    const bool yolov8 =
+      decoder.contract.tensor_layout == L2Perception::ArmorTensorLayout::FieldsByCandidates;
 
     L6Telemetry::logInfo(
       "armor model loaded",
       std::string{L2Perception::inferenceBackendName(config.inference_backend)},
-      config.model_path.string(), model_config.device);
-    // Decoder 的字段布局跟着 model_path 走；预处理保持默认（letterbox 的对齐和
-    // 填充色对现有模型实测无差别）；传统灯条精修来自 refiner 节点。
+      config.model_path.string(), model_config.device,
+      "layout", yolov8 ? "yolov8_21" : "yolov5_22", config.auto_layout ? "(auto)" : "(yaml)",
+      "output", decoder.contract.output_name, "conf", decoder.confidence_threshold);
+    // 预处理保持默认（letterbox 的对齐和填充色对现有模型实测无差别）；传统灯条
+    // 精修来自 refiner 节点。
     return L2Perception::ArmorDetector(
-      std::move(backend), config.decoder, L2Perception::ImagePreprocessConfig{},
+      std::move(backend), decoder, L2Perception::ImagePreprocessConfig{},
       config.refiner);
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
