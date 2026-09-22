@@ -1,14 +1,20 @@
 # 运行前需用 --use_tensorrt=y 配置，并提供 CUDA/TensorRT SDK 路径。
 inference:
   backend: "openvino"
-  # model_path 和下面的 decoder.layout 必须成对修改。已验证的组合：
+  # 下面 decoder.layout 写 auto 时按模型输出形状自动选契约；写死时必须和
+  # model_path 成对修改。已验证的组合：
   #   model/armor_model/yolov5.xml       -> yolov5_22   （SP-Vision 自带）
   #   model/armor_model/szu-v5n.xml      -> yolov5_22   （深大 Infantry-v5n）
   #   model/armor_model/szu-v8n-fp16.onnx-> yolov8_21   （深大 Infantry-v8n）
   # szu-v8n 的 .xml/.bin 需要较新的 OpenVINO 运行时（2023.1 读不了它的
   # MaxPool），旧运行时必须走同名 .onnx。
+  # szu-v8n-fp16.onnx 就是 Models-main 的 Infantry-v8n-fp16-20260726，那边的 IR
+  # 在 CPU 上输出逐位相同。
   model_path: "model/armor_model/szu-v8n-fp16.onnx"
-  device: "CPU"
+  # CPU / GPU（Intel 核显，要装 intel-opencl-icd）。GPU 加载失败会告警并退回 CPU。
+  # i9-13980HX + UHD 核显上 szu-v8n 整段 L2：CPU 12.9 ms、GPU 10.6 ms；GPU 按 FP16
+  # 算，角点差不到 0.2 px（网络输入尺度）。回放工具不读这一项，要对齐实机得加 -d=GPU。
+  device: "GPU"
 
   # ---- 模型格式：改错会直接改变推理结果，不是性能项 ----
   # 训练/导出时模型期望的颜色顺序。宿主侧输入恒为 uint8 NHWC BGR，
@@ -66,18 +72,22 @@ inference:
   # 因此这里不给默认值。
   # enable_hyper_threading: false
 
-  # ---- 输出契约：和 model_path 成对，配错不会报错，只会解出垃圾角点 ----
+  # ---- 输出契约：和 model_path 成对（layout 写 auto 时自动配），配错只会解出垃圾角点 ----
   decoder:
     # yolov5_22：[1, 25200, 22]，输出名 output，字段为
     #   0~7 四角点 / 8 objectness logit / 9~12 颜色 / 13~21 九类。
     # yolov8_21：[1, 21, 6300]，输出名 output0，channels-first，字段为
     #   0~3 颜色 / 4~12 九类 / 13~20 四角点，没有 objectness 通道，
     #   置信度取类别分支最大值且已过 sigmoid。
-    layout: "yolov8_21"
+    # auto：按模型输出形状在两者里选（同上游部署库的 postprocess_mode=auto），
+    # 形状对不上任何一种就启动报错，不会猜。
+    layout: "auto"
     # 下面四项在 layout 预设之上覆盖，缺省则用预设值。
     # yolov5_22 预设：0.7 / 0.8 / 0.3 / 0.7（对齐 SP demo）
     # yolov8_21 预设：0.5 / 0.5 / 0.2 / 0.5（对齐上游部署库）
-    # 两种模型的置信度分布不同（objectness vs 类别分数），阈值不要互相照抄。
+    # 两种模型的置信度分布不同（objectness vs 类别分数），阈值不要互相照抄；
+    # auto 时写了的值对选中的哪种都生效。上游 JSON 的 score_threshold 就是
+    # confidence_threshold，NMS IoU 上游写死 0.2。
     # confidence_threshold: 0.7
     # minimum_confidence: 0.8
     # nms_iou_threshold: 0.3

@@ -135,8 +135,8 @@ int main(int argc, char** argv)
     L2Perception::ArmorDecoderConfig decoder_config;
 
     // 移交后端所有权前先探一次原始张量，便于把模型/后端错误与 Decoder 错误分开定位。
-    // 这里按输出名挑契约，只是为了让同一个 smoke 能验两种模型；runtime 不这么做，
-    // 那边的契约由 auto_aim.yaml 的 inference.decoder.layout 显式指定。
+    // 这里按输出形状挑契约，让同一个 smoke 能验两种模型；runtime 只在
+    // inference.decoder.layout: auto 时这么做，否则用 YAML 显式指定的契约。
     {
       const auto preprocessed = L2Perception::ImagePreprocessor::run(image, input_spec);
       const auto raw_result = backend->infer(preprocessed.input);
@@ -147,7 +147,10 @@ int main(int argc, char** argv)
       decoder_config = L2Perception::armorDecoderConfigFor(
         {{raw_result.outputs.front().name, output_shape}});
 
-      if (use_configured_model) {
+      if (use_configured_model && runtime_config.auto_layout) {
+        // layout: auto 与 runtime 同一条路：探到的预设再盖上 YAML 写了的阈值。
+        runtime::applyThresholds(runtime_config.decoder_thresholds, decoder_config);
+      } else if (use_configured_model) {
         // 探到的契约和 YAML 写的必须一致。配错 layout 不会让解码失败，只会解出
         // 垃圾角点，所以这条检查放在这里，而不是等实机发现瞄不准。
         require(runtime_config.decoder.contract == decoder_config.contract,
