@@ -40,6 +40,17 @@ public:
     std::uint8_t shoot = 0;
   };
 
+  // 前馈格式与旧格式使用不同 cmd_id，避免改变旧固件识别的帧长。
+  struct __attribute__((packed)) TxFeedforwardPayload {
+    float yaw = 0.0F;
+    float yaw_velocity = 0.0F;
+    float yaw_acceleration = 0.0F;
+    float pitch = 0.0F;
+    float pitch_velocity = 0.0F;
+    float pitch_acceleration = 0.0F;
+    std::uint8_t shoot = 0;
+  };
+
   // 完整接收帧：帧头 + 状态数据 + CRC16。
   struct __attribute__((packed)) RxPacket {
     HeaderFrame frame_header;
@@ -54,8 +65,19 @@ public:
     std::uint16_t crc16 = 0;
   };
 
+  struct __attribute__((packed)) TxFeedforwardPacket {
+    HeaderFrame frame_header;
+    TxFeedforwardPayload data;
+    std::uint16_t crc16 = 0;
+  };
+
+  enum class CommandFormat : std::uint8_t { Angle, Feedforward };
+
   // 把控制命令打包成可以直接写入串口的字节流，并分配循环递增的发送 seq。
   std::vector<std::uint8_t> encodeCommand(const L5Control::SerialCommand& command);
+
+  void setCommandFormat(CommandFormat format);
+  CommandFormat commandFormat() const;
 
   // 输入串口原始字节流，解析并返回其中全部完整合法状态帧。
   // 不完整的尾部会保留到下一次调用继续解析。
@@ -80,8 +102,11 @@ public:
   std::uint64_t skippedByteCount() const;
 
 private:
+  CommandFormat command_format_ = CommandFormat::Angle;
+
   static constexpr std::uint8_t kSof = 0xA0;
   static constexpr std::uint16_t kTxCmdId = 0x0001;
+  static constexpr std::uint16_t kTxFeedforwardCmdId = 0x0003;
   static constexpr std::uint16_t kRxCmdId = 0x0002;
   static constexpr std::uint16_t kMaxPayloadLength = 256;
 

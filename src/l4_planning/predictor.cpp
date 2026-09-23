@@ -61,10 +61,10 @@ constexpr double kPi = 3.14159265358979323846;
   const L3Estimation::TargetState& target, TimePoint prediction_time)
 {
   auto predicted = target;
-  auto filter = std::make_shared<L3Estimation::TrackedTarget>(*target.filter_state);
-  filter->predict(prediction_time);
-  const auto& state = filter->ekf().x;
-  const auto& covariance = filter->ekf().P;
+  auto filter = *target.filter_state;
+  filter.predict(prediction_time);
+  const auto& state = filter.ekf().x;
+  const auto& covariance = filter.ekf().P;
   if (state.size() != L3Estimation::TrackedTarget::kStateSize ||
       covariance.rows() != L3Estimation::TrackedTarget::kStateSize ||
       covariance.cols() != L3Estimation::TrackedTarget::kStateSize) {

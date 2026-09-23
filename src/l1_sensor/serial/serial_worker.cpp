@@ -16,6 +16,10 @@ namespace L1Sensor {
 SerialWorker::SerialWorker(SerialConfig config)
     : config_(std::move(config)), port_(config_) {
   protocol_.setPacketLossCheckEnable(config_.packet_loss_check_enable);
+  protocol_.setCommandFormat(
+      config_.command_feedforward
+          ? SerialProtocol::CommandFormat::Feedforward
+          : SerialProtocol::CommandFormat::Angle);
 }
 
 // 析构时停止收发线程，确保线程退出后再释放串口。

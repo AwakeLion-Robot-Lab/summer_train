@@ -34,6 +34,9 @@ rx_buffer_size: 256
 # 使用 HeaderFrame.seq 检测接收帧是否丢包；下位机未维护 seq 时可关闭。
 packet_loss_check_enable: true
 
+# 仅当下位机固件已支持 cmd_id 0x0003 时启用；否则保持 false。
+command_feedforward: false
+
 # 坐标系约定
 # ---------------------------------------------------------------------------
 # world  : 直接采用下位机 IMU 的绝对系 imu_abs，轴向与 IMU 一致。

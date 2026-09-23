@@ -1,14 +1,14 @@
 #pragma once
 
+#include "l3_estimation/armor/target_estimator.hpp"
+
 #include <Eigen/Core>
 
 #include <array>
 #include <chrono>
-#include <memory>
+#include <optional>
 
 namespace L3Estimation {
-
-class TrackedTarget;
 
 // Stable, read-only snapshot consumed by the preserved L4 planner.
 // The first eleven entries match TrackedTarget's state layout exactly.
@@ -43,7 +43,9 @@ struct TargetState {
   std::array<double, 3> three_armor_height_offsets{0.0, 0.0, 0.0};
   StateCovariance covariance{StateCovariance::Identity()};
   std::chrono::steady_clock::time_point timestamp{};
-  std::shared_ptr<const TrackedTarget> filter_state;
+  // L4 owns an independent filter value. It must never predict on L3's live
+  // tracker instance.
+  std::optional<TrackedTarget> filter_state;
 };
 
 }  // namespace L3Estimation

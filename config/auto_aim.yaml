@@ -157,7 +157,7 @@ estimator:
 # L5 开火闸门。shoot_enable=false 时仍会跟随，但不会发出开火位。
 fire:
   # 最终发射总开关；关闭时仍计算 fire_feasible，便于无弹调试。
-  shoot_enable: false
+  shoot_enable: true
   # 只把装甲板中心区域视为可命中；0.6 表示使用板面宽、高的中央 60%。
   hit_margin_ratio: 0.6
   # 根据板宽和距离算出的 yaw 容差下限，单位 degree。
@@ -179,7 +179,7 @@ runtime:
 debug:
   overlay: true
   # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
-  overlay_every: 30
+  overlay_every: 1
 
   # PlotJuggler 曲线遥测，UDP 发到 plot_host:plot_port。与 overlay 分开开关：
   # 上车标定 planning.send_to_control_ms 时机器上没有显示器，要的正好是曲线。

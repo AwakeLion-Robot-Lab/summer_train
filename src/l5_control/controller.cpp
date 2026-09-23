@@ -100,7 +100,20 @@ std::optional<SerialCommand> Controller::makeCommand(
   if (!angles) {
     return std::nullopt;
   }
-  return SerialCommand{(*angles)[0], (*angles)[1], decision.shoot};
+  SerialCommand command{(*angles)[0], (*angles)[1], decision.shoot};
+  if (plan.using_MPC && !plan.samples.empty()) {
+    const auto &sample = plan.samples.front();
+    command.yaw_velocity = sample.yaw_rate;
+    command.yaw_acceleration = sample.yaw_acceleration;
+    command.pitch_velocity = sample.pitch_rate;
+    command.pitch_acceleration = sample.pitch_acceleration;
+  } else {
+    command.yaw_velocity = plan.yaw_rate;
+    command.yaw_acceleration = plan.yaw_acceleration;
+    command.pitch_velocity = plan.pitch_rate;
+    command.pitch_acceleration = plan.pitch_acceleration;
+  }
+  return command;
 }
 
 }  // namespace L5Control

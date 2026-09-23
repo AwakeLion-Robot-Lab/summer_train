@@ -19,6 +19,9 @@ struct SerialConfig {
   std::size_t rx_buffer_size = 256;
   bool packet_loss_check_enable = true;
 
+  // 电控固件支持后才能启用；默认保持现场使用的角度帧格式。
+  bool command_feedforward = false;
+
   // 外参命名沿用 T_A_B：R_imu_barrel 把 barrel 系中的向量转到下位机 IMU 系。
   // world 取 imu_abs（IMU 轴向），barrel 是独立定义的右手系，两者链式复合：
   //   R_world_barrel = R_world_imu * R_imu_barrel

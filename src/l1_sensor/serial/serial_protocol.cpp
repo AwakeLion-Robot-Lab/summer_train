@@ -14,28 +14,58 @@ std::vector<std::uint8_t>
 SerialProtocol::encodeCommand(const L5Control::SerialCommand &command) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  TxPacket packet;
-  packet.frame_header.sof = kSof;
-  packet.frame_header.data_length = sizeof(TxPayload);
-  packet.frame_header.seq = next_tx_seq_;
+  const std::uint8_t seq = next_tx_seq_;
   next_tx_seq_ = static_cast<std::uint8_t>(next_tx_seq_ + 1U);
-  packet.frame_header.cmd_id = kTxCmdId;
+
+  const auto finish = [&](auto &packet, std::uint16_t cmd_id) {
+    packet.frame_header.sof = kSof;
+    packet.frame_header.data_length = sizeof(packet.data);
+    packet.frame_header.seq = seq;
+    packet.frame_header.cmd_id = cmd_id;
+
+    auto header_body =
+        std::span{reinterpret_cast<const std::uint8_t *>(&packet.frame_header),
+                  offsetof(HeaderFrame, crc8)};
+    packet.frame_header.crc8 = crc8(header_body);
+
+    auto packet_bytes =
+        std::span{reinterpret_cast<const std::uint8_t *>(&packet),
+                  sizeof(packet) - sizeof(packet.crc16)};
+    packet.crc16 = crc16(packet_bytes);
+
+    const auto *begin = reinterpret_cast<const std::uint8_t *>(&packet);
+    return std::vector<std::uint8_t>(begin, begin + sizeof(packet));
+  };
+
+  if (command_format_ == CommandFormat::Feedforward) {
+    TxFeedforwardPacket packet;
+    packet.data.yaw = static_cast<float>(command.yaw);
+    packet.data.yaw_velocity = static_cast<float>(command.yaw_velocity);
+    packet.data.yaw_acceleration =
+        static_cast<float>(command.yaw_acceleration);
+    packet.data.pitch = static_cast<float>(command.pitch);
+    packet.data.pitch_velocity = static_cast<float>(command.pitch_velocity);
+    packet.data.pitch_acceleration =
+        static_cast<float>(command.pitch_acceleration);
+    packet.data.shoot = command.shoot ? 1 : 0;
+    return finish(packet, kTxFeedforwardCmdId);
+  }
+
+  TxPacket packet;
   packet.data.yaw = static_cast<float>(command.yaw);
   packet.data.pitch = static_cast<float>(command.pitch);
   packet.data.shoot = command.shoot ? 1 : 0;
+  return finish(packet, kTxCmdId);
+}
 
-  auto header_body =
-      std::span{reinterpret_cast<const std::uint8_t *>(&packet.frame_header),
-                offsetof(HeaderFrame, crc8)};
-  packet.frame_header.crc8 = crc8(header_body);
+void SerialProtocol::setCommandFormat(CommandFormat format) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  command_format_ = format;
+}
 
-  auto packet_bytes = std::span{reinterpret_cast<const std::uint8_t *>(&packet),
-                                sizeof(packet) - sizeof(packet.crc16)};
-  packet.crc16 = crc16(packet_bytes);
-
-  std::vector<std::uint8_t> bytes(sizeof(packet));
-  std::memcpy(bytes.data(), &packet, sizeof(packet));
-  return bytes;
+SerialProtocol::CommandFormat SerialProtocol::commandFormat() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return command_format_;
 }
 
 // 向协议解析器追加原始字节，并一次取出缓存中的全部完整合法状态帧。

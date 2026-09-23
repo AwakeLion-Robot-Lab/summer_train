@@ -89,9 +89,9 @@ selection:
 
   # 候选装甲板总评分的三项权重，均须非负且总和必须为 1。
   score_weights:
-    # 装甲板朝向相机/枪口的正对程度权重。lgn是傻逼
+    # 装甲板朝向相机/枪口的正对程度权重。
     facing: 0.40
-    # 装甲板在射击窗口中的剩余质量权重。lgn是傻逼
+    # 装甲板在射击窗口中的剩余质量权重。
     window: 0.35
     # 当前云台转到候选弹道角所需角度的权重。
     aim_cost: 0.25
@@ -104,24 +104,24 @@ mpc:
 
   # 是否启用 TinyMPC。false 时直接输出弹道求解得到的单点瞄准量。
   enable: false
-  # ADMM 最大迭代次数，必须大于 0；增大可能改善收敛但增加耗时。lgn是傻逼
+  # ADMM 最大迭代次数，必须大于 0；增大可能改善收敛但增加耗时。
   max_iterations: 10
 
-  # ADMM 罚参数 rho；README 指定为 1.0，必须大于 0。lgn是傻逼
+  # ADMM 罚参数 rho；README 指定为 1.0，必须大于 0。
   admm_rho: 1.0 
 
-  # ADMM 原始残差收敛阈值，必须大于 0；越小要求越严格。lgn是傻逼
+  # ADMM 原始残差收敛阈值，必须大于 0；越小要求越严格。
   primal_tolerance: 0.001
 
-  # ADMM 对偶残差收敛阈值，必须大于 0；越小要求越严格。lgn是傻逼
+  # ADMM 对偶残差收敛阈值，必须大于 0；越小要求越严格。
   dual_tolerance: 0.001
 
   yaw:
-    # Q_yaw[0]：yaw 角度跟踪误差权重；README 值为 9e6。lgn是傻逼
+    # Q_yaw[0]：yaw 角度跟踪误差权重；README 值为 9e6。
     angle_weight: 9000000.0
-    # Q_yaw[1]：yaw 角速度跟踪误差权重；README 值为 0。lgn是傻逼
+    # Q_yaw[1]：yaw 角速度跟踪误差权重；README 值为 0。
     velocity_weight: 0.0
-    # R_yaw[0]：yaw 加速度使用代价；README 值为 1，必须大于 0。lgn是傻逼
+    # R_yaw[0]：yaw 加速度使用代价；README 值为 1，必须大于 0。
     acceleration_weight: 1.0
     # yaw 最小允许角加速度；由 README 的绝对上限 50 取负值，单位 rad/s^2。
     min_acceleration_rad_s2: -50.0

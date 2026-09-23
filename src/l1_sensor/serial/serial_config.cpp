@@ -113,6 +113,8 @@ SerialConfig loadSerialConfig(const std::string &config_path) {
       readOptional(yaml, "rx_buffer_size", config.rx_buffer_size);
   config.packet_loss_check_enable = readOptional(
       yaml, "packet_loss_check_enable", config.packet_loss_check_enable);
+  config.command_feedforward = readOptional(
+      yaml, "command_feedforward", config.command_feedforward);
   config.R_imu_barrel =
       readRotation(yaml, "R_imu_barrel", config.R_imu_barrel);
 

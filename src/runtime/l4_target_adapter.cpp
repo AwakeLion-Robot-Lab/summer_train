@@ -1,7 +1,5 @@
 #include "runtime/l4_target_adapter.hpp"
 
-#include <memory>
-
 namespace runtime {
 
 std::optional<L3Estimation::TargetState> toL4TargetState(
@@ -44,7 +42,7 @@ std::optional<L3Estimation::TargetState> toL4TargetState(
   snapshot.covariance = covariance.topLeftCorner<
     L3Estimation::STATE_DIM, L3Estimation::STATE_DIM>();
   snapshot.timestamp = target->t();
-  snapshot.filter_state = std::make_shared<const L3Estimation::TrackedTarget>(*target);
+  snapshot.filter_state = *target;
 
   if (snapshot.robot_id < 0 ||
       (snapshot.armor_count != 3 && snapshot.armor_count != 4) ||

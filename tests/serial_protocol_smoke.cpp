@@ -138,6 +138,45 @@ int main()
     return 6;
   }
 
+  Protocol format_protocol;
+  command.yaw = 1.0;
+  command.pitch = 2.0;
+  command.shoot = true;
+  auto angle_bytes = format_protocol.encodeCommand(command);
+  Protocol::TxPacket angle_packet{};
+  std::memcpy(&angle_packet, angle_bytes.data(), sizeof(angle_packet));
+  if (angle_packet.frame_header.cmd_id != 0x0001 ||
+      angle_packet.frame_header.data_length != sizeof(Protocol::TxPayload) ||
+      angle_bytes.size() != sizeof(Protocol::TxPacket)) {
+    std::cerr << "SerialProtocol default command format changed\n";
+    return 7;
+  }
+
+  command.yaw_velocity = 3.0;
+  command.yaw_acceleration = 4.0;
+  command.pitch_velocity = 5.0;
+  command.pitch_acceleration = 6.0;
+  format_protocol.setCommandFormat(Protocol::CommandFormat::Feedforward);
+  const auto feedforward_bytes = format_protocol.encodeCommand(command);
+  Protocol::TxFeedforwardPacket feedforward_packet{};
+  if (feedforward_bytes.size() != sizeof(feedforward_packet)) {
+    std::cerr << "SerialProtocol feedforward frame has wrong size\n";
+    return 8;
+  }
+  std::memcpy(&feedforward_packet, feedforward_bytes.data(),
+              sizeof(feedforward_packet));
+  if (feedforward_packet.frame_header.cmd_id != 0x0003 ||
+      feedforward_packet.frame_header.data_length !=
+          sizeof(Protocol::TxFeedforwardPayload) ||
+      feedforward_packet.data.yaw_velocity != 3.0F ||
+      feedforward_packet.data.yaw_acceleration != 4.0F ||
+      feedforward_packet.data.pitch_velocity != 5.0F ||
+      feedforward_packet.data.pitch_acceleration != 6.0F ||
+      feedforward_packet.data.shoot != 1) {
+    std::cerr << "SerialProtocol feedforward payload is incorrect\n";
+    return 9;
+  }
+
   std::cout << "SerialProtocol smoke test passed\n";
   return 0;
 }
