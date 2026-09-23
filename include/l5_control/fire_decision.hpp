@@ -17,7 +17,7 @@ struct FireConfig {
   // 装甲板尺寸单位为米，用于把可命中区域换算为角度容差。
   double armor_width_small{0.135};
   double armor_width_big{0.230};
-  double armor_height{0.125};
+  double armor_height{0.056};
   double hit_margin_ratio{0.6};  // 只使用板面中心区域，范围 (0, 1]
   double min_yaw_tolerance{0.5 * std::numbers::pi / 180.0};
   double min_pitch_tolerance{0.5 * std::numbers::pi / 180.0};

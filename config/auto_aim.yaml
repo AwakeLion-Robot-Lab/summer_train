@@ -222,7 +222,7 @@ runtime:
 debug:
   overlay: true
   # 普通帧每 N 帧画一次；fire_feasible=true 的帧始终绘制。
-  overlay_every: 20
+  overlay_every: 1
 
   # PlotJuggler 曲线遥测，UDP 发到 plot_host:plot_port。与 overlay 分开开关：
   # 上车标定 planning.send_to_control_ms 时机器上没有显示器，要的正好是曲线。
