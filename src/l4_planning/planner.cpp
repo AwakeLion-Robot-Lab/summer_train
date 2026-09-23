@@ -298,6 +298,16 @@ AimPlan Planner::plan(
 
   Predictor predictor;
   BallisticSolver ballistic_solver;
+  // Match the L3/legacy planner prediction sequence: first advance the EKF
+  // snapshot to the estimated muzzle-exit time, then predict each impact from
+  // that same launch-time state. Each candidate iteration remains independent.
+  const PredictionResult launch_prediction =
+    predictor.predict({target_state, fire_time});
+  if (!launch_prediction.valid) {
+    return plan;
+  }
+  const L3Estimation::TargetState& launch_state =
+    launch_prediction.predicted_vehicle;
   const auto solve_ballistic =
     [&ballistic_solver, &robot_state, &config](
       const Eigen::Vector3d& position_barrel) {
@@ -330,7 +340,7 @@ AimPlan Planner::plan(
       const TimePoint impact_time =
         addSeconds(fire_time, current_fly_time);
       const PredictionResult prediction =
-        predictor.predict({target_state, impact_time});
+        predictor.predict({launch_state, impact_time});
       if (!prediction.valid) {
         break;
       }
@@ -396,7 +406,7 @@ AimPlan Planner::plan(
       const TimePoint final_impact_time =
         addSeconds(fire_time, candidate.ballistic.fly_time);
       const PredictionResult final_prediction =
-        predictor.predict({target_state, final_impact_time});
+        predictor.predict({launch_state, final_impact_time});
       const ArmorPose* final_armor = findArmor(final_prediction, armor_id);
       if (final_prediction.valid && final_armor != nullptr && final_armor->valid) {
         const Eigen::Vector3d final_position_barrel =
