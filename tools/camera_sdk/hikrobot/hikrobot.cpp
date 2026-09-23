@@ -7,7 +7,6 @@
 #define NEWVISION_HAS_LIBUSB 0
 #endif
 
-#include <cstdint>
 #include <unordered_map>
 
 #include "l6_telemetry/logger.hpp"
@@ -135,8 +134,6 @@ void HikRobot::capture_start() {
     capturing_ = true;
 
     MV_FRAME_OUT raw{};
-    constexpr unsigned int kMaxConsecutiveNoData = 100;
-    unsigned int consecutive_no_data = 0;
 
     while (!capture_quit_.load()) {
       std::this_thread::sleep_for(1ms);
@@ -146,20 +143,11 @@ void HikRobot::capture_start() {
 
       ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
       if (ret != MV_OK) {
-        // MV_E_NODATA 仅表示本次等待窗口内没有图像。相机刚启动时首帧可能
-        // 超过 10 ms，不能因一次超时就停止取流并反复 reset USB。
-        if (ret == MV_E_NODATA &&
-            ++consecutive_no_data < kMaxConsecutiveNoData) {
-          continue;
-        }
         if (!capture_quit_.load()) {
-          L6Telemetry::logWarn(
-              "MV_CC_GetImageBuffer failed", static_cast<std::uint64_t>(ret),
-              "consecutive_no_data", consecutive_no_data);
+          L6Telemetry::logWarn("MV_CC_GetImageBuffer failed: {:#x}", ret);
         }
         break;
       }
-      consecutive_no_data = 0;
 
       // 曝光中点而不是到达时刻。CLAUDE.md 的跨层契约写的是"A frame's
       // timestamp is its exposure instant"，而 MV_CC_GetImageBuffer 返回时

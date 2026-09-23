@@ -7,6 +7,7 @@
 
 #include <Eigen/Geometry>
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -32,6 +33,13 @@ public:
 
   bool ready() const noexcept;
   TrackState state() const noexcept;
+
+  // 连续确认计数，达到 min_detect_count 才从 Detecting 升到 Tracking。
+  int detectCount() const noexcept { return detect_count_; }
+
+  // resetTracking() 的累计次数。瞬时的 TrackState 看不出"每隔几帧重建一次
+  // EKF"这种churn——状态图上只是一个单帧尖峰，很容易被看漏；单调计数器不会。
+  std::uint64_t resetCount() const noexcept { return reset_count_; }
 
   // 处理一帧检测。枪管姿态必须对应 timestamp 所表示的图像曝光时刻。
   // Lost 或初始化失败时返回空；TempLost 时返回纯预测状态。
@@ -76,6 +84,7 @@ private:
   // 状态机计数、当前目标、上一帧时间及本帧全部观测。
   TrackState state_{TrackState::Lost};
   int detect_count_{0};
+  std::uint64_t reset_count_{0};
   int temp_lost_count_{0};
   std::optional<TrackedTarget> target_;
   std::optional<TimePoint> last_timestamp_;

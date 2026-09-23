@@ -33,6 +33,23 @@ int main()
     return 2;
   }
 
+  const runtime::AutoAimConfig loaded_config =
+    runtime::loadAutoAimConfig("config/auto_aim.yaml");
+  if (!loaded_config.auto_layout || loaded_config.debug.force_work_mode != "auto_aim") {
+    std::cerr << "Auto aim inference/debug configuration was not loaded\n";
+    return 9;
+  }
+  auto decoder = L2Perception::yolov8_21DecoderConfig();
+  runtime::DecoderThresholds thresholds;
+  thresholds.confidence_threshold = 0.61F;
+  thresholds.minimum_confidence = 1.5F;
+  runtime::applyThresholds(thresholds, decoder);
+  if (std::abs(decoder.confidence_threshold - 0.61F) > 1e-6F ||
+      std::abs(decoder.minimum_confidence - 0.5F) > 1e-6F) {
+    std::cerr << "Decoder threshold overrides did not preserve the preset fallback\n";
+    return 10;
+  }
+
   L3Estimation::Armor observation;
   observation.name = L3Estimation::ArmorName::Infantry3;
   observation.type = L3Estimation::ArmorType::Small;

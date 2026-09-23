@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <numbers>
+#include <optional>
 #include <string>
 
 namespace runtime {
@@ -24,11 +25,19 @@ struct DebugConfig {
   bool plot{false};
   std::string plot_host{"127.0.0.1"};
   int plot_port{9870};
+  std::string force_work_mode{};
 };
 
 // 只负责 runtime 胶水层的相邻命令检查，不重复 L3/L4/L5 的业务参数。
 struct RuntimeSafetyConfig {
   double command_jump_threshold{10.0 * std::numbers::pi / 180.0};
+};
+
+struct DecoderThresholds {
+  std::optional<float> confidence_threshold;
+  std::optional<float> minimum_confidence;
+  std::optional<float> nms_iou_threshold;
+  std::optional<float> nms_score_threshold;
 };
 
 struct AutoAimConfig {
@@ -47,6 +56,8 @@ struct AutoAimConfig {
   // 模型输出契约。和 model_path 是一对：换模型必须同时换契约，否则解码出的
   // 是垃圾角点而不是报错。默认是 SP YOLOV5 的 [1, 25200, 22]。
   L2Perception::ArmorDecoderConfig decoder;
+  bool auto_layout{false};
+  DecoderThresholds decoder_thresholds;
 
   // 传统灯条精修：网络四点划 ROI，ROI 内跑传统灯条，端点足够近才覆盖网络角点。
   // 角点抖动直接放大成 PnP 的 yaw 抖动，所以这几个数是要按场地光照调的。
@@ -62,5 +73,8 @@ struct AutoAimConfig {
 
 // 缺失字段保留各层的安全默认值；特别是 shoot_enable 默认为 false。
 [[nodiscard]] AutoAimConfig loadAutoAimConfig(const std::string& path);
+
+void applyThresholds(
+  const DecoderThresholds& thresholds, L2Perception::ArmorDecoderConfig& decoder);
 
 }  // namespace runtime

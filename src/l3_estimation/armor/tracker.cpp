@@ -322,6 +322,7 @@ void Tracker::updateState(bool found)
 void Tracker::resetTracking() noexcept
 {
   // 保留 last_timestamp_ 和 observations_，由完整 reset() 或下一帧管理。
+  ++reset_count_;
   state_ = TrackState::Lost;
   detect_count_ = 0;
   temp_lost_count_ = 0;

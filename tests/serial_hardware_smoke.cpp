@@ -125,7 +125,8 @@ int main(int argc, char* argv[])
       std::cout << " | worker: tx=" << serial.sentCommandCount()
                 << " rx=" << serial.receivedStateCount()
                 << " tx_failed=" << serial.failedCommandCount()
-                << " rx_dropped=" << serial.droppedPacketCount();
+                << " rx_dropped=" << serial.droppedPacketCount()
+                << " rx_skipped_bytes=" << serial.skippedByteCount();
 
       // tx：视觉端完整写入的控制帧数；rx：成功解析的下位机状态帧数。
       // tx_failed：写串口失败/不完整次数；rx_dropped：按接收 seq 推断的丢包数。

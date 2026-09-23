@@ -40,12 +40,9 @@ struct TargetState {
   double radius{0.0};
   double radius_offset{0.0};
   double height_offset{0.0};
-  // Three-armor targets use independent offsets for armor 1 and 2. Four-
-  // armor targets continue to use height_offset for the odd armor pair.
   std::array<double, 3> three_armor_height_offsets{0.0, 0.0, 0.0};
   StateCovariance covariance{StateCovariance::Identity()};
   std::chrono::steady_clock::time_point timestamp{};
-  // L4 每次预测先复制此滤波器，再调用 predict()；L3 状态不受影响。
   std::shared_ptr<const TrackedTarget> filter_state;
 };
 

@@ -54,7 +54,10 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       rx_buffer_.clear();
       break;
     }
-    // 删除 sof 前面的干扰字节。
+    // 删除 sof 前面的干扰字节。计数是为了让"被吃掉的字节"可见——不计的话，
+    // 下位机若发了别的 SOF 的帧，这里会一声不响地删掉整帧。
+    skipped_byte_count_ +=
+        static_cast<std::uint64_t>(std::distance(rx_buffer_.begin(), head_pos));
     rx_buffer_.erase(rx_buffer_.begin(), head_pos);
 
     if (rx_buffer_.size() < sizeof(HeaderFrame)) {
@@ -93,8 +96,10 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       continue;
     }
 
-    // 下位机的 seq 对所有帧型统一递增，因此合法但未支持的帧也必须参与
-    // 丢包检测；否则每收到一帧 0x21，下一帧 0x02 都会被误报为丢包。
+    // seq 由下位机**逐帧**自增，与帧类型无关。所以丢包判断必须对所有通过
+    // CRC 的帧做，不能只对本实现认识的那一种——否则下位机每插一帧别的类型
+    // （现场是 0x21），序号就跳一格，会被当成丢包。实测这样会让 rx_dropped
+    // 反过来比 rx 还大，明显不合理。
     if (packet_loss_check_enable_) {
       checkPacketLoss(header.seq);
     }
@@ -108,8 +113,12 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       continue;
     }
 
-    // 现场下位机持续发送本实现暂不消费的 0x21 帧。它已经通过两级 CRC，
-    // 静默跳过即可，避免约 90 Hz 的调试日志淹没真正的通信故障。
+    // 静默丢弃本实现不认识的帧。现场下位机稳定在发一种 0x21 帧（28 字节，
+    // 约 90 Hz），这是协议尚未对齐、不是运行故障，每帧打一条只会把真正的
+    // 告警冲掉——上一版在这里打 cmd_id/data_length/frame_size 与期望值的对照，
+    // 正是靠它认出 0x02 的 payload 是 22 字节而不是 18；原因查明之后它就只剩
+    // 噪声了。要再排一次结构体失配，从 b438f6e 把那段捡回来即可。
+    // 帧数本身不会丢：seq 检查在上面对所有帧做，落在 rx_dropped 里。
     rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
   }
 
@@ -125,6 +134,7 @@ void SerialProtocol::reset() {
   last_rx_seq_ = 0;
   next_tx_seq_ = 0;
   dropped_packet_count_ = 0;
+  skipped_byte_count_ = 0;
 }
 
 // 开关 seq 丢包检测；切换后重新建立 seq 基准，避免误报。
@@ -146,6 +156,12 @@ bool SerialProtocol::packetLossCheckEnable() const {
 std::uint64_t SerialProtocol::droppedPacketCount() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return dropped_packet_count_;
+}
+
+// 返回累计被 SOF 搜索丢弃的字节数。
+std::uint64_t SerialProtocol::skippedByteCount() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return skipped_byte_count_;
 }
 
 // 按当前协议的 CRC8 参数计算校验值。
@@ -228,8 +244,9 @@ bool SerialProtocol::checkPacketLoss(std::uint8_t seq) {
 
   const auto dropped = static_cast<std::uint8_t>(seq - expected);
   dropped_packet_count_ += dropped;
-  // 现场下位机每约 21 个 seq 会固定空转一个号。单号跳空保留在累计计数中，
-  // 但不逐条刷屏；一次连续跳过多个号才作为异常告警。
+  // 只在跳号超过 1 时告警。现场实测下位机每 21 个 seq 会稳定空转一个号，
+  // 逐条打印就是每秒十几行、几分钟上万条，会把真正的告警冲掉；单号跳空只
+  // 进计数器，从遥测的 serial/rx_dropped 曲线看。连跳多号才是异常。
   if (dropped > 1) {
     L6Telemetry::logWarn("serial rx packet lost", static_cast<int>(dropped),
                          "last", static_cast<int>(last_rx_seq_), "current",

@@ -46,6 +46,20 @@ bool isEnemyArmor(L2Perception::ArmorColor observed,
   return false;
 }
 
+std::optional<L1Sensor::WorkMode> parseWorkMode(const std::string& name)
+{
+  if (name.empty()) return std::nullopt;
+  if (name == "auto_aim") return L1Sensor::WorkMode::AutoAim;
+  if (name == "outpost") return L1Sensor::WorkMode::Outpost;
+  if (name == "small_buff") return L1Sensor::WorkMode::SmallBuff;
+  if (name == "big_buff") return L1Sensor::WorkMode::BigBuff;
+  if (name == "idle") return L1Sensor::WorkMode::Idle;
+  L6Telemetry::logError(
+    "debug.force_work_mode is not a known mode, ignored:", name,
+    "| valid: auto_aim outpost small_buff big_buff idle");
+  return std::nullopt;
+}
+
 L2Perception::ArmorDetector makeArmorDetector(
   const runtime::AutoAimConfig& config)
 {
@@ -54,17 +68,36 @@ L2Perception::ArmorDetector makeArmorDetector(
     // 模型路径、设备、颜色顺序、归一化以及后端调度参数全部来自 auto_aim.yaml
     // 的 inference 节点，loadAutoAimConfig 已经把 model_path/device 回填进去。
     // 宿主输入恒为 uint8 NHWC BGR；颜色和归一化转换由具体后端完成。
-    const L2Perception::InferenceModelConfig& model_config = config.inference;
-    backend->load(model_config);
+    L2Perception::InferenceModelConfig model_config = config.inference;
+    try {
+      backend->load(model_config);
+    } catch (const std::exception& error) {
+      const bool retry =
+        config.inference_backend == L2Perception::InferenceBackendKind::OpenVino &&
+        !model_config.device.starts_with("CPU");
+      if (!retry) throw;
+      L6Telemetry::logWarn(
+        "armor model failed on", model_config.device, error.what(), "; falling back to CPU");
+      model_config.device = "CPU";
+      backend->load(model_config);
+    }
+
+    L2Perception::ArmorDecoderConfig decoder = config.decoder;
+    if (config.auto_layout) {
+      decoder = L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
+      runtime::applyThresholds(config.decoder_thresholds, decoder);
+    }
+    const bool yolov8 =
+      decoder.contract.tensor_layout == L2Perception::ArmorTensorLayout::FieldsByCandidates;
 
     L6Telemetry::logInfo(
       "armor model loaded",
       std::string{L2Perception::inferenceBackendName(config.inference_backend)},
-      config.model_path.string(), model_config.device);
-    // Decoder 的字段布局跟着 model_path 走；预处理保持默认（letterbox 的对齐和
-    // 填充色对现有模型实测无差别）；传统灯条精修来自 refiner 节点。
+      config.model_path.string(), model_config.device,
+      "layout", yolov8 ? "yolov8_21" : "yolov5_22", config.auto_layout ? "(auto)" : "(yaml)",
+      "output", decoder.contract.output_name, "conf", decoder.confidence_threshold);
     return L2Perception::ArmorDetector(
-      std::move(backend), config.decoder, L2Perception::ImagePreprocessConfig{},
+      std::move(backend), decoder, L2Perception::ImagePreprocessConfig{},
       config.refiner);
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
@@ -87,7 +120,12 @@ nlohmann::json telemetryFrame(
   L3Estimation::TrackState track_state,
   const L4Planning::AimPlan& plan,
   const L5Control::FireDecision& fire,
-  bool command_sent);
+  bool command_sent,
+  const L1Sensor::SerialWorker& serial,
+  std::chrono::steady_clock::time_point timestamp,
+  int detect_count,
+  std::uint64_t tracker_resets,
+  std::uint64_t plan_rejects);
 /********************************** debug **********************************/
 
 } // namespace
@@ -201,6 +239,13 @@ void AutoAimRuntime::run() {
     L6Telemetry::logInfo(
       "telemetry enabled", plotter->host(), std::to_string(plotter->port()));
   }
+  const auto forced_mode = parseWorkMode(auto_aim_config.debug.force_work_mode);
+  if (forced_mode) {
+    L6Telemetry::logWarn(
+      "!!! debug.force_work_mode is ACTIVE:", L1Sensor::toString(*forced_mode),
+      "- the MCU's WorkMode is being IGNORED. Clear this key before a match.");
+  }
+  std::uint64_t plan_reject_count = 0;
   /******************************** debug *********************************/
 
   cv::Mat frame;
@@ -227,7 +272,8 @@ void AutoAimRuntime::run() {
     if (!serial_started || !state) {
       stopAimSession();
     } else {
-      switch (state->mode) {
+      const L1Sensor::WorkMode mode = forced_mode.value_or(state->mode);
+      switch (mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
           const auto image_pose = serial.gimbalPoseAt(timestamp);
@@ -249,7 +295,7 @@ void AutoAimRuntime::run() {
 
           // 规划与开火判定使用推理结束时刻。
           const auto plan_time = std::chrono::steady_clock::now();
-          const auto actual_pose = serial.gimbalPoseAt(plan_time);
+          const auto actual_pose = serial.latestGimbalPose();
 
           // L4: 预测命中时刻、选板并解算弹道。
           planner_context.planning_time = plan_time;
@@ -257,6 +303,9 @@ void AutoAimRuntime::run() {
           planning_state.timestamp = plan_time;
           const auto plan = planner.plan(
             toL4TargetState(target), planning_state, planner_context);
+          if (!plan.valid) {
+            ++plan_reject_count;
+          }
 
           // L5: 开火判定、命令跳变检查和安全保持。
           const auto command = controller.update(
@@ -284,11 +333,12 @@ void AutoAimRuntime::run() {
               tracker ? tracker->observations() : kNoObservations;
             (void)plotter->send(telemetryFrame(
               image_pose, *state, observations, target, track_state, plan,
-              controller.lastDecision(), command.has_value()));
+              controller.lastDecision(), command.has_value(), serial, timestamp,
+              tracker ? tracker->detectCount() : 0,
+              tracker ? tracker->resetCount() : 0, plan_reject_count));
           }
           if (overlay_solver && tracker &&
-              (controller.lastDecision().fire_feasible ||
-               frame_index % auto_aim_config.debug.overlay_every == 0)) {
+              frame_index % auto_aim_config.debug.overlay_every == 0) {
             overlay_solver->set_R_world_barrel(image_pose);
             L6Telemetry::drawAimOverlay(
               frame,
@@ -379,10 +429,17 @@ nlohmann::json telemetryFrame(
   L3Estimation::TrackState track_state,
   const L4Planning::AimPlan& plan,
   const L5Control::FireDecision& fire,
-  bool command_sent)
+  bool command_sent,
+  const L1Sensor::SerialWorker& serial,
+  std::chrono::steady_clock::time_point timestamp,
+  int detect_count,
+  std::uint64_t tracker_resets,
+  std::uint64_t plan_rejects)
 {
   constexpr double kRadToDeg = 180.0 / std::numbers::pi;
   nlohmann::json data;
+
+  data["t"] = std::chrono::duration<double>(timestamp.time_since_epoch()).count();
 
   // gimbal: L1 实测的云台姿态与弹速。
   if (q_world_barrel) {
@@ -392,10 +449,22 @@ nlohmann::json telemetryFrame(
     data["gimbal"]["pitch"] = ypr[1] * kRadToDeg;
   }
   data["gimbal"]["bullet_speed"] = state.bullet_speed;
+  data["gimbal"]["heat"] = state.heat;
+
+  data["serial"]["rx"] = serial.receivedStateCount();
+  data["serial"]["rx_dropped"] = serial.droppedPacketCount();
+  data["serial"]["rx_skipped_bytes"] = serial.skippedByteCount();
+  data["serial"]["tx"] = serial.sentCommandCount();
+  data["serial"]["tx_failed"] = serial.failedCommandCount();
+  data["serial"]["pose_before_history"] = serial.poseBeforeHistoryCount();
+  data["serial"]["pose_after_history"] = serial.poseAfterHistoryCount();
 
   // track: 状态机与本帧真正进滤波器的观测数量。
   data["track"]["state"] = static_cast<int>(track_state);
   data["track"]["n_obs"] = static_cast<int>(observations.size());
+  data["track"]["detect_count"] = detect_count;
+  data["track"]["resets"] = tracker_resets;
+  data["aim"]["rejects"] = plan_rejects;
 
   // obs: 单板 PnP 的原始观测。固定取图像最左的一块——多板时若按检测顺序取，
   // 曲线会在两块板之间来回跳，看不出任何趋势。
