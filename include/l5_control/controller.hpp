@@ -24,7 +24,8 @@ public:
     const std::optional<L3Estimation::TrackedTarget>& target,
     L3Estimation::TrackState track_state,
     const L4Planning::AimPlan& plan,
-    const std::optional<Eigen::Quaterniond>& actual_pose);
+    const std::optional<Eigen::Quaterniond>& actual_pose,
+    bool bullet_speed_valid = true);
 
   // 最近一次 update() 的开火判定。调试叠加层要显示拒绝原因，命令本身
   // 看不出"为什么不开火"。

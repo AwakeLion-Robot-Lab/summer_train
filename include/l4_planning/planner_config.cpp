@@ -47,6 +47,7 @@ void validate(const PlannerTuning& tuning)
     && config.fly_time_tolerance.count() > 0
     && finitePositive(config.position_tolerance)
     && finiteNonNegative(config.angle_tolerance)
+    && finitePositive(tuning.default_bullet_speed)
     && finitePositive(config.gravity)
     && (!config.enable_air_resistance
         || finitePositive(config.linear_drag_coefficient))
@@ -134,6 +135,10 @@ PlannerTuning loadPlannerTuning(const std::string& config_path)
   readOptional(prediction, "angle_tolerance_rad", config.angle_tolerance);
 
   const YAML::Node ballistic = root["ballistic"];
+  readOptional(
+    ballistic,
+    "default_bullet_speed_mps",
+    tuning.default_bullet_speed);
   readOptional(ballistic, "gravity_mps2", config.gravity);
   readOptional(
     ballistic, "enable_air_resistance", config.enable_air_resistance);

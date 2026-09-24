@@ -13,6 +13,7 @@ int main()
   if (planner.max_iterations != 20
       || planner.fly_time_tolerance != std::chrono::microseconds{200}
       || std::abs(planner.position_tolerance - 0.005) > 1e-12
+      || std::abs(tuning.default_bullet_speed - 27.0) > 1e-12
       || std::abs(tuning.latency.high_speed_fire_delay - 0.030) > 1e-12
       || std::abs(tuning.latency.low_speed_fire_delay - 0.015) > 1e-12
       || std::abs(tuning.latency.decision_speed - 8.0) > 1e-12

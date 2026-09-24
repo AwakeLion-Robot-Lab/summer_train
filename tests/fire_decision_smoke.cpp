@@ -1,4 +1,5 @@
 #include "l5_control/fire_decision.hpp"
+#include "l5_control/controller.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -84,6 +85,45 @@ void testInvalidPlan()
     "AimPlan::valid must gate firing");
 }
 
+void testFallbackBulletSpeedNeverFires()
+{
+  const L5Control::FireDecider decider(makeConfig());
+  auto input = makeInput();
+  input.bullet_speed_valid = false;
+  const auto decision = decider.decide(input);
+  require(
+    hasReason(decision, L5Control::RejectReason::BadBulletSpeed),
+    "fallback bullet speed must be reported");
+  require(
+    !decision.fire_feasible && !decision.shoot,
+    "fallback bullet speed must never permit firing");
+}
+
+void testFallbackBulletSpeedStillTracks()
+{
+  L5Control::Controller controller(makeConfig(), 1.0);
+  auto input = makeInput();
+  const auto command = controller.update(
+    input.target,
+    input.track_state,
+    input.plan,
+    Eigen::Quaterniond::Identity(),
+    false);
+  require(
+    command.has_value(),
+    "fallback bullet speed must still produce an aim command");
+  require(
+    command->yaw == input.plan.yaw && command->pitch == input.plan.pitch,
+    "fallback bullet speed must preserve planned aim angles");
+  require(
+    !command->shoot,
+    "fallback bullet speed command must force shoot=false");
+  require(
+    hasReason(
+      controller.lastDecision(), L5Control::RejectReason::BadBulletSpeed),
+    "controller must retain the fallback bullet speed rejection");
+}
+
 void testShootEnableOnlyGatesOutput()
 {
   const L5Control::FireDecider decider(makeConfig(false));
@@ -122,6 +162,8 @@ int main()
   testAlignedShot();
   testPlannerWindowGate();
   testInvalidPlan();
+  testFallbackBulletSpeedNeverFires();
+  testFallbackBulletSpeedStillTracks();
   testShootEnableOnlyGatesOutput();
   testMpcCommandAngles();
   std::cout << "fire decision smoke test passed\n";

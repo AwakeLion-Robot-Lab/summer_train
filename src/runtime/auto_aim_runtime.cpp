@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -246,6 +247,7 @@ void AutoAimRuntime::run() {
       "- the MCU's WorkMode is being IGNORED. Clear this key before a match.");
   }
   std::uint64_t plan_reject_count = 0;
+  bool using_default_bullet_speed = false;
   /******************************** debug *********************************/
 
   cv::Mat frame;
@@ -301,6 +303,21 @@ void AutoAimRuntime::run() {
           planner_context.planning_time = plan_time;
           auto planning_state = *state;
           planning_state.timestamp = plan_time;
+          const bool bullet_speed_valid =
+            std::isfinite(state->bullet_speed) && state->bullet_speed > 0.0;
+          if (!bullet_speed_valid) {
+            planning_state.bullet_speed = planner_tuning.default_bullet_speed;
+            if (!using_default_bullet_speed) {
+              L6Telemetry::logWarn(
+                "invalid MCU bullet speed", state->bullet_speed,
+                "; using tracking-only fallback",
+                planner_tuning.default_bullet_speed, "m/s");
+            }
+          } else if (using_default_bullet_speed) {
+            L6Telemetry::logInfo(
+              "MCU bullet speed recovered", state->bullet_speed, "m/s");
+          }
+          using_default_bullet_speed = !bullet_speed_valid;
           const auto plan = planner.plan(
             toL4TargetState(target), planning_state, planner_context);
           if (!plan.valid) {
@@ -312,7 +329,8 @@ void AutoAimRuntime::run() {
             target,
             track_state,
             plan,
-            actual_pose);
+            actual_pose,
+            bullet_speed_valid);
 
           // L1: 下发 L5 生成的控制命令，并量出本帧规划到发送的耗时，
           // 供下一帧的延迟链使用。

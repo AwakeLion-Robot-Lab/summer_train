@@ -46,7 +46,8 @@ std::optional<SerialCommand> Controller::update(
   const std::optional<L3Estimation::TrackedTarget>& target,
   L3Estimation::TrackState track_state,
   const L4Planning::AimPlan& plan,
-  const std::optional<Eigen::Quaterniond>& actual_pose)
+  const std::optional<Eigen::Quaterniond>& actual_pose,
+  bool bullet_speed_valid)
 {
   std::optional<Eigen::Vector2d> actual_angles;
   if (actual_pose && actual_pose->coeffs().allFinite()) {
@@ -71,6 +72,7 @@ std::optional<SerialCommand> Controller::update(
   input.command_jump = command_angles && last_command_ &&
     std::abs(L6Telemetry::limit_rad(
       (*command_angles)[0] - last_command_->yaw)) > command_jump_threshold_;
+  input.bullet_speed_valid = bullet_speed_valid;
 
   last_decision_ = fire_decider_.decide(input);
   std::optional<SerialCommand> command = makeCommand(plan, last_decision_);

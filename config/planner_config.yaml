@@ -26,6 +26,10 @@ prediction:
   angle_tolerance_rad: 0.0
 
 ballistic:
+  # 下位机尚未拿到有效弹速时，用该值继续计算跟随角度；此时 L5 会强制
+  # shoot=false，只有收到有效实测弹速后才允许开火。
+  default_bullet_speed_mps: 27.0
+
   # 重力加速度绝对值，单位 m/s^2，必须大于 0。
   gravity_mps2: 9.80665
 

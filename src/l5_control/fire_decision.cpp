@@ -59,6 +59,9 @@ FireDecision FireDecider::decide(const FireInput& input) const
   if (input.command_jump) {
     reject(RejectReason::CommandJump);
   }
+  if (!input.bullet_speed_valid) {
+    reject(RejectReason::BadBulletSpeed);
+  }
 
   if (!input.target) {
     reject(RejectReason::NoTarget);
