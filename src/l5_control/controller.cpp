@@ -102,7 +102,7 @@ std::optional<SerialCommand> Controller::makeCommand(
   if (!angles) {
     return std::nullopt;
   }
-  SerialCommand command{(*angles)[0], (*angles)[1], decision.shoot};
+  SerialCommand command{(*angles)[0], -(*angles)[1], decision.shoot};
   if (plan.using_MPC && !plan.samples.empty()) {
     const auto &sample = plan.samples.front();
     command.yaw_velocity = sample.yaw_rate;
