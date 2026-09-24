@@ -1,5 +1,7 @@
 #include "l3_estimation/armor/track_roi.hpp"
 
+#include "l3_estimation/armor/armor_matcher.hpp"
+
 #include <Eigen/Core>
 
 #include <opencv2/imgproc.hpp>
@@ -63,6 +65,28 @@ std::optional<cv::Rect> bounds(const Focus & focus, const cv::Size & image_size)
     return std::nullopt;
   }
   return box;
+}
+
+std::vector<L2Perception::LightHint> hints(const Focus & focus)
+{
+  std::vector<L2Perception::LightHint> result;
+  if (focus.target == nullptr) {
+    return result;
+  }
+  EskfTarget predicted = focus.target->snapshot();
+  if (focus.motion_end > predicted.t()) {
+    predicted.predict(focus.motion_end);
+  }
+  const Eigen::VectorXd state = predicted.rawState();
+  for (const auto & [id, is_left] : lightSlots(predicted, state, focus.ctx, {})) {
+    const auto [top, bottom] = focus.ctx.project(id, is_left, state);
+    if (
+      std::isfinite(top.x) && std::isfinite(top.y) && std::isfinite(bottom.x) &&
+      std::isfinite(bottom.y)) {
+      result.push_back({top, bottom});
+    }
+  }
+  return result;
 }
 
 cv::Rect light(const cv::Rect & box, const cv::Size & image_size)

@@ -80,6 +80,26 @@ light_finder:
   armor_margin: 0.5
   # R/B 能量比大于它判红、小于它的倒数判蓝，中间判未知并丢弃。
   color_ratio_threshold: 1.10
+  # contour：light_roi 内二值化找轮廓，上面几项门限都给它用。
+  # profile：沿 L3 预测的每根灯条做垂直剖面找亮度脊线，不二值化、不看长宽比，
+  #          只用 min_length_px / max_angle_deg / color_ratio_threshold 和下面几项。
+  search: contour
+  # 垂直灯条方向搜索半宽 = max(下限, 系数 × 预测灯长)，单位 px。
+  profile_half_width_ratio: 0.5
+  profile_half_width_min_px: 4.0
+  # 沿灯条方向在预测端点外各多搜多少倍预测灯长（下限 2 px）。
+  profile_extend_ratio: 0.5
+  # 剖面 峰值 − 最小值 至少多少才算这一行有灯条，底图 0~255（见下一项）。
+  profile_min_contrast: 40.0
+  # 底图：目标通道与 G 都 >= 它的像素当过曝白核取 255，其余取 gain ×（目标 − 对方）。
+  # G 是分开白核（249~255）和白色背景（3m_high 海报 229~240）的那个通道。
+  profile_saturation: 245.0
+  # 非饱和像素的差分乘它，让白核（255）比贴车身一侧的光晕（B−R 180~215）高一档。
+  profile_diff_gain: 0.5
+  # 端点定在行峰值降到中位对比度的多少倍处，[0.5, 1)。半高处端点被光晕往外拉。
+  profile_end_level: 0.5
+  # 各行脊线中心对拟合直线的 RMS 残差上限，px。
+  profile_max_residual_px: 1.0
 
 number_classifier:
   enable: false

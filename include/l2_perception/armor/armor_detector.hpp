@@ -35,7 +35,7 @@ struct DetectTiming
   double decode{0.0};
   double refine{0.0};
   double number{0.0};
-  // 侧边灯条整条路：二值化 + 轮廓筛选 + 判色 + 与已检出板的判重。
+  // 侧边灯条整条路：二值化 + 轮廓筛选（或剖面搜索）+ 判色 + 与已检出板的判重。
   double side_light{0.0};
 };
 
@@ -68,12 +68,14 @@ public:
   //   light_roi 有值时在其中找侧边灯条，无值时 lights 为空；
   //   net_roi   整板网络只在这块区域里跑，缺省为整图；
   //   color     侧边灯条只保留该颜色，Unknown 表示红蓝都要。装甲板不按颜色
-  //             筛，由调用方按电控给的敌方颜色过滤。
+  //             筛，由调用方按电控给的敌方颜色过滤；
+  //   hints     L3 预测的侧边灯条位置，只在 finder.search 为 Profile 时用，
+  //             此时 light_roi 只起"这一帧要不要找侧边灯条"的开关作用。
   // 后端抛出的异常在这里转成一条日志和空结果，不会中断主循环。
   [[nodiscard]] ArmorFrame detectFrame(
     const cv::Mat& image, const std::optional<cv::Rect>& light_roi = std::nullopt,
     const std::optional<cv::Rect>& net_roi = std::nullopt,
-    ArmorColor color = ArmorColor::Unknown) const;
+    ArmorColor color = ArmorColor::Unknown, const std::vector<LightHint>& hints = {}) const;
 
   // 整板网络输入的宽高比（宽 / 高），取自后端的输入形状；后端不可用时返回 1.0。
   // L3 的 netFocusRoi 用它把 ROI 修成同一比例，减少 letterbox 填充。
@@ -97,7 +99,8 @@ private:
   NumberStats classifyNumbers(const cv::Mat& image, std::vector<Armor>& armors) const;
 
   std::vector<Light> findSideLights(
-    const cv::Mat& image, const cv::Rect& roi, ArmorColor color) const;
+    const cv::Mat& image, const cv::Rect& roi, const std::vector<LightHint>& hints,
+    ArmorColor color) const;
 
   std::unique_ptr<IInferenceBackend> armor_backend_;
   ArmorDecoder decoder_{};

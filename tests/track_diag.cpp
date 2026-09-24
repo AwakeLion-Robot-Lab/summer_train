@@ -71,6 +71,7 @@ const std::string kCommandLineKeys =
   "{bullet-speed | 27.0 | 喂给 L4 的弹速；默认与 SP auto_aim_test 一致（m/s）}"
   "{start-index s | 0 | 视频起始帧下标}"
   "{end-index e | 0 | 视频结束帧下标，0 表示到结尾}"
+  "{config | config/auto_aim.yaml | L2/L3/L4 参数；A/B 时指向改过的副本，不动仓库里那份}"
   "{out o | /tmp/track_diag | CSV 输出目录}"
   "{@input-path | records/3m_run_mid | avi 和 txt 的路径（不含后缀）}";
 
@@ -300,7 +301,7 @@ int main(int argc, char* argv[])
 
     // L2/L3/L4 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
     // YAML 里调噪声或灯条门限，这里根本看不出变化。
-    const auto runtime_config = runtime::loadConfig("config/auto_aim.yaml");
+    const auto runtime_config = runtime::loadConfig(cli.get<std::string>("config"));
 
     // 检测器与实机同一个工厂组装，只有模型路径和设备允许命令行覆盖。命令行换了
     // 模型时 YAML 里的 layout 未必配得上，按模型输出形状认。
@@ -394,6 +395,8 @@ int main(int argc, char* argv[])
     std::size_t number_accepted = 0;
     std::size_t number_dropped = 0;
     std::vector<double> ms_l2;
+    // 其中侧边灯条那一路（找灯条 + 判色 + 判重），只记 L3 给了 ROI 的帧。
+    std::vector<double> ms_side_light;
     std::vector<double> ms_l3;
     std::vector<double> ms_l4;
     std::vector<double> pred_pixel_err;
@@ -449,12 +452,13 @@ int main(int argc, char* argv[])
         tracker.lightRoi(q_world_barrel, timestamp, img.size());
       const cv::Rect net_roi = tracker.netFocusRoi(
         q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio());
+      const auto light_hints = tracker.lightHints(q_world_barrel, timestamp);
       const auto t_l2_begin = std::chrono::steady_clock::now();
       // 敌方颜色必须传进去：侧边灯条按它筛色，findLights 的通道相减也只在
       // 颜色已知时才启用。不传等于把这条路默认关掉，而且会把友方灯条一起
       // 喂进滤波器 —— auto_aim_test 一直是传的，两个回放器不能不一致。
       auto detection_frame =
-        detector.detectFrame(img, light_roi, net_roi, enemy_color);
+        detector.detectFrame(img, light_roi, net_roi, enemy_color, light_hints);
       const auto t_l2_end = std::chrono::steady_clock::now();
       auto armors = detection_frame.armors;
       std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
@@ -474,6 +478,7 @@ int main(int argc, char* argv[])
         if (used.isolated) ++side_light_used;
       }
       ms_l2.push_back(std::chrono::duration<double, std::milli>(t_l2_end - t_l2_begin).count());
+      if (light_roi) ms_side_light.push_back(detector.lastTiming().side_light);
       ms_l3.push_back(std::chrono::duration<double, std::milli>(t_l3_end - t_l3_begin).count());
 
       // 观测明细。IESKF 的正常更新只吃类别和角点，不跑 PnP，所以这里只记 L2
@@ -830,6 +835,12 @@ int main(int argc, char* argv[])
               << "  毙于 长度 " << light_stats.reject_length << " / 角度 "
               << light_stats.reject_angle << " / 卡方 "
               << light_stats.reject_chi2 << '\n'
+              << "  过门灯条 实测/预测长度 几何平均 "
+              << (light_stats.passed > 0
+                    ? std::exp(light_stats.log_length_ratio /
+                               static_cast<double>(light_stats.passed))
+                    : 0.0)
+              << '\n'
               << "数字分类采信/丢弃           " << number_accepted << " / "
               << number_dropped << '\n'
               << "角点精修 替换/保留网络      " << refine_hit << " / " << refine_kept
@@ -867,6 +878,9 @@ int main(int argc, char* argv[])
               << "-- 单帧耗时（ms）--\n"
               << "L2 检测  p50 " << percentile(ms_l2, 0.5) << "  p90 "
               << percentile(ms_l2, 0.9) << "  max " << percentile(ms_l2, 1.0) << '\n'
+              << "  侧边灯条 p50 " << percentile(ms_side_light, 0.5) << "  p90 "
+              << percentile(ms_side_light, 0.9) << "  max " << percentile(ms_side_light, 1.0)
+              << "  n=" << ms_side_light.size() << '\n'
               << "L3 跟踪  p50 " << percentile(ms_l3, 0.5) << "  p90 "
               << percentile(ms_l3, 0.9) << "  max " << percentile(ms_l3, 1.0) << '\n'
               << "L4 规划  p50 " << percentile(ms_l4, 0.5) << "  p90 "

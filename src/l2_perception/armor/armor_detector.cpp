@@ -90,9 +90,12 @@ double ArmorDetector::net_aspect_ratio() const noexcept
 }
 
 std::vector<Light> ArmorDetector::findSideLights(
-  const cv::Mat& image, const cv::Rect& roi, ArmorColor color) const
+  const cv::Mat& image, const cv::Rect& roi, const std::vector<LightHint>& hints,
+  ArmorColor color) const
 {
-  std::vector<Light> lights = findLights(image, roi, finder_config_, color);
+  std::vector<Light> lights = finder_config_.search == LightSearch::Profile
+                                ? searchLights(image, hints, finder_config_, color)
+                                : findLights(image, roi, finder_config_, color);
 
   // 丢掉判不出颜色的灯条；指定了颜色就只留该颜色。判不出颜色的多是数字笔画
   // 和光晕，留着会被 L3 当成灯条去关联。
@@ -109,7 +112,8 @@ std::vector<Light> ArmorDetector::findSideLights(
 
 ArmorFrame ArmorDetector::detectFrame(
   const cv::Mat& image, const std::optional<cv::Rect>& light_roi,
-  const std::optional<cv::Rect>& net_roi, ArmorColor color) const
+  const std::optional<cv::Rect>& net_roi, ArmorColor color,
+  const std::vector<LightHint>& hints) const
 {
   last_refine_ = {};
   last_numbers_ = {};
@@ -175,7 +179,7 @@ ArmorFrame ArmorDetector::detectFrame(
     if (light_roi) {
       const cv::Rect roi = *light_roi & image_rect;
       if (roi.area() > 0) {
-        last_lights_ = findSideLights(image, roi, color);
+        last_lights_ = findSideLights(image, roi, hints, color);
         // 已检出装甲板自己的灯条已经作为板的角点进了观测，不能再以侧边灯条的
         // 身份进一次；不管是不是正在跟踪的那辆车，都不是“侧边”灯条。
         for (const Light& light : last_lights_) {

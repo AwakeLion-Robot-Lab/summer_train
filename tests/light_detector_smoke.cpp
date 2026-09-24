@@ -128,6 +128,77 @@ int main()
               "a neighbour-plate light four lengths away must stay a side light");
     }
 
+    // 剖面搜索：光晕比核心暗得多（实拍如此），半高门槛切在核心边缘上，端点应
+    // 落回核心两端。hint 故意横向偏 3 px、纵向偏 2 px、角度偏 5°。
+    {
+      const cv::Scalar dim_blue{120, 50, 20};
+      const cv::Scalar dim_red{20, 50, 120};
+      cv::Mat scene(300, 500, CV_8UC3, cv::Scalar{30, 30, 30});
+      drawLight(scene, {100.0F, 100.0F}, 40.0F, 6.0F, 0.0F, dim_blue);
+      drawLight(scene, {300.0F, 100.0F}, 40.0F, 6.0F, 20.0F, dim_red);
+      // 斜看的侧边灯条：核心宽 2 px、长 30 px。
+      drawLight(scene, {100.0F, 220.0F}, 30.0F, 2.0F, 0.0F, dim_blue);
+
+      LightFinderConfig profile;
+      profile.search = L2Perception::LightSearch::Profile;
+      const auto hintAt = [](cv::Point2f center, float length, float tilt_deg) {
+        const float rad = tilt_deg * static_cast<float>(CV_PI) / 180.0F;
+        const cv::Point2f half(-std::sin(rad) * length * 0.5F, std::cos(rad) * length * 0.5F);
+        return L2Perception::LightHint{center - half, center + half};
+      };
+
+      const std::vector<Light> blue_found = L2Perception::searchLights(
+        scene, {hintAt({103.0F, 102.0F}, 40.0F, 5.0F)}, profile, ArmorColor::Blue);
+      require(blue_found.size() == 1, "profile must find the upright light");
+      const Light& found = blue_found.front();
+      // fillConvexPoly 填满第 80~120 行，按像素中心约定边缘在 79.5 与 120.5。
+      // 合成光晕是一块平台（B=120），半高门槛按峰值定，所以端点会被光晕往外拉
+      // 最多约 1 px；实拍光晕是平滑衰减的，这个偏差由回放上的长度偏差去量。
+      require(cv::norm(found.top - cv::Point2f{100.0F, 79.5F}) < 1.0,
+              "profile top endpoint, got " + std::to_string(found.top.x) + "," +
+                std::to_string(found.top.y));
+      require(cv::norm(found.bottom - cv::Point2f{100.0F, 120.5F}) < 1.0,
+              "profile bottom endpoint, got " + std::to_string(found.bottom.x) + "," +
+                std::to_string(found.bottom.y));
+      require(found.color == ArmorColor::Blue, "profile light colour");
+
+      const std::vector<Light> red_found = L2Perception::searchLights(
+        scene, {hintAt({302.0F, 99.0F}, 38.0F, 15.0F)}, profile, ArmorColor::Red);
+      require(red_found.size() == 1, "profile must find the tilted light");
+      require(std::abs(red_found.front().tilt_angle_deg - 20.0F) < 2.0F,
+              "profile tilted light angle");
+      require(cv::norm(red_found.front().center - cv::Point2f{300.0F, 100.0F}) < 1.0,
+              "profile tilted light center");
+
+      const std::vector<Light> thin = L2Perception::searchLights(
+        scene, {hintAt({102.0F, 221.0F}, 30.0F, 0.0F)}, profile, ArmorColor::Blue);
+      require(thin.size() == 1, "profile must find a thin oblique light");
+      require(std::abs(thin.front().length - 30.0) < 2.0, "thin light length");
+
+      require(
+        L2Perception::searchLights(
+          scene, {hintAt({400.0F, 220.0F}, 40.0F, 0.0F)}, profile, ArmorColor::Blue)
+          .empty(),
+        "a hint on empty background must find nothing");
+
+      require(
+        L2Perception::searchLights(
+          scene,
+          {hintAt({103.0F, 102.0F}, 40.0F, 5.0F), hintAt({98.0F, 99.0F}, 40.0F, -3.0F)},
+          profile, ArmorColor::Blue)
+            .size() == 1,
+        "two hints on one light must yield one light");
+
+      // 灯条伸出搜索范围（贴着画面边）时不收：端点没收住就不给端点观测。
+      cv::Mat edge(120, 120, CV_8UC3, cv::Scalar{30, 30, 30});
+      drawLight(edge, {60.0F, 20.0F}, 60.0F, 6.0F, 0.0F, dim_blue);
+      require(
+        L2Perception::searchLights(
+          edge, {hintAt({60.0F, 20.0F}, 60.0F, 0.0F)}, profile, ArmorColor::Blue)
+          .empty(),
+        "a light cut by the image border must be rejected");
+    }
+
     std::cout << "light detector smoke test passed\n";
     return 0;
   } catch (const std::exception& error) {

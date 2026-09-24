@@ -91,6 +91,10 @@ public:
     const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
     const cv::Size & image_size) const;
 
+  // 剖面搜索的侧边灯条位置，门限与 lightRoi 相同，不满足时为空。见 Roi::hints。
+  std::vector<L2Perception::LightHint> lightHints(
+    const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp) const;
+
   // 送给网络的检测 ROI，形状见 Roi::net。目标不可聚焦时返回整图而不是空，
   // 调用方拿到的永远是一个能直接用的矩形。
   cv::Rect netFocusRoi(

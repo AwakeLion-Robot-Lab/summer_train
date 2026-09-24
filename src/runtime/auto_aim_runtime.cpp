@@ -187,9 +187,11 @@ void AutoAimRuntime::run() {
           // 后者返回空，等价于全图检测、不给独立灯条。
           std::optional<cv::Rect> light_roi;
           std::optional<cv::Rect> net_roi;
+          std::vector<L2Perception::LightHint> light_hints;
           if (tracker && tracker->ready()) {
             light_roi =
               tracker->lightRoi(image_pose, timestamp, frame.size());
+            light_hints = tracker->lightHints(image_pose, timestamp);
             net_roi = tracker->netFocusRoi(
               image_pose, timestamp, frame.size(),
               armor_detector.net_aspect_ratio());
@@ -197,7 +199,8 @@ void AutoAimRuntime::run() {
           // 侧边灯条按下位机给的敌方颜色筛：传 Unknown 会把友军灯条也送进
           // L3 关联。装甲板在下面按同一颜色过滤。
           auto perception = armor_detector.detectFrame(
-            frame, light_roi, net_roi, enemyArmorColor(state->enemy_color));
+            frame, light_roi, net_roi, enemyArmorColor(state->enemy_color),
+            light_hints);
           std::erase_if(perception.armors, [&state](const auto& armor) {
             return !isEnemyArmor(armor.color, state->enemy_color);
           });

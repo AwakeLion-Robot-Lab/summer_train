@@ -7,6 +7,7 @@
 #include <Eigen/Core>
 
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 // 观测关联：把本帧的检测挂到整车的某一块物理板、某一根物理灯条上。
@@ -38,6 +39,10 @@ struct LightMatchStats
   std::size_t reject_angle{0};
   std::size_t reject_chi2{0};
   std::size_t passed{0};
+  // 过了三道门的 (灯条, 槽位) 对，log(实测长度 / 预测长度) 的累加。除以 passed
+  // 再取 exp 是长度比的几何平均：偏离 1 说明端点定义与观测模型的灯条长度不一致，
+  // 这种偏差是系统性的，会一直把滤波器往一个方向拽。
+  double log_length_ratio{0.0};
   // 贪心配对之后真正返回的根数，必然不大于 passed。
   std::size_t matched{0};
   // 至少采纳了一根侧边灯条的帧数。
@@ -53,6 +58,14 @@ struct LightMatchStats
 std::vector<MatchedArmor> matchArmor(
   const EskfTarget & target, const Eigen::VectorXd & state, const ObsContext & ctx,
   const std::vector<Armor> & armors);
+
+// 侧边灯条可能出现的槽位 (板编号, 是否左灯)：最正对的那块板的左右灯条，加上
+// 相邻两块板靠近它的各一根；matched_armors 里已配成完整板的板和背对相机的板
+// 不算。matchLight 用它开候选，剖面搜索用它（matched_armors 传空）定搜索位置，
+// 两边必须是同一组，否则搜到的灯条在关联时没有槽位可去。
+std::vector<std::pair<int, bool>> lightSlots(
+  const EskfTarget & target, const Eigen::VectorXd & state, const ObsContext & ctx,
+  const std::vector<MatchedArmor> & matched_armors);
 
 // 把侧边灯条关联到整车的某根物理灯条上。候选只取最正对的那块板及其两块邻板
 // 靠近它的那根灯条，已配成完整板的板和背对相机的板不参与；按长度比、角度差、

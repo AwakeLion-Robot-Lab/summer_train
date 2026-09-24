@@ -124,6 +124,14 @@ struct Light {
   std::size_t id{0};
 };
 
+// L3 按整车预测投影出的一根灯条的上下端点，原图像素系。剖面搜索（searchLights）
+// 只在它附近找灯条，不做全区域二值化。L2 只拿它当搜索位置，不关心它是哪块板
+// 的哪根灯条——那仍由 L3 关联时决定。
+struct LightHint {
+  cv::Point2f top{};
+  cv::Point2f bottom{};
+};
+
 // 一帧装甲感知的输出：网络检出的装甲板，以及 light_roi 内不属于任何检出
 // 装甲板的侧边灯条，后者交给 L3 做额外的端点观测。
 struct ArmorFrame {

@@ -442,6 +442,13 @@ public:
     return tracker_.lightRoi(q_world_barrel, timestamp, image_size);
   }
 
+  std::vector<L2Perception::LightHint> lightHints(
+    const std::optional<Eigen::Quaterniond>& q_world_barrel,
+    L3Estimation::TimePoint timestamp) const
+  {
+    return tracker_.lightHints(q_world_barrel, timestamp);
+  }
+
   // 本帧关联到的板数与编号。关联在编号间来回跳会让整车 yaw 每帧偏 2π/N。
   int lastMatchCount() const noexcept { return tracker_.lastMatchCount(); }
   std::string lastMatchedIdsString() const { return tracker_.lastMatchedIds(); }
@@ -1575,9 +1582,10 @@ int main(int argc, char** argv)
       // 远距小目标裁剪后再 resize 相当于局部放大。目标丢失时它自动退化为整图。
       const cv::Rect net_roi = tracker.netFocusRoi(
         q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio());
+      const auto light_hints = tracker.lightHints(q_world_barrel, timestamp);
       clock.lap("L3 ROI 先验");
       L2Perception::ArmorFrame detection_frame =
-        detector.detectFrame(img, light_roi, net_roi, enemy_color);
+        detector.detectFrame(img, light_roi, net_roi, enemy_color, light_hints);
       clock.lap("L2 检测");
       {
         // L2 常年占掉管线九成，只报总数没法定位是网络、精修还是侧边灯条那一路

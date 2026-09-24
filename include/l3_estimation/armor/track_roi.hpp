@@ -1,5 +1,6 @@
 #pragma once
 
+#include "l2_perception/armor.hpp"
 #include "l3_estimation/armor/armor_observation.hpp"
 #include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/types.hpp"
@@ -7,6 +8,7 @@
 #include <opencv2/core/types.hpp>
 
 #include <optional>
+#include <vector>
 
 // 由整车预测算出下一帧的搜索窗口。
 //
@@ -36,6 +38,10 @@ std::optional<cv::Rect> bounds(const Focus & focus, const cv::Size & image_size)
 // 这个 ROI 越紧越好：范围一大，别的车和环境灯光就容易混进候选，CPU 开销和
 // 误匹配概率一起上去。
 cv::Rect light(const cv::Rect & box, const cv::Size & image_size);
+
+// 剖面搜索的位置：把目标外推到 motion_end，投影出 lightSlots 那几根灯条的端点。
+// 与 bounds 同一份外推，所以 ROI 和搜索位置不会各说各的。
+std::vector<L2Perception::LightHint> hints(const Focus & focus);
 
 // 送给网络的检测 ROI。同样从预测包围框出发，但比 light() 多三步：按
 // target_wh_ratio（网络输入宽高比）修正形状以减少 letterbox 填充、随距上次

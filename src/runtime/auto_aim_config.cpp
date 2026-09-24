@@ -176,6 +176,34 @@ void normalize(AutoAimConfig& config)
     config.light_finder.color_ratio_threshold = light_finder_defaults.color_ratio_threshold;
   }
 
+  // 剖面搜索的几个量都必须为正：半宽或外扩为 0 时搜不到任何东西，却不会报错，
+  // 看起来就像侧边灯条这一路"没收益"。
+  auto & finder = config.light_finder;
+  if (!(positiveFinite(finder.profile_half_width_ratio) &&
+        positiveFinite(finder.profile_half_width_min_px))) {
+    finder.profile_half_width_ratio = light_finder_defaults.profile_half_width_ratio;
+    finder.profile_half_width_min_px = light_finder_defaults.profile_half_width_min_px;
+  }
+  if (!positiveFinite(finder.profile_extend_ratio)) {
+    finder.profile_extend_ratio = light_finder_defaults.profile_extend_ratio;
+  }
+  if (!(finder.profile_min_contrast > 0.0F && finder.profile_min_contrast < 255.0F)) {
+    finder.profile_min_contrast = light_finder_defaults.profile_min_contrast;
+  }
+  if (!(finder.profile_saturation > 0.0F && finder.profile_saturation <= 255.0F)) {
+    finder.profile_saturation = light_finder_defaults.profile_saturation;
+  }
+  if (!(finder.profile_diff_gain > 0.0F && finder.profile_diff_gain <= 1.0F)) {
+    finder.profile_diff_gain = light_finder_defaults.profile_diff_gain;
+  }
+  // 端点门槛低于拟合用的半高会把光晕行算进灯条，到 1 则一格都走不出去。
+  if (!(finder.profile_end_level >= 0.5F && finder.profile_end_level < 1.0F)) {
+    finder.profile_end_level = light_finder_defaults.profile_end_level;
+  }
+  if (!positiveFinite(finder.profile_max_residual_px)) {
+    finder.profile_max_residual_px = light_finder_defaults.profile_max_residual_px;
+  }
+
   const L2Perception::NumberClassifierConfig number_defaults;
   // 置信度门限落到 [0, 1] 外等于放弃这道筛选或全盘拒绝，两种都不是想要的。
   if (!(config.number_classifier.min_confidence >= 0.0 &&
@@ -501,6 +529,28 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(light_finder, "armor_margin", config.light_finder.armor_margin);
   readValue(
     light_finder, "color_ratio_threshold", config.light_finder.color_ratio_threshold);
+  if (light_finder && light_finder["search"]) {
+    const std::string search = light_finder["search"].as<std::string>();
+    if (search == "contour") {
+      config.light_finder.search = L2Perception::LightSearch::Contour;
+    } else if (search == "profile") {
+      config.light_finder.search = L2Perception::LightSearch::Profile;
+    } else {
+      L6Telemetry::logWarn(
+        "light_finder.search must be 'contour' or 'profile', keep default; got", search);
+    }
+  }
+  readValue(
+    light_finder, "profile_half_width_ratio", config.light_finder.profile_half_width_ratio);
+  readValue(
+    light_finder, "profile_half_width_min_px", config.light_finder.profile_half_width_min_px);
+  readValue(light_finder, "profile_extend_ratio", config.light_finder.profile_extend_ratio);
+  readValue(light_finder, "profile_min_contrast", config.light_finder.profile_min_contrast);
+  readValue(light_finder, "profile_saturation", config.light_finder.profile_saturation);
+  readValue(light_finder, "profile_diff_gain", config.light_finder.profile_diff_gain);
+  readValue(light_finder, "profile_end_level", config.light_finder.profile_end_level);
+  readValue(
+    light_finder, "profile_max_residual_px", config.light_finder.profile_max_residual_px);
 
 
   const YAML::Node number_classifier = root["number_classifier"];

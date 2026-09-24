@@ -145,6 +145,41 @@ std::vector<MatchedArmor> matchArmor(
   return result;
 }
 
+std::vector<std::pair<int, bool>> lightSlots(
+  const EskfTarget & target, const Eigen::VectorXd & state, const ObsContext & ctx,
+  const std::vector<MatchedArmor> & matched_armors)
+{
+  std::vector<std::pair<int, bool>> slots;
+  const int count = target.armor_num();
+  if (count <= 0) {
+    return slots;
+  }
+  const std::vector<double> facing = facingScores(target, state, ctx);
+  const int closest_id =
+    static_cast<int>(std::max_element(facing.begin(), facing.end()) - facing.begin());
+
+  const auto matchedPlate = [&matched_armors](int id) {
+    return std::any_of(
+      matched_armors.begin(), matched_armors.end(),
+      [id](const MatchedArmor & matched) { return matched.first == id; });
+  };
+  const auto add = [&](int id, bool is_left) {
+    // 已配成完整板的板，两根灯条本帧都由 update() 从板的角点拆出来，不再需要
+    // 侧边灯条补位；背对相机的板看不到灯条，槽位留着只会招来错配。
+    if (matchedPlate(id) || !(facing[id] > 0.0)) {
+      return;
+    }
+    slots.emplace_back(id, is_left);
+  };
+
+  // 候选限定在最正对那块板的左右灯条，加上相邻两块板靠近它的各一根。
+  add((closest_id + count - 1) % count, false);
+  add((closest_id + 1) % count, true);
+  add(closest_id, false);
+  add(closest_id, true);
+  return slots;
+}
+
 std::vector<MatchedLight> matchLight(
   const EskfTarget & target, const Eigen::VectorXd & state, const ObsContext & ctx,
   const std::vector<L2Perception::Light> & lights,
@@ -164,33 +199,11 @@ std::vector<MatchedLight> matchLight(
     return result;
   }
 
-  const int count = target.armor_num();
-  const std::vector<double> facing = facingScores(target, state, ctx);
-  const int closest_id =
-    static_cast<int>(std::max_element(facing.begin(), facing.end()) - facing.begin());
-
   using PredictedLight = std::tuple<int, bool, std::pair<cv::Point2f, cv::Point2f>>;
   std::vector<PredictedLight> visible_lights;
-  visible_lights.reserve(4);
-  const auto matchedPlate = [&matched_armors](int id) {
-    return std::any_of(
-      matched_armors.begin(), matched_armors.end(),
-      [id](const MatchedArmor & matched) { return matched.first == id; });
-  };
-  const auto addVisible = [&](int id, bool is_left) {
-    // 已配成完整板的板，两根灯条本帧都由 update() 从板的角点拆出来，不再需要
-    // 侧边灯条补位；背对相机的板看不到灯条，槽位留着只会招来错配。
-    if (matchedPlate(id) || !(facing[id] > 0.0)) {
-      return;
-    }
+  for (const auto & [id, is_left] : lightSlots(target, state, ctx, matched_armors)) {
     visible_lights.emplace_back(id, is_left, ctx.project(id, is_left, state));
-  };
-
-  // 候选限定在最正对那块板的左右灯条，加上相邻两块板靠近它的各一根。
-  addVisible((closest_id + count - 1) % count, false);
-  addVisible((closest_id + 1) % count, true);
-  addVisible(closest_id, false);
-  addVisible(closest_id, true);
+  }
 
   if (visible_lights.empty()) {
     if (stats != nullptr) {
@@ -255,6 +268,7 @@ std::vector<MatchedLight> matchLight(
     }
     if (stats != nullptr) {
       ++stats->passed;
+      stats->log_length_ratio += std::log(light.length / predicted_length);
     }
     return *distance;
   };

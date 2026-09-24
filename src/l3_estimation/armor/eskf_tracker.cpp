@@ -385,6 +385,13 @@ std::optional<cv::Rect> EskfTracker::lightRoi(
   return Roi::light(*box, image_size);
 }
 
+std::vector<L2Perception::LightHint> EskfTracker::lightHints(
+  const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp) const
+{
+  const auto focus = roiFocus(q_world_barrel, timestamp, true);
+  return focus ? Roi::hints(*focus) : std::vector<L2Perception::LightHint>{};
+}
+
 cv::Rect EskfTracker::netFocusRoi(
   const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
   const cv::Size & image_size, double target_wh_ratio) const
