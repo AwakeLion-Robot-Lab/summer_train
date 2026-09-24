@@ -175,6 +175,15 @@ int main()
       require(thin.size() == 1, "profile must find a thin oblique light");
       require(std::abs(thin.front().length - 30.0) < 2.0, "thin light length");
 
+      // 车身倾斜时的侧面板：灯条在图像里斜 55°，超过 max_angle_deg。轮廓法按
+      // 图像竖直方向判会丢掉它，剖面搜索按预测方向判（预测偏 5°）要留下。
+      cv::Mat tilted_scene(200, 200, CV_8UC3, cv::Scalar{30, 30, 30});
+      drawLight(tilted_scene, {100.0F, 100.0F}, 40.0F, 6.0F, 55.0F, dim_blue);
+      const std::vector<Light> steep = L2Perception::searchLights(
+        tilted_scene, {hintAt({101.0F, 99.0F}, 40.0F, 50.0F)}, profile, ArmorColor::Blue);
+      require(steep.size() == 1, "profile must keep a light tilted past max_angle_deg");
+      require(std::abs(steep.front().tilt_angle_deg - 55.0F) < 2.0F, "steep light angle");
+
       require(
         L2Perception::searchLights(
           scene, {hintAt({400.0F, 220.0F}, 40.0F, 0.0F)}, profile, ArmorColor::Blue)

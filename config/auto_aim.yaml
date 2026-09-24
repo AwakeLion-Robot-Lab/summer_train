@@ -74,6 +74,7 @@ light_finder:
   # 外接矩形 短边 / 长边，FYT 原值。
   min_ratio: 0.08
   max_ratio: 0.4
+  # 偏离参考方向的最大角度：contour 相对图像竖直，profile 相对预测灯条方向。
   max_angle_deg: 40.0
   min_length_px: 4.0
   # 灯条中心落在检出板外接框外扩这么多倍灯长的范围内，就算那块板自己的灯条。

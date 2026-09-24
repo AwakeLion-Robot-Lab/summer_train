@@ -325,7 +325,11 @@ std::optional<Found> searchOne(
     return std::nullopt;
   }
   light.tilt_angle_deg = tiltDegrees(light.top, light.bottom);
-  if (!(light.tilt_angle_deg < config.max_angle_deg)) {
+  // 方向门以预测灯条为参考，不以图像竖直方向为参考：车身倾斜、斜看侧面板时
+  // 灯条在图像里可以斜过 40°，预测也跟着斜。拟合直线在预测轴系里的斜率就是
+  // 两者夹角的正切。
+  const double off_axis_deg = std::atan(std::abs(slope)) * 180.0 / CV_PI;
+  if (!(off_axis_deg < config.max_angle_deg)) {
     return std::nullopt;
   }
   light.center = (light.top + light.bottom) * 0.5F;

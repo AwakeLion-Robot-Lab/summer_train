@@ -33,7 +33,9 @@ struct LightFinderConfig
   // 最小外接矩形的 短边 / 长边，落在区间外的斑点不是灯条。
   float min_ratio{0.08F};
   float max_ratio{0.4F};
-  // 端点连线偏离竖直方向的最大角度，单位为度。
+  // 端点连线偏离参考方向的最大角度，单位为度。Contour 的参考是图像竖直方向
+  // （盲检要靠它挡掉数字横杠、地面反光这类横着的亮条）；Profile 的参考是预测
+  // 灯条的方向，灯条在图像里斜多少都不受限。
   float max_angle_deg{40.0F};
   // 灯条长度下限，单位为 pixel。
   float min_length{4.0F};
