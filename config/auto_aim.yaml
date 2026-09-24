@@ -84,7 +84,8 @@ light_finder:
   # contour：light_roi 内二值化找轮廓，上面几项门限都给它用。
   # profile：沿 L3 预测的每根灯条做垂直剖面找亮度脊线，不二值化、不看长宽比，
   #          只用 min_length_px / max_angle_deg / color_ratio_threshold 和下面几项。
-  search: contour
+  # 回放上 contour 几乎采纳不到灯条（见 replay_ab_log 剖面搜索一节）。
+  search: profile
   # 垂直灯条方向搜索半宽 = max(下限, 系数 × 预测灯长)，单位 px。
   profile_half_width_ratio: 0.5
   profile_half_width_min_px: 4.0
@@ -150,15 +151,16 @@ ieskf:
   sigma_along_by_length: 0.0
   sigma_perp_by_length: 0.0
   sigma_min_px: 6.32
-  # 侧边灯条只有几何关联、没有类别证据，sigma 再乘上它。
-  isolated_light_sigma_scale: 1.4
+  # 侧边灯条只有几何关联、没有类别证据，sigma 再乘上它。它只是整车的辅助约束：
+  # 1.4 时 p90 砍得最多但 p50 在 2.9 rad/s 小陀螺上 +18%；3 时 p50 回到 off 水平、
+  # p90 仍平均 -7.5%。扫描见 replay_ab_log。
+  isolated_light_sigma_scale: 3.0
   # 单块完整板时 IPPE 左右灯条深度差的 sigma（米）。
   armor_lights_depth_diff_sigma: 0.1
 
   # 侧边灯条关联，几道门都是硬拒绝：长度比、角度差（rad）、马氏距离（4 自由度，
-  # 13.28 为 99% 分位），以及见过 0 号以外的板之后才启用。回放上帮了八段里的
-  # 五段：动目标正收益，静止的 3m_mid / 3m_low 负收益。
-  enable_lights_measure: false
+  # 13.28 为 99% 分位），以及见过 0 号以外的板之后才启用。
+  enable_lights_measure: true
   light_match_length_ratio_gate: 0.2
   light_match_angle_gate: 0.2
   light_match_chi2_gate: 13.28
