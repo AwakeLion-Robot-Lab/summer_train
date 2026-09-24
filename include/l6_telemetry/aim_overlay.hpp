@@ -37,11 +37,24 @@ struct AimOverlayInput
 };
 
 // 在原图上画：检测角点、送入滤波器的单板重投影与朝向箭头、EKF 展开的整车、
-// Plan 的命中板、fire_feasible 时的当前装甲板，以及一行状态文字。就地修改 image。
+// Tracker 进入 Tracking 后的红色命中预测板、fire_feasible 时包在
+// 红框外的紫色边沿，以及一行状态文字。就地修改 image。
 void drawAimOverlay(
   cv::Mat& image, const AimOverlayInput& input,
   const L3Estimation::PnpSolver& solver,
   const L1Sensor::CameraCalibration& calibration);
+
+// 只有 Plan 有效、板号和命中时刻合法时，才返回命中时刻预测板。
+std::optional<Eigen::Vector4d> plannedImpactArmorPose(
+  const std::optional<L3Estimation::TrackedTarget>& target,
+  const L4Planning::AimPlan& plan);
+
+// 仅当 Tracker 处于 Tracking 且 Plan 有效时返回红色命中预测板。
+// 规划无效或 Detecting/TempLost/Lost 时均不返回红框。
+std::optional<Eigen::Vector4d> trackingRedArmorPose(
+  const std::optional<L3Estimation::TrackedTarget>& target,
+  L3Estimation::TrackState track_state,
+  const L4Planning::AimPlan& plan);
 
 // 以下是叠加层的组成部件，离线回放另外还要画代价曲线和外推框，所以单独导出。
 cv::Point toPixel(const cv::Point2f& point);

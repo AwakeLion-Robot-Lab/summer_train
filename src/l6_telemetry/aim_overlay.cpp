@@ -54,30 +54,23 @@ void drawAimOverlay(
     drawVehicle(
       image, current_armors, type, input.target->name, solver,
       {0, 255, 0}, 2);
-    // 红色：Plan 选中的命中时刻预测板。
-    if (input.plan.valid && input.plan.armor_id >= 0 &&
-        input.plan.impact_time >= input.target->t()) {
-      L3Estimation::TrackedTarget predicted = *input.target;
-      predicted.predict(input.plan.impact_time);
-      const auto predicted_armors = predicted.armor_xyza_list();
-      const auto selected = static_cast<std::size_t>(input.plan.armor_id);
-      if (selected < predicted_armors.size()) {
+    const auto tracked_armor = trackingRedArmorPose(
+      input.target, input.track_state, input.plan);
+    if (tracked_armor) {
+      // fire_feasible 时先画同一命中预测板的粗紫框，再在上面
+      // 画细红框，让紫色作为红框外沿始终可见。使用 fire_feasible
+      // 而不是 shoot，使总开火开关关闭时仍能可视化判定结果。
+      if (input.fire.fire_feasible) {
         drawVehicle(
-          image, {predicted_armors[selected]}, type, input.target->name, solver,
-          {0, 0, 255}, 2);
+          image, {*tracked_armor}, type, input.target->name, solver,
+          {255, 0, 255}, 4);
       }
-    }
 
-    // 紫色：只表示本帧 fire_feasible，画在 L3 当前时刻的
-    // 装甲板位姿上，不再与红色的命中时刻预测位姿绑定。
-    // 使用 fire_feasible 而不是 shoot，使总开火开关关闭时仍能可视化判定结果。
-    if (input.fire.fire_feasible && input.plan.armor_id >= 0) {
-      const auto selected = static_cast<std::size_t>(input.plan.armor_id);
-      if (selected < current_armors.size()) {
-        drawVehicle(
-          image, {current_armors[selected]}, type, input.target->name, solver,
-          {255, 0, 255}, 2);
-      }
+      // 红色：只有 Tracker 处于 Tracking 且 Plan 有效时，
+      // 才画 Plan 选中的命中时刻预测板。
+      drawVehicle(
+        image, {*tracked_armor}, type, input.target->name, solver,
+        {0, 0, 255}, 2);
     }
   }
 
@@ -95,6 +88,37 @@ void drawAimOverlay(
   drawOutlinedText(
     image, status, {12, 28},
     input.fire.shoot ? cv::Scalar{0, 0, 255} : cv::Scalar{0, 255, 255}, 0.7);
+}
+
+std::optional<Eigen::Vector4d> plannedImpactArmorPose(
+  const std::optional<L3Estimation::TrackedTarget>& target,
+  const L4Planning::AimPlan& plan)
+{
+  if (!target || !plan.valid || plan.armor_id < 0 ||
+      plan.impact_time < target->t()) {
+    return std::nullopt;
+  }
+
+  L3Estimation::TrackedTarget predicted = *target;
+  predicted.predict(plan.impact_time);
+  const auto predicted_armors = predicted.armor_xyza_list();
+  const auto selected = static_cast<std::size_t>(plan.armor_id);
+  if (selected >= predicted_armors.size() ||
+      !predicted_armors[selected].allFinite()) {
+    return std::nullopt;
+  }
+  return predicted_armors[selected];
+}
+
+std::optional<Eigen::Vector4d> trackingRedArmorPose(
+  const std::optional<L3Estimation::TrackedTarget>& target,
+  L3Estimation::TrackState track_state,
+  const L4Planning::AimPlan& plan)
+{
+  if (!target || track_state != L3Estimation::TrackState::Tracking) {
+    return std::nullopt;
+  }
+  return plannedImpactArmorPose(target, plan);
 }
 
 cv::Point toPixel(const cv::Point2f& point)
@@ -196,7 +220,7 @@ bool isFilterInputArmor(const L3Estimation::Armor& armor)
     std::isfinite(armor.ypr_in_world[0]);
 }
 
-// 将当前帧实际送入目标滤波器的单板 PnP 位姿重投影为红框。
+// 将当前帧实际送入目标滤波器的单板 PnP 位姿重投影为绿框。
 void drawFilterInputArmors(
   cv::Mat& image,
   const std::vector<L3Estimation::Armor>& observations,

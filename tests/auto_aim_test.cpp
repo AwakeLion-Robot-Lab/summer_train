@@ -971,17 +971,11 @@ int main(int argc, char** argv)
       const double command_pitch = plan.using_MPC && !plan.samples.empty()
         ? plan.samples.front().pitch
         : plan.pitch;
-      std::optional<Eigen::Vector4d> planned_armor_pose;
-      if (target && plan.valid && plan_armor_id >= 0 &&
-          plan.impact_time >= target->t()) {
-        auto impact_target = *target;
-        impact_target.predict(plan.impact_time);
-        const auto impact_armors = impact_target.armor_xyza_list();
-        const auto selected = static_cast<std::size_t>(plan_armor_id);
-        if (selected < impact_armors.size()) {
-          planned_armor_pose = impact_armors[selected];
-        }
-      }
+      const std::optional<Eigen::Vector4d> planned_armor_pose =
+        L6Telemetry::plannedImpactArmorPose(target, plan);
+      const std::optional<Eigen::Vector4d> tracked_armor_pose =
+        L6Telemetry::trackingRedArmorPose(
+          target, tracker.state(), plan);
 
       L5Control::FireInput fire_input;
       fire_input.target = target;
@@ -1107,10 +1101,11 @@ int main(int argc, char** argv)
           img, target_armor_poses, armor_type, target->name, solver,
           {0, 255, 0}, 2, overlay_shift);
 
-        // Plan 的命中时刻预测板始终画红框。
-        if (plan.valid && planned_armor_pose) {
+        // 只有 Tracker 处于 Tracking 且 Plan 有效时，
+        // 才画 Plan 选中的命中时刻预测板。
+        if (tracked_armor_pose) {
           drawVehicle(
-            img, {*planned_armor_pose}, armor_type, target->name, solver,
+            img, {*tracked_armor_pose}, armor_type, target->name, solver,
             {0, 0, 255}, 2, overlay_shift);
         }
 
@@ -1142,10 +1137,10 @@ int main(int argc, char** argv)
                    cv::LINE_AA);
           cv::circle(img, center, 18, color, 2, cv::LINE_AA);
         }
-        if (planned_armor_pose) {
+        if (tracked_armor_pose) {
           const auto fire_pixel =
             projectWorldPoint(
-              planned_armor_pose->head<3>(), calibration, q_world_barrel);
+              tracked_armor_pose->head<3>(), calibration, q_world_barrel);
           if (fire_pixel) {
             cv::circle(img, toPixel(*fire_pixel), 9, {255, 0, 255}, 2, cv::LINE_AA);
           }

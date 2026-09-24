@@ -3,6 +3,7 @@
 #include "l4_planning/types.hpp"
 #include "l4_planning/predictor.hpp"
 #include "l5_control/reject_reason.hpp"
+#include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/auto_aim_trace.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "runtime/l4_target_adapter.hpp"
@@ -136,6 +137,35 @@ int main()
       (observed.ekf_x() - snapshot->filter_state->ekf_x()).norm() > 1e-12) {
     std::cerr << "L4 prediction must use an isolated copy of the L3 EKF\n";
     return 8;
+  }
+
+  // 只有 Tracking 且规划有效时才画红色命中时刻预测板。
+  std::optional<L3Estimation::TrackedTarget> overlay_target = observed;
+  L4Planning::AimPlan invalid_plan;
+  if (L6Telemetry::trackingRedArmorPose(
+        overlay_target, L3Estimation::TrackState::Detecting, invalid_plan) ||
+      L6Telemetry::plannedImpactArmorPose(overlay_target, invalid_plan)) {
+    std::cerr << "Overlay drew a red/impact armor before tracking or planning\n";
+    return 11;
+  }
+  if (L6Telemetry::trackingRedArmorPose(
+        overlay_target, L3Estimation::TrackState::Tracking, invalid_plan)) {
+    std::cerr << "Tracking overlay drew a red armor for an invalid plan\n";
+    return 12;
+  }
+
+  L4Planning::AimPlan valid_plan;
+  valid_plan.valid = true;
+  valid_plan.armor_id = 1;
+  valid_plan.impact_time = impact_time;
+  const auto impact_armor =
+    L6Telemetry::plannedImpactArmorPose(overlay_target, valid_plan);
+  const auto planned_red = L6Telemetry::trackingRedArmorPose(
+    overlay_target, L3Estimation::TrackState::Tracking, valid_plan);
+  if (!impact_armor || !planned_red ||
+      (*impact_armor - *planned_red).norm() > 1e-12) {
+    std::cerr << "Valid plan did not select the predicted impact armor\n";
+    return 13;
   }
 
   std::cout << "Auto aim data types smoke test passed\n";
