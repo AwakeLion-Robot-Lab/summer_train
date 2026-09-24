@@ -1,1 +1,386 @@
 [
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-DNDEBUG", "-o", "build/.objs/logger_smoke/linux/x86_64/release/tests/logger_smoke.cpp.o", "tests/logger_smoke.cpp"],
+  "file": "tests/logger_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-DNDEBUG", "-o", "build/.objs/logger_smoke/linux/x86_64/release/src/l6_telemetry/logger.cpp.o", "src/l6_telemetry/logger.cpp"],
+  "file": "src/l6_telemetry/logger.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-DNDEBUG", "-o", "build/.objs/fps_counter_smoke/linux/x86_64/release/tests/fps_counter_smoke.cpp.o", "tests/fps_counter_smoke.cpp"],
+  "file": "tests/fps_counter_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-DNDEBUG", "-o", "build/.objs/fps_counter_smoke/linux/x86_64/release/src/l6_telemetry/fps_counter.cpp.o", "src/l6_telemetry/fps_counter.cpp"],
+  "file": "src/l6_telemetry/fps_counter.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/tiny_mpc_smoke/linux/x86_64/release/tests/tiny_mpc_smoke.cpp.o", "tests/tiny_mpc_smoke.cpp"],
+  "file": "tests/tiny_mpc_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/planner_tracking_smoke/linux/x86_64/release/tests/planner_tracking_smoke.cpp.o", "tests/planner_tracking_smoke.cpp"],
+  "file": "tests/planner_tracking_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/track_diag/linux/x86_64/release/tests/track_diag.cpp.o", "tests/track_diag.cpp"],
+  "file": "tests/track_diag.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/auto_aim_types_smoke/linux/x86_64/release/tests/auto_aim_types_smoke.cpp.o", "tests/auto_aim_types_smoke.cpp"],
+  "file": "tests/auto_aim_types_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/fire_decision_smoke/linux/x86_64/release/tests/fire_decision_smoke.cpp.o", "tests/fire_decision_smoke.cpp"],
+  "file": "tests/fire_decision_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/pnp_solver_smoke/linux/x86_64/release/tests/pnp_solver_smoke.cpp.o", "tests/pnp_solver_smoke.cpp"],
+  "file": "tests/pnp_solver_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/tensorrt_backend_smoke/linux/x86_64/release/tests/tensorrt_backend_smoke.cpp.o", "tests/tensorrt_backend_smoke.cpp"],
+  "file": "tests/tensorrt_backend_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/latency_compensator_test/linux/x86_64/release/tests/latency_compensator_test.cpp.o", "tests/latency_compensator_test.cpp"],
+  "file": "tests/latency_compensator_test.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-Itools/logger/include/3rdparty", "-DNDEBUG", "-o", "build/.objs/udp_json_sender_smoke/linux/x86_64/release/tests/udp_json_sender_smoke.cpp.o", "tests/udp_json_sender_smoke.cpp"],
+  "file": "tests/udp_json_sender_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-Itools/logger/include/3rdparty", "-DNDEBUG", "-o", "build/.objs/udp_json_sender_smoke/linux/x86_64/release/src/l6_telemetry/udp_json_sender.cpp.o", "src/l6_telemetry/udp_json_sender.cpp"],
+  "file": "src/l6_telemetry/udp_json_sender.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/armor_refiner_smoke/linux/x86_64/release/tests/armor_refiner_smoke.cpp.o", "tests/armor_refiner_smoke.cpp"],
+  "file": "tests/armor_refiner_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/armor_refiner_smoke/linux/x86_64/release/src/l2_perception/armor/armor_refiner.cpp.o", "src/l2_perception/armor/armor_refiner.cpp"],
+  "file": "src/l2_perception/armor/armor_refiner.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/image_preprocessor_smoke/linux/x86_64/release/tests/image_preprocessor_smoke.cpp.o", "tests/image_preprocessor_smoke.cpp"],
+  "file": "tests/image_preprocessor_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/planner_config_smoke/linux/x86_64/release/tests/planner_config_smoke.cpp.o", "tests/planner_config_smoke.cpp"],
+  "file": "tests/planner_config_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/serial_worker_smoke/linux/x86_64/release/tests/serial_worker_smoke.cpp.o", "tests/serial_worker_smoke.cpp"],
+  "file": "tests/serial_worker_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/serial_hardware_smoke/linux/x86_64/release/tests/serial_hardware_smoke.cpp.o", "tests/serial_hardware_smoke.cpp"],
+  "file": "tests/serial_hardware_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/camera_calibration_smoke/linux/x86_64/release/tests/camera_calibration_smoke.cpp.o", "tests/camera_calibration_smoke.cpp"],
+  "file": "tests/camera_calibration_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-DNDEBUG", "-o", "build/.objs/serial_protocol_smoke/linux/x86_64/release/tests/serial_protocol_smoke.cpp.o", "tests/serial_protocol_smoke.cpp"],
+  "file": "tests/serial_protocol_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-DNDEBUG", "-o", "build/.objs/serial_protocol_smoke/linux/x86_64/release/src/l1_sensor/serial/serial_protocol.cpp.o", "src/l1_sensor/serial/serial_protocol.cpp"],
+  "file": "src/l1_sensor/serial/serial_protocol.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-DNDEBUG", "-o", "build/.objs/serial_protocol_smoke/linux/x86_64/release/src/l6_telemetry/logger.cpp.o", "src/l6_telemetry/logger.cpp"],
+  "file": "src/l6_telemetry/logger.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/auto_aim_test/linux/x86_64/release/tests/auto_aim_test.cpp.o", "tests/auto_aim_test.cpp"],
+  "file": "tests/auto_aim_test.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/openvino_armor_smoke/linux/x86_64/release/tests/openvino_armor_smoke.cpp.o", "tests/openvino_armor_smoke.cpp"],
+  "file": "tests/openvino_armor_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/auto_aim/linux/x86_64/release/tests/main.cpp.o", "tests/main.cpp"],
+  "file": "tests/main.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/armor_decoder_smoke/linux/x86_64/release/tests/armor_decoder_smoke.cpp.o", "tests/armor_decoder_smoke.cpp"],
+  "file": "tests/armor_decoder_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/armor_refiner_video_test/linux/x86_64/release/tests/armor_refiner_video_test.cpp.o", "tests/armor_refiner_video_test.cpp"],
+  "file": "tests/armor_refiner_video_test.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-DNDEBUG", "-o", "build/.objs/tracker_smoke/linux/x86_64/release/tests/tracker_smoke.cpp.o", "tests/tracker_smoke.cpp"],
+  "file": "tests/tracker_smoke.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/fps_counter.cpp.o", "src/l6_telemetry/fps_counter.cpp"],
+  "file": "src/l6_telemetry/fps_counter.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/aim_overlay.cpp.o", "src/l6_telemetry/aim_overlay.cpp"],
+  "file": "src/l6_telemetry/aim_overlay.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/trace_scope.cpp.o", "src/l6_telemetry/trace_scope.cpp"],
+  "file": "src/l6_telemetry/trace_scope.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/math.cpp.o", "src/l6_telemetry/math.cpp"],
+  "file": "src/l6_telemetry/math.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/logger.cpp.o", "src/l6_telemetry/logger.cpp"],
+  "file": "src/l6_telemetry/logger.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l6_telemetry/udp_json_sender.cpp.o", "src/l6_telemetry/udp_json_sender.cpp"],
+  "file": "src/l6_telemetry/udp_json_sender.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/camera/camera_calibration.cpp.o", "src/l1_sensor/camera/camera_calibration.cpp"],
+  "file": "src/l1_sensor/camera/camera_calibration.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/camera/camera.cpp.o", "src/l1_sensor/camera/camera.cpp"],
+  "file": "src/l1_sensor/camera/camera.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/serial_port.cpp.o", "src/l1_sensor/serial/serial_port.cpp"],
+  "file": "src/l1_sensor/serial/serial_port.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/serial_worker.cpp.o", "src/l1_sensor/serial/serial_worker.cpp"],
+  "file": "src/l1_sensor/serial/serial_worker.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/robot_state.cpp.o", "src/l1_sensor/serial/robot_state.cpp"],
+  "file": "src/l1_sensor/serial/robot_state.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/serial_config.cpp.o", "src/l1_sensor/serial/serial_config.cpp"],
+  "file": "src/l1_sensor/serial/serial_config.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l1_sensor/serial/serial_protocol.cpp.o", "src/l1_sensor/serial/serial_protocol.cpp"],
+  "file": "src/l1_sensor/serial/serial_protocol.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/armor/tracker.cpp.o", "src/l3_estimation/armor/tracker.cpp"],
+  "file": "src/l3_estimation/armor/tracker.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/armor/target_estimator.cpp.o", "src/l3_estimation/armor/target_estimator.cpp"],
+  "file": "src/l3_estimation/armor/target_estimator.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/armor/pnp_solver.cpp.o", "src/l3_estimation/armor/pnp_solver.cpp"],
+  "file": "src/l3_estimation/armor/pnp_solver.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l3_estimation/ekf.cpp.o", "src/l3_estimation/ekf.cpp"],
+  "file": "src/l3_estimation/ekf.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/armor/armor_detector.cpp.o", "src/l2_perception/armor/armor_detector.cpp"],
+  "file": "src/l2_perception/armor/armor_detector.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/armor/armor_refiner.cpp.o", "src/l2_perception/armor/armor_refiner.cpp"],
+  "file": "src/l2_perception/armor/armor_refiner.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/armor/armor_decoder.cpp.o", "src/l2_perception/armor/armor_decoder.cpp"],
+  "file": "src/l2_perception/armor/armor_decoder.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/buff/buff_detector.cpp.o", "src/l2_perception/buff/buff_detector.cpp"],
+  "file": "src/l2_perception/buff/buff_detector.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/buff/buff_decoder.cpp.o", "src/l2_perception/buff/buff_decoder.cpp"],
+  "file": "src/l2_perception/buff/buff_decoder.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/inference_backend_factory.cpp.o", "src/l2_perception/inference/inference_backend_factory.cpp"],
+  "file": "src/l2_perception/inference/inference_backend_factory.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/image_preprocessor.cpp.o", "src/l2_perception/inference/image_preprocessor.cpp"],
+  "file": "src/l2_perception/inference/image_preprocessor.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/inference_backend.cpp.o", "src/l2_perception/inference/inference_backend.cpp"],
+  "file": "src/l2_perception/inference/inference_backend.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/backends/tensorrt_backend.cpp.o", "src/l2_perception/inference/backends/tensorrt_backend.cpp"],
+  "file": "src/l2_perception/inference/backends/tensorrt_backend.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l2_perception/inference/backends/openvino_backend.cpp.o", "src/l2_perception/inference/backends/openvino_backend.cpp"],
+  "file": "src/l2_perception/inference/backends/openvino_backend.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l5_control/fire_decision.cpp.o", "src/l5_control/fire_decision.cpp"],
+  "file": "src/l5_control/fire_decision.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l5_control/controller.cpp.o", "src/l5_control/controller.cpp"],
+  "file": "src/l5_control/controller.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l5_control/reject_reason.cpp.o", "src/l5_control/reject_reason.cpp"],
+  "file": "src/l5_control/reject_reason.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/runtime/l4_target_adapter.cpp.o", "src/runtime/l4_target_adapter.cpp"],
+  "file": "src/runtime/l4_target_adapter.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/runtime/auto_aim_runtime.cpp.o", "src/runtime/auto_aim_runtime.cpp"],
+  "file": "src/runtime/auto_aim_runtime.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/runtime/auto_aim_config.cpp.o", "src/runtime/auto_aim_config.cpp"],
+  "file": "src/runtime/auto_aim_config.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l4_planning/tiny_MPC/result.cpp.o", "src/l4_planning/tiny_MPC/result.cpp"],
+  "file": "src/l4_planning/tiny_MPC/result.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l4_planning/tiny_MPC/track_planner.cpp.o", "src/l4_planning/tiny_MPC/track_planner.cpp"],
+  "file": "src/l4_planning/tiny_MPC/track_planner.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l4_planning/tiny_MPC/get_trajectory.cpp.o", "src/l4_planning/tiny_MPC/get_trajectory.cpp"],
+  "file": "src/l4_planning/tiny_MPC/get_trajectory.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l4_planning/planner.cpp.o", "src/l4_planning/planner.cpp"],
+  "file": "src/l4_planning/planner.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l4_planning/predictor.cpp.o", "src/l4_planning/predictor.cpp"],
+  "file": "src/l4_planning/predictor.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l4_planning/ballistic_solver.cpp.o", "src/l4_planning/ballistic_solver.cpp"],
+  "file": "src/l4_planning/ballistic_solver.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l4_planning/state.cpp.o", "src/l4_planning/state.cpp"],
+  "file": "src/l4_planning/state.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/src/l4_planning/latency_compensator.cpp.o", "src/l4_planning/latency_compensator.cpp"],
+  "file": "src/l4_planning/latency_compensator.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/include/l4_planning/planner_config.cpp.o", "include/l4_planning/planner_config.cpp"],
+  "file": "include/l4_planning/planner_config.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/hikrobot/hikrobot.cpp.o", "tools/camera_sdk/hikrobot/hikrobot.cpp"],
+  "file": "tools/camera_sdk/hikrobot/hikrobot.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/tools/camera_sdk/mindvision/mindvision.cpp.o", "tools/camera_sdk/mindvision/mindvision.cpp"],
+  "file": "tools/camera_sdk/mindvision/mindvision.cpp"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/tools/serial/src/serial.cc.o", "tools/serial/src/serial.cc"],
+  "file": "tools/serial/src/serial.cc"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Iinclude", "-I/usr/include/eigen3", "-Itools/serial/include", "-Itools/config_set/include", "-Itools/LatestBuffer/include", "-Itools/camera_sdk", "-Itools/camera_sdk/hikrobot", "-Itools/camera_sdk/hikrobot/include", "-Itools/camera_sdk/mindvision", "-Itools/camera_sdk/mindvision/include", "-Itools/logger/include", "-Itools/logger/include/3rdparty", "-I/usr/include/opencv4", "-I/usr/lib/pkgconfig/../../include", "-DTBB_PREVIEW_WAITING_FOR_WORKERS=1", "-DIE_THREAD=IE_THREAD_TBB", "-DOV_THREAD=OV_THREAD_TBB", "-DNEWVISION_HAS_OPENVINO=1", "-DNDEBUG", "-o", "build/.objs/newvision/linux/x86_64/release/tools/serial/src/impl/unix.cc.o", "tools/serial/src/impl/unix.cc"],
+  "file": "tools/serial/src/impl/unix.cc"
+},
+{
+  "directory": "/home/rm/rebuild/summer_train",
+  "arguments": ["/usr/bin/g++-13", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++20", "-Itools/LatestBuffer/include", "-DNDEBUG", "-o", "build/.objs/latest_buffer_smoke/linux/x86_64/release/tests/latest_buffer_smoke.cpp.o", "tests/latest_buffer_smoke.cpp"],
+  "file": "tests/latest_buffer_smoke.cpp"
+}]
