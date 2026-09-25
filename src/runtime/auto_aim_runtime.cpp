@@ -135,7 +135,9 @@ nlohmann::json telemetryFrame(
   std::chrono::steady_clock::time_point timestamp,
   int detect_count,
   std::uint64_t tracker_resets,
-  std::uint64_t plan_rejects);
+  std::uint64_t plan_rejects,
+  bool pose_ready,
+  double pose_wait_ms);
 /********************************** debug **********************************/
 
 } // namespace
@@ -285,13 +287,20 @@ void AutoAimRuntime::run() {
       switch (mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
-          const auto image_pose = serial.gimbalPoseAt(timestamp);
-
           // L2: 检测并保留敌方装甲板。
           auto armors = armor_detector.detect(frame);
           std::erase_if(armors, [&state](const auto& armor) {
             return !isEnemyArmor(armor.color, state->enemy_color);
           });
+
+          // 曝光时刻的姿态要晚 serial pose_delay_ms 才到，图像刚到手时还没收到。
+          // 放在检测之后等，等待与检测重叠，不白白加延迟；等不到（串口断流）
+          // 就用边界值，遥测里 pose_ready=0 会标出来。
+          const auto wait_start = std::chrono::steady_clock::now();
+          const bool pose_ready = serial.waitPose(timestamp);
+          const double pose_wait_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - wait_start).count();
+          const auto image_pose = serial.gimbalPoseAt(timestamp);
 
           // L3: PnP、状态机与整车 EKF。
           std::optional<L3Estimation::TrackedTarget> target;
@@ -351,7 +360,8 @@ void AutoAimRuntime::run() {
               image_pose, *state, observations, target, track_state, plan,
               controller.lastDecision(), command.has_value(), serial,
               timestamp, tracker ? tracker->detectCount() : 0,
-              tracker ? tracker->resetCount() : 0, plan_reject_count));
+              tracker ? tracker->resetCount() : 0, plan_reject_count,
+              pose_ready, pose_wait_ms));
           }
           if (overlay_solver && tracker &&
               frame_index % auto_aim_config.debug.overlay_every == 0) {
@@ -449,7 +459,9 @@ nlohmann::json telemetryFrame(
   std::chrono::steady_clock::time_point timestamp,
   int detect_count,
   std::uint64_t tracker_resets,
-  std::uint64_t plan_rejects)
+  std::uint64_t plan_rejects,
+  bool pose_ready,
+  double pose_wait_ms)
 {
   constexpr double kRadToDeg = 180.0 / std::numbers::pi;
   nlohmann::json data;
@@ -475,6 +487,9 @@ nlohmann::json telemetryFrame(
   // 与 USB 传输耗时仍未补；pose_before 高则是图像太老或姿态历史太短，成因相反。
   // rx_skipped_bytes 恒为 0 说明下位机只是空转 seq，跟着 rx_dropped 一起涨才
   // 说明有第三种 SOF 的帧被静默吃掉了。
+  // pose_wait 是检测做完后还要等姿态的时间；pose_ready=0 说明等满了也没等到。
+  data["serial"]["pose_ready"] = pose_ready ? 1 : 0;
+  data["serial"]["pose_wait"] = pose_wait_ms;
   data["serial"]["rx"] = serial.receivedStateCount();
   data["serial"]["rx_dropped"] = serial.droppedPacketCount();
   data["serial"]["rx_skipped_bytes"] = serial.skippedByteCount();

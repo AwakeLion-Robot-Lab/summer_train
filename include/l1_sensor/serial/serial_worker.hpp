@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -72,8 +73,17 @@ public:
   // 时间戳落在历史区间外时会夹到边界并**只累加计数器**，不打日志：这一路每帧
   // 都会走到，逐帧打印会把真正的告警冲掉。频次用 poseBeforeHistoryCount() /
   // poseAfterHistoryCount() 看。
+  //
+  // 实际查的是 timestamp + pose_delay_ms：同一时刻的姿态包比图像晚到这么多。
   std::optional<Eigen::Quaterniond> gimbalPoseAt(
     std::chrono::steady_clock::time_point timestamp) const;
+
+  // 该图像时刻的姿态是否已经被历史覆盖，即 gimbalPoseAt 能插值而不是取边界值。
+  bool poseReady(std::chrono::steady_clock::time_point timestamp) const;
+
+  // 阻塞到 poseReady 或等满 pose_wait_ms，返回是否等到。补偿 pose_delay_ms
+  // 之后，图像刚到手时它要的那帧姿态还没收到，必须等。
+  bool waitPose(std::chrono::steady_clock::time_point timestamp) const;
 
   // 最新一次云台姿态，不做插值。"现在"之后不可能有采样，所以想要当前姿态时
   // 用这个而不是 gimbalPoseAt(now())——后者会无谓地走一遍越界分支并计数，
@@ -88,6 +98,9 @@ public:
 
 private:
   // 把下位机 IMU 约定下的姿态按 config_.R_imu_barrel 转换到 barrel 约定。
+  std::chrono::steady_clock::time_point poseTime(
+    std::chrono::steady_clock::time_point timestamp) const;
+
   Eigen::Quaterniond toBarrelPose(
     const Eigen::Quaterniond& q_world_imu) const;
 
@@ -110,6 +123,7 @@ private:
   std::mutex lifecycle_mutex_;
 
   mutable std::mutex state_mutex_;
+  mutable std::condition_variable pose_cv_;
   std::optional<RobotState> latest_state_;
   std::deque<RobotState> gimbal_history_;
   std::size_t max_gimbal_history_size_ = 64;
