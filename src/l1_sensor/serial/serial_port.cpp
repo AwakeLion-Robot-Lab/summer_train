@@ -15,7 +15,14 @@ namespace L1Sensor {
 SerialPort::SerialPort(SerialConfig config) : config_(std::move(config)) {
   const auto read_timeout_ms =
       static_cast<std::uint32_t>(std::max(config_.read_timeout_ms, 0));
-  auto timeout = serial::Timeout::simpleTimeout(read_timeout_ms);
+  // 不能用 simpleTimeout：它把 inter_byte_timeout 设成 max，serial 库此时每次
+  // 读到字节后会按"缓冲区还差多少字节 × 每字节传输时间"补睡（unix.cc 的
+  // waitByteTimes），256 字节缓冲、115200 波特下每次白睡约 19 ms，read_timeout
+  // 形同虚设。实测姿态成批到达、最新一帧常年陈旧 12~35 ms，云台一动就是几度
+  // 的图像-姿态对齐误差。给一个有限的字节间隔就跳过这段补睡。
+  constexpr std::uint32_t kInterByteTimeoutMs = 1;
+  serial::Timeout timeout(kInterByteTimeoutMs, read_timeout_ms, 0,
+                          read_timeout_ms, 0);
   serial_ = std::make_unique<serial::Serial>();
   serial_->setPort(config_.device);
   serial_->setBaudrate(static_cast<std::uint32_t>(config_.baud_rate));

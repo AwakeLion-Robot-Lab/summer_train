@@ -178,6 +178,7 @@ void SerialWorker::rxLoop() {
         gimbal_history_.pop_front();
       }
     }
+    pose_cv_.notify_all();
   }
 }
 
@@ -264,9 +265,36 @@ Eigen::Quaterniond SerialWorker::toBarrelPose(
   return Eigen::Quaterniond(R_world_barrel).normalized();
 }
 
+// 图像时刻对应的姿态包时间戳。
+std::chrono::steady_clock::time_point SerialWorker::poseTime(
+    std::chrono::steady_clock::time_point timestamp) const {
+  return timestamp + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                         std::chrono::duration<double, std::milli>(
+                             config_.pose_delay_ms));
+}
+
+bool SerialWorker::poseReady(
+    std::chrono::steady_clock::time_point timestamp) const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return !gimbal_history_.empty() &&
+         gimbal_history_.back().timestamp >= poseTime(timestamp);
+}
+
+bool SerialWorker::waitPose(
+    std::chrono::steady_clock::time_point timestamp) const {
+  const auto target = poseTime(timestamp);
+  std::unique_lock<std::mutex> lock(state_mutex_);
+  return pose_cv_.wait_for(
+      lock, std::chrono::milliseconds(config_.pose_wait_ms), [&] {
+        return !gimbal_history_.empty() &&
+               gimbal_history_.back().timestamp >= target;
+      });
+}
+
 // 按时间戳查询云台姿态；找到前后两帧 RPY 后再转四元数并 slerp。
 std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
-    std::chrono::steady_clock::time_point timestamp) const {
+    std::chrono::steady_clock::time_point image_time) const {
+  const auto timestamp = poseTime(image_time);
   std::lock_guard<std::mutex> lock(state_mutex_);
 
   if (gimbal_history_.empty()) {

@@ -90,6 +90,11 @@ void normalize(SerialConfig &config) {
   config.command_timeout_ms = std::max(config.command_timeout_ms, 1);
   config.reconnect_interval_ms = std::max(config.reconnect_interval_ms, 1);
   config.rx_buffer_size = std::max<std::size_t>(config.rx_buffer_size, 1);
+  if (!std::isfinite(config.pose_delay_ms) || std::abs(config.pose_delay_ms) > 200.0) {
+    L6Telemetry::logWarn("serial config pose_delay_ms out of [-200, 200], use 0");
+    config.pose_delay_ms = 0.0;
+  }
+  config.pose_wait_ms = std::max(config.pose_wait_ms, 0);
 }
 
 } // namespace
@@ -105,6 +110,9 @@ SerialConfig loadSerialConfig(const std::string &config_path) {
   config.read_timeout_ms =
       readOptional(yaml, "read_timeout_ms", config.read_timeout_ms);
   config.tx_rate_hz = readOptional(yaml, "tx_rate_hz", config.tx_rate_hz);
+  config.pose_delay_ms =
+      readOptional(yaml, "pose_delay_ms", config.pose_delay_ms);
+  config.pose_wait_ms = readOptional(yaml, "pose_wait_ms", config.pose_wait_ms);
   config.command_timeout_ms =
       readOptional(yaml, "command_timeout_ms", config.command_timeout_ms);
   config.reconnect_interval_ms =

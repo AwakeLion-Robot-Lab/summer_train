@@ -226,3 +226,10 @@ debug:
   overlay: true
   # 每 N 帧画一次。
   overlay_every: 1
+
+  # PlotJuggler 曲线遥测，UDP 发到 plot_host:plot_port，时间轴选 t 字段。
+  # gimbal 是图像曝光时刻的云台角、gimbal_now 是规划时刻的，cmd 是真正下发的
+  # 命令；三者同图即看得出跟随误差和振荡。角度 degree，时间 ms。
+  plot: true
+  plot_host: "127.0.0.1"
+  plot_port: 9870

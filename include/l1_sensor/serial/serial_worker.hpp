@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -64,12 +65,23 @@ public:
   std::uint64_t failedCommandCount() const;
 
   // 根据图像时间戳查询云台姿态；内部会在历史 RPY 中找前后两帧并 slerp。
+  // 实际查的是 timestamp + pose_delay_ms：姿态包比同一时刻的图像晚到这么多。
   // 返回的姿态已经是 barrel -> world，可直接交给 L3，无需再补轴向转换。
   std::optional<Eigen::Quaterniond> gimbalPoseAt(
     std::chrono::steady_clock::time_point timestamp) const;
 
+  // 该图像时刻的姿态是否已经被历史覆盖，即 gimbalPoseAt 能插值而不是取边界值。
+  bool poseReady(std::chrono::steady_clock::time_point timestamp) const;
+
+  // 阻塞到 poseReady 或等满 pose_wait_ms，返回是否等到。补偿 pose_delay_ms
+  // 之后，图像刚到手时它要的那帧姿态还没收到，必须等。
+  bool waitPose(std::chrono::steady_clock::time_point timestamp) const;
+
 private:
   // 把下位机 IMU 约定下的姿态按 config_.R_imu_barrel 转换到 barrel 约定。
+  std::chrono::steady_clock::time_point poseTime(
+    std::chrono::steady_clock::time_point timestamp) const;
+
   Eigen::Quaterniond toBarrelPose(
     const Eigen::Quaterniond& q_world_imu) const;
 
@@ -92,6 +104,7 @@ private:
   std::mutex lifecycle_mutex_;
 
   mutable std::mutex state_mutex_;
+  mutable std::condition_variable pose_cv_;
   std::optional<RobotState> latest_state_;
   std::deque<RobotState> gimbal_history_;
   std::size_t max_gimbal_history_size_ = 64;
