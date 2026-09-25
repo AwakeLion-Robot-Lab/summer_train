@@ -304,6 +304,50 @@ int main()
           }
         }
       }
+
+      // 收包延迟：状态帧写进串口后，latestState() 必须在 read_timeout 量级内
+      // 看到它。serial 库在 inter_byte_timeout 为 max 时会按"缓冲区还差多少字节
+      // × 每字节传输时间"补睡，256 字节缓冲、115200 波特下每次读白睡约 19 ms，
+      // read_timeout 形同虚设——图像与云台姿态的对齐误差就是这么来的。
+      if (result == 0) {
+        double worst_lag_ms = 0.0;
+        for (int i = 1; i <= 10 && result == 0; ++i) {
+          const float yaw = 0.3F + 0.01F * static_cast<float>(i);
+          const auto packet = makeStatePacket(static_cast<std::uint8_t>(i), 0.1F, 0.2F, yaw);
+          const auto written = Clock::now();
+          if (::write(pty.masterFd(), packet.data(), packet.size()) !=
+              static_cast<ssize_t>(packet.size())) {
+            std::cerr << "Failed to inject a state packet\n";
+            result = 13;
+            break;
+          }
+          bool seen = false;
+          while (Clock::now() - written < std::chrono::milliseconds(100)) {
+            const auto state = worker.latestState();
+            if (state && std::abs(state->rpy.yaw - yaw) < 1e-6) {
+              seen = true;
+              break;
+            }
+            pollfd idle{pty.masterFd(), 0, 0};
+            ::poll(&idle, 1, 0);
+          }
+          if (!seen) {
+            std::cerr << "SerialWorker did not parse state packet " << i << "\n";
+            result = 14;
+            break;
+          }
+          worst_lag_ms = std::max(
+            worst_lag_ms,
+            std::chrono::duration<double, std::milli>(Clock::now() - written).count());
+          pollfd idle{pty.masterFd(), 0, 0};
+          ::poll(&idle, 1, 10);
+        }
+        if (result == 0 && worst_lag_ms > config.read_timeout_ms + 5.0) {
+          std::cerr << "SerialWorker state lag " << worst_lag_ms << " ms exceeds read_timeout "
+                    << config.read_timeout_ms << " ms + 5 ms\n";
+          result = 15;
+        }
+      }
     }
 
     const auto stop_started = Clock::now();
@@ -311,6 +355,63 @@ int main()
     if (result == 0 && Clock::now() - stop_started > std::chrono::milliseconds(250)) {
       std::cerr << "SerialWorker stop took too long\n";
       result = 7;
+    }
+  }
+
+  // pose_delay_ms：gimbalPoseAt(图像时刻) 要查 图像时刻 + 延迟 的姿态，poseReady
+  // 要等那一时刻被历史覆盖才为真。两帧姿态相隔 40 ms，延迟 30 ms，查第一帧
+  // 之后 5 ms 的图像时刻应落在第二帧附近（插值比例约 7/8），不补偿则靠近第一帧。
+  if (result == 0) {
+    config.pose_delay_ms = 30.0;
+    config.pose_wait_ms = 100;
+    L1Sensor::SerialWorker worker(config);
+    if (!worker.start()) {
+      std::cerr << "SerialWorker failed to restart for the delay test\n";
+      result = 16;
+    } else {
+      const auto waitFor = [&](float yaw) {
+        const auto deadline = Clock::now() + std::chrono::milliseconds(100);
+        while (Clock::now() < deadline) {
+          const auto state = worker.latestState();
+          if (state && std::abs(state->rpy.yaw - yaw) < 1e-6) {
+            return state->timestamp;
+          }
+          pollfd idle{pty.masterFd(), 0, 0};
+          ::poll(&idle, 1, 0);
+        }
+        return Clock::time_point{};
+      };
+      const auto first = makeStatePacket(20, 0.0F, 0.0F, 0.5F);
+      (void)::write(pty.masterFd(), first.data(), first.size());
+      const auto t0 = waitFor(0.5F);
+      const auto image_time = t0 + std::chrono::milliseconds(5);
+      if (t0 == Clock::time_point{} || worker.poseReady(image_time)) {
+        std::cerr << "poseReady true before the delayed pose arrived\n";
+        result = 17;
+      }
+      pollfd idle{pty.masterFd(), 0, 0};
+      ::poll(&idle, 1, 40);
+      const auto second = makeStatePacket(21, 0.0F, 0.0F, 0.9F);
+      (void)::write(pty.masterFd(), second.data(), second.size());
+      const auto t1 = waitFor(0.9F);
+      if (result == 0 && (t1 == Clock::time_point{} || !worker.waitPose(image_time))) {
+        std::cerr << "waitPose did not see the delayed pose\n";
+        result = 18;
+      }
+      if (result == 0) {
+        const auto pose = worker.gimbalPoseAt(image_time);
+        const double query = std::chrono::duration<double>(image_time - t0).count() + 0.030;
+        const double span = std::chrono::duration<double>(t1 - t0).count();
+        const Eigen::Matrix3d R = pose->toRotationMatrix() * config.R_imu_barrel.transpose();
+        const double yaw = std::atan2(R(1, 0), R(0, 0));
+        const double expected = 0.5 + 0.4 * query / span;
+        if (std::abs(yaw - expected) > 0.02) {
+          std::cerr << "gimbalPoseAt ignored pose_delay_ms: yaw " << yaw << " expected "
+                    << expected << "\n";
+          result = 19;
+        }
+      }
+      worker.stop();
     }
   }
 
