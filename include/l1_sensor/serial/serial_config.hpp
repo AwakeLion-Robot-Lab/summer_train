@@ -19,6 +19,14 @@ struct SerialConfig {
   std::size_t rx_buffer_size = 256;
   bool packet_loss_check_enable = true;
 
+  // 云台姿态相对图像的滞后（ms）：同一物理时刻，姿态包的接收时间戳比图像时间戳
+  // 晚这么多。来自下位机姿态解算、发包和 USB 传输，加上相机时间戳本身取的是
+  // 到达时刻。gimbalPoseAt(图像时刻) 实际查的是 图像时刻 + pose_delay_ms。
+  // 0 表示不补偿；数值只能用实机录像离线扫出来，见 serial_config.yaml。
+  double pose_delay_ms = 0.0;
+  // 补偿后要的姿态要晚 pose_delay_ms 才到，waitPose 最多等这么久（ms）。
+  int pose_wait_ms = 20;
+
   // 外参命名沿用 T_A_B：R_imu_barrel 把 barrel 系中的向量转到下位机 IMU 系。
   // world 取 imu_abs（IMU 轴向），barrel 是独立定义的右手系，两者链式复合：
   //   R_world_barrel = R_world_imu * R_imu_barrel
