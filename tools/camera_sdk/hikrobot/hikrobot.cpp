@@ -139,7 +139,9 @@ void HikRobot::capture_start() {
       std::this_thread::sleep_for(1ms);
 
       unsigned int ret;
-      unsigned int nMsec = 10;
+      // USB 相机启动后的首帧可能超过 10 ms；原超时会把正常等待误判成
+      // MV_E_NODATA，导致守护线程反复重置相机。
+      unsigned int nMsec = 100;
 
       ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
       if (ret != MV_OK) {

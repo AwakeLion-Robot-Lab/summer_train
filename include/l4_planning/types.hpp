@@ -123,6 +123,9 @@ struct AimPlan : AimReference {
 
   bool using_MPC{false};       // false：直接参考；true：已生成 MPC samples
   ArmorTrackingPhase tracked_phase{ArmorTrackingPhase::Unlocked};
+  // 将开火门控的两个来源分开保存，便于区分“未锁稳”和“已出窗”。
+  bool tracked_ready{false};   // 选板状态稳定且本帧观测新鲜
+  bool within_firing_window{false}; // 预计命中时装甲板位于正式射击窗口
   bool fire_permitted{false};  // 稳定跟踪、位于射击窗口内且弹道有效
   bool valid{false};           // 规划结果是否有效
 };

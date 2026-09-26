@@ -10,6 +10,44 @@ if is_plat("windows") then
     add_cxxflags("/utf-8")
 end
 
+-- 相机标定工具（从 5cea87a 的文件树中独立引入）。这些源文件使用从项目
+-- 根目录开始的 include 路径，因此为每个工具显式加入当前目录。
+target("camera_capture")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/camera_capture.cpp")
+    add_files("tools/camera_calibration/timed_image_saver.cpp")
+    add_includedirs(".")
+    add_deps("newvision")
+
+target("camera_calibrator")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/camera_calibrator.cpp")
+    add_files("tools/camera_calibration/high_precision_calibrator.cpp")
+    add_includedirs(".")
+    add_deps("newvision")
+
+target("camera_calibrator_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/camera_calibrator_smoke.cpp")
+    add_files("tools/camera_calibration/high_precision_calibrator.cpp")
+    add_includedirs(".")
+    add_deps("newvision")
+
+target("timed_image_saver_smoke")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/timed_image_saver_smoke.cpp")
+    add_files("tools/camera_calibration/timed_image_saver.cpp")
+    add_includedirs(".")
+    add_deps("newvision")
+
 option("use_xrepo_deps")
     set_default(false)
     set_showmenu(true)

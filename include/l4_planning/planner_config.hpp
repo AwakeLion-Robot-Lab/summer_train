@@ -13,8 +13,8 @@ struct PlannerTuning {
   PlannerConfig planner;
   LatencyConfig latency;
   ArmorScoreWeights armor_score_weights;
-  // 下位机弹速无效时仅用于维持弹道跟随的保底值。L5 仍会以
-  // BadBulletSpeed 拒绝开火，不能把这个值当成实测弹速。
+  // 下位机弹速无效时用于弹道跟随和开火判定的配置回退值。
+  // 运行时仍会记录正在使用回退值，便于排查下位机弹速。
   double default_bullet_speed{27.0}; // m/s
   double facing_angle_good{5.0}; // degree
   double facing_angle_bad{25.0}; // degree

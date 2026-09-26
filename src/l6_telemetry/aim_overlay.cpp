@@ -23,6 +23,29 @@ const char* trackStateName(L3Estimation::TrackState state) noexcept
   return "?";
 }
 
+const char* trackingPhaseName(L4Planning::ArmorTrackingPhase phase) noexcept
+{
+  switch (phase) {
+  case L4Planning::ArmorTrackingPhase::Unlocked:    return "unlocked";
+  case L4Planning::ArmorTrackingPhase::Tracking:    return "tracking";
+  case L4Planning::ArmorTrackingPhase::Switching:   return "switching";
+  case L4Planning::ArmorTrackingPhase::Stabilizing: return "stabilizing";
+  }
+  return "?";
+}
+
+std::string rejectReasons(const L5Control::FireDecision& fire)
+{
+  std::string result;
+  for (const auto reason : fire.reasons) {
+    if (!result.empty()) {
+      result += ',';
+    }
+    result += L5Control::toString(reason);
+  }
+  return result;
+}
+
 }  // namespace
 
 void drawAimOverlay(
@@ -74,20 +97,32 @@ void drawAimOverlay(
     }
   }
 
-  // 一行状态：跟踪状态、规划是否可开火、以及不开火的第一个原因。
+  // 第一行展开 L3/L4 状态和全部开火拒绝原因，避免“+N”
+  // 把真正的第二个门控隐藏掉。
   std::string status = trackStateName(input.track_state);
-  status += input.plan.fire_permitted
-    ? " | plan:fire-ready"
-    : " | plan:track-only";
-  if (!input.fire.reasons.empty()) {
-    status += " | " + L5Control::toString(input.fire.reasons.front());
-    if (input.fire.reasons.size() > 1) {
-      status += " +" + std::to_string(input.fire.reasons.size() - 1);
-    }
+  status += " | l4:";
+  status += trackingPhaseName(input.plan.tracked_phase);
+  status += input.plan.fire_permitted ? "/fire-ready" : "/track-only";
+  const std::string reasons = rejectReasons(input.fire);
+  if (!reasons.empty()) {
+    status += " | " + reasons;
   }
   drawOutlinedText(
     image, status, {12, 28},
     input.fire.shoot ? cv::Scalar{0, 0, 255} : cv::Scalar{0, 255, 255}, 0.7);
+
+  // 第二行直接显示 outside_hit_window 合并前的两个条件，
+  // 以及实际跟随误差/本帧容差（单位 degree）。
+  constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+  const std::string details = cv::format(
+    "lock=%d window=%d | err yaw=%.2f/%.2f pitch=%.2f/%.2f deg",
+    input.plan.tracked_ready ? 1 : 0,
+    input.plan.within_firing_window ? 1 : 0,
+    input.fire.yaw_error * kRadToDeg,
+    input.fire.tolerance.yaw * kRadToDeg,
+    input.fire.pitch_error * kRadToDeg,
+    input.fire.tolerance.pitch * kRadToDeg);
+  drawOutlinedText(image, details, {12, 54}, {0, 255, 255}, 0.6);
 }
 
 std::optional<Eigen::Vector4d> plannedImpactArmorPose(

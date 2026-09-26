@@ -26,8 +26,8 @@ prediction:
   angle_tolerance_rad: 0.0
 
 ballistic:
-  # 下位机尚未拿到有效弹速时，用该值继续计算跟随角度；此时 L5 会强制
-  # shoot=false，只有收到有效实测弹速后才允许开火。
+  # 下位机尚未拿到有效弹速时，用该值继续计算弹道。
+  # 回退值为有效正数时，L5 仍允许开火，因此需按实际弹速标定。
   default_bullet_speed_mps: 27.0
 
   # 重力加速度绝对值，单位 m/s^2，必须大于 0。
@@ -43,8 +43,8 @@ ballistic:
 selection:
   # 切换或首次锁定装甲板后，允许进入稳定计数的最大分轴瞄准误差。
   # 两轴必须各自满足门限；越大越快确认锁定，但枪口可能尚未完全对准。
-  switch_yaw_dead_zone_deg: 9.2
-  switch_pitch_dead_zone_deg: 12.0
+  switch_yaw_dead_zone_deg: 5.0
+  switch_pitch_dead_zone_deg: 2.5
 
   # 新候选评分至少比当前装甲板高出该值，才允许主动切换。
   # 越大越不容易换板，可抑制评分接近时的来回跳变。
@@ -78,7 +78,7 @@ selection:
   facing_angle_bad_deg: 60.0
 
   # 普通车辆装甲板沿旋转方向进入射击窗口前侧的角度，单位 deg。
-  normal_enter_angle_deg: 60.0
+  normal_enter_angle_deg: 75.0
 
   # 普通车辆装甲板离开射击窗口后侧的角度，单位 deg。
   # 必须不大于 normal_enter_angle_deg。

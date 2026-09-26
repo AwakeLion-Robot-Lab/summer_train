@@ -161,9 +161,9 @@ fire:
   # 只把装甲板中心区域视为可命中；0.6 表示使用板面宽、高的中央 60%。
   hit_margin_ratio: 0.6
   # 根据板宽和距离算出的 yaw 容差下限，单位 degree。
-  min_yaw_tolerance_deg: 0.5
+  min_yaw_tolerance_deg: 3.0
   # 根据板高和距离算出的 pitch 容差下限，单位 degree。
-  min_pitch_tolerance_deg: 0.5
+  min_pitch_tolerance_deg: 2.0
 
 # runtime 只管相邻命令跳变，不会修改 L4 预测结果。
 runtime:
