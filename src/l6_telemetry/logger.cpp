@@ -23,10 +23,10 @@ void initLogger()
   auto logger = aw_logger::getLogger(kRootLoggerName);
 
   auto console = std::make_shared<aw_logger::ConsoleAppender>();
-  console->setPattern("%t [%p] %f:%l %m");
+  console->setPattern("%t %p %f:%l %m");
 
   auto file = std::make_shared<aw_logger::FileAppender>("logs/logger_l6_telemetry.log");
-  file->setPattern("%t [%p] %m");
+  file->setPattern("%t %p %m");
   file->setMaxFileSize(1024 * 1024);
   file->setMaxBackupNum(3);
 

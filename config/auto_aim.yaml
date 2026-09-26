@@ -10,7 +10,7 @@ inference:
   # MaxPool），旧运行时必须走同名 .onnx。
   # szu-v8n-fp16.onnx 就是 Models-main 的 Infantry-v8n-fp16-20260726，那边的 IR
   # 在 CPU 上输出逐位相同。
-  model_path: "model/armor_model/yolov5.xml"
+  model_path: "model/armor_model/szu-v5n.xml"
   # CPU / GPU（Intel 核显，要装 intel-opencl-icd）。GPU 加载失败会告警并退回 CPU。
   # i9-13980HX + UHD 核显上 szu-v8n 整段 L2：CPU 12.9 ms、GPU 10.6 ms；GPU 按 FP16
   # 算，角点差不到 0.2 px（网络输入尺度）。回放工具不读这一项，要对齐实机得加 -d=GPU。
