@@ -531,7 +531,9 @@ AimPlan Planner::plan(
       candidate.aim_yaw_error = std::abs(normalizeAngle(
         candidate.ballistic.yaw - robot_state.rpy.yaw));
       candidate.aim_pitch_error =
-        std::abs(candidate.ballistic.pitch - robot_state.rpy.pitch);
+        // 弹道 pitch 以向上为正，下位机反馈的右手系 Ry pitch 以向下为正。
+        // 与 L5 的反馈转换保持一致，否则会始终无法进入锁板稳定死区。
+        std::abs(candidate.ballistic.pitch + robot_state.rpy.pitch);
       candidate.aim_angle_error =
         std::hypot(candidate.aim_yaw_error, candidate.aim_pitch_error);
       const double aim_cost_good_angle =
@@ -606,9 +608,9 @@ AimPlan Planner::plan(
   plan.yaw = selected.ballistic.yaw;
   plan.pitch = selected.ballistic.pitch;
   plan.fly_time = selected.ballistic.fly_time;
-  plan.fire_permitted =
-    selection.tracked_ready
-    && selected.within_firing_window;
+  plan.tracked_ready = selection.tracked_ready;
+  plan.within_firing_window = selected.within_firing_window;
+  plan.fire_permitted = plan.tracked_ready && plan.within_firing_window;
   plan.valid = true;
 
   return applyTinyMpc(

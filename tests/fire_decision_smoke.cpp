@@ -1,5 +1,6 @@
 #include "l5_control/fire_decision.hpp"
 #include "l5_control/controller.hpp"
+#include "l6_telemetry/math.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -85,7 +86,7 @@ void testInvalidPlan()
     "AimPlan::valid must gate firing");
 }
 
-void testFallbackBulletSpeedNeverFires()
+void testNoUsableBulletSpeedNeverFires()
 {
   const L5Control::FireDecider decider(makeConfig());
   auto input = makeInput();
@@ -93,13 +94,13 @@ void testFallbackBulletSpeedNeverFires()
   const auto decision = decider.decide(input);
   require(
     hasReason(decision, L5Control::RejectReason::BadBulletSpeed),
-    "fallback bullet speed must be reported");
+    "an unusable effective bullet speed must be reported");
   require(
     !decision.fire_feasible && !decision.shoot,
-    "fallback bullet speed must never permit firing");
+    "an unusable effective bullet speed must never permit firing");
 }
 
-void testFallbackBulletSpeedStillTracks()
+void testNoUsableBulletSpeedStillTracks()
 {
   L5Control::Controller controller(makeConfig(), 1.0);
   auto input = makeInput();
@@ -111,17 +112,41 @@ void testFallbackBulletSpeedStillTracks()
     false);
   require(
     command.has_value(),
-    "fallback bullet speed must still produce an aim command");
+    "an unusable effective bullet speed must still produce an aim command");
   require(
     command->yaw == input.plan.yaw && command->pitch == input.plan.pitch,
-    "fallback bullet speed must preserve planned aim angles");
+    "an unusable effective bullet speed must preserve planned aim angles");
   require(
     !command->shoot,
-    "fallback bullet speed command must force shoot=false");
+    "an unusable effective bullet speed must force shoot=false");
   require(
     hasReason(
       controller.lastDecision(), L5Control::RejectReason::BadBulletSpeed),
-    "controller must retain the fallback bullet speed rejection");
+    "controller must retain the unusable bullet speed rejection");
+}
+
+void testControllerConvertsPitchFeedbackConvention()
+{
+  L5Control::Controller controller(makeConfig(), 1.0);
+  auto input = makeInput();
+  input.plan.pitch = 0.08;
+  // 电控姿态的 Ry 俯仰角向下为正；物理上向上 0.08 rad
+  // 因此以 -0.08 rad 姿态回传。L5 转换后应与规划角对齐。
+  const Eigen::Quaterniond actual_pose = L6Telemetry::rpyToQuaternion(
+    0.0, -input.plan.pitch, 0.0);
+  const auto command = controller.update(
+    input.target,
+    input.track_state,
+    input.plan,
+    actual_pose,
+    true);
+  require(command.has_value(), "converted pitch feedback must produce a command");
+  require(
+    controller.lastDecision().pitch_error < 1e-9,
+    "controller must compare pitch in the planning convention");
+  require(
+    controller.lastDecision().fire_feasible && command->shoot,
+    "aligned nonzero pitch must permit firing after feedback conversion");
 }
 
 void testShootEnableOnlyGatesOutput()
@@ -162,8 +187,9 @@ int main()
   testAlignedShot();
   testPlannerWindowGate();
   testInvalidPlan();
-  testFallbackBulletSpeedNeverFires();
-  testFallbackBulletSpeedStillTracks();
+  testNoUsableBulletSpeedNeverFires();
+  testNoUsableBulletSpeedStillTracks();
+  testControllerConvertsPitchFeedbackConvention();
   testShootEnableOnlyGatesOutput();
   testMpcCommandAngles();
   std::cout << "fire decision smoke test passed\n";

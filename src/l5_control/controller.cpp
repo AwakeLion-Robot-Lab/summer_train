@@ -47,7 +47,7 @@ std::optional<SerialCommand> Controller::update(
   L3Estimation::TrackState track_state,
   const L4Planning::AimPlan& plan,
   const std::optional<Eigen::Quaterniond>& actual_pose,
-  bool bullet_speed_valid)
+  bool effective_bullet_speed_valid)
 {
   std::optional<Eigen::Vector2d> actual_angles;
   if (actual_pose && actual_pose->coeffs().allFinite()) {
@@ -66,13 +66,16 @@ std::optional<SerialCommand> Controller::update(
   input.actual_yaw = actual_angles
     ? (*actual_angles)[0]
     : std::numeric_limits<double>::quiet_NaN();
+  // 规划层的弹道 pitch 以向上为正，而电控姿态按右手系 Ry
+  // 表示，pitch 以向下为正。下发命令时已取反，反馈在进入 L5
+  // 误差判定前也必须转回规划约定。
   input.actual_pitch = actual_angles
-    ? (*actual_angles)[1]
+    ? -(*actual_angles)[1]
     : std::numeric_limits<double>::quiet_NaN();
   input.command_jump = command_angles && last_command_ &&
     std::abs(L6Telemetry::limit_rad(
       (*command_angles)[0] - last_command_->yaw)) > command_jump_threshold_;
-  input.bullet_speed_valid = bullet_speed_valid;
+  input.bullet_speed_valid = effective_bullet_speed_valid;
 
   last_decision_ = fire_decider_.decide(input);
   std::optional<SerialCommand> command = makeCommand(plan, last_decision_);

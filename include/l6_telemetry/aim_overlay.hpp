@@ -38,7 +38,7 @@ struct AimOverlayInput
 
 // 在原图上画：检测角点、送入滤波器的单板重投影与朝向箭头、EKF 展开的整车、
 // Tracker 进入 Tracking 后的红色命中预测板、fire_feasible 时包在
-// 红框外的紫色边沿，以及一行状态文字。就地修改 image。
+// 红框外的紫色边沿，以及 L3/L4/L5 门控与角度误差诊断。就地修改 image。
 void drawAimOverlay(
   cv::Mat& image, const AimOverlayInput& input,
   const L3Estimation::PnpSolver& solver,

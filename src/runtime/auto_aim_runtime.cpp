@@ -303,21 +303,27 @@ void AutoAimRuntime::run() {
           planner_context.planning_time = plan_time;
           auto planning_state = *state;
           planning_state.timestamp = plan_time;
-          const bool bullet_speed_valid =
+          const bool mcu_bullet_speed_valid =
             std::isfinite(state->bullet_speed) && state->bullet_speed > 0.0;
-          if (!bullet_speed_valid) {
+          if (!mcu_bullet_speed_valid) {
             planning_state.bullet_speed = planner_tuning.default_bullet_speed;
             if (!using_default_bullet_speed) {
               L6Telemetry::logWarn(
                 "invalid MCU bullet speed", state->bullet_speed,
-                "; using tracking-only fallback",
+                "; using configured fallback for tracking and firing",
                 planner_tuning.default_bullet_speed, "m/s");
             }
           } else if (using_default_bullet_speed) {
             L6Telemetry::logInfo(
               "MCU bullet speed recovered", state->bullet_speed, "m/s");
           }
-          using_default_bullet_speed = !bullet_speed_valid;
+          using_default_bullet_speed = !mcu_bullet_speed_valid;
+          // PlannerTuning validation guarantees that the configured fallback is
+          // a finite positive speed. L5 gates on the effective planning speed,
+          // so a valid fallback may be used for both tracking and firing.
+          const bool effective_bullet_speed_valid =
+            std::isfinite(planning_state.bullet_speed)
+            && planning_state.bullet_speed > 0.0;
           const auto plan = planner.plan(
             toL4TargetState(target), planning_state, planner_context);
           if (!plan.valid) {
@@ -330,7 +336,7 @@ void AutoAimRuntime::run() {
             track_state,
             plan,
             actual_pose,
-            bullet_speed_valid);
+            effective_bullet_speed_valid);
 
           // L1: 下发 L5 生成的控制命令，并量出本帧规划到发送的耗时，
           // 供下一帧的延迟链使用。
@@ -538,6 +544,9 @@ nlohmann::json telemetryFrame(
   // aim: L4 规划出的云台目标姿态。**与 gimbal/ 分开**，两者同图即跟随误差。
   data["aim"]["valid"] = plan.valid ? 1 : 0;
   data["aim"]["tracked_phase"] = static_cast<int>(plan.tracked_phase);
+  data["aim"]["tracked_ready"] = plan.tracked_ready ? 1 : 0;
+  data["aim"]["within_firing_window"] =
+    plan.within_firing_window ? 1 : 0;
   data["aim"]["fire_permitted"] = plan.fire_permitted ? 1 : 0;
   if (plan.valid) {
     const double command_yaw = plan.using_MPC && !plan.samples.empty()
@@ -581,6 +590,11 @@ nlohmann::json telemetryFrame(
   data["fire"]["tol_pitch"] = fire.tolerance.pitch * kRadToDeg;
   data["fire"]["reason"] =
     fire.reasons.empty() ? -1 : static_cast<int>(fire.reasons.front());
+  data["fire"]["reason_count"] = static_cast<int>(fire.reasons.size());
+  for (std::size_t index = 0; index < fire.reasons.size(); ++index) {
+    data["fire"]["reason_" + std::to_string(index)] =
+      static_cast<int>(fire.reasons[index]);
+  }
 
   return data;
 }

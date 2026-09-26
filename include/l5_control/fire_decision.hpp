@@ -35,7 +35,8 @@ struct FireInput {
   // 当前规划 yaw 相对上一条下发命令是否超过连续性阈值。
   bool command_jump{false};
 
-  // false 表示本帧规划使用了配置中的保底弹速。允许继续跟随，但必须禁止开火。
+  // false 表示实测弹速和配置回退弹速都不可用。
+  // 使用有效配置回退值时应传 true，允许继续开火判定。
   bool bullet_speed_valid{true};
 };
 
