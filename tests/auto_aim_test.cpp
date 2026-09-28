@@ -468,6 +468,17 @@ public:
       q_world_barrel, timestamp, image_size, target_wh_ratio);
   }
 
+  // 冷启动那一帧的网络 ROI（ieskf.init_roi），见 EskfTracker::initRoi。
+  std::optional<cv::Rect> initRoi(
+    const std::vector<L2Perception::Armor>& detections,
+    const std::optional<Eigen::Quaterniond>& q_world_barrel,
+    L3Estimation::TimePoint timestamp, const cv::Size& image_size,
+    double target_wh_ratio)
+  {
+    return tracker_.initRoi(
+      detections, q_world_barrel, timestamp, image_size, target_wh_ratio);
+  }
+
   std::vector<Eigen::Vector4d> armorPoses() const
   {
     return tracker_.armorPoses();
@@ -1631,11 +1642,25 @@ int main(int argc, char** argv)
       const cv::Mat recognition_panel =
         makeRecognitionPanel(img, recognized_armors, enemy_color);
       clock.lap("绘图/显示", true);
-      auto& armors = detection_frame.armors;
-      std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
+      const auto not_enemy = [enemy_color](const L2Perception::Armor& armor) {
         return enemy_color != L2Perception::ArmorColor::Unknown &&
           armor.color != enemy_color;
-      });
+      };
+      auto& armors = detection_frame.armors;
+      std::erase_if(armors, not_enemy);
+      // 与实跑路径一致：冷启动那一帧（ieskf.init_roi）在候选周围按跟踪时的
+      // ROI 再检一次，ROI 里一块都没检出就退回整图结果。
+      if (const auto init_roi = tracker.initRoi(
+            armors, q_world_barrel, timestamp, img.size(),
+            detector.net_aspect_ratio())) {
+        L2Perception::ArmorFrame refined =
+          detector.detectFrame(img, light_roi, *init_roi, enemy_color, light_hints);
+        std::erase_if(refined.armors, not_enemy);
+        if (!refined.armors.empty()) {
+          detection_frame = std::move(refined);
+        }
+        clock.lap("L2 冷启动 ROI 重检");
+      }
 
       solver.set_R_world_barrel(q_world_barrel);
       const auto target = tracker.track(

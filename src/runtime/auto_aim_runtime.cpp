@@ -250,13 +250,30 @@ void AutoAimRuntime::run() {
               armor_detector.net_aspect_ratio());
           }
           // 侧边灯条按下位机给的敌方颜色筛：传 Unknown 会把友军灯条也送进
-          // L3 关联。装甲板在下面按同一颜色过滤。
-          auto perception = armor_detector.detectFrame(
-            frame, light_roi, net_roi, enemyArmorColor(state->enemy_color),
-            light_hints);
-          std::erase_if(perception.armors, [&state](const auto& armor) {
-            return !isEnemyArmor(armor.color, state->enemy_color);
-          });
+          // L3 关联。装甲板在这里按同一颜色过滤。
+          const auto detect = [&](const std::optional<cv::Rect>& roi) {
+            auto result = armor_detector.detectFrame(
+              frame, light_roi, roi, enemyArmorColor(state->enemy_color),
+              light_hints);
+            std::erase_if(result.armors, [&state](const auto& armor) {
+              return !isEnemyArmor(armor.color, state->enemy_color);
+            });
+            return result;
+          };
+          auto perception = detect(net_roi);
+          // 冷启动那一帧（ieskf.init_roi）：在初始化会挑的那块板周围按跟踪时
+          // 的 ROI 再检一次，初始化和之后的 ROI 帧同一尺度。ROI 里一块都没检
+          // 出就退回整图结果。
+          if (tracker && tracker->ready()) {
+            if (const auto init_roi = tracker->initRoi(
+                  perception.armors, image_pose, timestamp, frame.size(),
+                  armor_detector.net_aspect_ratio())) {
+              auto refined = detect(*init_roi);
+              if (!refined.armors.empty()) {
+                perception = std::move(refined);
+              }
+            }
+          }
 
           // L3: 关联、状态机与整车 IESKF。独立灯条与装甲板角点一起进
           // updateMulti()，每根灯条都是一个四维端点观测，独立灯条是

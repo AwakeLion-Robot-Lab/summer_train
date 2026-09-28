@@ -391,6 +391,8 @@ int main(int argc, char* argv[])
     // 一块"，跟侧边灯条无关，别拿它当灯条检出量看。
     std::size_t side_light_total = 0;
     std::size_t frames_with_side_light = 0;
+    // ieskf.init_roi 在冷启动帧用 ROI 重检、并换掉整图结果的次数。
+    std::size_t init_roi_frames = 0;
     // L3 真正吃下去的那些：过了 matchLight 全部门限、进了 updateMulti 的
     // 独立灯条。与上面 L2 的检出量一起看，才知道关联门限收紧了多少。
     std::size_t side_light_used = 0;
@@ -453,11 +455,28 @@ int main(int argc, char* argv[])
       // 喂进滤波器 —— auto_aim_test 一直是传的，两个回放器不能不一致。
       auto detection_frame =
         detector.detectFrame(img, light_roi, net_roi, enemy_color, light_hints);
+      const auto enemies = [enemy_color](std::vector<L2Perception::Armor> armors) {
+        std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
+          return enemy_color != L2Perception::ArmorColor::Unknown && armor.color != enemy_color;
+        });
+        return armors;
+      };
+      auto armors = enemies(detection_frame.armors);
+      // 与实跑路径一致：冷启动那一帧（ieskf.init_roi）在候选周围按跟踪时的
+      // ROI 再检一次，ROI 里一块都没检出就退回整图结果。
+      if (use_net_roi) {
+        if (const auto init_roi = tracker.initRoi(
+              armors, q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio())) {
+          auto refined = detector.detectFrame(img, light_roi, *init_roi, enemy_color, light_hints);
+          auto refined_armors = enemies(refined.armors);
+          if (!refined_armors.empty()) {
+            detection_frame = std::move(refined);
+            armors = std::move(refined_armors);
+            ++init_roi_frames;
+          }
+        }
+      }
       const auto t_l2_end = std::chrono::steady_clock::now();
-      auto armors = detection_frame.armors;
-      std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
-        return enemy_color != L2Perception::ArmorColor::Unknown && armor.color != enemy_color;
-      });
       det_total += armors.size();
       if (!armors.empty()) ++frames_with_det;
       side_light_total += detection_frame.lights.size();
@@ -813,6 +832,7 @@ int main(int argc, char* argv[])
               << "检出总数                    " << det_total << '\n'
               << "Tracking 帧                 " << frames_tracking << '\n'
               << "跟踪丢失/重置次数           " << resets << '\n'
+              << "冷启动帧 ROI 重检           " << init_roi_frames << '\n'
               << "单帧多观测更新的帧          " << double_update_frames << '\n'
               << "侧边灯条 总数/有灯条的帧    " << side_light_total << " / "
               << frames_with_side_light << '\n'

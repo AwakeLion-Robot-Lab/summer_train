@@ -548,6 +548,7 @@ AutoAimConfig loadConfig(const std::string& path)
   readMillisecondsAsSeconds(ieskf, "max_frame_gap_ms", config.ieskf_tracker.max_frame_gap);
   readMillisecondsAsSeconds(
     ieskf, "temp_lost_predict_ms", config.ieskf_tracker.temp_lost_predict_time);
+  readValue(ieskf, "init_roi", config.ieskf_tracker.init_roi);
   readValue(ieskf, "iteration_num", config.ieskf_target.iteration_num);
   readVector3(
     ieskf, "body_acceleration", config.ieskf_target.noise.body_acceleration);

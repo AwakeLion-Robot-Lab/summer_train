@@ -43,6 +43,17 @@ struct EskfTrackerConfig
   // 和姿态上，协方差照常增长。速度或角速度一旦被错关联带偏，TempLost 期间
   // 匀速外推能把目标推出画面，按预测位置做的关联也就再也接不上真实的板。
   double temp_lost_predict_time{0.1};
+
+  // 冷启动也用网络 ROI。整图缩放和裁剪放大后检出的板尺寸有系统差（回放实测
+  // ROI 里的板窄约 4.5%），原先进 Tracking 才开 ROI，切换那一刻深度跳一下；
+  // 刚初始化时速度不确定度大，这一跳会被当成径向速度（静止目标冷启动 vx 冲到
+  // 0.5 m/s）。打开后初始化那一帧在候选周围按跟踪时同样的 ROI 再检一次，从
+  // 这份检测初始化，Detecting 起就一直用 ROI，全程同一尺度，代价是初始化帧多
+  // 一次推理，见 initRoi()。只管网络 ROI，独立灯条的 ROI 仍按 Tracking 开。
+  //
+  // 另一种做法"等累计观测数够了再开 ROI"回放比过：只是把跳变推后，径向残差
+  // 拖得更久，最坏收敛帧数还变长，已去掉。数字见 docs/replay_ab_log.md。
+  bool init_roi{false};
 };
 
 // 本帧真正作为端点观测送进 IESKF 多观测更新的一根灯条。完整装甲板会拆成
@@ -100,6 +111,16 @@ public:
   cv::Rect netFocusRoi(
     const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
     const cv::Size & image_size, double target_wh_ratio = 1.0) const;
+
+  // 冷启动那一帧给网络的 ROI（init_roi 打开时）。当前目标是 Lost、这一帧会
+  // 从 detections 里初始化，就按 initTarget 会挑的那块板临时建一个目标，用
+  // 跟踪时同一个 Roi::net 算出窗口。调用方在同一帧里用它再检一次、把新结果
+  // 交给 track()，初始化的观测就和之后 ROI 帧的尺度一致。detections 要和交给
+  // track() 的一样先按颜色筛过。不适用时返回空。
+  std::optional<cv::Rect> initRoi(
+    const std::vector<L2Perception::Armor> & detections,
+    const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
+    const cv::Size & image_size, double target_wh_ratio = 1.0);
 
   // 本帧关联到的完整装甲板数量，以及关联到的物理板编号（形如 "0|2"）。
   // 关联在编号间来回跳会让整车 yaw 每帧偏 2π/N，是抖动最常见的来源，所以这
@@ -175,11 +196,12 @@ private:
   bool semanticUsable(const Armor & armor) const noexcept;
   bool pnpUsable(const Armor & armor) const noexcept;
 
-  // ROI 的状态机门限。不在跟踪态、未初始化或已超时时返回空；
-  // require_light_measurements 再额外要求开了独立灯条观测且目标不是基地。
+  // ROI 的状态机门限。未初始化或已超时时返回空。for_lights 为 true 是独立
+  // 灯条的 ROI：要求在跟踪态、开了独立灯条观测且目标不是基地；否则是网络
+  // ROI，init_roi 打开时从 Detecting 起就给，否则和灯条一样按跟踪态。
   std::optional<Roi::Focus> roiFocus(
     const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
-    bool require_light_measurements) const;
+    bool for_lights) const;
 
   double lostThreshold(const EskfTarget & target) const noexcept;
   // 这个槽的运动外推截止时刻：上次成功更新后再过 temp_lost_predict_time。

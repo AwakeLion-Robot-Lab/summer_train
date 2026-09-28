@@ -112,6 +112,12 @@ ieskf:
   max_frame_gap_ms: 100
   # 超过这么久没有成功更新，预测停止外推、停在原地。
   temp_lost_predict_ms: 100
+  # 冷启动也用网络 ROI：初始化帧在候选周围按跟踪时的 ROI 再检一次，Detecting
+  # 起一直用 ROI（初始化帧多一次推理）。ROI 里检出的板比整图窄约 4.5%，原先
+  # 进 Tracking 才开 ROI，那一刻的深度跳变会被刚初始化的滤波器当成径向速度。
+  # 回放冷启动：平移目标第 6 帧径向速度误差 p50 0.21 -> 0.03 m/s，2.5 rad/s
+  # 小陀螺 p90 1.13 -> 0.59；稳态预测误差不变。见 docs/replay_ab_log.md。
+  init_roi: true
   # 每帧更新的高斯牛顿迭代次数。
   iteration_num: 8
 

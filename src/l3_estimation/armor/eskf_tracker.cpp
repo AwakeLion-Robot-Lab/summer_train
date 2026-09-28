@@ -342,20 +342,25 @@ bool EskfTracker::pnpUsable(const Armor & armor) const noexcept
 
 std::optional<Roi::Focus> EskfTracker::roiFocus(
   const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
-  bool require_light_measurements) const
+  bool for_lights) const
 {
   if (!q_world_barrel) {
     return std::nullopt;
   }
+  // init_roi 时网络 ROI 从 Detecting 起就给：初始化用的已经是 ROI 检测，
+  // 接下来几帧若退回整图，尺度又切一次，等于没做。
+  const bool live = (for_lights || !tracker_config_.init_roi)
+                      ? active_.lifecycle.isTracking()
+                      : active_.lifecycle.state != TrackState::Lost;
   if (
-    !active_.lifecycle.isTracking() || !active_.target.initialized() ||
+    !live || !active_.target.initialized() ||
     elapsedSeconds(active_.last_update, timestamp) >= lostThreshold(active_.target)) {
     return std::nullopt;
   }
   // 独立灯条 ROI 多两个条件：开关打开，且目标不是基地——基地的板不绕转，
   // 整车预测约束不了它的灯条位置。
   if (
-    require_light_measurements &&
+    for_lights &&
     (!active_.target.lightsEnabled() || VehicleModel::isBase(active_.target.name))) {
     return std::nullopt;
   }
@@ -406,6 +411,45 @@ cv::Rect EskfTracker::netFocusRoi(
     return image_rect;
   }
   return Roi::net(*focus, *box, image_size, target_wh_ratio);
+}
+
+std::optional<cv::Rect> EskfTracker::initRoi(
+  const std::vector<L2Perception::Armor> & detections,
+  const std::optional<Eigen::Quaterniond> & q_world_barrel, TimePoint timestamp,
+  const cv::Size & image_size, double target_wh_ratio)
+{
+  if (
+    !ready_ || !tracker_config_.init_roi || !q_world_barrel ||
+    active_.lifecycle.state != TrackState::Lost) {
+    return std::nullopt;
+  }
+  // 和 track() 里的初始化同一套挑法：同一份候选、同一个排序、取第一块。
+  pnp_solver_.set_R_world_barrel(q_world_barrel);
+  Frame frame{
+    .timestamp = timestamp,
+    .camera_in_world = cameraInWorld(calibration_, *q_world_barrel),
+    .armors = toObservations(detections)};
+  const std::vector<Armor> & candidates = initCandidates(frame);
+  if (candidates.empty()) {
+    return std::nullopt;
+  }
+
+  // 临时目标只用来投影整车包围盒，窗口大小因此和跟踪时的 Roi::net 一致。
+  // 整图和 ROI 的尺度差来自两者放大倍率不同，所以初始化这一窗口也要按跟踪
+  // 时的算法定大小，而不是随手在板周围框一块。
+  EskfTarget probe;
+  probe.reset(candidates.front(), target_config_, timestamp);
+  Roi::Focus focus;
+  focus.target = &probe;
+  focus.ctx = probe.obsContext(calibration_, frame.camera_in_world);
+  focus.motion_end = timestamp;
+  focus.lost_time = 0.0;
+  focus.lost_thres = lostThreshold(probe);
+  const auto box = Roi::bounds(focus, image_size);
+  if (!box) {
+    return std::nullopt;
+  }
+  return Roi::net(focus, *box, image_size, target_wh_ratio);
 }
 
 // --- 杂项 -----------------------------------------------------------------

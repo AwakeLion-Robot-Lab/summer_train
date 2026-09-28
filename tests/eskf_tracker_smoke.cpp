@@ -522,6 +522,71 @@ int main()
       "无枪管姿态时应当返回整图");
   }
 
+  // --- 5b. 冷启动 ROI（init_roi）-------------------------------------
+  {
+    const cv::Size image_size = calibration.image_size;
+    const cv::Rect full(0, 0, image_size.width, image_size.height);
+    const auto now = L3Estimation::TimePoint{} + std::chrono::seconds(1);
+    const auto frame = synthesizeFrame(makeTruth(), calibration, armor_config);
+    expect(!frame.empty(), "合成帧里应当有可见板");
+
+    // 关着：不给冷启动 ROI，Detecting 仍是整图（原行为）。
+    {
+      L3Estimation::EskfTracker tracker(
+        calibration, armor_config, tracker_config, target_config);
+      expect(
+        !tracker.initRoi(frame, kBarrelPose, now, image_size, 1.0),
+        "init_roi 关闭时不应给冷启动 ROI");
+      tracker.track(frame, kBarrelPose, now);
+      expect(
+        tracker.state() == L3Estimation::TrackState::Detecting, "初始化后应在 Detecting");
+      expect(
+        tracker.netFocusRoi(kBarrelPose, now, image_size, 1.0) == full,
+        "init_roi 关闭时 Detecting 的网络 ROI 应当是整图");
+    }
+
+    // 打开：Lost 时按初始化会挑的板给出 ROI，初始化之后 Detecting 就开始聚焦。
+    {
+      L3Estimation::EskfTrackerConfig config = tracker_config;
+      config.init_roi = true;
+      L3Estimation::EskfTracker tracker(calibration, armor_config, config, target_config);
+      expect(
+        !tracker.initRoi({}, kBarrelPose, now, image_size, 1.0), "没有检测时不应给冷启动 ROI");
+      expect(
+        !tracker.initRoi(frame, std::nullopt, now, image_size, 1.0),
+        "无枪管姿态时不应给冷启动 ROI");
+
+      const auto roi = tracker.initRoi(frame, kBarrelPose, now, image_size, 1.0);
+      expect(roi.has_value(), "Lost 且有候选时应当给冷启动 ROI");
+      expect(roi->area() < full.area(), "冷启动 ROI 应当小于整图");
+      expect((*roi & full) == *roi, "冷启动 ROI 越出了图像边界");
+      // 窗口按猜的半径展开整车，同一辆车的可见板都得落在里面，不然 ROI 重检
+      // 会把邻板裁掉。
+      for (const auto& armor : frame) {
+        for (const auto& corner : armor.corners) {
+          expect(
+            roi->contains(cv::Point(static_cast<int>(corner.x), static_cast<int>(corner.y))),
+            "冷启动 ROI 没有盖住全部可见板角点");
+        }
+      }
+
+      tracker.track(frame, kBarrelPose, now);
+      expect(
+        tracker.state() == L3Estimation::TrackState::Detecting, "初始化后应在 Detecting");
+      expect(
+        !tracker.initRoi(frame, kBarrelPose, now, image_size, 1.0),
+        "已初始化后不应再给冷启动 ROI");
+      const cv::Rect focus = tracker.netFocusRoi(kBarrelPose, now, image_size, 1.0);
+      expect(
+        focus.area() > 0 && focus.area() < full.area(),
+        "init_roi 打开时 Detecting 的网络 ROI 就应当聚焦");
+      // 独立灯条的 ROI 不受这个开关影响，仍要等 Tracking。
+      expect(
+        !tracker.lightRoi(kBarrelPose, now, image_size).has_value(),
+        "Detecting 时不应给独立灯条 ROI");
+    }
+  }
+
   // --- 6. 断流复位与 TempLost 外推截止 --------------------------------
   {
     L3Estimation::EskfTrackerConfig config = tracker_config;
