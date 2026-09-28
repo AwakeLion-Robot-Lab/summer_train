@@ -52,7 +52,6 @@ L2Perception::ArmorDetector makeDetector(const AutoAimConfig& config, bool guess
     std::move(armor_backend),
     L2Perception::ArmorDetectorConfig{
       .decoder = decoder,
-      .refiner = config.refiner,
       .finder = config.light_finder,
       .number = config.number_classifier});
   L6Telemetry::logInfo(

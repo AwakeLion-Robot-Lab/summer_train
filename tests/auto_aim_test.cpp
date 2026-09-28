@@ -712,12 +712,11 @@ cv::Mat makeRecognitionPanel(
     const bool filtered =
       enemy_color != L2Perception::ArmorColor::Unknown &&
       armor.color != enemy_color;
-    const bool refined = armor.corner_source == L2Perception::CornerSource::Refined;
     const std::string label = cv::format(
-      "[%zu] %s %s  conf=%.2f  %s%s",
+      "[%zu] %s %s  conf=%.2f%s",
       tile_index + 1, armorColorName(armor.color),
       armorClassName(L2Perception::armorClassFromId(armor.class_id)),
-      armor.confidence, refined ? "refined" : "net", filtered ? "  ignored" : "");
+      armor.confidence, filtered ? "  ignored" : "");
     drawOutlinedText(
       panel, label, tile_rect.tl() + cv::Point{8, 28},
       armorDisplayColor(armor.color), 0.58);
@@ -1529,7 +1528,7 @@ int main(int argc, char** argv)
       require(state_csv.is_open(), "无法打开 csv 输出路径: " + csv_path);
       state_csv << "frame,t,state,ndet,nlight,nmatch,armor_ids,jumped,"
                    "xc,yc,zc,vx,vy,vz,yaw_deg,vyaw,r1,r2,h,roll_deg,pitch_deg,"
-                   "nis,nis_dof,roi_x,roi_y,roi_w,roi_h,refined,net_kept\n";
+                   "nis,nis_dof,roi_x,roi_y,roi_w,roi_h\n";
       state_csv << std::fixed << std::setprecision(6);
     }
 
@@ -1588,13 +1587,12 @@ int main(int argc, char** argv)
         detector.detectFrame(img, light_roi, net_roi, enemy_color, light_hints);
       clock.lap("L2 检测");
       {
-        // L2 常年占掉管线九成，只报总数没法定位是网络、精修还是侧边灯条那一路
+        // L2 常年占掉管线九成，只报总数没法定位是网络、数字分类还是侧边灯条那一路
         // 贵。这些分项已经含在"L2 检测"里，不重复计入合计。
         const L2Perception::DetectTiming& t = detector.lastTiming();
         clock.add("  ├ 预处理", t.preprocess);
         clock.add("  ├ 整板推理", t.infer);
         clock.add("  ├ 解码", t.decode);
-        clock.add("  ├ 角点精修", t.refine);
         clock.add("  ├ 数字分类", t.number);
         clock.add("  └ 侧边灯条", t.side_light);
       }
@@ -1694,9 +1692,7 @@ int main(int argc, char** argv)
         state_csv << (target ? target->lastNis() : 0.0) << ','
                   << (target ? target->lastNisDof() : 0) << ','
                   << net_roi.x << ',' << net_roi.y << ',' << net_roi.width << ','
-                  << net_roi.height << ','
-                  << detector.lastRefine().refined << ','
-                  << detector.lastRefine().network_kept << '\n';
+                  << net_roi.height << '\n';
       }
 
       const auto& observations = diagnostic_pnp_observations;

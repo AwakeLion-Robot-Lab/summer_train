@@ -305,7 +305,6 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
       detection.center += detection.corners[corner];
     }
     detection.center = detection.center * 0.25F;
-    detection.network_corners = detection.corners;
     detection.confidence = confidence;
 
     // 颜色/类别一般是 logits；比较大小求 argmax 无需先做 softmax。

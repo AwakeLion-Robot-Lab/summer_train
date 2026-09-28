@@ -62,6 +62,35 @@
 3. 噪声不是逐帧切换造成的：把 `max_endpoint_distance_px` 推到 1000（无条件替换）噪声炸到 7.76、pred p50
    从 1.72 升到 8.22。这个门限是在限制损害。
 
+### 删除，2026-09-25
+
+剖面搜索 + `isolated_light_sigma_scale: 3` 的配置下再做一次开/关，关掉前的触发率（替换 / (替换+保留网络)）：
+
+```text
+3m_high 0%   3m_mid 0.22%   3m_low 0%   3m_run_fast 0.43%   3m_run_mid 0.32%   3m_run_no 0%
+fast_run 4.2%   fast_stop 4.1%
+保留网络的主因是"没找到灯条"，其余是"端点超门限"
+```
+
+`pred_px` p50 / p90，开 → 关：
+
+```text
+3m_high     2.37 / 6.00  →  同左（obs 逐位相同）
+3m_mid      1.485 / 4.685 → 1.490 / 4.701
+3m_low      1.23 / 2.40  →  同左（obs 逐位相同）
+3m_run_fast 4.690 / 15.35 → 4.653 / 15.32
+3m_run_mid  1.977 / 14.54 → 1.999 / 14.76
+3m_run_no   1.58 / 12.29 →  同左（obs 逐位相同）
+fast_run    17.98 / 30.20 → 17.83 / 30.50
+fast_stop   19.70 / 25.24 → 19.93 / 25.13
+```
+
+差别都在 ±1.5% 以内且方向不一，等于没有作用，整个模块（`ArmorRefiner`、`refiner:` 配置段、
+`Armor::network_corners / corner_source / corner_shift`、`armor_refiner_smoke`、
+`armor_refiner_video_test`）一并删掉。删后的构建用同一份配置回放 3m_mid、fast_run，五份 CSV 与
+`enable: false` 逐位相同。5 m 工况若要重新做角点细化，更合适的起点是把网络角点拆成两根灯条交给
+`searchLights`（不二值化，不怕过曝），而不是恢复这套轮廓法。
+
 ## 侧边灯条（`light_finder` 与 `ieskf.enable_lights_measure`），2026-09-19
 
 ### 传统检测 vs 灯条关键点模型

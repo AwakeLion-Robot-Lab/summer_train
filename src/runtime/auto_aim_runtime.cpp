@@ -81,7 +81,7 @@ void AutoAimRuntime::run() {
     std::lock_guard<std::mutex> lock(camera_mutex_);
     active_camera_ = camera;
   }
-  // 启动时只加载一次模型；每帧仅执行预处理、推理、解码和角点精修。
+  // 启动时只加载一次模型；每帧仅执行预处理、推理、解码和数字分类。
   L2Perception::ArmorDetector armor_detector =
     loadDetector(auto_aim_config);
 

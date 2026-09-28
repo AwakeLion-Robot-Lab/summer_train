@@ -16,7 +16,6 @@ ArmorDetector::ArmorDetector(
   std::unique_ptr<IInferenceBackend> armor_backend, ArmorDetectorConfig config)
   : armor_backend_(std::move(armor_backend))
   , decoder_(std::move(config.decoder))
-  , refiner_(std::move(config.refiner))
   , finder_config_(std::move(config.finder))
   , preprocess_config_(std::move(config.preprocess))
 {
@@ -115,9 +114,7 @@ ArmorFrame ArmorDetector::detectFrame(
   const std::optional<cv::Rect>& net_roi, ArmorColor color,
   const std::vector<LightHint>& hints) const
 {
-  last_refine_ = {};
   last_numbers_ = {};
-  last_records_.clear();
   last_lights_.clear();
   last_timing_ = {};
   if (!ready() || image.empty() || image.type() != CV_8UC3) {
@@ -150,29 +147,18 @@ ArmorFrame ArmorDetector::detectFrame(
     frame.armors = decoder_.decode(armor_result, preprocessed.transform);
     last_timing_.decode = lap();
 
-    // 解码出的角点在裁剪图里，补偏移回原图。精修和下游都在原图坐标系，所以
-    // 必须在精修之前做。
+    // 解码出的角点在裁剪图里，补偏移回原图。数字分类和下游都在原图坐标系。
     if (cropped) {
       const cv::Point2f offset(static_cast<float>(focus.x), static_cast<float>(focus.y));
       for (Armor& armor : frame.armors) {
         for (cv::Point2f& corner : armor.corners) {
           corner += offset;
         }
-        for (cv::Point2f& corner : armor.network_corners) {
-          corner += offset;
-        }
         armor.center += offset;
       }
     }
 
-    // 精修用原图而不是 letterbox 后的网络输入，免得二次引入缩放误差。失败的
-    // 板保留网络角点。
-    last_refine_ =
-      refiner_.refine(image, frame.armors, collect_records_ ? &last_records_ : nullptr);
-    last_timing_.refine = lap();
-
-    // 数字二次分类排在精修之后：抠图用的是精修过的角点，数字区域对得更准；
-    // 判不出的板在这里就被丢掉，不再进 L3 的关联。
+    // 数字二次分类：判不出的板在这里就被丢掉，不再进 L3 的关联。
     last_numbers_ = classifyNumbers(image, frame.armors);
     last_timing_.number = lap();
 
@@ -198,9 +184,7 @@ ArmorFrame ArmorDetector::detectFrame(
   } catch (const std::exception& error) {
     // 一帧坏图或一次推理失败不该中断主循环，记日志后当这帧没检出。
     L6Telemetry::logError("armor inference failed", error.what());
-    last_refine_ = {};
     last_numbers_ = {};
-    last_records_.clear();
     last_lights_.clear();
     last_timing_ = {};
     return {};

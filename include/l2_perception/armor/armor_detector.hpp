@@ -1,7 +1,6 @@
 #pragma once
 
 #include "l2_perception/armor/armor_decoder.hpp"
-#include "l2_perception/armor/armor_refiner.hpp"
 #include "l2_perception/armor/light_detector.hpp"
 #include "l2_perception/armor/number_classifier.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
@@ -17,8 +16,7 @@ namespace L2Perception
 {
 
 // L2 装甲检测的编排层，一帧分两部分：
-//   装甲板  整板网络（同济 yolov5 等）→ 解码 → 板 ROI 内传统精修角点 →
-//          数字二次分类（可关）；
+//   装甲板  整板网络（同济 yolov5 等）→ 解码 → 数字二次分类（可关）；
 //   侧边灯条  只在 L3 给出 light_roi 时，在其中用传统二值化（findLights）找
 //            灯条，剔掉属于已检出装甲板的，交给 L3 做额外的端点观测。
 //
@@ -27,13 +25,12 @@ namespace L2Perception
 // 一帧检测里各环节的配置。分开传是六个位置参数，中间几个还常常要写 {} 占位
 // 才能传到后面的，收成一个结构体后调用点按名字赋值，加新环节也不动签名。
 // detectFrame 一帧里各段的 CPU 墙钟耗时，单位 ms。整块 L2 常年占掉管线九成，
-// 只报一个总数没法定位是网络、精修还是侧边灯条那一路贵，所以拆开。
+// 只报一个总数没法定位是网络、数字分类还是侧边灯条那一路贵，所以拆开。
 struct DetectTiming
 {
   double preprocess{0.0};
   double infer{0.0};
   double decode{0.0};
-  double refine{0.0};
   double number{0.0};
   // 侧边灯条整条路：二值化 + 轮廓筛选（或剖面搜索）+ 判色 + 与已检出板的判重。
   double side_light{0.0};
@@ -42,7 +39,6 @@ struct DetectTiming
 struct ArmorDetectorConfig
 {
   ArmorDecoderConfig decoder{};
-  ArmorRefinerConfig refiner{};
   LightFinderConfig finder{};
   ImagePreprocessConfig preprocess{};
   NumberClassifierConfig number{};
@@ -81,15 +77,11 @@ public:
   // L3 的 netFocusRoi 用它把 ROI 修成同一比例，减少 letterbox 填充。
   [[nodiscard]] double net_aspect_ratio() const noexcept;
 
-  // 最近一帧的调试快照：精修统计、逐块明细（collectRecords(true) 之后才填，
-  // 实机保持关闭以免每帧多分配），以及颜色过滤后、剔除已检出装甲板之前的
-  // 全部侧边灯条候选。每次 detectFrame 进来先清空。
-  const RefineStats& lastRefine() const noexcept { return last_refine_; }
+  // 最近一帧的调试快照：分段耗时、数字分类统计，以及颜色过滤后、剔除已检出
+  // 装甲板之前的全部侧边灯条候选。每次 detectFrame 进来先清空。
   const DetectTiming& lastTiming() const noexcept { return last_timing_; }
   const NumberStats& lastNumbers() const noexcept { return last_numbers_; }
-  const std::vector<RefineRecord>& lastRecords() const noexcept { return last_records_; }
   const std::vector<Light>& lastLights() const noexcept { return last_lights_; }
-  void collectRecords(bool enable) noexcept { collect_records_ = enable; }
 
   const ArmorDecoderConfig& decoderConfig() const noexcept { return decoder_.config(); }
 
@@ -104,16 +96,12 @@ private:
 
   std::unique_ptr<IInferenceBackend> armor_backend_;
   ArmorDecoder decoder_{};
-  ArmorRefiner refiner_{};
   NumberClassifier classifier_{};
   LightFinderConfig finder_config_{};
   ImagePreprocessConfig preprocess_config_{};
-  bool collect_records_{false};
   // detectFrame 对外是 const，这几个快照只供调试读取，所以用 mutable。
-  mutable RefineStats last_refine_{};
   mutable DetectTiming last_timing_{};
   mutable NumberStats last_numbers_{};
-  mutable std::vector<RefineRecord> last_records_;
   mutable std::vector<Light> last_lights_;
 };
 

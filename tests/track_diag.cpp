@@ -403,16 +403,6 @@ int main(int argc, char* argv[])
     std::vector<double> hold_pixel_err;
     std::vector<double> nis_values;
     std::vector<double> nis_per_dof;
-    std::size_t refine_hit = 0;
-    std::size_t refine_kept = 0;
-    std::size_t refine_no_bar = 0;
-    std::size_t refine_too_short = 0;
-    std::size_t refine_shift_rej = 0;
-    std::size_t refine_contours = 0;
-    std::size_t refine_bar_kept = 0;
-    std::size_t refine_rej_angle = 0;
-    std::size_t refine_rej_ratio = 0;
-    std::size_t refine_rej_len = 0;
     std::vector<double> res_along_stats;
     std::vector<double> res_perp_stats;
     // 四个物理通道的逐帧统计，下标与 LightResidual 同序：横移⊥、沿移∥、
@@ -503,18 +493,6 @@ int main(int argc, char* argv[])
       }
       if (match_here > 1) ++double_update_frames;
       // 数字二次分类丢掉的板：全局统计，判断门限是不是把有效观测也筛掉了。
-      // 精修的触发比例。判断"换底图之后精修变好了"还是"只是更少触发了"——
-      // 后者等于偷偷关掉功能，两种情况在 pred_px 上长得一模一样。
-      refine_hit += detector.lastRefine().refined;
-      refine_kept += detector.lastRefine().network_kept;
-      refine_no_bar += detector.lastRefine().no_lightbar;
-      refine_too_short += detector.lastRefine().size_skipped;
-      refine_shift_rej += detector.lastRefine().shift_rejected;
-      refine_contours += detector.lastRefine().contour_total;
-      refine_bar_kept += detector.lastRefine().bar_kept;
-      refine_rej_angle += detector.lastRefine().rej_angle;
-      refine_rej_ratio += detector.lastRefine().rej_ratio;
-      refine_rej_len += detector.lastRefine().rej_length;
       number_accepted += detector.lastNumbers().accepted;
       number_dropped += detector.lastNumbers().dropped();
 
@@ -843,19 +821,6 @@ int main(int argc, char* argv[])
               << '\n'
               << "数字分类采信/丢弃           " << number_accepted << " / "
               << number_dropped << '\n'
-              << "角点精修 替换/保留网络      " << refine_hit << " / " << refine_kept
-              << "  触发率 "
-              << (refine_hit + refine_kept > 0
-                    ? 100.0 * static_cast<double>(refine_hit) /
-                        static_cast<double>(refine_hit + refine_kept)
-                    : 0.0)
-              << "%\n"
-              << "  其中保留网络的成因  没找到灯条 " << refine_no_bar
-              << " / 灯条太短 " << refine_too_short << " / 端点超门限 "
-              << refine_shift_rej << '\n'
-              << "  轮廓 " << refine_contours << "  过筛 " << refine_bar_kept
-              << "  毙于 角度 " << refine_rej_angle << " / 长宽比 "
-              << refine_rej_ratio << " / 长度 " << refine_rej_len << '\n'
               << "-- 滤波器 --\n"
               << "NIS  mean " << mean(nis_values) << "  p50 " << percentile(nis_values, 0.5)
               << "  p90 " << percentile(nis_values, 0.9)

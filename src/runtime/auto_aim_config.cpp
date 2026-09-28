@@ -122,30 +122,6 @@ void normalize(AutoAimConfig& config)
 
   // L2 阈值越界不会报错，只会静默失效：颜色比 <= 1 会让红蓝判定区间重叠。
   // 整板模型的置信度阈值在 applyThresholds 里挡。
-  const L2Perception::ArmorRefinerConfig refiner_defaults;
-  if (!(config.refiner.binary_threshold > 0.0 && config.refiner.binary_threshold < 255.0)) {
-    config.refiner.binary_threshold = refiner_defaults.binary_threshold;
-  }
-  if (!(config.refiner.color_diff_threshold > 0.0 &&
-        config.refiner.color_diff_threshold < 255.0)) {
-    config.refiner.color_diff_threshold = refiner_defaults.color_diff_threshold;
-  }
-  if (!positiveFinite(config.refiner.min_lightbar_length_px)) {
-    config.refiner.min_lightbar_length_px = refiner_defaults.min_lightbar_length_px;
-  }
-  if (!positiveFinite(config.refiner.max_endpoint_distance_px)) {
-    config.refiner.max_endpoint_distance_px = refiner_defaults.max_endpoint_distance_px;
-  }
-  if (!(config.refiner.min_lightbar_ratio > 0.0F &&
-        config.refiner.min_lightbar_ratio < config.refiner.max_lightbar_ratio)) {
-    config.refiner.min_lightbar_ratio = refiner_defaults.min_lightbar_ratio;
-    config.refiner.max_lightbar_ratio = refiner_defaults.max_lightbar_ratio;
-  }
-  if (!(config.refiner.max_angle_error_deg > 0.0F &&
-        config.refiner.max_angle_error_deg <= 90.0F)) {
-    config.refiner.max_angle_error_deg = refiner_defaults.max_angle_error_deg;
-  }
-
   const L2Perception::LightFinderConfig light_finder_defaults;
   if (!(config.light_finder.binary_threshold > 0 && config.light_finder.binary_threshold < 255)) {
     config.light_finder.binary_threshold = light_finder_defaults.binary_threshold;
@@ -505,18 +481,6 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(armor, "small_width_m", config.armor.small_width);
   readValue(armor, "big_width_m", config.armor.big_width);
   readValue(armor, "height_m", config.armor.height);
-
-  const YAML::Node refiner = root["refiner"];
-  readValue(refiner, "enable", config.refiner.enable);
-  readValue(refiner, "binary_threshold", config.refiner.binary_threshold);
-  readValue(refiner, "min_lightbar_length_px", config.refiner.min_lightbar_length_px);
-  readValue(refiner, "max_angle_error_deg", config.refiner.max_angle_error_deg);
-  readValue(refiner, "min_lightbar_ratio", config.refiner.min_lightbar_ratio);
-  readValue(refiner, "max_lightbar_ratio", config.refiner.max_lightbar_ratio);
-  readValue(refiner, "max_endpoint_distance_px", config.refiner.max_endpoint_distance_px);
-  readValue(refiner, "pca_corner_correction", config.refiner.pca_corner_correction);
-  readValue(refiner, "color_channel_diff", config.refiner.color_channel_diff);
-  readValue(refiner, "color_diff_threshold", config.refiner.color_diff_threshold);
 
   const YAML::Node light_finder = root["light_finder"];
   readValue(light_finder, "binary_threshold", config.light_finder.binary_threshold);

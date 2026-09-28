@@ -66,31 +66,18 @@ constexpr std::optional<bool> isLargeArmor(ArmorClass armor_class) noexcept
   return std::nullopt;
 }
 
-// 角点的来源。传统精修只在证据充分时才替换网络角点，下游和离线工具要能
-// 区分两者。
-enum class CornerSource {
-  Network,  // 网络回归的原始角点
-  Refined   // 已由 ROI 内的灯条端点替换
-};
-
 // 类别的来源。二次分类会改写 class_id，下游和离线工具要能区分两者。
 enum class ClassSource {
   Network,  // 整板网络的类别 argmax
   Number    // 已由数字分类器重判
 };
 
-// 整板网络检出的装甲板，角点可能已被传统精修替换。
+// 整板网络检出的装甲板。
 struct Armor {
   // 顺序固定为：左上、右上、右下、左下；PnP 必须沿用同一顺序。
   // 左上/左下是左灯条的上下端点，右上/右下是右灯条的，L3 按此拆成两根灯条。
   std::array<cv::Point2f, 4> corners{};
-  // 精修前的网络原始角点，顺序同 corners。留着是为了能离线对比两条通路，
-  // 否则无从验证精修是否真有收益。
-  std::array<cv::Point2f, 4> network_corners{};
-  CornerSource corner_source{CornerSource::Network};
-  // 精修角点相对网络角点的最大位移，单位 pixel；未精修时为 0。
-  float corner_shift{0.0F};
-  // 网络角点的几何中心。精修不重算它，与 SP-Vision 同口径。
+  // 四个角点的几何中心。
   cv::Point2f center{};
   // 车辆类别编号，见 ArmorClass。二次分类开着时它是数字分类器的结果。
   int class_id{-1};

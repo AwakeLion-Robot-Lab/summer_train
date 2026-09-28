@@ -41,26 +41,6 @@ inference:
     # nms_iou_threshold: 0.3
     # nms_score_threshold: 0.7
 
-# 板 ROI 内的传统角点精修（SP-Vision）：传统灯条端点与网络角点的距离和小于
-# max_endpoint_distance_px 才替换网络角点。用 armor_refiner_video_test 看替换比例。
-# 回放结论：在现有八段 3 m 录像上精修是净负的，留着是因为 5 m 工况还没有录像。
-refiner:
-  enable: true
-  # 场地偏暗调低、偏亮调高，取值在 (0, 255) 内。
-  binary_threshold: 150.0
-  # 灯条筛选：长度下限、与竖直方向的最大夹角、长宽比区间。
-  min_lightbar_length_px: 8.0
-  max_angle_error_deg: 45.0
-  min_lightbar_ratio: 1.5
-  max_lightbar_ratio: 20.0
-  # 放大会让传统解无条件覆盖网络解，这个门限是在限制损害。
-  max_endpoint_distance_px: 15.0
-  # 端点用亮度梯度 + PCA 主轴定位，替代 minAreaRect 的二值边界。
-  pca_corner_correction: false
-  # 二值化底图用颜色差分而不是灰度：过曝时灰度切到的是饱和白核，长度随曝光变。
-  color_channel_diff: true
-  color_diff_threshold: 50.0
-
 # 侧边灯条：跟踪中在 L3 给的 light_roi 里用传统二值化找灯条（FYT 做法），剔掉
 # 属于已检出板的，剩下的交给 L3 按整车几何关联到邻板（门限见 ieskf.light_match_*）。
 # 补的是整板网络漏检的侧面那块板。
