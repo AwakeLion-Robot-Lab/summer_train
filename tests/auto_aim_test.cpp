@@ -921,8 +921,9 @@ struct SideLightMatch
 // "滤波器采纳了" / "进了 L3 但被 matchLight 毙掉" / "被判成已检出装甲板自己
 // 的灯条而丢掉" 三档分开。
 //
-// 之所以要单独一个窗口：灯条模型只在 light_roi 里跑，而 ROI 在整图上只占很
-// 小一块，压在 reprojection 上根本看不清端点。另外 used lights 面板画的是
+// 之所以要单独一个窗口：侧边灯条只在 light_roi 附近找（profile 模式下是 ROI
+// 里那几条搜索带），而 ROI 在整图上只占很小一块，压在 reprojection 上根本看
+// 不清端点。另外 used lights 面板画的是
 // 滤波器实际消费的量（含装甲板自己的两根），跟"侧边灯条检出了没有"不是同
 // 一个问题——后者要连被丢掉的候选一起看才判得出来。
 //
@@ -934,7 +935,9 @@ cv::Mat makeSideLightPanel(
   const std::vector<L2Perception::Light>& kept,
   const std::vector<L3Estimation::UsedLight>& update_lights,
   const std::vector<SideLightMatch>& matches,
-  const std::optional<cv::Rect>& light_roi)
+  const std::optional<cv::Rect>& light_roi,
+  const std::vector<L2Perception::LightHint>& hints,
+  const L2Perception::LightFinderConfig& finder)
 {
   // light_roi 是整车框扩出来的，通常又宽又扁（3 m 处约 4:1），固定的方形面板
   // 会把放大倍率卡在宽度上、下半张全是黑边。所以面板宽度固定、高度跟着 ROI
@@ -974,15 +977,16 @@ cv::Mat makeSideLightPanel(
   drawOutlinedText(
     panel,
     cv::format(
-      "side lights  candidates=%zu  to L3=%zu  used by filter=%zu  "
+      "side lights  search=%zu  candidates=%zu  to L3=%zu  used by filter=%zu  "
       "dropped(owned by armor)=%zu",
+      finder.search == L2Perception::LightSearch::Profile ? hints.size() : 0,
       candidates.size(), kept.size(), used_ids.size(),
       candidates.size() - kept.size()),
     {12, 28}, {255, 255, 255}, 0.58);
   drawOutlinedText(
     panel,
-    "thick=used by IESKF   thin=rejected by matchLight   gray=owned by armor   "
-    "green=model prediction, d=endpoint residual",
+    "thick=used by IESKF  thin=rejected by matchLight  gray=owned by armor  "
+    "orange=search band+prior  green=posterior, d=residual",
     {12, 57}, {180, 180, 180}, 0.46);
 
   if (roi.area() <= 0) {
@@ -1012,9 +1016,35 @@ cv::Mat makeSideLightPanel(
       destination.y + static_cast<int>(std::round((point.y - roi.y) * scale))};
   };
 
+  // 剖面搜索的输入：L3 按先验投影的每根侧边灯条（橙色细线）和它的搜索带（橙色
+  // 框）。灯条没找到时靠它区分"预测偏出了搜索带"和"带里有灯条但被拒了"。只画
+  // 在放大区域里，带子伸出 ROI 的部分裁掉，免得压到标题栏。
+  if (finder.search == L2Perception::LightSearch::Profile) {
+    cv::Mat view = panel(destination);
+    const cv::Point offset{destination.x, destination.y};
+    const cv::Scalar search_color{0, 165, 255};
+    for (const auto& hint : hints) {
+      const std::vector<cv::Point2f> band = L2Perception::searchBand(hint, finder);
+      if (band.size() != 4) {
+        continue;
+      }
+      std::vector<cv::Point> polygon;
+      for (const cv::Point2f& corner : band) {
+        polygon.push_back(panelPoint(corner) - offset);
+      }
+      cv::polylines(view, polygon, true, search_color, 1, cv::LINE_AA);
+      cv::line(
+        view, panelPoint(hint.top) - offset, panelPoint(hint.bottom) - offset, search_color, 1,
+        cv::LINE_AA);
+    }
+  }
+
   if (candidates.empty()) {
     drawOutlinedText(
-      panel, "the light model returned nothing in this roi",
+      panel,
+      finder.search == L2Perception::LightSearch::Profile
+        ? "no light found in any search band"
+        : "no light found in this roi",
       {destination.x + 10, destination.y + destination.height - 12},
       {0, 255, 255}, 0.55);
     return panel;
@@ -1649,7 +1679,7 @@ int main(int argc, char** argv)
       // 灯条是"没检出"还是"检出了但被判给了某块板"。
       const cv::Mat side_light_panel = makeSideLightPanel(
         img, detector.lastLights(), detection_frame.lights, used_lights,
-        side_light_matches, light_roi);
+        side_light_matches, light_roi, light_hints, runtime_config.light_finder);
       clock.lap("绘图/显示", true);
       const std::optional<FilterEstimate> filter_estimate = target
         ? std::optional<FilterEstimate>{target->estimate()}
@@ -1879,7 +1909,8 @@ int main(int argc, char** argv)
       // 角度、卡方三道门，且这一帧 updateMulti 成功——标注关联到的物理板编号
       // 和左右。交给 L3 的候选大半会被门限毙掉，把它们一起画在原图上等于把
       // "检出了" 当成 "用上了"；被毙掉的和被判给已检出装甲板的都去 side
-      // lights 窗口里看。灰框是灯条模型的搜索区 light_roi。
+      // lights 窗口里看。灰框是 light_roi：contour 模式下是搜索区，profile 模式下
+      // 只表示这一帧开了侧边灯条，真正的搜索带在 side lights 窗口里画。
       if (light_roi) {
         cv::rectangle(img, *light_roi, {90, 90, 90}, 1, cv::LINE_AA);
       }

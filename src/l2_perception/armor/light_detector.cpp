@@ -84,6 +84,24 @@ struct ProfileRow
   bool valid{false};
 };
 
+// 搜索带的尺寸，单位 pixel：横向半宽，以及沿灯条方向第一、最后一格相对 hint.top
+// 的位置。searchOne 与 searchBand 共用，显示的范围与实际搜索的范围不会各说各的。
+struct Band
+{
+  int half{0};
+  int first{0};
+  int last{0};
+};
+
+Band bandSize(float length, const LightFinderConfig& config)
+{
+  const float extend = std::max(2.0F, config.profile_extend_ratio * length);
+  return {
+    static_cast<int>(std::ceil(
+      std::max(config.profile_half_width_min_px, config.profile_half_width_ratio * length))),
+    -static_cast<int>(std::ceil(extend)), static_cast<int>(std::ceil(length + extend))};
+}
+
 struct Found
 {
   Light light;
@@ -101,11 +119,7 @@ std::optional<Found> searchOne(
   }
   const cv::Point2f along = delta / length;
   const cv::Point2f across(-along.y, along.x);
-  const int half = static_cast<int>(std::ceil(
-    std::max(config.profile_half_width_min_px, config.profile_half_width_ratio * length)));
-  const float extend = std::max(2.0F, config.profile_extend_ratio * length);
-  const int first = -static_cast<int>(std::ceil(extend));
-  const int last = static_cast<int>(std::ceil(length + extend));
+  const auto [half, first, last] = bandSize(length, config);
 
   std::vector<ProfileRow> rows;
   rows.reserve(static_cast<std::size_t>(last - first + 1));
@@ -338,6 +352,22 @@ std::optional<Found> searchOne(
 }
 
 }  // namespace
+
+std::vector<cv::Point2f> searchBand(const LightHint& hint, const LightFinderConfig& config)
+{
+  const cv::Point2f delta = hint.bottom - hint.top;
+  const float length = static_cast<float>(cv::norm(delta));
+  if (!(length >= 1.0F)) {
+    return {};
+  }
+  const cv::Point2f along = delta / length;
+  const cv::Point2f across(-along.y, along.x);
+  const auto [half, first, last] = bandSize(length, config);
+  const auto corner = [&](int s, int k) {
+    return hint.top + along * static_cast<float>(s) + across * static_cast<float>(k);
+  };
+  return {corner(first, -half), corner(first, half), corner(last, half), corner(last, -half)};
+}
 
 std::vector<Light> searchLights(
   const cv::Mat& image, const std::vector<LightHint>& hints, const LightFinderConfig& config,

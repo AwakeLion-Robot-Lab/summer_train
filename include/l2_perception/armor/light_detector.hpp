@@ -93,6 +93,13 @@ struct LightFinderConfig
 //
 // 两个 hint 找到同一根灯条时只留对比度高的那根，免得 L3 把一根灯条配给两个
 // 槽位。返回的坐标在原图上，top 恒在 bottom 上方。
+// 一个 hint 的剖面搜索带在原图上的四个角：沿预测灯条向两端各外扩
+// max(2, profile_extend_ratio × 灯长)，横向 ±max(profile_half_width_min_px,
+// profile_half_width_ratio × 灯长) 取整。与 searchLights 用的是同一套尺寸，给
+// 调试显示画"到底在哪找"。灯长不足 1 px 时 hint 无效，返回空。
+[[nodiscard]] std::vector<cv::Point2f> searchBand(
+  const LightHint& hint, const LightFinderConfig& config);
+
 [[nodiscard]] std::vector<Light> searchLights(
   const cv::Mat& image, const std::vector<LightHint>& hints, const LightFinderConfig& config,
   ArmorColor color = ArmorColor::Unknown);
