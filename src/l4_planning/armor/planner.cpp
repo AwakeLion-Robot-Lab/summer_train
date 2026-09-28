@@ -76,7 +76,7 @@ Plan Planner::plan(const PlanInput& input)
 {
   return planTarget(
     input.target, input.robot_state, input.plan_time, input.to_now,
-    input.plan_to_send);
+    input.plan_to_send, input.q_world_barrel);
 }
 
 template <typename Target>
@@ -85,7 +85,8 @@ Plan Planner::planTarget(
   const L1Sensor::RobotState& robot_state,
   TimePoint plan_time,
   bool to_now,
-  double plan_to_send)
+  double plan_to_send,
+  const std::optional<Eigen::Quaterniond>& q_world_barrel)
 {
   if (!input_target.has_value()) {
     return rejected(PlanError::NoTarget);
@@ -122,7 +123,13 @@ Plan Planner::planTarget(
   const TimePoint future = target.t() + secondsToDuration(before_fire);
   target.predict(future);
 
-  AimPoint final_aim = chooseAimPoint(target);
+  // barrel 系 x 轴就是出膛方向。
+  std::optional<Eigen::Vector3d> muzzle;
+  if (entering_ && q_world_barrel) {
+    muzzle = *q_world_barrel * Eigen::Vector3d::UnitX();
+  }
+
+  AimPoint final_aim = chooseAimPoint(target, muzzle);
   if (!final_aim.valid) {
     return rejected(PlanError::OutOfWindow);
   }
@@ -146,7 +153,7 @@ Plan Planner::planTarget(
     const TimePoint predict_time = future + secondsToDuration(previous_fly_time);
     iteration_target.predict(predict_time);
 
-    final_aim = chooseAimPoint(iteration_target);
+    final_aim = chooseAimPoint(iteration_target, muzzle);
     if (!final_aim.valid) {
       return rejected(PlanError::OutOfWindow);
     }
@@ -196,6 +203,8 @@ Plan Planner::planTarget(
       !std::isfinite(plan.timing.fly_time)) {
     return rejected(PlanError::BallisticFailed);
   }
+  // 命令发出去了，云台开始往这块板走；之后的选板照常沿用锁。
+  entering_ = false;
   return plan;
 }
 
@@ -224,13 +233,16 @@ Plan Planner::plan(
 
 void Planner::reset() noexcept
 {
-  // locked_id_ 由候选板变化时更新。短暂中断不清锁，避免恢复后立即切板。
+  // runtime 只在 Idle、切能量机关和串口断开时调这里，都是一轮自瞄的边界。
+  // 旧锁不清：进自瞄的头一次选板会按枪口重挑，没给枪口姿态时还沿用它。
+  entering_ = true;
 }
 
 // ---- 以下为私有实现 ----
 
 template <typename Target>
-Planner::AimPoint Planner::chooseAimPoint(const Target& target)
+Planner::AimPoint Planner::chooseAimPoint(
+  const Target& target, const std::optional<Eigen::Vector3d>& muzzle)
 {
   const Eigen::VectorXd ekf_x = target.ekf_x();
   const std::vector<Eigen::Vector4d> armors = target.armor_xyza_list();
@@ -281,7 +293,16 @@ Planner::AimPoint Planner::chooseAimPoint(const Target& target)
     if (ids.size() > 1) {
       const int id0 = ids[0];
       const int id1 = ids[1];
-      if (locked_id_ != id0 && locked_id_ != id1) {
+      if (muzzle) {
+        // 刚进自瞄时云台还停在操作手瞄的地方。更正对的那块可能在车的另一侧，
+        // 近距离两块板的方位能差十几度，第一条命令就会甩过去；先锁离枪口
+        // 最近的那块，它离开窗口后再按常规切板。比较的是指向夹角的余弦。
+        const auto facing = [&](int id) {
+          return muzzle->dot(
+            armors[static_cast<std::size_t>(id)].head<3>().normalized());
+        };
+        locked_id_ = facing(id0) >= facing(id1) ? id0 : id1;
+      } else if (locked_id_ != id0 && locked_id_ != id1) {
         locked_id_ =
           std::abs(delta_angles[static_cast<std::size_t>(id0)]) <
               std::abs(delta_angles[static_cast<std::size_t>(id1)])

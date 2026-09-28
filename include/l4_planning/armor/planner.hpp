@@ -6,6 +6,7 @@
 #include "l4_planning/armor/types.hpp"
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include <optional>
 
@@ -19,6 +20,9 @@ struct PlanInput {
   // 上一帧实测的"规划结束 -> 串口发出"耗时，单位秒。本帧的值要等规划做完
   // 才知道，所以只能用上一帧的量代入；帧间这一段基本恒定。
   double plan_to_send{0.0};
+  // 规划时刻的枪管姿态。只在进自瞄后的头一次选板用：两块板都能打时挑离枪口
+  // 最近的那块。缺省时照常选更正对的板。
+  std::optional<Eigen::Quaterniond> q_world_barrel;
 };
 
 class IPlanner {
@@ -47,6 +51,7 @@ public:
     TimePoint plan_time,
     bool to_now = true);
 
+  // 标记一轮新的自瞄：下一次成功规划改按离枪口最近选板，见 chooseAimPoint。
   void reset() noexcept override;
   int lockedArmorId() const noexcept { return locked_id_; }
 
@@ -63,13 +68,18 @@ private:
     const L1Sensor::RobotState& robot_state,
     TimePoint plan_time,
     bool to_now,
-    double plan_to_send);
+    double plan_to_send,
+    const std::optional<Eigen::Quaterniond>& q_world_barrel);
 
+  // muzzle 是枪口在世界系的单位指向，只在进自瞄后的头一次选板给。
   template <typename Target>
-  AimPoint chooseAimPoint(const Target& target);
+  AimPoint chooseAimPoint(
+    const Target& target, const std::optional<Eigen::Vector3d>& muzzle);
 
   ArmorPlanConfig config_;
   int locked_id_{-1};
+  // 构造即算一轮新的自瞄，reset() 再置回；第一次成功规划后清掉。
+  bool entering_{true};
 };
 
 }  // namespace L4Planning

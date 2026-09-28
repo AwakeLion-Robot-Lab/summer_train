@@ -301,6 +301,7 @@ void AutoAimRuntime::run() {
             plan_input.plan_time = plan_time;
             plan_input.to_now = true;
             plan_input.plan_to_send = measured_plan_to_send;
+            plan_input.q_world_barrel = actual_pose;
             plan = planner.plan(plan_input);
 
             // L5: 开火判定、命令跳变检查和安全保持。
@@ -320,7 +321,8 @@ void AutoAimRuntime::run() {
             measured_plan_to_send = std::chrono::duration<double>(
               std::chrono::steady_clock::now() - plan_time).count();
           } else {
-            // Idle 不出命令：规划器的选板锁留到进自瞄再重建，跟踪器不动。
+            // Idle 不出命令，跟踪器不动。reset 让进自瞄后的头一次选板挑离枪口
+            // 最近的板，不让第一条命令甩到车的另一侧。
             planner.reset();
             sendSafeHold();
           }

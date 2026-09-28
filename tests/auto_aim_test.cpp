@@ -346,10 +346,16 @@ public:
     L4Planning::Planner& planner,
     const L1Sensor::RobotState& robot_state,
     L3Estimation::TimePoint plan_time,
-    bool to_now) const
+    bool to_now,
+    const Eigen::Quaterniond& q_world_barrel) const
   {
-    return planner.plan(
-      std::optional<L3Estimation::EskfTarget>{value_}, robot_state, plan_time, to_now);
+    L4Planning::PlanInput input;
+    input.target = value_;
+    input.robot_state = robot_state;
+    input.plan_time = plan_time;
+    input.to_now = to_now;
+    input.q_world_barrel = q_world_barrel;
+    return planner.plan(input);
   }
 
   double lastNis() const noexcept { return value_.lastNis(); }
@@ -495,10 +501,11 @@ public:
     const std::optional<ReplayTarget>& target,
     const L1Sensor::RobotState& robot_state,
     L3Estimation::TimePoint plan_time,
-    bool to_now) const
+    bool to_now,
+    const Eigen::Quaterniond& q_world_barrel) const
   {
     if (target) {
-      return target->plan(planner, robot_state, plan_time, to_now);
+      return target->plan(planner, robot_state, plan_time, to_now, q_world_barrel);
     }
     return planner.plan(
       std::optional<L3Estimation::EskfTarget>{}, robot_state, plan_time, to_now);
@@ -1854,12 +1861,14 @@ int main(int argc, char** argv)
       // 0.005 s 检测耗时，再叠加 Aimer 的高/低速延迟。
       const auto plan_time = timestamp;
       clock.lap("CSV 导出", true);
-      // Idle 不规划、不出命令，规划器的选板锁留到切进自瞄再重建（同 runtime）。
+      // Idle 不规划、不出命令；reset 让切进自瞄后的头一次选板挑离枪口最近的
+      // 板（同 runtime）。回放的枪管姿态是录像里的，所以看的是"当时按下自瞄
+      // 键的话第一条命令要甩多少"。
       if (!aiming) {
         planner.reset();
       }
       const auto plan = aiming
-        ? tracker.plan(planner, target, robot_state, plan_time, false)
+        ? tracker.plan(planner, target, robot_state, plan_time, false, q_world_barrel)
         : L4Planning::Plan{};
       clock.lap("L4 规划");
       const int plan_armor_id =

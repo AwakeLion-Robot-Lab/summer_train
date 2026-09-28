@@ -507,6 +507,51 @@ void testSelectorHoldsUntilArmorLeavesWindow()
   std::cout << "  [ok] selector holds a plate until it leaves the 60 deg window\n";
 }
 
+// 进自瞄的头一次选板按枪口挑：0 号板更正对，但枪口正对 3 号板时先锁 3 号；
+// 之后枪口怎么转都沿用锁，直到 reset 开始新一轮自瞄。
+void testEntryPicksArmorNearestMuzzle()
+{
+  L1Sensor::RobotState robot_state;
+  robot_state.bullet_speed = 23.0;
+
+  const auto target = makeTarget(0.0, 44.0 * std::numbers::pi / 180.0);
+  const auto armors = target.armor_xyza_list();
+  const auto aimAt = [&](int id) {
+    return Eigen::Quaterniond::FromTwoVectors(
+      Eigen::Vector3d::UnitX(),
+      armors[static_cast<std::size_t>(id)].head<3>().normalized());
+  };
+  const auto planWith = [&](L4Planning::Planner& planner, int muzzle_id) {
+    L4Planning::PlanInput input;
+    input.target = target;
+    input.robot_state = robot_state;
+    input.to_now = false;
+    input.q_world_barrel = aimAt(muzzle_id);
+    return planner.plan(input);
+  };
+
+  L4Planning::Planner frontal;
+  const auto usual = frontal.plan(target, robot_state, {}, false);
+  require(usual.valid() && usual.fire && usual.fire->armor_id == 0,
+          "without a muzzle pose the more frontal armor 0 must win");
+
+  L4Planning::Planner planner;
+  // 无目标的帧不算进入完成，第一条真正发出去的命令才算。
+  require(!planner.plan(std::nullopt, robot_state, {}).valid(), "no target must be rejected");
+  const auto entry = planWith(planner, 3);
+  require(entry.valid() && entry.fire && entry.fire->armor_id == 3,
+          "entry must lock the armor nearest the muzzle");
+  const auto held = planWith(planner, 0);
+  require(held.valid() && held.fire && held.fire->armor_id == 3,
+          "after entry the lock must not follow the muzzle");
+
+  planner.reset();
+  const auto again = planWith(planner, 0);
+  require(again.valid() && again.fire && again.fire->armor_id == 0,
+          "a new aim session must pick by muzzle again");
+  std::cout << "  [ok] entry locks the armor nearest the muzzle, then holds\n";
+}
+
 // 面对高速旋转的普通四板车，规划结果仍必须落在实体装甲板上。
 void testPlannerAlwaysAimsAtPhysicalArmor()
 {
@@ -599,6 +644,7 @@ int main()
   testPlannerRejectsNoTarget();
   testUnobservedGeometryLocksArmorZero();
   testSelectorHoldsUntilArmorLeavesWindow();
+  testEntryPicksArmorNearestMuzzle();
   testPlannerAlwaysAimsAtPhysicalArmor();
   testSignedSpeedDelaySelection();
   testSharedIterationProducesFiniteCommands();
