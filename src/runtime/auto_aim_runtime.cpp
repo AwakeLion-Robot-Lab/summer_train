@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace {
@@ -49,6 +50,35 @@ constexpr bool isEnemyArmor(
 {
   return expected != L1Sensor::EnemyColor::Unknown &&
          observed == enemyArmorColor(expected);
+}
+
+const char* stateName(L3Estimation::TrackState state) noexcept
+{
+  switch (state) {
+    case L3Estimation::TrackState::Lost: return "lost";
+    case L3Estimation::TrackState::Detecting: return "detecting";
+    case L3Estimation::TrackState::Tracking: return "tracking";
+    case L3Estimation::TrackState::TempLost: return "temp_lost";
+  }
+  return "unknown";
+}
+
+// 把配置里的字符串解析成 WorkMode。空串或无法识别都返回空，表示不覆盖——
+// 拼错模式名不该悄悄退化成 Idle 或 AutoAim，那两种误判的后果完全不同。
+std::optional<L1Sensor::WorkMode> parseWorkMode(const std::string& name)
+{
+  if (name.empty()) {
+    return std::nullopt;
+  }
+  if (name == "auto_aim") return L1Sensor::WorkMode::AutoAim;
+  if (name == "outpost") return L1Sensor::WorkMode::Outpost;
+  if (name == "small_buff") return L1Sensor::WorkMode::SmallBuff;
+  if (name == "big_buff") return L1Sensor::WorkMode::BigBuff;
+  if (name == "idle") return L1Sensor::WorkMode::Idle;
+  L6Telemetry::logError(
+    "debug.force_work_mode is not a known mode, ignored:", name,
+    "| valid: auto_aim outpost small_buff big_buff idle");
+  return std::nullopt;
 }
 
 L2Perception::ArmorDetector loadDetector(const runtime::AutoAimConfig& config)
@@ -147,6 +177,16 @@ void AutoAimRuntime::run() {
     overlay_solver.emplace(*camera_calibration, auto_aim_config.armor);
   }
 
+  // 调试旁路：强制 WorkMode。启动时解析一次，循环里只做覆盖。
+  const auto forced_mode = parseWorkMode(auto_aim_config.debug.force_work_mode);
+  if (forced_mode) {
+    L6Telemetry::logWarn(
+      "!!! debug.force_work_mode is ACTIVE:", L1Sensor::toString(*forced_mode),
+      "- the MCU's WorkMode is being IGNORED. Clear this key before a match.");
+  }
+  // 只用来在模式切换时打一条日志：进自瞄前滤波器是否已在跟，要靠它对时间。
+  std::optional<L1Sensor::WorkMode> last_mode;
+
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
   // "规划结束 -> 串口发出"的实测耗时。本帧的值要等规划做完才知道，所以
@@ -173,9 +213,24 @@ void AutoAimRuntime::run() {
     if (!serial_started || !state) {
       stopAimSession();
     } else {
-      switch (L1Sensor::WorkMode::AutoAim) {
+      // 覆盖只改分派用的模式，state 本身不动——日志仍然反映下位机真正上报的
+      // 值，否则排查时会看不出电控到底给没给对模式。
+      const L1Sensor::WorkMode mode = forced_mode.value_or(state->mode);
+      if (mode != last_mode) {
+        L6Telemetry::logInfo(
+          "work mode ->", L1Sensor::toString(mode), "| tracker",
+          tracker ? stateName(tracker->state()) : "disabled");
+        last_mode = mode;
+      }
+      switch (mode) {
+        // Idle 也照跑 L2/L3，只是不出命令。电控切进自瞄的那一刻，滤波器若
+        // 已经跟着目标，就不必从零收敛：冷启动回放里速度要十几到几十帧才稳，
+        // 小陀螺反转时更久。ROI 也照开，否则一进自瞄网络输入从整图换成裁剪，
+        // 检出的板宽差约 4.5%，深度跳变会被当成径向速度。
         case L1Sensor::WorkMode::AutoAim:
-        case L1Sensor::WorkMode::Outpost: {
+        case L1Sensor::WorkMode::Outpost:
+        case L1Sensor::WorkMode::Idle: {
+          const bool aiming = mode != L1Sensor::WorkMode::Idle;
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 
           // L2: ROI 聚焦 + 检测，保留敌方装甲板。两个 ROI 都由上一帧的整车
@@ -215,30 +270,42 @@ void AutoAimRuntime::run() {
             ? tracker->state()
             : L3Estimation::TrackState::Lost;
 
-          // 规划与开火判定使用推理结束时刻。
-          const auto plan_time = std::chrono::steady_clock::now();
-          const auto actual_pose = serial.gimbalPoseAt(plan_time);
+          L4Planning::Plan plan;
+          L5Control::FireDecision fire;
+          if (aiming) {
+            // 规划与开火判定使用推理结束时刻。
+            const auto plan_time = std::chrono::steady_clock::now();
+            const auto actual_pose = serial.gimbalPoseAt(plan_time);
 
-          // L4: 预测命中时刻、选板并解算弹道。
-          L4Planning::PlanInput plan_input;
-          plan_input.target = target;
-          plan_input.robot_state = *state;
-          plan_input.plan_time = plan_time;
-          plan_input.to_now = true;
-          plan_input.plan_to_send = measured_plan_to_send;
-          const auto plan = planner.plan(plan_input);
+            // L4: 预测命中时刻、选板并解算弹道。
+            L4Planning::PlanInput plan_input;
+            plan_input.target = target;
+            plan_input.robot_state = *state;
+            plan_input.plan_time = plan_time;
+            plan_input.to_now = true;
+            plan_input.plan_to_send = measured_plan_to_send;
+            plan = planner.plan(plan_input);
 
-          // L5: 开火判定、命令跳变检查和安全保持。
-          const auto command = controller.update(
-            target,
-            track_state,
-            plan,
-            actual_pose);
+            // L5: 开火判定、命令跳变检查和安全保持。
+            const auto command = controller.update(
+              target,
+              track_state,
+              plan,
+              actual_pose);
+            fire = controller.lastDecision();
 
-          // L1: 下发 L5 生成的控制命令，并量出本帧规划到发送的耗时，
-          // 供下一帧的延迟链使用。
-          if (command) {
-            serial.updateCommand(*command);
+            // L1: 下发 L5 生成的控制命令，并量出本帧规划到发送的耗时，
+            // 供下一帧的延迟链使用。必须紧接着 updateCommand 取，放到叠加层
+            // 之后会把画图的几毫秒算进 plan_to_send。
+            if (command) {
+              serial.updateCommand(*command);
+            }
+            measured_plan_to_send = std::chrono::duration<double>(
+              std::chrono::steady_clock::now() - plan_time).count();
+          } else {
+            // Idle 不出命令：规划器的选板锁留到进自瞄再重建，跟踪器不动。
+            planner.reset();
+            sendSafeHold();
           }
 
           // 叠加层画在命令下发之后，不占用瞄准链路的时间预算。
@@ -251,12 +318,10 @@ void AutoAimRuntime::run() {
                .target = target,
                .track_state = track_state,
                .plan = plan,
-               .fire = controller.lastDecision(),
+               .fire = fire,
                .q_world_barrel = image_pose},
               *overlay_solver, *camera_calibration);
           }
-          measured_plan_to_send = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - plan_time).count();
           break;
         }
 
@@ -270,7 +335,6 @@ void AutoAimRuntime::run() {
           stopAimSession();
           break;
 
-        case L1Sensor::WorkMode::Idle:
         default:
           stopAimSession();
           break;

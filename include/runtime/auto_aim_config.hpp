@@ -21,6 +21,12 @@ struct DebugConfig {
   bool overlay{false};
   // 每 N 帧画一次。画面只是用来目视对齐，不必每帧都画。
   int overlay_every{1};
+
+  // 无视下位机上报的 WorkMode，强制按指定模式跑。空串表示不覆盖。
+  // 只用于电控还没接好模式切换、但视觉侧要先把链路跑通的场合。
+  // 这是**调试用的旁路**：正常比赛必须留空，由下位机决定何时进自瞄。
+  // 注意它不解除任何开火闸门，shoot_enable 和延迟链标定仍然各自独立生效。
+  std::string force_work_mode{};
 };
 
 // inference.decoder 里显式写出的阈值。layout 为 auto 时预设要等模型加载、按

@@ -655,6 +655,7 @@ AutoAimConfig loadConfig(const std::string& path)
   const YAML::Node debug = root["debug"];
   readValue(debug, "overlay", config.debug.overlay);
   readValue(debug, "overlay_every", config.debug.overlay_every);
+  readValue(debug, "force_work_mode", config.debug.force_work_mode);
 
   normalize(config);
 
