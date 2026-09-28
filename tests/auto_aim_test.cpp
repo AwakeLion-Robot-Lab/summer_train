@@ -243,6 +243,8 @@ const std::string kCommandLineKeys =
   "{start-index s | 0 | 视频起始帧下标}"
   "{end-index e | 0 | 视频结束帧下标，0 表示到结尾}"
   "{wait w | 30 | 每帧 waitKey 毫秒，0 表示逐帧手动推进}"
+  "{start-mode | auto_aim | 起始模式：auto_aim / idle。回放中按 g 在两者间切换，模拟电控切进 / 切出自瞄}"
+  "{idle-track | true | Idle 下照跑检测和跟踪（与 runtime 一致）；false 时 Idle 每帧复位跟踪器，切进自瞄即冷启动}"
   "{view | sp | 叠加层：sp（只画当前估计整车和瞄准板）/ full（全部调试层）}"
   "{overlay-offset | 0 | full 视图下整车叠加层上移的像素数；sp 视图恒为 0}"
   "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
@@ -485,6 +487,8 @@ public:
   }
 
   L3Estimation::TrackState state() const noexcept { return tracker_.state(); }
+
+  void reset() noexcept { tracker_.reset(); }
 
   L4Planning::Plan plan(
     L4Planning::Planner& planner,
@@ -1449,6 +1453,11 @@ int main(int argc, char** argv)
     const int start_index = cli.get<int>("start-index");
     const int end_index = cli.get<int>("end-index");
     const int wait_ms = cli.get<int>("wait");
+    const std::string start_mode = cli.get<std::string>("start-mode");
+    require(
+      start_mode == "auto_aim" || start_mode == "idle",
+      "start-mode 必须是 auto_aim 或 idle");
+    const bool idle_track = cli.get<bool>("idle-track");
 
     // 叠加层口径。sp 视图刻意只保留 sp_vision auto_aim_test 画的那两样东西：
     // 当前估计器展开的全部装甲板（绿），和命中时刻瞄准的那块板（红）。这样
@@ -1569,7 +1578,7 @@ int main(int argc, char** argv)
       require(state_csv.is_open(), "无法打开 csv 输出路径: " + csv_path);
       state_csv << "frame,t,state,ndet,nlight,nmatch,armor_ids,jumped,"
                    "xc,yc,zc,vx,vy,vz,yaw_deg,vyaw,r1,r2,h,roll_deg,pitch_deg,"
-                   "nis,nis_dof,roi_x,roi_y,roi_w,roi_h\n";
+                   "nis,nis_dof,roi_x,roi_y,roi_w,roi_h,mode\n";
       state_csv << std::fixed << std::setprecision(6);
     }
 
@@ -1577,17 +1586,43 @@ int main(int argc, char** argv)
     std::optional<double> last_command_yaw;
     std::optional<double> last_same_armor_step;
     bool paused = false;
+    bool quit = false;
+
+    // 模拟下位机的 WorkMode，按 g 在 Idle 和自瞄之间切。与 runtime 一样，Idle
+    // 照跑 L2/L3、只停 L4/L5，切进自瞄时滤波器已经在跟；--idle-track=false 时
+    // Idle 每帧复位跟踪器，即旧 runtime 的做法，切进来就是冷启动。
+    bool aiming = start_mode == "auto_aim";
+    // 本次进入自瞄的帧号，画面上显示进入后第几帧，看收敛用。
+    std::optional<int> aim_since =
+      aiming ? std::optional<int>{start_index} : std::nullopt;
+    std::size_t aim_entries = 0;
+    // next_frame 是切换后第一个按新模式处理的帧。
+    const auto handleKey = [&](int key, int next_frame) {
+      if (key == 'q' || key == 27) {
+        quit = true;
+      } else if (key == ' ') {
+        paused = !paused;
+      } else if (key == 'g' || key == 'G') {
+        aiming = !aiming;
+        if (aiming) {
+          aim_since = next_frame;
+          ++aim_entries;
+        } else {
+          aim_since.reset();
+        }
+        std::cout << "[frame " << next_frame << "] "
+                  << (aiming ? "切进自瞄" : "切回 Idle") << "，跟踪器 "
+                  << stateName(tracker.state()) << '\n';
+      }
+    };
 
     for (int frame_index = start_index;; ++frame_index) {
-      if (paused) {
-        const int key = cv::waitKey(0);
-        if (key == 'q' || key == 27) {
-          break;
-        }
-        if (key == ' ') {
-          paused = false;
-        }
-        continue;
+      // 暂停时原地等键，不能 continue：那会让 frame_index 白涨而视频没读。
+      while (paused && !quit) {
+        handleKey(cv::waitKey(0), frame_index);
+      }
+      if (quit) {
+        break;
       }
       if (end_index > 0 && frame_index > end_index) {
         break;
@@ -1615,6 +1650,13 @@ int main(int argc, char** argv)
         toWorldBarrelPose(pose, sp_convention, R_imu_barrel);
 
       /// 自瞄核心逻辑
+
+      // --idle-track=false 时 Idle 不喂跟踪器、每帧复位，ROI 随之退回整图，
+      // 等价于旧 runtime 在 Idle 里 stopAimSession()。
+      const bool feed_tracker = aiming || idle_track;
+      if (!feed_tracker) {
+        tracker.reset();
+      }
 
       const std::optional<cv::Rect> light_roi = tracker.lightRoi(
         q_world_barrel, timestamp, img.size());
@@ -1650,9 +1692,11 @@ int main(int argc, char** argv)
       std::erase_if(armors, not_enemy);
       // 与实跑路径一致：冷启动那一帧（ieskf.init_roi）在候选周围按跟踪时的
       // ROI 再检一次，ROI 里一块都没检出就退回整图结果。
-      if (const auto init_roi = tracker.initRoi(
-            armors, q_world_barrel, timestamp, img.size(),
-            detector.net_aspect_ratio())) {
+      if (const auto init_roi = feed_tracker
+            ? tracker.initRoi(
+                armors, q_world_barrel, timestamp, img.size(),
+                detector.net_aspect_ratio())
+            : std::nullopt) {
         L2Perception::ArmorFrame refined =
           detector.detectFrame(img, light_roi, *init_roi, enemy_color, light_hints);
         std::erase_if(refined.armors, not_enemy);
@@ -1663,8 +1707,9 @@ int main(int argc, char** argv)
       }
 
       solver.set_R_world_barrel(q_world_barrel);
-      const auto target = tracker.track(
-        armors, detection_frame.lights, q_world_barrel, timestamp);
+      const auto target = feed_tracker
+        ? tracker.track(armors, detection_frame.lights, q_world_barrel, timestamp)
+        : std::optional<ReplayTarget>{};
       const auto& used_lights = tracker.usedLights();
       clock.lap("L3 跟踪");
       const auto target_armor_poses = tracker.armorPoses();
@@ -1747,7 +1792,7 @@ int main(int argc, char** argv)
         state_csv << (target ? target->lastNis() : 0.0) << ','
                   << (target ? target->lastNisDof() : 0) << ','
                   << net_roi.x << ',' << net_roi.y << ',' << net_roi.width << ','
-                  << net_roi.height << '\n';
+                  << net_roi.height << ',' << (aiming ? 1 : 0) << '\n';
       }
 
       const auto& observations = diagnostic_pnp_observations;
@@ -1797,7 +1842,7 @@ int main(int argc, char** argv)
         : enemy_color == L2Perception::ArmorColor::Blue
         ? L1Sensor::EnemyColor::Blue
         : L1Sensor::EnemyColor::Unknown;
-      robot_state.mode = L1Sensor::WorkMode::AutoAim;
+      robot_state.mode = aiming ? L1Sensor::WorkMode::AutoAim : L1Sensor::WorkMode::Idle;
       const Eigen::Vector3d gimbal_ypr =
         L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0);
       robot_state.rpy.yaw = gimbal_ypr[0];
@@ -1809,8 +1854,13 @@ int main(int argc, char** argv)
       // 0.005 s 检测耗时，再叠加 Aimer 的高/低速延迟。
       const auto plan_time = timestamp;
       clock.lap("CSV 导出", true);
-      const auto plan =
-        tracker.plan(planner, target, robot_state, plan_time, false);
+      // Idle 不规划、不出命令，规划器的选板锁留到切进自瞄再重建（同 runtime）。
+      if (!aiming) {
+        planner.reset();
+      }
+      const auto plan = aiming
+        ? tracker.plan(planner, target, robot_state, plan_time, false)
+        : L4Planning::Plan{};
       clock.lap("L4 规划");
       const int plan_armor_id =
         plan.fire.has_value() ? plan.fire->armor_id : -1;
@@ -1851,8 +1901,12 @@ int main(int argc, char** argv)
         last_same_armor_step.reset();
       }
 
-      const auto fire_decision = fire_decider.decide(fire_input);
-      const auto command = controller.makeCommand(plan, fire_decision);
+      // Idle 帧不进火控，免得拒绝原因直方图被 Idle 的 no_target 灌满。
+      const auto fire_decision =
+        aiming ? fire_decider.decide(fire_input) : L5Control::FireDecision{};
+      const auto command = aiming
+        ? controller.makeCommand(plan, fire_decision)
+        : std::optional<L5Control::SerialCommand>{};
       clock.lap("L5 火控");
 
       if (plan.valid()) {
@@ -2050,9 +2104,22 @@ int main(int argc, char** argv)
             target->lastNisDof()),
           {10, full_view ? 152 : 122}, {0, 255, 0}, 0.5);
       }
+      // 模式横幅放在左下角，和上面几行调试文字分开，切换那一刻一眼能看到。
       drawOutlinedText(
         img,
-        plan.valid()
+        aiming
+          ? cv::format(
+              "MODE auto_aim  +%d frames  [g] -> idle",
+              frame_index - aim_since.value_or(frame_index))
+          : cv::format(
+              "MODE idle (%s)  [g] -> auto_aim",
+              idle_track ? "tracker running" : "tracker reset"),
+        {10, img.rows - 30},
+        aiming ? cv::Scalar{0, 0, 255} : cv::Scalar{200, 200, 200}, 1.2);
+      drawOutlinedText(
+        img,
+        !aiming ? std::string{"CMD not sent (idle)"}
+        : plan.valid()
           ? cv::format(
               "CMD yaw=%.2f pitch=%.2f deg | err yaw=%.2f pitch=%.2f | "
               "armor=%d fire_armor=%d",
@@ -2078,6 +2145,11 @@ int main(int argc, char** argv)
         L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
         kRadToDeg;
       data["armor_num"] = armors.size();
+      // 1 = 自瞄、0 = Idle；aim_frames 是进入自瞄后的帧数，PlotJuggler 里拿它对齐切换时刻。
+      data["mode"] = aiming ? 1 : 0;
+      if (aiming && aim_since) {
+        data["aim_frames"] = frame_index - *aim_since;
+      }
 
       // 装甲板原始观测数据
       if (selected) {
@@ -2213,12 +2285,9 @@ int main(int argc, char** argv)
       // waitKey 是人机交互的等待，和算法耗时无关，必须排除在外。
       clock.lap("绘图/显示", true);
       clock.flush();
-      const int key = cv::waitKey(wait_ms);
-      if (key == 'q' || key == 27) {
+      handleKey(cv::waitKey(wait_ms), frame_index + 1);
+      if (quit) {
         break;
-      }
-      if (key == ' ') {
-        paused = true;
       }
     }
 
@@ -2231,6 +2300,8 @@ int main(int argc, char** argv)
               << "PnP 成功的候选数: " << valid_pnp_observations
               << '\n'
               << "Tracking 帧: " << tracking_frames << '\n'
+              << "按 g 切进自瞄的次数: " << aim_entries
+              << (idle_track ? "（Idle 照跑跟踪）" : "（Idle 复位跟踪器）") << '\n'
               << "代价曲线出现多个局部极小值的帧: " << multi_minimum_frames
               << '\n'
               << "L4 规划成功的帧: " << plan_valid_frames << '\n'
