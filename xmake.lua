@@ -332,6 +332,28 @@ for _, source in ipairs(os.files("tests/*.cpp")) do
     end
 end
 
+-- 相机内参标定，来自 atooooooom 分支，用法见 tools/camera_calibration/README.md。
+-- 源文件按 "tools/camera_calibration/..." 引用，只给这两个目标加项目根目录。
+target("camera_capture")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/camera_capture.cpp")
+    add_files("tools/camera_calibration/timed_image_saver.cpp")
+    add_includedirs("$(projectdir)")
+    add_deps("newvision")
+target_end()
+
+target("camera_calibrator")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/camera_calibration/camera_calibrator.cpp")
+    add_files("tools/camera_calibration/high_precision_calibrator.cpp")
+    add_includedirs("$(projectdir)")
+    add_deps("newvision")
+target_end()
+
 target("daedalus_client")
     set_kind("binary")
     set_default(false)
