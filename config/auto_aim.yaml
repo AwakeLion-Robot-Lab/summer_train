@@ -6,7 +6,7 @@ inference:
   # 已验证：yolov5.xml、szu-v5n.xml -> yolov5_22，szu-v8n-fp16.onnx -> yolov8_21。
   # 这份 onnx 就是 Models-main 的 Infantry-v8n-fp16-20260726，那边的 IR 在 CPU 上
   # 输出逐位相同。换模型后要重跑 track_diag。
-  model_path: "/home/rm/super/newvision/model/armor_model/szu-v8n-fp16.onnx"
+  model_path: "model/armor_model/szu-v8n-fp16.onnx"
   # CPU / GPU（Intel 核显，要装 intel-opencl-icd）。GPU 加载失败会告警并退回 CPU。
   # i9-13980HX + UHD 核显上整段 L2：CPU 12.9 ms、GPU 10.6 ms；GPU 按 FP16 算，角点差
   # 不到 0.2 px（网络输入尺度）。回放工具不读这一项，要对齐实机得加 -d=GPU。
@@ -188,7 +188,7 @@ planning:
 
   # "串口发出 -> 电控执行"的延迟，只能在实车上标。不写 = 未标定：云台照常跟随，
   # 但 L5 以 delay_not_calibrated 拒绝开火。验收标完再取消注释。
-  # send_to_control_ms: 5.0
+  send_to_control_ms: 5.0
 
 # L5 开火闸门。
 fire:
@@ -197,8 +197,8 @@ fire:
   # 只把板面中央这个比例视为可命中。
   hit_margin_ratio: 0.6
   # 由板尺寸和距离算出的 yaw / pitch 容差的下限。
-  min_yaw_tolerance_deg: 0.5
-  min_pitch_tolerance_deg: 0.5
+  min_yaw_tolerance_deg: 1.2
+  min_pitch_tolerance_deg: 1.2
   # yaw 命令与上一帧相比跳得超过它时，本帧以 command_jump 拒绝开火，命令照发。
   command_jump_deg: 10.0
 

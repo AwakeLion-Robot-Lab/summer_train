@@ -139,7 +139,7 @@ void HikRobot::capture_start() {
       std::this_thread::sleep_for(1ms);
 
       unsigned int ret;
-      unsigned int nMsec = 10;
+      unsigned int nMsec = 100;
 
       ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
       if (ret != MV_OK) {

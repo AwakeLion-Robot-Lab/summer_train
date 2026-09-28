@@ -10,7 +10,7 @@ baud_rate: 115200
 read_timeout_ms: 20
 
 # 视觉向下位机发送控制命令的频率。
-tx_rate_hz: 200
+tx_rate_hz: 500
 
 # 最新控制命令的最长有效时间，超时后保持最后的 yaw/pitch、禁止射击。
 command_timeout_ms: 100
