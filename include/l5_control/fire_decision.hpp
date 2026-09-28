@@ -21,6 +21,10 @@ struct FireConfig {
   double hit_margin_ratio{0.6};  // 只使用板面中心区域，范围 (0, 1]
   double min_yaw_tolerance{0.5 * std::numbers::pi / 180.0};
   double min_pitch_tolerance{0.5 * std::numbers::pi / 180.0};
+
+  // yaw 命令与上一条下发命令相差超过它（rad）时，本帧以 command_jump 拒绝开火，
+  // 命令照发。由 Controller 比对，因为只有它保留着上一条命令。
+  double command_jump_threshold{10.0 * std::numbers::pi / 180.0};
 };
 
 struct FireInput {

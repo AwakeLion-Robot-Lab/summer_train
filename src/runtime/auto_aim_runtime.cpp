@@ -113,9 +113,7 @@ void AutoAimRuntime::run() {
   }
 
   L4Planning::Planner planner(auto_aim_config.plan);
-  L5Control::Controller controller(
-    auto_aim_config.fire,
-    auto_aim_config.runtime.command_jump_threshold);
+  L5Control::Controller controller(auto_aim_config.fire);
 
   // 规划失败时不能只是“不更新命令”：上一条 shoot=true 在
   // command_timeout 内仍可能被重复发送。这里保留最后角度并立即关火。

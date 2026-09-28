@@ -4,29 +4,21 @@
 
 #include <cmath>
 #include <limits>
-#include <numbers>
 #include <utility>
 
 namespace L5Control {
-namespace {
-
-constexpr double kDefaultCommandJump = 10.0 * std::numbers::pi / 180.0;
-
-}  // namespace
-
 Controller::Controller() noexcept
-: Controller(FireConfig{}, kDefaultCommandJump)
+: Controller(FireConfig{})
 {
 }
 
-Controller::Controller(
-  FireConfig fire_config,
-  double command_jump_threshold) noexcept
-: fire_decider_(std::move(fire_config)),
-  command_jump_threshold_(
-    std::isfinite(command_jump_threshold) && command_jump_threshold >= 0.0
-      ? command_jump_threshold
-      : kDefaultCommandJump)
+Controller::Controller(FireConfig fire_config) noexcept
+: command_jump_threshold_(
+    std::isfinite(fire_config.command_jump_threshold) &&
+        fire_config.command_jump_threshold >= 0.0
+      ? fire_config.command_jump_threshold
+      : FireConfig{}.command_jump_threshold),
+  fire_decider_(std::move(fire_config))
 {
 }
 

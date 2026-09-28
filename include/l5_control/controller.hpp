@@ -17,7 +17,7 @@ namespace L5Control {
 class Controller {
 public:
   Controller() noexcept;
-  Controller(FireConfig fire_config, double command_jump_threshold) noexcept;
+  explicit Controller(FireConfig fire_config) noexcept;
 
   // actual_pose 是 L1 回传的枪管实际姿态；yaw/pitch 分解由 L5 完成。
   [[nodiscard]] std::optional<SerialCommand> update(
@@ -40,8 +40,9 @@ public:
     const L4Planning::Plan& plan, const FireDecision& decision) const;
 
 private:
-  FireDecider fire_decider_;
+  // 先于 fire_decider_ 声明：构造时要在 FireConfig 被移走之前读出阈值。
   double command_jump_threshold_{0.0};
+  FireDecider fire_decider_;
   std::optional<SerialCommand> last_command_;
   FireDecision last_decision_;
 };

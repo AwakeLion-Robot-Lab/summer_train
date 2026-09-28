@@ -10,7 +10,6 @@
 #include "l5_control/fire_decision.hpp"
 
 #include <filesystem>
-#include <numbers>
 #include <optional>
 #include <string>
 
@@ -22,11 +21,6 @@ struct DebugConfig {
   bool overlay{false};
   // 每 N 帧画一次。画面只是用来目视对齐，不必每帧都画。
   int overlay_every{1};
-};
-
-// 只负责 runtime 胶水层的相邻命令检查，不重复 L3/L4/L5 的业务参数。
-struct RuntimeSafetyConfig {
-  double command_jump_threshold{10.0 * std::numbers::pi / 180.0};
 };
 
 // inference.decoder 里显式写出的阈值。layout 为 auto 时预设要等模型加载、按
@@ -70,7 +64,6 @@ struct AutoAimConfig {
   L3Estimation::EskfTargetConfig ieskf_target;
   L4Planning::ArmorPlanConfig plan;
   L5Control::FireConfig fire;
-  RuntimeSafetyConfig runtime;
   DebugConfig debug;
 };
 

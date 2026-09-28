@@ -199,9 +199,7 @@ fire:
   # 由板尺寸和距离算出的 yaw / pitch 容差的下限。
   min_yaw_tolerance_deg: 0.5
   min_pitch_tolerance_deg: 0.5
-
-# yaw 命令与上一帧相比跳得超过它时，本帧以 command_jump 拒绝开火，命令照发。
-runtime:
+  # yaw 命令与上一帧相比跳得超过它时，本帧以 command_jump 拒绝开火，命令照发。
   command_jump_deg: 10.0
 
 # 调试叠加层。实机要关：imshow 要几毫秒并计进 image_to_plan，NUC 没显示器会直接抛。

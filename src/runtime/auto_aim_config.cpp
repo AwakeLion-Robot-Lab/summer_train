@@ -361,15 +361,12 @@ void normalize(AutoAimConfig& config)
   if (!positiveFinite(config.fire.min_pitch_tolerance)) {
     config.fire.min_pitch_tolerance = fire_defaults.min_pitch_tolerance;
   }
+  if (!std::isfinite(config.fire.command_jump_threshold) ||
+      config.fire.command_jump_threshold < 0.0) {
+    config.fire.command_jump_threshold = fire_defaults.command_jump_threshold;
+  }
 
   config.debug.overlay_every = std::max(config.debug.overlay_every, 1);
-
-  const RuntimeSafetyConfig runtime_defaults;
-  if (!std::isfinite(config.runtime.command_jump_threshold) ||
-      config.runtime.command_jump_threshold < 0.0) {
-    config.runtime.command_jump_threshold =
-      runtime_defaults.command_jump_threshold;
-  }
 }
 
 }  // namespace
@@ -653,12 +650,7 @@ AutoAimConfig loadConfig(const std::string& path)
     fire, "min_yaw_tolerance_deg", config.fire.min_yaw_tolerance);
   readDegrees(
     fire, "min_pitch_tolerance_deg", config.fire.min_pitch_tolerance);
-
-  const YAML::Node runtime = root["runtime"];
-  readDegrees(
-    runtime,
-    "command_jump_deg",
-    config.runtime.command_jump_threshold);
+  readDegrees(fire, "command_jump_deg", config.fire.command_jump_threshold);
 
   const YAML::Node debug = root["debug"];
   readValue(debug, "overlay", config.debug.overlay);
