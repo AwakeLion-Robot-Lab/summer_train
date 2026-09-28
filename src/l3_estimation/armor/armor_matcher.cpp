@@ -30,6 +30,21 @@ double facingScore(const Eigen::Isometry3d & armor_in_camera)
   return front_normal.dot(-armor_in_camera.translation());
 }
 
+// 两根灯条在滤波器先验上的马氏距离之和是否低于 match_chi2_gate。
+bool withinChi2(
+  const EskfTarget & target, const ObsContext & ctx,
+  const std::array<cv::Point2f, 4> & measured, int id)
+{
+  const double gate = target.config().match_chi2_gate;
+  if (!(gate > 0.0) || !target.hasFilter()) {
+    return false;
+  }
+  // 角点序左上、右上、右下、左下：左灯条 [0]、[3]，右灯条 [1]、[2]。
+  const auto left = target.mahalanobis(target.lightObs(ctx, measured[0], measured[3], id, true, false));
+  const auto right = target.mahalanobis(target.lightObs(ctx, measured[1], measured[2], id, false, false));
+  return left && right && *left + *right < gate;
+}
+
 double segmentAngle(const cv::Point2f & from, const cv::Point2f & to)
 {
   return std::atan2(to.y - from.y, to.x - from.x);
@@ -63,6 +78,10 @@ std::vector<MatchedArmor> matchArmor(
   const EskfTargetConfig & config = target.config();
 
   // 可见性筛选：按正对相机的程度排序，只留最正对的三块。
+  //
+  // 背对的板也要留着：TempLost 期间外推停住而真车还在转，重新看到的那块板在
+  // 冻结的预测里常常是背对的，把它剔掉会让旧目标接不回来、被单板新建的目标
+  // 顶掉（3m_run_mid 实测 TempLost 帧数翻倍）。
   const std::vector<double> facing = facingScores(target, state, ctx);
   std::vector<std::pair<double, int>> ranked;
   ranked.reserve(facing.size());
@@ -132,7 +151,11 @@ std::vector<MatchedArmor> matchArmor(
                            config.weight_angle_error * angle_error +
                            config.weight_side_length_error * side_length_error;
 
-      if (std::isfinite(total) && total < gate) {
+      if (!std::isfinite(total)) {
+        continue;
+      }
+      // 排序始终按像素代价；马氏距离只决定过不过门。
+      if (total < gate || withinChi2(target, ctx, measured, id)) {
         cost[j][i] = total;
       }
     }

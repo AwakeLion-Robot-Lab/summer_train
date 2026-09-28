@@ -272,6 +272,8 @@ void normalize(AutoAimConfig& config)
                    ieskf_target_defaults.sigma_along_by_length},
          std::pair{&config.ieskf_target.sigma_perp_by_length,
                    ieskf_target_defaults.sigma_perp_by_length},
+         std::pair{&config.ieskf_target.match_chi2_gate,
+                   ieskf_target_defaults.match_chi2_gate},
          std::pair{&config.ieskf_target.weight_center_error,
                    ieskf_target_defaults.weight_center_error},
          std::pair{&config.ieskf_target.weight_angle_error,
@@ -593,6 +595,7 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(ieskf, "match_gate", config.ieskf_target.match_gate);
   readValue(
     ieskf, "match_gate_not_all_init", config.ieskf_target.match_gate_not_all_init);
+  readValue(ieskf, "match_chi2_gate", config.ieskf_target.match_chi2_gate);
   readValue(
     ieskf, "weight_center_error", config.ieskf_target.weight_center_error);
   readValue(

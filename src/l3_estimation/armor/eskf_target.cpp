@@ -85,9 +85,14 @@ void EskfTarget::reset(
   //
   // 两个假设都会错，但都不致命：编号只是标签的循环平移，认错了整车 yaw 差
   // 2πk/N，几何仍然自洽；半径偏差由后续观测修正，p0 给了足够的不确定性。
+  //
+  // 板的姿态只取 yaw，俯仰按标准后仰角、横滚取 0，即整车初始倾斜为 0。单板
+  // IPPE 的 pitch/roll 有镜像歧义：倾斜车上实测过解到镜像分支，板面 +29° 解成
+  // -14°，整车凭空多出 43° 倾斜；单板时倾斜几乎不可观测，错的初值一直带着，
+  // 旋转方向一变关联就接不上邻板。yaw 来自 optimize_yaw，本来就是按标准后仰搜的。
   Eigen::Isometry3d armor_in_world = Eigen::Isometry3d::Identity();
   armor_in_world.translation() = armor.xyz_in_world;
-  armor_in_world.linear() = L6Telemetry::yprToRotation(armor.ypr_in_world);
+  armor_in_world.linear() = VM::rotationZY<double>(armor.ypr_in_world[0], armorPitchOf(name));
 
   Eigen::Isometry3d armor_in_vehicle = Eigen::Isometry3d::Identity();
   armor_in_vehicle.translation() = Eigen::Vector3d(-radius, 0.0, 0.0);

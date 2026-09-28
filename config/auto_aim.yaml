@@ -150,6 +150,10 @@ ieskf:
   # 更宽门限。
   match_gate: 200.0
   match_gate_not_all_init: 1000.0
+  # 像素代价超门时，两根灯条的马氏距离之和低于它也放行（8 自由度 99% 分位），
+  # 0 关闭。倾斜车上刚转进来的邻板会被固定像素门限拒掉，这条按滤波器自己的
+  # 不确定度放宽。
+  match_chi2_gate: 20.09
   weight_center_error: 5.0
   weight_angle_error: 10.0
   weight_side_length_error: 1.0

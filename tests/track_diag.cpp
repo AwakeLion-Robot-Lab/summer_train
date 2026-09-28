@@ -73,6 +73,7 @@ const std::string kCommandLineKeys =
   "{end-index e | 0 | 视频结束帧下标，0 表示到结尾}"
   "{config | config/auto_aim.yaml | L2/L3/L4 参数；A/B 时指向改过的副本，不动仓库里那份}"
   "{out o | /tmp/track_diag | CSV 输出目录}"
+  "{net-roi | true | false 时网络始终看整图，用来区分漏检是 ROI 裁掉的还是网络本身没认出}"
   "{@input-path | records/3m_run_mid | avi 和 txt 的路径（不含后缀）}";
 
 struct PoseSample {
@@ -325,6 +326,7 @@ int main(int argc, char* argv[])
     const L4Planning::Predictor predictor;
     L4Planning::Planner planner(runtime_config.plan);
     const double bullet_speed = cli.get<double>("bullet-speed");
+    const bool use_net_roi = cli.get<bool>("net-roi");
 
     cv::VideoCapture video(video_path);
     require(video.isOpened(), "无法打开录像：" + video_path);
@@ -348,7 +350,7 @@ int main(int argc, char* argv[])
                  "res_shift_perp_mean,res_shift_perp_rms,"
                  "res_shift_along_mean,res_shift_along_rms,"
                  "res_tilt_mean_deg,res_tilt_rms_deg,"
-                 "res_len_mean,res_len_rms,res_depth_m,reset\n";
+                 "res_len_mean,res_len_rms,res_depth_m,reset,tilt_pitch_deg,tilt_roll_deg,ids\n";
     frame_csv << std::fixed;
 
     std::ofstream aim_csv(out_dir / "aim.csv");
@@ -440,8 +442,10 @@ int main(int argc, char* argv[])
       // 观测维数和实际滤波器吃到的对不上。
       const std::optional<cv::Rect> light_roi =
         tracker.lightRoi(q_world_barrel, timestamp, img.size());
-      const cv::Rect net_roi = tracker.netFocusRoi(
-        q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio());
+      const cv::Rect net_roi = use_net_roi
+        ? tracker.netFocusRoi(
+            q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio())
+        : cv::Rect(0, 0, img.cols, img.rows);
       const auto light_hints = tracker.lightHints(q_world_barrel, timestamp);
       const auto t_l2_begin = std::chrono::steady_clock::now();
       // 敌方颜色必须传进去：侧边灯条按它筛色，findLights 的通道相减也只在
@@ -580,7 +584,17 @@ int main(int argc, char* argv[])
       for (std::size_t k = 0; k < res_channel_mean_row.size(); ++k) {
         frame_csv << res_channel_mean_row[k] << ',' << res_channel_rms_row[k] << ',';
       }
-      frame_csv << res_depth_m << ',' << (reset ? 1 : 0) << '\n';
+      frame_csv << res_depth_m << ',' << (reset ? 1 : 0) << ',';
+      // 整车 roll/pitch：叠加层和 armor_xyza_list 只带 yaw，车体倾斜漂了在图上
+      // 只表现为各板高低错开，要从这两列读。
+      if (target) {
+        const Eigen::Vector3d ypr = L6Telemetry::eulers(
+          L3Estimation::VehicleModel::stateRotation(target->ekf_x()), 2, 1, 0);
+        frame_csv << ypr[1] * kRadToDeg << ',' << ypr[2] * kRadToDeg << ',';
+      } else {
+        frame_csv << ",,";
+      }
+      frame_csv << tracker.lastMatchedIds() << '\n';
 
       // 叠加层像素位置：整车中心 + 四块板的框心，外加当帧检出的板心作参照。
       {

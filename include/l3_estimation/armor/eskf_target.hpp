@@ -77,6 +77,12 @@ struct EskfTargetConfig
   // 还没见过 0 号以外的板时改用这个更宽的门限：那时整车 yaw、第二组半径和
   // 高度差几乎不可观测，其余板的位置全是初值猜的，门限太紧第二块板进不来。
   double match_gate_not_all_init{1000.0};
+  // 像素代价过不了门时的第二条路：两根灯条在滤波器先验上的马氏距离之和
+  // 低于它也放行，0 表示不启用。像素门限不看不确定度——车体倾斜估偏 10°，
+  // 1.6 m 处刚转进视野的邻板就偏 50 px 被拒，目标随之进 TempLost、被备用槽
+  // 用单板新建的目标顶掉。20.09 是 8 自由度的 99% 分位；两根灯条共享状态、
+  // 误差正相关，直接相加偏大，是偏严的近似。
+  double match_chi2_gate{20.09};
   double weight_center_error{5.0};
   double weight_angle_error{10.0};
   double weight_side_length_error{1.0};
