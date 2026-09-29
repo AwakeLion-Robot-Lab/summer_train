@@ -46,13 +46,26 @@ int main()
     return 5;
   }
 
+  auto offset_node = YAML::Clone(camera_config["calibration"]);
+  offset_node["T_barrel_camera"]["translation_offset"] =
+    YAML::Load("[0.004, -0.005, 0.006]");
+  const auto offset_calibration = L1Sensor::loadCameraCalibration(
+    offset_node, "translation-offset smoke config");
+  const Eigen::Vector3d offset_point_in_barrel =
+    *offset_calibration.T_barrel_camera * point_in_camera;
+  const Eigen::Vector3d expected_offset_point{0.014, 0.975, 2.036};
+  if (!offset_point_in_barrel.isApprox(expected_offset_point, 1e-12)) {
+    std::cerr << "T_barrel_camera translation offset was not applied\n";
+    return 6;
+  }
+
   auto intrinsic_only_node = YAML::Clone(camera_config["calibration"]);
   intrinsic_only_node.remove("T_barrel_camera");
   const auto intrinsic_only = L1Sensor::loadCameraCalibration(
     intrinsic_only_node, "intrinsic-only smoke config");
   if (intrinsic_only.barrelExtrinsicsReady()) {
     std::cerr << "Missing extrinsics were treated as valid identity transforms\n";
-    return 6;
+    return 7;
   }
 
   std::cout << "CameraCalibration smoke test passed\n";

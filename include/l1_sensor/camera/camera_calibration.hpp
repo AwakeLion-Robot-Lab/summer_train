@@ -39,7 +39,9 @@ struct CameraCalibration {
 
 // 从相机配置中的 calibration: 节点读取标定数据。camera_matrix 使用 3 行数组，
 // distortion_coefficients 使用一维数组。可选的 T_barrel_camera 使用
-// {rotation: 3x3, translation: [x,y,z]}，平移单位为米。
+// {rotation: 3x3, translation: [x,y,z], translation_offset: [dx,dy,dz]}。
+// 平移及可选微调偏移的单位均为米，二者都在 barrel 坐标系中表达；加载后的
+// T_barrel_camera 使用 translation + translation_offset。省略偏移时按零处理。
 // source_name 仅用于生成可定位的错误信息。
 CameraCalibration loadCameraCalibration(const YAML::Node& node, const std::string& source_name);
 

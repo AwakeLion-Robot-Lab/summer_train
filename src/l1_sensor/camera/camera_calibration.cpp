@@ -145,6 +145,39 @@ Eigen::Vector3d readTranslation(const YAML::Node &transform_node,
   return translation;
 }
 
+Eigen::Vector3d readTranslationOffset(const YAML::Node &transform_node,
+                                      const std::string &transform_name,
+                                      const std::string &source_name) {
+  const auto offset_node = transform_node["translation_offset"];
+  if (!offset_node) {
+    return Eigen::Vector3d::Zero();
+  }
+  if (!offset_node.IsSequence() || offset_node.size() != 3) {
+    invalidCalibration(
+        source_name,
+        transform_name + ".translation_offset must contain 3 values");
+  }
+
+  Eigen::Vector3d offset;
+  try {
+    for (std::size_t index = 0; index < 3; ++index) {
+      offset[static_cast<Eigen::Index>(index)] =
+          offset_node[index].as<double>();
+    }
+  } catch (const YAML::Exception &e) {
+    invalidCalibration(
+        source_name,
+        "invalid " + transform_name + ".translation_offset: " + e.what());
+  }
+
+  if (!offset.allFinite()) {
+    invalidCalibration(
+        source_name,
+        transform_name + ".translation_offset must be finite");
+  }
+  return offset;
+}
+
 std::optional<Eigen::Isometry3d> readOptionalTransform(
     const YAML::Node &node, const std::string &key,
     const std::string &source_name) {
@@ -158,8 +191,9 @@ std::optional<Eigen::Isometry3d> readOptionalTransform(
 
   Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
   transform.linear() = readRotation(transform_node, key, source_name);
-  transform.translation() =
-      readTranslation(transform_node, key, source_name);
+  transform.translation() = readTranslation(transform_node, key, source_name) +
+                            readTranslationOffset(transform_node, key,
+                                                  source_name);
   return transform;
 }
 

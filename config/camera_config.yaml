@@ -34,3 +34,6 @@ calibration:
       - [-1.0, 0.0, 0.0]
       - [0.0, -1.0, 0.0]
     translation: [0.06971, 0.0655, 0.040]
+    # 实机击打微调量，单位为米，按 barrel 坐标轴表达：x 向前、y 向左、z 向上
+    # 有效平移 = translation + translation_offset
+    translation_offset: [0.0, 0.0, 0.0]
