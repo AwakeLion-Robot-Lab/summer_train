@@ -103,16 +103,16 @@ selection:
 
     selection:
       # 高速选板窗口相对原始窗口的最小比例，范围 (0, 1]。
-      min_window_scale: 0.75
+      min_window_scale: 0.65
       # 当前锁定板在动态选板窗口两侧额外放宽的滞回角。
       # 只有离开该保持窗口才强制切板，单位 deg。
-      hold_margin_deg: 8.0
+      hold_margin_deg: 5.0
 
     firing:
       # 开火窗口的低速/高速比例。为保证始终窄于选板窗口，max 必须
       # 小于 1，min 必须小于 selection.min_window_scale 且不大于 max。
       max_window_scale: 0.90
-      min_window_scale: 0.50
+      min_window_scale: 0.60
 
   # 候选装甲板总评分的三项权重，均须非负且总和必须为 1。
   score_weights:
