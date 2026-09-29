@@ -149,7 +149,7 @@ z_hat = h(x) = [u_t_hat, v_t_hat, u_b_hat, v_b_hat]ᵀ
 
 rmcs_auto_aim_v2 的解析雅可比只用了针孔模型；这里的 `H` 由滤波器对整条投影链做中心差分，畸变自然包含在内。
 
-相机姿态与图像必须对应同一时间，否则云台运动会表现成错误的灯条残差，进而污染目标状态。runtime 按图像时间调用 `gimbalPoseAt(timestamp)` 查询姿态；查询超出姿态历史范围时，当前实现取历史端点值。
+相机姿态与图像必须对应同一时间，否则云台运动会表现成错误的灯条残差，进而污染目标状态。runtime 先 `waitPose(timestamp)` 等到图像之后的那包姿态，再按图像时间调用 `gimbalPoseAt(timestamp)` 前后两包插值（同 sp_vision 的 `imu_at`）；等满 `pose_wait_ms` 仍没等到（串口断流）时取历史端点值。串口接收线程有字节就立刻取走、逐包打时间戳，不能让串口库攒满缓冲区再返回，否则整批姿态共用一个接收时间戳。
 
 源码：[light_measure.hpp](../include/l3_estimation/armor/light_measure.hpp) 的 `projectPointsOf()`，以及 [projection.hpp](../include/l6_telemetry/projection.hpp)。
 

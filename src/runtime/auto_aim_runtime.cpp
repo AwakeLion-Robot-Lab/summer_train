@@ -231,6 +231,12 @@ void AutoAimRuntime::run() {
         case L1Sensor::WorkMode::Outpost:
         case L1Sensor::WorkMode::Idle: {
           const bool aiming = mode != L1Sensor::WorkMode::Idle;
+          // 同 sp_vision：先等图像之后的那包姿态到齐，再前后两包插值。图像
+          // 刚到手时它往往还在路上，直接查只能拿最新一包顶替，云台一转就
+          // 错开几度。只等一个发包周期；等满说明串口断流，退回最新一包。
+          if (!serial.waitPose(timestamp)) {
+            L6Telemetry::logDebug("gimbal pose wait timeout");
+          }
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 
           // L2: ROI 聚焦 + 检测，保留敌方装甲板。两个 ROI 都由上一帧的整车
