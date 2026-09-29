@@ -166,22 +166,25 @@ void SerialWorker::rxLoop() {
 
     received_state_count_.fetch_add(states.size());
 
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    for (const auto &state : states) {
-      if (!gimbal_history_.empty() &&
-          state.timestamp <= gimbal_history_.back().timestamp) {
-        L6Telemetry::logWarn(
-            "serial gimbal history timestamp is not increasing");
-        continue;
-      }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      for (const auto &state : states) {
+        if (!gimbal_history_.empty() &&
+            state.timestamp <= gimbal_history_.back().timestamp) {
+          L6Telemetry::logWarn(
+              "serial gimbal history timestamp is not increasing");
+          continue;
+        }
 
-      latest_state_ = state;
-      gimbal_history_.push_back(state);
+        latest_state_ = state;
+        gimbal_history_.push_back(state);
 
-      while (gimbal_history_.size() > max_gimbal_history_size_) {
-        gimbal_history_.pop_front();
+        while (gimbal_history_.size() > max_gimbal_history_size_) {
+          gimbal_history_.pop_front();
+        }
       }
     }
+    pose_cv_.notify_all();
   }
 }
 
@@ -266,6 +269,16 @@ Eigen::Quaterniond SerialWorker::toBarrelPose(
   const Eigen::Matrix3d R_world_barrel =
       q_world_imu.toRotationMatrix() * config_.R_imu_barrel;
   return Eigen::Quaterniond(R_world_barrel).normalized();
+}
+
+bool SerialWorker::waitPose(
+    std::chrono::steady_clock::time_point timestamp) const {
+  std::unique_lock<std::mutex> lock(state_mutex_);
+  return pose_cv_.wait_for(
+      lock, std::chrono::milliseconds(config_.pose_wait_ms), [&] {
+        return !gimbal_history_.empty() &&
+               gimbal_history_.back().timestamp > timestamp;
+      });
 }
 
 // 按时间戳查询云台姿态；找到前后两帧 RPY 后再转四元数并 slerp。

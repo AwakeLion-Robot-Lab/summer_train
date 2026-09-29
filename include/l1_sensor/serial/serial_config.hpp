@@ -18,6 +18,9 @@ struct SerialConfig {
   int reconnect_interval_ms = 500;
   std::size_t rx_buffer_size = 256;
   bool packet_loss_check_enable = true;
+  // waitPose 最多等多久（ms）：图像到手后，等它之后的那包姿态到齐再插值。
+  // 正常只等一个下位机发包周期；等满说明串口断流，退回取最新一包。
+  int pose_wait_ms = 20;
 
   // 外参命名沿用 T_A_B：R_imu_barrel 把 barrel 系中的向量转到下位机 IMU 系。
   // world 取 imu_abs（IMU 轴向），barrel 是独立定义的右手系，两者链式复合：
