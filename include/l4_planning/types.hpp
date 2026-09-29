@@ -159,6 +159,17 @@ struct PlannerConfig {
   double normal_leave_angle{20.0};   // degree
   double outpost_enter_angle{70.0};  // degree
   double outpost_leave_angle{30.0};  // degree
+  // 按装甲板相对视线角速度分段线性缩小选板和开火窗口。
+  bool enable_dynamic_windows{false};
+  double window_shrink_start_speed{2.0}; // rad/s，低于该值不再放宽
+  double window_shrink_end_speed{8.0};   // rad/s，高于该值不再收窄
+  // 选板窗口从原始窗口线性缩到该比例。
+  double selection_min_window_scale{0.65};
+  // 开火窗口从低速比例线性缩到高速比例，且始终窄于选板窗口。
+  double firing_max_window_scale{0.80};
+  double firing_min_window_scale{0.40};
+  // 当前已锁定板的保持窗口在动态选板窗口两侧各放宽的角度。
+  double selection_hold_margin{8.0}; // degree
   int max_lost_frames{3};
 
   double yaw_angle_weight{9000000.0};

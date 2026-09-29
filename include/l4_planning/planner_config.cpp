@@ -1,4 +1,5 @@
 #include "l4_planning/planner_config.hpp"
+#include "l4_planning/planner_validation.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -21,11 +22,6 @@ void readOptional(
   }
 }
 
-[[nodiscard]] bool finiteNonNegative(double value) noexcept
-{
-  return std::isfinite(value) && value >= 0.0;
-}
-
 [[nodiscard]] bool finitePositive(double value) noexcept
 {
   return std::isfinite(value) && value > 0.0;
@@ -33,65 +29,16 @@ void readOptional(
 
 void validate(const PlannerTuning& tuning)
 {
-  const PlannerConfig& config = tuning.planner;
-  const ArmorScoreWeights& weights = tuning.armor_score_weights;
-  const double weight_sum =
-    weights.facing_weight + weights.window_weight + weights.aim_cost_weight;
-
-  const bool base_valid =
+  const bool valid =
     tuning.latency.ready()
-    && finiteNonNegative(tuning.facing_angle_good)
-    && finitePositive(tuning.facing_angle_bad)
-    && tuning.facing_angle_bad > tuning.facing_angle_good
-    && config.max_iterations > 0
-    && config.fly_time_tolerance.count() > 0
-    && finitePositive(config.position_tolerance)
-    && finiteNonNegative(config.angle_tolerance)
     && finitePositive(tuning.default_bullet_speed)
-    && finitePositive(config.gravity)
-    && (!config.enable_air_resistance
-        || finitePositive(config.linear_drag_coefficient))
-    && finiteNonNegative(config.switch_yaw_dead_zone)
-    && finiteNonNegative(config.switch_pitch_dead_zone)
-    && finiteNonNegative(config.score_switch_threshold)
-    && config.score_switch_stable_frames > 0
-    && finiteNonNegative(config.rotation_rate_dead_zone)
-    && config.lock_stable_frames > 0
-    && finiteNonNegative(config.aim_cost_good_angle)
-    && finitePositive(config.aim_cost_bad_angle)
-    && config.aim_cost_bad_angle > config.aim_cost_good_angle
-    && finitePositive(config.normal_enter_angle)
-    && finiteNonNegative(config.normal_leave_angle)
-    && config.normal_leave_angle <= config.normal_enter_angle
-    && finitePositive(config.outpost_enter_angle)
-    && finiteNonNegative(config.outpost_leave_angle)
-    && config.outpost_leave_angle <= config.outpost_enter_angle
-    && config.max_lost_frames >= 0
-    && finiteNonNegative(weights.facing_weight)
-    && finiteNonNegative(weights.window_weight)
-    && finiteNonNegative(weights.aim_cost_weight)
-    && std::abs(weight_sum - 1.0) <= 1e-9;
+    && validPlannerConfig(tuning.planner)
+    && validArmorScoreWeights(tuning.armor_score_weights)
+    && validFacingAngleThresholds(
+      tuning.facing_angle_good,
+      tuning.facing_angle_bad);
 
-  const bool mpc_valid =
-    !config.enable_mpc
-    || (finiteNonNegative(config.yaw_angle_weight)
-        && finiteNonNegative(config.yaw_velocity_weight)
-        && finitePositive(config.yaw_acceleration_weight)
-        && finiteNonNegative(config.pitch_angle_weight)
-        && finiteNonNegative(config.pitch_velocity_weight)
-        && finitePositive(config.pitch_acceleration_weight)
-        && std::isfinite(config.min_yaw_acceleration)
-        && std::isfinite(config.max_yaw_acceleration)
-        && config.min_yaw_acceleration <= config.max_yaw_acceleration
-        && std::isfinite(config.min_pitch_acceleration)
-        && std::isfinite(config.max_pitch_acceleration)
-        && config.min_pitch_acceleration <= config.max_pitch_acceleration
-        && config.mpc_max_iterations > 0
-        && finitePositive(config.mpc_admm_rho)
-        && finitePositive(config.mpc_primal_tolerance)
-        && finitePositive(config.mpc_dual_tolerance));
-
-  if (!base_valid || !mpc_valid) {
+  if (!valid) {
     throw std::invalid_argument(
       "planner configuration contains invalid values or inconsistent ranges");
   }
@@ -187,6 +134,35 @@ PlannerTuning loadPlannerTuning(const std::string& config_path)
     selection, "outpost_enter_angle_deg", config.outpost_enter_angle);
   readOptional(
     selection, "outpost_leave_angle_deg", config.outpost_leave_angle);
+  const YAML::Node dynamic_windows = selection["dynamic_windows"];
+  readOptional(
+    dynamic_windows, "enable", config.enable_dynamic_windows);
+  readOptional(
+    dynamic_windows,
+    "shrink_start_speed_rad_s",
+    config.window_shrink_start_speed);
+  readOptional(
+    dynamic_windows,
+    "shrink_end_speed_rad_s",
+    config.window_shrink_end_speed);
+  const YAML::Node dynamic_selection = dynamic_windows["selection"];
+  readOptional(
+    dynamic_selection,
+    "min_window_scale",
+    config.selection_min_window_scale);
+  readOptional(
+    dynamic_selection,
+    "hold_margin_deg",
+    config.selection_hold_margin);
+  const YAML::Node dynamic_firing = dynamic_windows["firing"];
+  readOptional(
+    dynamic_firing,
+    "max_window_scale",
+    config.firing_max_window_scale);
+  readOptional(
+    dynamic_firing,
+    "min_window_scale",
+    config.firing_min_window_scale);
   readOptional(
     selection, "facing_angle_good_deg", tuning.facing_angle_good);
   readOptional(

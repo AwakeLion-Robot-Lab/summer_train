@@ -45,12 +45,12 @@ constexpr double kPi = 3.14159265358979323846;
     if (!candidate.valid
         || (excluded_armor_id.has_value()
             && candidate.armor.armor_id == *excluded_armor_id)
-        || (require_within_window && !candidate.within_firing_window)
+        || (require_within_window && !candidate.within_selection_window)
         || (require_entering_window
-            && !candidate.entering_firing_window)
+            && !candidate.entering_selection_window)
         || (require_selectable_window
-            && !candidate.within_firing_window
-            && !candidate.entering_firing_window)) {
+            && !candidate.within_selection_window
+            && !candidate.entering_selection_window)) {
       continue;
     }
     if (best == nullptr
@@ -78,9 +78,12 @@ constexpr double kPi = 3.14159265358979323846;
 [[nodiscard]] bool selectableWindow(
   const ArmorCandidate& candidate) noexcept
 {
+  // 候选一旦进入 Switching/Stabilizing 就使用保持窗口，避免它在锁定
+  // 确认期间刚越过选板边界便被丢弃；尚未选中的候选仍由
+  // bestScoredCandidate 严格按选板窗口筛选。
   return candidate.valid
-         && (candidate.within_firing_window
-             || candidate.entering_firing_window);
+         && (candidate.within_selection_hold_window
+             || candidate.entering_selection_window);
 }
 
 }  // namespace
@@ -215,11 +218,10 @@ SelectionResult Planner::selectArmor(
 
         tracking_state_.current_lost_frames = 0;
 
-        // 当前板在预计命中时刻已经出窗时，不再等待评分优势连续
-        // score_switch_stable_frames 帧。先选择窗口内最高分候选，再选择
-        // 位于进入角外 10 degree 预进入区的最高分候选；两者都不存在
-        // 时立即解除装甲板锁定。
-        if (!current->within_firing_window) {
+        // 当前板离开比选板窗口更宽的保持窗口后，才绕过评分优势连续
+        // score_switch_stable_frames 帧。这个滞回区避免角速度或相位在
+        // 动态选板边界附近抖动时来回换板。
+        if (!current->within_selection_hold_window) {
           tracking_state_.score_candidate_id.reset();
           tracking_state_.score_stable_frames = 0;
           const ArmorCandidate* next = bestScoredCandidate(

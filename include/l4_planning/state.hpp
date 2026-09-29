@@ -28,6 +28,7 @@ struct ArmorScoreHardConditions {
   bool identity_consistent{false};
   bool stable_tracking{false};
   bool prediction_valid{false};
+  bool within_selection_window{false};
   bool within_firing_window{false};
   bool ballistic_valid{false};
   bool iteration_converged{false};
@@ -54,10 +55,12 @@ struct ArmorCandidate {
   double aim_angle_error{0.0};    // 两轴合成角差，rad；仅用于候选评分
   double relative_yaw_rate{0.0};  // 装甲板法线相对目标方位的角速度，rad/s
   double phase_angle{0.0};        // 沿旋转方向递增的窗口相位，rad
-  double remaining_window_time{0.0}; // 到离开射击窗口的预计时间，s
-  // 是否位于正式进入角之前 10 degree 的预进入区间。
-  bool entering_firing_window{false};
+  double remaining_window_time{0.0}; // 到离开选板窗口的预计时间，s
+  // 是否位于正式选板进入角之前 10 degree 的预进入区间。
+  bool entering_selection_window{false};
   bool converged{false};          // 时间误差和位置/角度误差是否收敛
+  bool within_selection_window{false}; // 是否位于新候选可选窗口
+  bool within_selection_hold_window{false}; // 当前锁定板是否仍可保持
   bool within_firing_window{false}; // 命中时刻是否仍在可射击窗口
   bool valid{false};              // 除射击窗口外的跟踪、预测和弹道条件有效
   ArmorScore score;               // 用于多装甲板选择的最终评分

@@ -194,6 +194,65 @@ int main()
     return 8;
   }
 
+  // 动态选板窗口与保持窗口之间形成滞回：当前板刚离开选板窗口时
+  // 继续保持，但因为同时位于更窄的开火窗口外，所以不得开火。
+  L4Planning::Planner hysteresis_planner;
+  L4Planning::PlannerContext hysteresis_context;
+  hysteresis_context.config.enable_dynamic_windows = true;
+  hysteresis_context.config.normal_enter_angle = 75.0;
+  hysteresis_context.config.normal_leave_angle = 45.0;
+  hysteresis_context.config.lock_stable_frames = 2;
+  hysteresis_context.config.switch_yaw_dead_zone = 180.0;
+  hysteresis_context.config.switch_pitch_dead_zone = 180.0;
+  hysteresis_context.config.score_switch_stable_frames = 10;
+  L1Sensor::RobotState hysteresis_robot = robot_state;
+  auto hysteresis_time = L4Planning::TimePoint{3s};
+  const auto run_hysteresis =
+    [&](double yaw, double yaw_rate) {
+      hysteresis_time += 10ms;
+      hysteresis_robot.timestamp = hysteresis_time;
+      hysteresis_context.planning_time = hysteresis_time;
+      return hysteresis_planner.plan(
+        std::optional<L3Estimation::TargetState>{
+          makeTarget(hysteresis_time, yaw, yaw_rate)},
+        hysteresis_robot,
+        hysteresis_context);
+    };
+
+  (void)run_hysteresis(0.0, 0.0);
+  const L4Planning::AimPlan hysteresis_locked =
+    run_hysteresis(0.0, 0.0);
+  if (!hysteresis_locked.valid || hysteresis_locked.armor_id != 0
+      || hysteresis_locked.tracked_phase
+           != L4Planning::ArmorTrackingPhase::Tracking) {
+    std::cerr << "hysteresis test did not establish the initial lock\n";
+    return 11;
+  }
+
+  // 1 rad/s 下预测命中姿态会再前进约 11°；输入 35° 后 armor 0
+  // 落在 selection.leave=45° 与 hold.leave=53° 之间。
+  const L4Planning::AimPlan held =
+    run_hysteresis(35.0 * kPi / 180.0, 1.0);
+  if (!held.valid || held.armor_id != 0 || held.fire_permitted
+      || held.tracked_phase != L4Planning::ArmorTrackingPhase::Tracking) {
+    std::cerr << "selection hysteresis did not retain the current armor: id="
+              << held.armor_id << ", phase="
+              << static_cast<int>(held.tracked_phase) << ", fire="
+              << held.fire_permitted << ", valid=" << held.valid << '\n';
+    return 12;
+  }
+
+  // 再向前 10° 后越过保持窗口，必须绕过评分确认并开始切换。
+  const L4Planning::AimPlan left_hold =
+    run_hysteresis(45.0 * kPi / 180.0, 1.0);
+  if (!left_hold.valid || left_hold.armor_id == 0
+      || left_hold.fire_permitted
+      || left_hold.tracked_phase
+           != L4Planning::ArmorTrackingPhase::Stabilizing) {
+    std::cerr << "leaving the dynamic hold window did not switch armor\n";
+    return 13;
+  }
+
   std::cout << "Planner armor tracking smoke test passed\n";
   return 0;
 }

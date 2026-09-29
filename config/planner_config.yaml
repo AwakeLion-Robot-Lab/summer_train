@@ -91,6 +91,29 @@ selection:
   # 必须不大于 outpost_enter_angle_deg。
   outpost_leave_angle_deg: 40.0
 
+  # 根据装甲板相对视线角速度，分别线性收窄选板和开火窗口。
+  # 原始 enter/leave 角作为选板窗口的低速上限；修改后需结合实车回放标定。
+  dynamic_windows:
+    enable: true
+
+    # 低于 start 使用低速窗口，高于 end 使用最小窗口，中间分段线性插值。
+    # 必须满足 0 <= start < end，单位 rad/s。
+    shrink_start_speed_rad_s: 2.0
+    shrink_end_speed_rad_s: 6.0
+
+    selection:
+      # 高速选板窗口相对原始窗口的最小比例，范围 (0, 1]。
+      min_window_scale: 0.75
+      # 当前锁定板在动态选板窗口两侧额外放宽的滞回角。
+      # 只有离开该保持窗口才强制切板，单位 deg。
+      hold_margin_deg: 8.0
+
+    firing:
+      # 开火窗口的低速/高速比例。为保证始终窄于选板窗口，max 必须
+      # 小于 1，min 必须小于 selection.min_window_scale 且不大于 max。
+      max_window_scale: 0.90
+      min_window_scale: 0.50
+
   # 候选装甲板总评分的三项权重，均须非负且总和必须为 1。
   score_weights:
     # 装甲板朝向相机/枪口的正对程度权重。
