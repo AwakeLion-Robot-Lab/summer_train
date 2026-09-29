@@ -18,6 +18,9 @@ struct SerialConfig {
   int reconnect_interval_ms = 500;
   std::size_t rx_buffer_size = 256;
   bool packet_loss_check_enable = true;
+  // waitPose 最多等多久（ms）：图像到手后，等它之后的那包姿态到齐再插值。
+  // 正常只等一个下位机发包周期；等满说明串口断流，退回取最新一包。
+  int pose_wait_ms = 20;
 
   // 下行帧是否携带速度/加速度前馈（电控用它做 LQR 解算）。
   // 默认 false，即现场下位机现在认的 9 字节格式；电控固件支持之后再打开。

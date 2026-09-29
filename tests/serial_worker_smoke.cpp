@@ -18,6 +18,7 @@
 #include <pty.h>
 #include <span>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -190,6 +191,7 @@ int main()
   config.command_timeout_ms = 80;
   config.reconnect_interval_ms = 5;
   config.packet_loss_check_enable = false;
+  config.pose_wait_ms = 30;
   // 取一个非单位阵的合法右手旋转（绕 z 转 180 度），让轴向转换真正生效。
   config.R_imu_barrel = Eigen::Vector3d{-1.0, -1.0, 1.0}.asDiagonal();
 
@@ -260,27 +262,33 @@ int main()
       // gimbalPoseAt 必须返回 barrel -> world，即在下位机上报的姿态右乘一次
       // R_imu_barrel。roll 和 pitch 都取非零值，这样单边右乘、单边左乘和
       // 双边相似变换三种写法互不相同，写反了这里就会失败。
+      //
+      // 这一包还必须即时收到：串口库攒满缓冲区才返回时这里要等约 19 ms，
+      // 整批姿态共用一个接收时间戳，图像和姿态就对不齐。
       if (result == 0) {
         const auto state_packet = makeStatePacket(0, 0.1F, 0.2F, 0.3F);
+        const auto sent = Clock::now();
         if (::write(pty.masterFd(), state_packet.data(), state_packet.size()) !=
             static_cast<ssize_t>(state_packet.size())) {
           std::cerr << "Failed to inject a state packet\n";
           result = 9;
         }
 
-        std::optional<L1Sensor::RobotState> state;
-        const auto state_deadline = Clock::now() + std::chrono::milliseconds(500);
-        while (result == 0 && Clock::now() < state_deadline) {
-          state = worker.latestState();
-          if (state) {
-            break;
-          }
-          pollfd idle{pty.masterFd(), 0, 0};
-          ::poll(&idle, 1, 5);
+        if (result == 0 && !worker.waitPose(sent)) {
+          std::cerr << "SerialWorker did not parse the injected state\n";
+          result = 10;
+        }
+        const auto latency = std::chrono::duration<double, std::milli>(
+          Clock::now() - sent).count();
+        if (result == 0 && latency > 10.0) {
+          std::cerr << "SerialWorker received the state " << latency
+                    << " ms late; reads are batching\n";
+          result = 13;
         }
 
+        const auto state = worker.latestState();
         if (result == 0 && !state) {
-          std::cerr << "SerialWorker did not parse the injected state\n";
+          std::cerr << "SerialWorker has no latest state\n";
           result = 10;
         }
 
@@ -301,6 +309,48 @@ int main()
                 << "SerialWorker composed R_imu_barrel the wrong way round\n";
               result = 12;
             }
+          }
+        }
+      }
+
+      // 图像落在两包姿态之间：后一包到之前 waitPose 必须超时，到了之后
+      // 必须返回，且 gimbalPoseAt 插在两包之间，而不是拿某一包顶替。
+      if (result == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const auto image_time = Clock::now();
+        if (worker.waitPose(image_time)) {
+          std::cerr << "waitPose returned before a later pose arrived\n";
+          result = 14;
+        }
+
+        const auto later_packet = makeStatePacket(1, 0.1F, 0.2F, 0.5F);
+        if (result == 0 &&
+            ::write(pty.masterFd(), later_packet.data(), later_packet.size()) !=
+              static_cast<ssize_t>(later_packet.size())) {
+          std::cerr << "Failed to inject the later state packet\n";
+          result = 9;
+        }
+        if (result == 0 && !worker.waitPose(image_time)) {
+          std::cerr << "waitPose did not see the later pose\n";
+          result = 15;
+        }
+
+        if (result == 0) {
+          const auto barrel = [&config](float yaw) {
+            const auto q = L6Telemetry::rpyToQuaternion(0.1F, 0.2F, yaw);
+            return Eigen::Quaterniond(
+              q.toRotationMatrix() * config.R_imu_barrel);
+          };
+          const auto before = barrel(0.3F);
+          const auto after = barrel(0.5F);
+          const auto pose = worker.gimbalPoseAt(image_time);
+          const double to_before = pose ? pose->angularDistance(before) : 0.0;
+          const double to_after = pose ? pose->angularDistance(after) : 0.0;
+          if (!pose || to_before < 1e-3 || to_after < 1e-3 ||
+              std::abs(to_before + to_after - before.angularDistance(after)) >
+                1e-7) {
+            std::cerr << "gimbalPoseAt did not interpolate between the poses\n";
+            result = 16;
           }
         }
       }

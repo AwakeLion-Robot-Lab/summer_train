@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -86,6 +87,11 @@ public:
   std::uint64_t poseBeforeHistoryCount() const;
   std::uint64_t poseAfterHistoryCount() const;
 
+  // 阻塞到收到一包时间戳晚于 timestamp 的姿态，或等满 pose_wait_ms，返回是否
+  // 等到。做法同 sp_vision 的 imu_at：图像刚到手时，它之后的那包姿态往往
+  // 还在路上，先等到它，gimbalPoseAt 才是前后两包插值而不是拿最新一包顶替。
+  bool waitPose(std::chrono::steady_clock::time_point timestamp) const;
+
 private:
   // 把下位机 IMU 约定下的姿态按 config_.R_imu_barrel 转换到 barrel 约定。
   Eigen::Quaterniond toBarrelPose(
@@ -110,6 +116,7 @@ private:
   std::mutex lifecycle_mutex_;
 
   mutable std::mutex state_mutex_;
+  mutable std::condition_variable pose_cv_;
   std::optional<RobotState> latest_state_;
   std::deque<RobotState> gimbal_history_;
   std::size_t max_gimbal_history_size_ = 64;
