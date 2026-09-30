@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -75,6 +76,9 @@ public:
   std::optional<Eigen::Quaterniond> gimbalPoseAt(
     std::chrono::steady_clock::time_point timestamp) const;
 
+  // 阻塞到收到一包时间戳晚于图像的姿态，或等满 pose_wait_ms。
+  bool waitPose(std::chrono::steady_clock::time_point timestamp) const;
+
   // 最新一次云台姿态，不做插值。"现在"之后不可能有采样，所以想要当前姿态时
   // 用这个而不是 gimbalPoseAt(now())——后者会无谓地走一遍越界分支并计数，
   // 把统计污染成"每帧都越界"，真正该关注的图像时刻越界反而看不出来。
@@ -110,6 +114,7 @@ private:
   std::mutex lifecycle_mutex_;
 
   mutable std::mutex state_mutex_;
+  mutable std::condition_variable pose_cv_;
   std::optional<RobotState> latest_state_;
   std::deque<RobotState> gimbal_history_;
   std::size_t max_gimbal_history_size_ = 64;

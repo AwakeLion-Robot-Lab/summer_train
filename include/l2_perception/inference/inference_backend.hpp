@@ -121,10 +121,10 @@ public:
 // L2 装甲模块的事，两者不要混在一起。
 [[nodiscard]] std::vector<InferenceOutputSpec> probeOutputSpecs(IInferenceBackend& backend);
 
-std::string_view inferenceBackendName(InferenceBackendKind backend) noexcept;
-[[nodiscard]] std::optional<InferenceBackendKind> inferenceBackendFromString(
+std::string_view backendName(InferenceBackendKind backend) noexcept;
+[[nodiscard]] std::optional<InferenceBackendKind> parseBackend(
   std::string_view name);
-[[nodiscard]] std::unique_ptr<IInferenceBackend> makeInferenceBackend(
+[[nodiscard]] std::unique_ptr<IInferenceBackend> makeBackend(
   InferenceBackendKind backend);
 
 }  // namespace L2Perception

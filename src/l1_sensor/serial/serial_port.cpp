@@ -81,7 +81,14 @@ bool SerialPort::isOpen() const {
 // 调用方已持有 lifecycle_mutex_；serial_ 在构造后不再替换。
 bool SerialPort::isOpenLocked() const { return serial_ && serial_->isOpen(); }
 
-// 读取一段原始字节，串口未打开、buffer 为空或异常时返回 0。
+// 读取已经到达的字节，串口未打开、buffer 为空、超时或异常时返回 0。
+//
+// 和 sp_vision 一样逐包即时取走：先阻塞到有字节可读（最多 read_timeout_ms），
+// 再只读已到达的部分，不等 buffer 填满。直接 read(buffer.size()) 不行：
+// simpleTimeout 的 inter_byte_timeout 为 max，serial 库读到字节后会按
+// "缓冲区缺口 × 每字节时间"补睡（unix.cc 的 waitByteTimes），256 字节、
+// 115200 波特约 19 ms。姿态包因此每 20~30 ms 成批到达、整批打成同一个接收
+// 时间戳，云台一转图像和姿态就错开几度。
 std::size_t SerialPort::read(std::span<std::uint8_t> buffer) {
   bool close_after_error = false;
   {
@@ -91,7 +98,14 @@ std::size_t SerialPort::read(std::span<std::uint8_t> buffer) {
     }
 
     try {
-      return serial_->read(buffer.data(), buffer.size());
+      if (!serial_->waitReadable()) {
+        return 0;
+      }
+      // 可读却一个字节都没有是设备断开的表现；至少读 1 字节，让 serial 库
+      // 抛异常走重连，而不是在这里空转。
+      const auto size =
+          std::clamp<std::size_t>(serial_->available(), 1, buffer.size());
+      return serial_->read(buffer.data(), size);
     } catch (const std::exception &e) {
       L6Telemetry::logWarn("serial read failed", config_.device, e.what());
       close_after_error = true;

@@ -267,21 +267,15 @@ local standalone_tests = {
         files    = {"src/l1_sensor/serial/serial_protocol.cpp", "src/l6_telemetry/logger.cpp"},
         includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
-    -- 灯条精修只依赖 OpenCV，不牵扯相机/串口 SDK。
-    armor_refiner_smoke = {
-        files    = {"src/l2_perception/armor/armor_refiner.cpp"},
-        includes = {"include", "/usr/include/eigen3"},
-        opencv   = {"opencv_core", "opencv_imgproc"},
-    },
+    -- IESKF/车辆模型相关测试由完整 newvision 目标提供依赖。
 }
 
 -- 需要开关或平台才存在的目标。openvino 这几个都要模型；
--- armor_refiner_video_test 和 auto_aim_test 还要显示器。
+-- auto_aim_test 还要显示器。
 local gated_tests = {
     openvino_armor_smoke     = "use_openvino",
     auto_aim_test            = "use_openvino",
     track_diag               = "use_openvino",
-    armor_refiner_video_test = "use_openvino",
     serial_worker_smoke      = "linux",
 }
 

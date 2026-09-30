@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l3_estimation/armor/target_estimator.hpp"
+#include "l3_estimation/armor/eskf_target.hpp"
 
 #include <Eigen/Core>
 
@@ -10,8 +10,9 @@
 
 namespace L3Estimation {
 
-// Stable, read-only snapshot consumed by the preserved L4 planner.
-// The first eleven entries match TrackedTarget's state layout exactly.
+// Stable, read-only snapshot consumed by the preserved Bruce0178 L4 planner.
+// The bridge converts EskfTarget's two absolute radii / outpost height slots
+// into the offset representation expected by this planner.
 enum StateIndex : int {
   XC = 0,
   VX = 1,
@@ -45,7 +46,7 @@ struct TargetState {
   std::chrono::steady_clock::time_point timestamp{};
   // L4 owns an independent filter value. It must never predict on L3's live
   // tracker instance.
-  std::optional<TrackedTarget> filter_state;
+  std::optional<EskfTarget> filter_state;
 };
 
 }  // namespace L3Estimation

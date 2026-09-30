@@ -16,7 +16,7 @@ std::optional<Eigen::Vector4d> selectedArmorPose(const FireInput& input)
     return std::nullopt;
   }
 
-  L3Estimation::TrackedTarget predicted = *input.target;
+  L3Estimation::EskfTarget predicted = *input.target;
   predicted.predict(input.plan.impact_time);
   const auto armors = predicted.armor_xyza_list();
   const auto index = static_cast<std::size_t>(input.plan.armor_id);

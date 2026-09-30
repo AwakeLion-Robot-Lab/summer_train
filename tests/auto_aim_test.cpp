@@ -9,9 +9,9 @@
 #include "l1_sensor/camera/camera_calibration.hpp"
 #include "l1_sensor/serial/serial_config.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
-#include "l2_perception/inference/backends/openvino_backend.hpp"
 #include "l3_estimation/armor/pnp_solver.hpp"
-#include "l3_estimation/armor/tracker.hpp"
+#include "l3_estimation/armor/eskf_tracker.hpp"
+#include "runtime/armor_detector_factory.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "runtime/l4_target_adapter.hpp"
 #include "l4_planning/planner.hpp"
@@ -395,7 +395,7 @@ YawCostCurve sampleJointYawCost(
 // 选一块装甲板画代价曲线：优先跟踪器当前关联的那块，其次取图像中心附近的。
 std::optional<std::size_t> selectArmor(
   const std::vector<L3Estimation::Armor>& observations,
-  const std::optional<L3Estimation::TrackedTarget>& target,
+  const std::optional<L3Estimation::EskfTarget>& target,
   const std::vector<Eigen::Vector4d>& target_armor_poses,
   const cv::Size& image_size)
 {
@@ -736,36 +736,27 @@ int main(int argc, char** argv)
     // YAML 里调噪声或精修阈值，这里根本看不出变化。
     const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
 
-    auto backend = std::make_unique<L2Perception::OpenVinoBackend>();
-    L2Perception::InferenceModelConfig model_config;
-    model_config.model_path = cli.get<std::string>("model");
-    model_config.device = cli.get<std::string>("device");
-    model_config.model_color_order = L2Perception::ModelColorOrder::Rgb;
-    model_config.normalization_divisor = 255.0F;
-    backend->load(model_config);
-    require(backend->ready(), "OpenVINO 后端未就绪");
-    // 模型来自 --model，没有 auto_aim.yaml 的 layout 可依，按输出形状探契约。
-    auto decoder_config =
-      L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
-    // --conf 只为扫阈值实验存在：<=0 时保持 layout 预设，行为与不加这个参数完全一致。
-    // 三道分数门要一起动——minimum_confidence 是 NMS 之后的门，单独降前两个不起作用。
-    // 注意本文件的 decoder 配置来自输出形状探测，不读 auto_aim.yaml 的 decoder 覆盖项，
-    // 因此改 yaml 对回放无效，只能走这里。
+    runtime::AutoAimConfig detector_config = runtime_config;
+    detector_config.model_path = cli.get<std::string>("model");
+    detector_config.inference.model_path = detector_config.model_path;
+    detector_config.inference_device = cli.get<std::string>("device");
+    detector_config.inference.device = detector_config.inference_device;
+    // --conf 只为扫阈值实验存在：三道分数门保持一起覆盖。
     const float conf_override = cli.get<float>("conf");
     if (conf_override > 0.0F) {
-      decoder_config.confidence_threshold = conf_override;
-      decoder_config.minimum_confidence = conf_override;
-      decoder_config.nms_score_threshold = conf_override;
+      detector_config.decoder_thresholds.confidence_threshold = conf_override;
+      detector_config.decoder_thresholds.minimum_confidence = conf_override;
+      detector_config.decoder_thresholds.nms_score_threshold = conf_override;
       std::cout << "检测分数门被 --conf 覆盖为 " << conf_override << '\n';
     }
-    L2Perception::ArmorDetector detector(
-      std::move(backend), decoder_config, L2Perception::ImagePreprocessConfig{},
-      runtime_config.refiner);
+    L2Perception::ArmorDetector detector =
+      runtime::makeDetector(detector_config, true);
     require(detector.ready(), "ArmorDetector 未就绪");
 
     const L3Estimation::ArmorConfig & armor_config = runtime_config.armor;
-    L3Estimation::Tracker tracker(
-      calibration, armor_config, runtime_config.tracker, runtime_config.target);
+    L3Estimation::EskfTracker tracker(
+      calibration, armor_config, runtime_config.ieskf_tracker,
+      runtime_config.ieskf_target);
     require(tracker.ready(), "Tracker 拒绝了该标定");
     // 与 Tracker 内部同参数的求解器，只用来做重投影和代价曲线，不参与滤波。
     L3Estimation::PnpSolver solver(calibration, armor_config);
@@ -880,12 +871,20 @@ int main(int argc, char** argv)
       const auto track_start = std::chrono::steady_clock::now();
       solver.set_R_world_barrel(q_world_barrel);
       const auto target = tracker.track(armors, q_world_barrel, timestamp);
-      const auto target_armor_poses = tracker.targetArmorPoses();
+      const auto target_armor_poses = tracker.armorPoses();
       const auto track_end = std::chrono::steady_clock::now();
 
       /// PnP 代价曲线
 
-      const auto& observations = tracker.observations();
+      std::vector<L3Estimation::Armor> observations;
+      observations.reserve(armors.size());
+      for (const auto& detection : armors) {
+        auto observation = L3Estimation::toObservation(detection);
+        solver.single_pnp(observation);
+        if (observation.name != L3Estimation::ArmorName::Unknown) {
+          observations.push_back(std::move(observation));
+        }
+      }
       const auto selected = selectArmor(
         observations, target, target_armor_poses, calibration.image_size);
       std::optional<YawCostCurve> curve;
@@ -923,7 +922,7 @@ int main(int argc, char** argv)
       }
 
       /// 整车预测：把当前 EKF 状态外推 predict_time 秒后重新展开所有装甲板
-      std::optional<L3Estimation::TrackedTarget> predicted;
+      std::optional<L3Estimation::EskfTarget> predicted;
       std::vector<Eigen::Vector4d> predicted_armor_poses;
       std::optional<double> predicted_armor_yaw;
       if (target && predict_time > 0.0) {
@@ -1274,7 +1273,7 @@ int main(int argc, char** argv)
         data["w"] = tx[7];
         data["r"] = tx[8];
         data["last_id"] = target->last_id;
-        data["nis"] = target->ekf().last_nis;
+        data["nis"] = target->lastNis();
         if (ekf_armor_yaw) {
           data["ekf_armor_yaw"] = *ekf_armor_yaw * kRadToDeg;
         }

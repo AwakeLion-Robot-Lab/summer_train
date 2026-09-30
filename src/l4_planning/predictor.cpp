@@ -1,6 +1,6 @@
 #include "l4_planning/predictor.hpp"
 
-#include "l3_estimation/armor/target_estimator.hpp"
+#include "l3_estimation/armor/eskf_target.hpp"
 #include "l3_estimation/target_state.hpp"
 #include "l4_planning/types.hpp"
 
@@ -63,11 +63,8 @@ constexpr double kPi = 3.14159265358979323846;
   auto predicted = target;
   auto filter = *target.filter_state;
   filter.predict(prediction_time);
-  const auto& state = filter.ekf().x;
-  const auto& covariance = filter.ekf().P;
-  if (state.size() != L3Estimation::TrackedTarget::kStateSize ||
-      covariance.rows() != L3Estimation::TrackedTarget::kStateSize ||
-      covariance.cols() != L3Estimation::TrackedTarget::kStateSize) {
+  const Eigen::VectorXd state = filter.ekf_x();
+  if (state.size() != L3Estimation::EskfTarget::kStateSize) {
     predicted.center.setConstant(std::numeric_limits<double>::quiet_NaN());
     return predicted;
   }
@@ -78,13 +75,29 @@ constexpr double kPi = 3.14159265358979323846;
   predicted.yaw = state[L3Estimation::YAW];
   predicted.yaw_rate = state[L3Estimation::YAW_RATE];
   predicted.radius = state[L3Estimation::RADIUS];
-  predicted.radius_offset = state[L3Estimation::RADIUS_OFFSET];
-  predicted.height_offset = state[L3Estimation::HEIGHT_OFFSET];
-  if (predicted.armor_count == 3) {
-    predicted.three_armor_height_offsets = {0.0, state[11], state[12]};
+  if (predicted.armor_count == 4) {
+    predicted.radius_offset = state[9] - state[8];
+    predicted.height_offset = state[10];
+  } else {
+    predicted.radius_offset = 0.0;
+    predicted.height_offset = 0.0;
+    predicted.three_armor_height_offsets = {0.0, state[9], state[10]};
   }
-  predicted.covariance = covariance.topLeftCorner<
-    L3Estimation::STATE_DIM, L3Estimation::STATE_DIM>();
+  Eigen::Matrix<double, L3Estimation::STATE_DIM,
+                L3Estimation::EskfTarget::kStateSize> jacobian =
+    Eigen::Matrix<double, L3Estimation::STATE_DIM,
+                  L3Estimation::EskfTarget::kStateSize>::Zero();
+  for (int index = 0; index < 8; ++index) {
+    jacobian(index, index) = 1.0;
+  }
+  jacobian(L3Estimation::RADIUS, 8) = state[8];
+  if (predicted.armor_count == 4) {
+    jacobian(L3Estimation::RADIUS_OFFSET, 8) = -state[8];
+    jacobian(L3Estimation::RADIUS_OFFSET, 9) = state[9];
+    jacobian(L3Estimation::HEIGHT_OFFSET, 10) = 1.0;
+  }
+  predicted.covariance =
+    jacobian * filter.covariance() * jacobian.transpose();
   predicted.timestamp = prediction_time;
   predicted.filter_state = std::move(filter);
   return predicted;
@@ -99,17 +112,11 @@ L3Estimation::TargetState Predictor::predict(const L3Estimation::TargetState& ta
     return predicted;
   }
 
-  if (predicted.filter_state && dt >= 0.0) {
+  if (predicted.filter_state) {
     const auto prediction_time = target.timestamp +
       std::chrono::duration_cast<TimePoint::duration>(
         std::chrono::duration<double>(dt));
     return predictFilter(target, prediction_time);
-  }
-
-  // TinyMPC 的居中轨迹需要回推到观测之前。回推不使用 EKF 过程噪声，
-  // 否则负 dt 会生成负的协方差项；随后沿用数值状态向前采样。
-  if (dt < 0.0) {
-    predicted.filter_state.reset();
   }
 
   // 与 L3 EKF 相同的匀速、匀角速度状态转移模型。
@@ -160,6 +167,27 @@ PredictionResult Predictor::predict(const PredictionRequest& request) const
 
   result.armor_candidates.reserve(
     static_cast<std::size_t>(result.predicted_vehicle.armor_count));
+
+  // The new L3 filter models the complete SO(3) vehicle pose.  Keep the
+  // Bruce0178 candidate selection/window policy, but feed it armor poses from
+  // that model instead of flattening roll/pitch back into the legacy yaw-only
+  // geometry.  A short deterministic look-ahead supplies the per-armor
+  // velocity used by the existing selector.
+  std::vector<Eigen::Vector4d> filter_armors;
+  std::vector<Eigen::Vector4d> filter_armors_next;
+  constexpr double kVelocitySampleSeconds = 1.0e-3;
+  if (result.predicted_vehicle.filter_state) {
+    filter_armors =
+      result.predicted_vehicle.filter_state->armor_xyza_list();
+    auto next_filter = *result.predicted_vehicle.filter_state;
+    next_filter.predict(kVelocitySampleSeconds);
+    filter_armors_next = next_filter.armor_xyza_list();
+  }
+  const bool use_filter_geometry =
+    filter_armors.size() ==
+      static_cast<std::size_t>(result.predicted_vehicle.armor_count)
+    && filter_armors_next.size() == filter_armors.size();
+
   for (int armor_id = 0;
        armor_id < result.predicted_vehicle.armor_count;
        ++armor_id) {
@@ -178,6 +206,22 @@ PredictionResult Predictor::predict(const PredictionRequest& request) const
     armor.robot_id = result.predicted_vehicle.robot_id;
     armor.armor_id = armor_id;
     armor.armor_type = armorTypeForRobot(armor.robot_id);
+
+    if (use_filter_geometry) {
+      const auto index = static_cast<std::size_t>(armor_id);
+      armor.position_world = filter_armors[index].head<3>();
+      armor.velocity_world =
+        (filter_armors_next[index].head<3>() - armor.position_world)
+        / kVelocitySampleSeconds;
+      armor.yaw_world = filter_armors[index].w();
+      armor.timestamp = request.target_time;
+      armor.valid = armor.position_world.allFinite()
+                    && armor.velocity_world.allFinite()
+                    && std::isfinite(armor.yaw_world);
+      result.armor_candidates.push_back(armor);
+      continue;
+    }
+
     // L3 的 yaw 指向“装甲板到车辆中心”，因此装甲板位置为 center-r*n。
     const double height_offset = result.predicted_vehicle.armor_count == 3
       ? result.predicted_vehicle.three_armor_height_offsets[

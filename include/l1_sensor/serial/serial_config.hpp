@@ -18,6 +18,8 @@ struct SerialConfig {
   int reconnect_interval_ms = 500;
   std::size_t rx_buffer_size = 256;
   bool packet_loss_check_enable = true;
+  // 图像到手后等待其后一包姿态到齐的最长时间；随后才能做前后插值。
+  int pose_wait_ms = 20;
 
   // 电控固件支持后才能启用；默认保持现场使用的角度帧格式。
   bool command_feedforward = false;

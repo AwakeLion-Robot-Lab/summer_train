@@ -1,8 +1,10 @@
 #pragma once
 
 #include "l2_perception/armor/armor_decoder.hpp"
-#include "l2_perception/armor/armor_refiner.hpp"
+#include "l2_perception/armor/light_detector.hpp"
+#include "l2_perception/armor/number_classifier.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
+#include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/types.hpp"
 #include "l5_control/fire_decision.hpp"
 
@@ -20,19 +22,26 @@ struct DebugConfig {
   // 每 N 帧画一次。画面只是用来目视对齐，不必每帧都画。
   int overlay_every{1};
 
-  // PlotJuggler 遥测。与叠加层分开开关：曲线是上车标定 send_to_control_ms
-  // 唯一的证据来源，而那台机器上没有显示器，overlay 必须是关的。
+  // PlotJuggler 遥测与 GUI 叠加层独立开关。
   bool plot{false};
   std::string plot_host{"127.0.0.1"};
   int plot_port{9870};
+
+  // 无视下位机上报的 WorkMode，强制按指定模式跑。空串表示不覆盖。
+  // 只用于电控还没接好模式切换、但视觉侧要先把链路跑通的场合。
+  // 这是**调试用的旁路**：正常比赛必须留空，由下位机决定何时进自瞄。
+  // 注意它不解除任何开火闸门，shoot_enable 和延迟链标定仍然各自独立生效。
   std::string force_work_mode{};
 };
 
-// 只负责 runtime 胶水层的相邻命令检查，不重复 L3/L4/L5 的业务参数。
+// runtime 胶水层只保留相邻控制命令的跳变保护；选板和开火规则仍由现有 L4/L5
+// 实现负责。
 struct RuntimeSafetyConfig {
   double command_jump_threshold{10.0 * std::numbers::pi / 180.0};
 };
 
+// inference.decoder 里显式写出的阈值。layout 为 auto 时预设要等模型加载、按
+// 输出形状认出来之后才定，阈值得在那之后覆盖上去，所以单独留一份。
 struct DecoderThresholds {
   std::optional<float> confidence_threshold;
   std::optional<float> minimum_confidence;
@@ -41,6 +50,7 @@ struct DecoderThresholds {
 };
 
 struct AutoAimConfig {
+  // 整板检测模型，输出契约由 decoder 的 layout 指定。
   std::filesystem::path model_path{"model/armor_model/yolov5.xml"};
   std::string inference_device{"CPU"};
   L2Perception::InferenceBackendKind inference_backend{
@@ -53,19 +63,22 @@ struct AutoAimConfig {
   // 打日志和选后端；其余的只在构造 Backend 时透传，所以整个结构体直接放这。
   L2Perception::InferenceModelConfig inference;
 
-  // 模型输出契约。和 model_path 是一对：换模型必须同时换契约，否则解码出的
-  // 是垃圾角点而不是报错。默认是 SP YOLOV5 的 [1, 25200, 22]。
+  // 整板模型的输出契约与筛选阈值（inference.decoder），输出形状在构造
+  // ArmorDetector 时核对。
   L2Perception::ArmorDecoderConfig decoder;
+  // layout: auto 时为 true：decoder 里的契约作废，makeDetector 按模型输出形状
+  // 选预设，再套上 decoder_thresholds。
   bool auto_layout{false};
   DecoderThresholds decoder_thresholds;
+  // 侧边灯条：传统二值化检测的门限与判色阈值。这一路不走网络。
+  L2Perception::LightFinderConfig light_finder;
 
-  // 传统灯条精修：网络四点划 ROI，ROI 内跑传统灯条，端点足够近才覆盖网络角点。
-  // 角点抖动直接放大成 PnP 的 yaw 抖动，所以这几个数是要按场地光照调的。
-  L2Perception::ArmorRefinerConfig refiner;
+  // 数字二次分类：整板网络的类别在原图 ROI 上重判一次，判不准的板直接丢掉。
+  L2Perception::NumberClassifierConfig number_classifier;
 
   L3Estimation::ArmorConfig armor;
-  L3Estimation::TrackerConfig tracker;
-  L3Estimation::TargetConfig target;
+  L3Estimation::EskfTrackerConfig ieskf_tracker;
+  L3Estimation::EskfTargetConfig ieskf_target;
   L5Control::FireConfig fire;
   RuntimeSafetyConfig runtime;
   DebugConfig debug;
@@ -74,6 +87,7 @@ struct AutoAimConfig {
 // 缺失字段保留各层的安全默认值；特别是 shoot_enable 默认为 false。
 [[nodiscard]] AutoAimConfig loadAutoAimConfig(const std::string& path);
 
+// 把写了的阈值盖到 decoder 上。越界的值（不在 [0, 1]）丢掉、保留预设的。
 void applyThresholds(
   const DecoderThresholds& thresholds, L2Perception::ArmorDecoderConfig& decoder);
 

@@ -4,8 +4,7 @@
 #include "l1_sensor/serial/serial_worker.hpp"
 #include "l2_perception/armor.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
-#include "l2_perception/inference/inference_backend.hpp"
-#include "l3_estimation/armor/tracker.hpp"
+#include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l4_planning/planner.hpp"
 #include "l4_planning/planner_config.hpp"
 #include "l5_control/controller.hpp"
@@ -14,6 +13,7 @@
 #include "l6_telemetry/math.hpp"
 #include "l6_telemetry/udp_json_sender.hpp"
 #include "runtime/auto_aim_config.hpp"
+#include "runtime/armor_detector_factory.hpp"
 #include "runtime/l4_target_adapter.hpp"
 #include <opencv2/opencv.hpp>
 
@@ -47,6 +47,20 @@ bool isEnemyArmor(L2Perception::ArmorColor observed,
   return false;
 }
 
+L2Perception::ArmorColor enemyArmorColor(
+  L1Sensor::EnemyColor expected) noexcept
+{
+  switch (expected) {
+  case L1Sensor::EnemyColor::Red:
+    return L2Perception::ArmorColor::Red;
+  case L1Sensor::EnemyColor::Blue:
+    return L2Perception::ArmorColor::Blue;
+  case L1Sensor::EnemyColor::Unknown:
+    return L2Perception::ArmorColor::Unknown;
+  }
+  return L2Perception::ArmorColor::Unknown;
+}
+
 std::optional<L1Sensor::WorkMode> parseWorkMode(const std::string& name)
 {
   if (name.empty()) return std::nullopt;
@@ -65,46 +79,12 @@ L2Perception::ArmorDetector makeArmorDetector(
   const runtime::AutoAimConfig& config)
 {
   try {
-    auto backend = L2Perception::makeInferenceBackend(config.inference_backend);
-    // 模型路径、设备、颜色顺序、归一化以及后端调度参数全部来自 auto_aim.yaml
-    // 的 inference 节点，loadAutoAimConfig 已经把 model_path/device 回填进去。
-    // 宿主输入恒为 uint8 NHWC BGR；颜色和归一化转换由具体后端完成。
-    L2Perception::InferenceModelConfig model_config = config.inference;
-    try {
-      backend->load(model_config);
-    } catch (const std::exception& error) {
-      const bool retry =
-        config.inference_backend == L2Perception::InferenceBackendKind::OpenVino &&
-        !model_config.device.starts_with("CPU");
-      if (!retry) throw;
-      L6Telemetry::logWarn(
-        "armor model failed on", model_config.device, error.what(), "; falling back to CPU");
-      model_config.device = "CPU";
-      backend->load(model_config);
-    }
-
-    L2Perception::ArmorDecoderConfig decoder = config.decoder;
-    if (config.auto_layout) {
-      decoder = L2Perception::armorDecoderConfigFor(L2Perception::probeOutputSpecs(*backend));
-      runtime::applyThresholds(config.decoder_thresholds, decoder);
-    }
-    const bool yolov8 =
-      decoder.contract.tensor_layout == L2Perception::ArmorTensorLayout::FieldsByCandidates;
-
-    L6Telemetry::logInfo(
-      "armor model loaded",
-      std::string{L2Perception::inferenceBackendName(config.inference_backend)},
-      config.model_path.string(), model_config.device,
-      "layout", yolov8 ? "yolov8_21" : "yolov5_22", config.auto_layout ? "(auto)" : "(yaml)",
-      "output", decoder.contract.output_name, "conf", decoder.confidence_threshold);
-    return L2Perception::ArmorDetector(
-      std::move(backend), decoder, L2Perception::ImagePreprocessConfig{},
-      config.refiner);
+    return runtime::makeDetector(config);
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
     L6Telemetry::logError(
       "armor model unavailable",
-      std::string{L2Perception::inferenceBackendName(config.inference_backend)},
+      std::string{L2Perception::backendName(config.inference_backend)},
       config.model_path.string(), error.what());
     return {};
   }
@@ -117,7 +97,7 @@ nlohmann::json telemetryFrame(
   const std::optional<Eigen::Quaterniond>& q_world_barrel,
   const L1Sensor::RobotState& state,
   const std::vector<L3Estimation::Armor>& observations,
-  const std::optional<L3Estimation::TrackedTarget>& target,
+  const std::optional<L3Estimation::EskfTarget>& target,
   L3Estimation::TrackState track_state,
   const L4Planning::AimPlan& plan,
   const L5Control::FireDecision& fire,
@@ -166,9 +146,9 @@ void AutoAimRuntime::run() {
   if (!serial_started && serial_config.enable) {
     L6Telemetry::logWarn("Failed to start serial worker.");
   }
-  // L3 Tracker 持有 PnP 和 EKF。标定缺失时 runtime 继续运行检测和显示，
+  // L3 EskfTracker 持有初始化 PnP 与整车 IESKF。标定缺失时继续运行检测，
   // 但后续不得生成有效瞄准/开火命令。
-  std::optional<L3Estimation::Tracker> tracker;
+  std::optional<L3Estimation::EskfTracker> tracker;
   const auto& camera_calibration = camera->calibration();
   if (!camera_calibration) {
     L6Telemetry::logWarn("Tracker disabled: camera calibration is missing");
@@ -176,8 +156,8 @@ void AutoAimRuntime::run() {
     tracker.emplace(
       *camera_calibration,
       auto_aim_config.armor,
-      auto_aim_config.tracker,
-      auto_aim_config.target);
+      auto_aim_config.ieskf_tracker,
+      auto_aim_config.ieskf_target);
     if (tracker->ready()) {
       L6Telemetry::logInfo("L3 tracker configured");
     } else {
@@ -277,71 +257,103 @@ void AutoAimRuntime::run() {
       const L1Sensor::WorkMode mode = forced_mode.value_or(state->mode);
       switch (mode) {
         case L1Sensor::WorkMode::AutoAim:
-        case L1Sensor::WorkMode::Outpost: {
+        case L1Sensor::WorkMode::Outpost:
+        case L1Sensor::WorkMode::Idle: {
+          const bool aiming = mode != L1Sensor::WorkMode::Idle;
+          // 等图像之后的姿态包到齐，再用前后两包插值，避免转动中把最新姿态
+          // 当作曝光时刻姿态。
+          if (!serial.waitPose(timestamp)) {
+            L6Telemetry::logDebug("gimbal pose wait timeout");
+          }
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 
-          // L2: 检测并保留敌方装甲板。
-          auto armors = armor_detector.detect(frame);
-          std::erase_if(armors, [&state](const auto& armor) {
-            return !isEnemyArmor(armor.color, state->enemy_color);
-          });
-
-          // L3: PnP、状态机与整车 EKF。
-          std::optional<L3Estimation::TrackedTarget> target;
+          // L2: 用上一帧整车状态生成网络 ROI 和侧灯条 ROI；Lost 时网络 ROI
+          // 自动退化为整图。侧灯条作为额外端点观测交给 IESKF。
+          std::optional<cv::Rect> light_roi;
+          std::optional<cv::Rect> net_roi;
+          std::vector<L2Perception::LightHint> light_hints;
           if (tracker && tracker->ready()) {
-            target = tracker->track(armors, image_pose, timestamp);
+            light_roi = tracker->lightRoi(image_pose, timestamp, frame.size());
+            light_hints = tracker->lightHints(image_pose, timestamp);
+            net_roi = tracker->netFocusRoi(
+              image_pose, timestamp, frame.size(),
+              armor_detector.net_aspect_ratio());
+          }
+          const auto detect = [&](const std::optional<cv::Rect>& roi) {
+            auto result = armor_detector.detectFrame(
+              frame, light_roi, roi,
+              enemyArmorColor(state->enemy_color),
+              light_hints);
+            std::erase_if(result.armors, [&state](const auto& armor) {
+              return !isEnemyArmor(armor.color, state->enemy_color);
+            });
+            return result;
+          };
+          auto perception = detect(net_roi);
+          if (tracker && tracker->ready()) {
+            if (const auto init_roi = tracker->initRoi(
+                  perception.armors, image_pose, timestamp, frame.size(),
+                  armor_detector.net_aspect_ratio())) {
+              auto refined = detect(*init_roi);
+              if (!refined.armors.empty()) {
+                perception = std::move(refined);
+              }
+            }
+          }
+
+          // L3: 完整板与独立灯条联合关联，更新整车 IESKF。
+          std::optional<L3Estimation::EskfTarget> target;
+          if (tracker && tracker->ready()) {
+            target = tracker->track(
+              perception.armors, perception.lights, image_pose, timestamp);
           }
           const auto track_state = tracker
             ? tracker->state()
             : L3Estimation::TrackState::Lost;
 
-          // 规划与开火判定使用推理结束时刻。
-          const auto plan_time = std::chrono::steady_clock::now();
-          const auto actual_pose = serial.latestGimbalPose();
-
-          // L4: 预测命中时刻、选板并解算弹道。
-          planner_context.planning_time = plan_time;
-          auto planning_state = *state;
-          planning_state.timestamp = plan_time;
-          const bool mcu_bullet_speed_valid =
-            std::isfinite(state->bullet_speed) && state->bullet_speed > 0.0;
-          if (!mcu_bullet_speed_valid) {
-            planning_state.bullet_speed = planner_tuning.default_bullet_speed;
-            if (!using_default_bullet_speed) {
-              L6Telemetry::logWarn(
-                "invalid MCU bullet speed", state->bullet_speed,
-                "; using configured fallback for tracking and firing",
-                planner_tuning.default_bullet_speed, "m/s");
+          L4Planning::AimPlan plan;
+          std::optional<L5Control::SerialCommand> command;
+          if (aiming) {
+            // L4/L5 保留 Bruce0178 分支现有实现：动态窗口选板、弹道迭代与
+            // 开火闸门均不被目标分支覆盖。
+            const auto plan_time = std::chrono::steady_clock::now();
+            const auto actual_pose = serial.gimbalPoseAt(plan_time);
+            planner_context.planning_time = plan_time;
+            auto planning_state = *state;
+            planning_state.timestamp = plan_time;
+            const bool mcu_bullet_speed_valid =
+              std::isfinite(state->bullet_speed) && state->bullet_speed > 0.0;
+            if (!mcu_bullet_speed_valid) {
+              planning_state.bullet_speed = planner_tuning.default_bullet_speed;
+              if (!using_default_bullet_speed) {
+                L6Telemetry::logWarn(
+                  "invalid MCU bullet speed", state->bullet_speed,
+                  "; using configured fallback for tracking and firing",
+                  planner_tuning.default_bullet_speed, "m/s");
+              }
+            } else if (using_default_bullet_speed) {
+              L6Telemetry::logInfo(
+                "MCU bullet speed recovered", state->bullet_speed, "m/s");
             }
-          } else if (using_default_bullet_speed) {
-            L6Telemetry::logInfo(
-              "MCU bullet speed recovered", state->bullet_speed, "m/s");
-          }
-          using_default_bullet_speed = !mcu_bullet_speed_valid;
-          // PlannerTuning validation guarantees that the configured fallback is
-          // a finite positive speed. L5 gates on the effective planning speed,
-          // so a valid fallback may be used for both tracking and firing.
-          const bool effective_bullet_speed_valid =
-            std::isfinite(planning_state.bullet_speed)
-            && planning_state.bullet_speed > 0.0;
-          const auto plan = planner.plan(
-            toL4TargetState(target), planning_state, planner_context);
-          if (!plan.valid) {
-            ++plan_reject_count;
-          }
-
-          // L5: 开火判定、命令跳变检查和安全保持。
-          const auto command = controller.update(
-            target,
-            track_state,
-            plan,
-            actual_pose,
-            effective_bullet_speed_valid);
-
-          // L1: 下发 L5 生成的控制命令，并量出本帧规划到发送的耗时，
-          // 供下一帧的延迟链使用。
-          if (command) {
-            serial.updateCommand(*command);
+            using_default_bullet_speed = !mcu_bullet_speed_valid;
+            const bool effective_bullet_speed_valid =
+              std::isfinite(planning_state.bullet_speed) &&
+              planning_state.bullet_speed > 0.0;
+            plan = planner.plan(
+              toL4TargetState(target), planning_state, planner_context);
+            if (!plan.valid) {
+              ++plan_reject_count;
+            }
+            command = controller.update(
+              target, track_state, plan, actual_pose,
+              effective_bullet_speed_valid);
+            if (command) {
+              serial.updateCommand(*command);
+            }
+          } else {
+            // Idle 继续预热识别与预测，但不运行选板、不输出开火命令。
+            planner.resetTracking();
+            sendSafeHold();
           }
 
           // 规划到发送的实测耗时必须在 updateCommand 之后**立刻**取。
@@ -350,24 +362,20 @@ void AutoAimRuntime::run() {
           /*************************** debug ****************************/
           // 全部排在命令下发和延迟测量之后，不占用瞄准链路的时间预算。
           if (plotter) {
-            // 三目里直接放 observations() 会按值合成公共类型，等于每帧拷一份
-            // 整个 vector；用一个空的静态量接住 tracker 为空的分支。
             static const std::vector<L3Estimation::Armor> kNoObservations;
-            const auto& observations =
-              tracker ? tracker->observations() : kNoObservations;
             (void)plotter->send(telemetryFrame(
-              image_pose, *state, observations, target, track_state, plan,
+              image_pose, *state, kNoObservations, target, track_state, plan,
               controller.lastDecision(), command.has_value(), serial, timestamp,
-              tracker ? tracker->detectCount() : 0,
-              tracker ? tracker->resetCount() : 0, plan_reject_count));
+              tracker ? tracker->lastMatchCount() : 0,
+              tracker ? tracker->dropCount() : 0, plan_reject_count));
           }
           if (overlay_solver && tracker &&
               frame_index % auto_aim_config.debug.overlay_every == 0) {
             overlay_solver->set_R_world_barrel(image_pose);
             L6Telemetry::drawAimOverlay(
               frame,
-              {.detections = armors,
-               .observations = tracker->observations(),
+              {.detections = perception.armors,
+               .observations = {},
                .target = target,
                .track_state = track_state,
                .plan = plan,
@@ -389,7 +397,6 @@ void AutoAimRuntime::run() {
           stopAimSession();
           break;
 
-        case L1Sensor::WorkMode::Idle:
         default:
           stopAimSession();
           break;
@@ -449,7 +456,7 @@ nlohmann::json telemetryFrame(
   const std::optional<Eigen::Quaterniond>& q_world_barrel,
   const L1Sensor::RobotState& state,
   const std::vector<L3Estimation::Armor>& observations,
-  const std::optional<L3Estimation::TrackedTarget>& target,
+  const std::optional<L3Estimation::EskfTarget>& target,
   L3Estimation::TrackState track_state,
   const L4Planning::AimPlan& plan,
   const L5Control::FireDecision& fire,
@@ -486,8 +493,8 @@ nlohmann::json telemetryFrame(
   // track: 状态机与本帧真正进滤波器的观测数量。
   data["track"]["state"] = static_cast<int>(track_state);
   data["track"]["n_obs"] = static_cast<int>(observations.size());
-  data["track"]["detect_count"] = detect_count;
-  data["track"]["resets"] = tracker_resets;
+  data["track"]["match_count"] = detect_count;
+  data["track"]["drops"] = tracker_resets;
   data["aim"]["rejects"] = plan_rejects;
 
   // obs: 单板 PnP 的原始观测。固定取图像最左的一块——多板时若按检测顺序取，
@@ -509,8 +516,7 @@ nlohmann::json telemetryFrame(
     data["obs"]["reproj_err"] = leftmost->reprojection_error;
   }
 
-  // ekf: 整车状态全 13 维，加一致性统计。下标顺序见 TrackedTarget::kStateSize
-  // 的注释，前十一维不可改。
+  // ekf: 目标提交的十三维误差状态整车模型。
   if (target) {
     const Eigen::VectorXd x = target->ekf_x();
     data["ekf"]["x"] = x[0];
@@ -522,23 +528,21 @@ nlohmann::json telemetryFrame(
     data["ekf"]["a"] = x[6] * kRadToDeg;
     data["ekf"]["w"] = x[7];
     data["ekf"]["r"] = x[8];
-    data["ekf"]["dr"] = x[9];
-    data["ekf"]["dz"] = x[10];
-    data["ekf"]["dz1"] = x[11];
-    data["ekf"]["dz2"] = x[12];
+    data["ekf"]["r2_or_dz1"] = x[9];
+    data["ekf"]["height_or_dz2"] = x[10];
+    data["ekf"]["rot_y"] = target->rawState()[11] * kRadToDeg;
+    data["ekf"]["rot_x"] = target->rawState()[12] * kRadToDeg;
     data["ekf"]["last_id"] = target->last_id;
     data["ekf"]["jumped"] = target->jumped ? 1 : 0;
 
-    // 残差按分量发。只发一个 NIS 标量的话，超标时无法定位是哪一维在超。
-    const auto& ekf_data = target->ekf().data;
-    data["ekf"]["res_yaw"] = ekf_data.at("residual_yaw");
-    data["ekf"]["res_pitch"] = ekf_data.at("residual_pitch");
-    data["ekf"]["res_distance"] = ekf_data.at("residual_distance");
-    data["ekf"]["res_angle"] = ekf_data.at("residual_angle");
-    data["ekf"]["nis"] = ekf_data.at("nis");
-    data["ekf"]["nees"] = ekf_data.at("nees");
-    data["ekf"]["nis_fail"] = ekf_data.at("nis_fail");
-    data["ekf"]["nis_fail_rate"] = ekf_data.at("recent_nis_failures");
+    const auto& residual = target->lastLightResidual();
+    data["ekf"]["nis"] = target->lastNis();
+    data["ekf"]["nis_dof"] = target->lastNisDof();
+    data["ekf"]["lights"] = residual.light_count;
+    data["ekf"]["res_shift_perp"] = residual.shift_perp.mean;
+    data["ekf"]["res_shift_along"] = residual.shift_along.mean;
+    data["ekf"]["res_tilt"] = residual.tilt.mean;
+    data["ekf"]["res_length"] = residual.length.mean;
   }
 
   // aim: L4 规划出的云台目标姿态。**与 gimbal/ 分开**，两者同图即跟随误差。

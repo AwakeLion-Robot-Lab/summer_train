@@ -43,7 +43,7 @@ Controller::Controller(
 }
 
 std::optional<SerialCommand> Controller::update(
-  const std::optional<L3Estimation::TrackedTarget>& target,
+  const std::optional<L3Estimation::EskfTarget>& target,
   L3Estimation::TrackState track_state,
   const L4Planning::AimPlan& plan,
   const std::optional<Eigen::Quaterniond>& actual_pose,

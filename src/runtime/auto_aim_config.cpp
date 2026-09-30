@@ -11,7 +11,6 @@
 #include <numbers>
 #include <stdexcept>
 #include <string>
-#include <utility>
 
 namespace runtime {
 namespace {
@@ -33,6 +32,7 @@ void readValue(
   }
 }
 
+// 可选项只在键存在且能解析时赋值，“没写”和“写了”要分得开。
 void readValue(const YAML::Node& section, const char* key, std::optional<float>& value)
 {
   if (!section || !section[key]) {
@@ -46,14 +46,14 @@ void readValue(const YAML::Node& section, const char* key, std::optional<float>&
   }
 }
 
-void readMilliseconds(
+void readMillisecondsAsSeconds(
   const YAML::Node& section,
   const char* key,
-  std::chrono::milliseconds& value)
+  double& seconds)
 {
-  int milliseconds = static_cast<int>(value.count());
+  double milliseconds = seconds * 1e3;
   readValue(section, key, milliseconds);
-  value = std::chrono::milliseconds{milliseconds};
+  seconds = milliseconds * 1e-3;
 }
 
 void readDegrees(
@@ -66,9 +66,35 @@ void readDegrees(
   radians = degrees * std::numbers::pi / 180.0;
 }
 
+void readVector3(
+  const YAML::Node& section,
+  const char* key,
+  Eigen::Vector3d& value)
+{
+  if (!section || !section[key]) {
+    return;
+  }
+  try {
+    const YAML::Node vector = section[key];
+    if (!vector.IsSequence() || vector.size() != 3) {
+      throw std::runtime_error("expected a three-element sequence");
+    }
+    Eigen::Vector3d parsed;
+    parsed << vector[0].as<double>(), vector[1].as<double>(), vector[2].as<double>();
+    value = parsed;
+  } catch (const std::exception& error) {
+    L6Telemetry::logWarn("auto-aim config invalid field", key, error.what());
+  }
+}
+
 bool positiveFinite(double value) noexcept
 {
   return std::isfinite(value) && value > 0.0;
+}
+
+bool nonNegativeFinite(double value) noexcept
+{
+  return std::isfinite(value) && value >= 0.0;
 }
 
 void normalize(AutoAimConfig& config)
@@ -83,76 +109,177 @@ void normalize(AutoAimConfig& config)
   if (!positiveFinite(config.armor.height)) {
     config.armor.height = armor_defaults.height;
   }
-  if (!positiveFinite(config.armor.corner_noise_px)) {
-    config.armor.corner_noise_px = armor_defaults.corner_noise_px;
+
+  // L2 阈值越界不会报错，只会静默失效：颜色比 <= 1 会让红蓝判定区间重叠。
+  // 整板模型的置信度阈值在 applyThresholds 里挡。
+  const L2Perception::LightFinderConfig light_finder_defaults;
+  if (!(config.light_finder.binary_threshold > 0 && config.light_finder.binary_threshold < 255)) {
+    config.light_finder.binary_threshold = light_finder_defaults.binary_threshold;
+  }
+  if (!(config.light_finder.color_diff_threshold > 0 &&
+        config.light_finder.color_diff_threshold < 255)) {
+    config.light_finder.color_diff_threshold = light_finder_defaults.color_diff_threshold;
+  }
+  if (!(config.light_finder.min_ratio >= 0.0F &&
+        config.light_finder.min_ratio < config.light_finder.max_ratio &&
+        config.light_finder.max_ratio <= 1.0F)) {
+    config.light_finder.min_ratio = light_finder_defaults.min_ratio;
+    config.light_finder.max_ratio = light_finder_defaults.max_ratio;
+  }
+  if (!(config.light_finder.max_angle_deg > 0.0F && config.light_finder.max_angle_deg <= 90.0F)) {
+    config.light_finder.max_angle_deg = light_finder_defaults.max_angle_deg;
+  }
+  if (!(std::isfinite(config.light_finder.min_length) && config.light_finder.min_length >= 0.0F)) {
+    config.light_finder.min_length = light_finder_defaults.min_length;
+  }
+  // 判重半径不能大到把同一块板的两根灯条并掉。
+  // 外扩太大会把相邻板的灯条也当成已检出板的（3 m 处两者相距约 4 倍灯长）。
+  if (!(config.light_finder.armor_margin >= 0.0F && config.light_finder.armor_margin < 2.0F)) {
+    config.light_finder.armor_margin = light_finder_defaults.armor_margin;
+  }
+  if (!(std::isfinite(config.light_finder.color_ratio_threshold) &&
+        config.light_finder.color_ratio_threshold > 1.0)) {
+    config.light_finder.color_ratio_threshold = light_finder_defaults.color_ratio_threshold;
   }
 
-  config.tracker.min_detect_count =
-    std::max(config.tracker.min_detect_count, 1);
-  config.tracker.max_frame_interval = std::max(
-    config.tracker.max_frame_interval, std::chrono::milliseconds{1});
-  config.tracker.max_temp_lost_count =
-    std::max(config.tracker.max_temp_lost_count, 0);
-  config.tracker.outpost_max_temp_lost_count =
-    std::max(config.tracker.outpost_max_temp_lost_count, 0);
-
-  // 精修参数越界会让它静默失效（阈值 255 时二值图全黑，一块灯条也找不到）
-  // 或者全盘接受（端点距离无穷大时任何传统解都覆盖网络角点），都不会报错。
-  const L2Perception::ArmorRefinerConfig refiner_defaults;
-  if (!(config.refiner.binary_threshold > 0.0 &&
-        config.refiner.binary_threshold < 255.0)) {
-    config.refiner.binary_threshold = refiner_defaults.binary_threshold;
+  // 剖面搜索的几个量都必须为正：半宽或外扩为 0 时搜不到任何东西，却不会报错，
+  // 看起来就像侧边灯条这一路"没收益"。
+  auto & finder = config.light_finder;
+  if (!(positiveFinite(finder.profile_half_width_ratio) &&
+        positiveFinite(finder.profile_half_width_min_px))) {
+    finder.profile_half_width_ratio = light_finder_defaults.profile_half_width_ratio;
+    finder.profile_half_width_min_px = light_finder_defaults.profile_half_width_min_px;
   }
-  if (!positiveFinite(config.refiner.min_lightbar_length_px)) {
-    config.refiner.min_lightbar_length_px = refiner_defaults.min_lightbar_length_px;
+  if (!positiveFinite(finder.profile_extend_ratio)) {
+    finder.profile_extend_ratio = light_finder_defaults.profile_extend_ratio;
   }
-  if (!positiveFinite(config.refiner.max_endpoint_distance_px)) {
-    config.refiner.max_endpoint_distance_px = refiner_defaults.max_endpoint_distance_px;
+  if (!(finder.profile_min_contrast > 0.0F && finder.profile_min_contrast < 255.0F)) {
+    finder.profile_min_contrast = light_finder_defaults.profile_min_contrast;
   }
-  if (!(config.refiner.min_lightbar_ratio > 0.0F &&
-        config.refiner.min_lightbar_ratio < config.refiner.max_lightbar_ratio)) {
-    config.refiner.min_lightbar_ratio = refiner_defaults.min_lightbar_ratio;
-    config.refiner.max_lightbar_ratio = refiner_defaults.max_lightbar_ratio;
+  if (!(finder.profile_saturation > 0.0F && finder.profile_saturation <= 255.0F)) {
+    finder.profile_saturation = light_finder_defaults.profile_saturation;
   }
-  if (!(config.refiner.max_angle_error_deg > 0.0F &&
-        config.refiner.max_angle_error_deg <= 90.0F)) {
-    config.refiner.max_angle_error_deg = refiner_defaults.max_angle_error_deg;
+  if (!(finder.profile_diff_gain > 0.0F && finder.profile_diff_gain <= 1.0F)) {
+    finder.profile_diff_gain = light_finder_defaults.profile_diff_gain;
+  }
+  // 端点门槛低于拟合用的半高会把光晕行算进灯条，到 1 则一格都走不出去。
+  if (!(finder.profile_end_level >= 0.5F && finder.profile_end_level < 1.0F)) {
+    finder.profile_end_level = light_finder_defaults.profile_end_level;
+  }
+  if (!positiveFinite(finder.profile_max_residual_px)) {
+    finder.profile_max_residual_px = light_finder_defaults.profile_max_residual_px;
   }
 
-  // 噪声为零或负会让 EKF 的增益直接发散，越界一律退回默认。
-  const L3Estimation::TargetConfig target_defaults;
-  for (const auto & [value, fallback] : {
-         std::pair{&config.target.q_translation, target_defaults.q_translation},
-         std::pair{&config.target.q_rotation, target_defaults.q_rotation},
-         std::pair{&config.target.outpost_q_translation, target_defaults.outpost_q_translation},
-         std::pair{&config.target.outpost_q_rotation, target_defaults.outpost_q_rotation},
-         std::pair{&config.target.angle_variance, target_defaults.angle_variance},
-         std::pair{&config.target.distance_variance_factor,
-                   target_defaults.distance_variance_factor},
-         std::pair{&config.target.armor_yaw_variance_base,
-                   target_defaults.armor_yaw_variance_base},
-         std::pair{&config.target.armor_yaw_distance_divisor,
-                   target_defaults.armor_yaw_distance_divisor}}) {
+  const L2Perception::NumberClassifierConfig number_defaults;
+  // 置信度门限落到 [0, 1] 外等于放弃这道筛选或全盘拒绝，两种都不是想要的。
+  if (!(config.number_classifier.min_confidence >= 0.0 &&
+        config.number_classifier.min_confidence <= 1.0)) {
+    config.number_classifier.min_confidence = number_defaults.min_confidence;
+  }
+  if (!positiveFinite(config.number_classifier.large_center_distance_ratio)) {
+    config.number_classifier.large_center_distance_ratio =
+      number_defaults.large_center_distance_ratio;
+  }
+
+  // 整车 IESKF：状态机按真实时间计，过程噪声在车体系表达，端点观测的噪声
+  // 是 sigma（px）而非方差。
+  const L3Estimation::EskfTrackerConfig ieskf_tracker_defaults;
+  config.ieskf_tracker.tracking_thres =
+    std::max(config.ieskf_tracker.tracking_thres, 1);
+  if (!positiveFinite(config.ieskf_tracker.lost_time_thres)) {
+    config.ieskf_tracker.lost_time_thres = ieskf_tracker_defaults.lost_time_thres;
+  }
+  if (!positiveFinite(config.ieskf_tracker.lost_time_thres_outpost)) {
+    config.ieskf_tracker.lost_time_thres_outpost =
+      ieskf_tracker_defaults.lost_time_thres_outpost;
+  }
+  config.ieskf_tracker.lost_time_thres_outpost = std::max(
+    config.ieskf_tracker.lost_time_thres_outpost,
+    config.ieskf_tracker.lost_time_thres);
+  if (!positiveFinite(config.ieskf_tracker.max_frame_gap)) {
+    config.ieskf_tracker.max_frame_gap = ieskf_tracker_defaults.max_frame_gap;
+  }
+  if (!positiveFinite(config.ieskf_tracker.temp_lost_predict_time)) {
+    config.ieskf_tracker.temp_lost_predict_time =
+      ieskf_tracker_defaults.temp_lost_predict_time;
+  }
+
+  const L3Estimation::EskfTargetConfig ieskf_target_defaults;
+  config.ieskf_target.iteration_num = std::max(config.ieskf_target.iteration_num, 1);
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!positiveFinite(config.ieskf_target.noise.body_acceleration[axis])) {
+      config.ieskf_target.noise.body_acceleration[axis] =
+        ieskf_target_defaults.noise.body_acceleration[axis];
+    }
+    if (!positiveFinite(config.ieskf_target.noise.outpost_body_acceleration[axis])) {
+      config.ieskf_target.noise.outpost_body_acceleration[axis] =
+        ieskf_target_defaults.noise.outpost_body_acceleration[axis];
+    }
+  }
+  for (const auto& [value, fallback] : {
+         std::pair{&config.ieskf_target.noise.yaw_acceleration,
+                   ieskf_target_defaults.noise.yaw_acceleration},
+         std::pair{&config.ieskf_target.noise.outpost_yaw_acceleration,
+                   ieskf_target_defaults.noise.outpost_yaw_acceleration},
+         std::pair{&config.ieskf_target.noise.radius,
+                   ieskf_target_defaults.noise.radius},
+         std::pair{&config.ieskf_target.noise.height,
+                   ieskf_target_defaults.noise.height},
+         std::pair{&config.ieskf_target.noise.outpost_height,
+                   ieskf_target_defaults.noise.outpost_height},
+         std::pair{&config.ieskf_target.noise.roll_pitch,
+                   ieskf_target_defaults.noise.roll_pitch},
+         std::pair{&config.ieskf_target.sigma_min_px,
+                   ieskf_target_defaults.sigma_min_px},
+         std::pair{&config.ieskf_target.isolated_light_sigma_scale,
+                   ieskf_target_defaults.isolated_light_sigma_scale},
+         std::pair{&config.ieskf_target.armor_lights_depth_diff_sigma,
+                   ieskf_target_defaults.armor_lights_depth_diff_sigma},
+         std::pair{&config.ieskf_target.light_match_length_ratio_gate,
+                   ieskf_target_defaults.light_match_length_ratio_gate},
+         std::pair{&config.ieskf_target.light_match_angle_gate,
+                   ieskf_target_defaults.light_match_angle_gate},
+         std::pair{&config.ieskf_target.light_match_chi2_gate,
+                   ieskf_target_defaults.light_match_chi2_gate},
+         std::pair{&config.ieskf_target.match_gate,
+                   ieskf_target_defaults.match_gate},
+         std::pair{&config.ieskf_target.match_gate_not_all_init,
+                   ieskf_target_defaults.match_gate_not_all_init},
+         std::pair{&config.ieskf_target.initial_radius,
+                   ieskf_target_defaults.initial_radius},
+         std::pair{&config.ieskf_target.initial_radius_outpost,
+                   ieskf_target_defaults.initial_radius_outpost},
+         std::pair{&config.ieskf_target.initial_radius_base,
+                   ieskf_target_defaults.initial_radius_base}}) {
     if (!positiveFinite(*value)) {
       *value = fallback;
     }
   }
+  // 两个按长度缩放的系数允许取 0：此时 sigma 恒为 sigma_min_px，即 rmcs 的
+  // 常数 R，而 sigma_min_px 已保证为正，R 不会退化。
+  for (const auto& [value, fallback] : {
+         std::pair{&config.ieskf_target.sigma_along_by_length,
+                   ieskf_target_defaults.sigma_along_by_length},
+         std::pair{&config.ieskf_target.sigma_perp_by_length,
+                   ieskf_target_defaults.sigma_perp_by_length},
+         std::pair{&config.ieskf_target.match_chi2_gate,
+                   ieskf_target_defaults.match_chi2_gate},
+         std::pair{&config.ieskf_target.weight_center_error,
+                   ieskf_target_defaults.weight_center_error},
+         std::pair{&config.ieskf_target.weight_angle_error,
+                   ieskf_target_defaults.weight_angle_error},
+         std::pair{&config.ieskf_target.weight_side_length_error,
+                   ieskf_target_defaults.weight_side_length_error}}) {
+    if (!nonNegativeFinite(*value)) {
+      *value = fallback;
+    }
+  }
+  config.ieskf_target.match_gate_not_all_init = std::max(
+    config.ieskf_target.match_gate_not_all_init,
+    config.ieskf_target.match_gate);
+  // 端点观测和 PnP 必须引用同一套物理板尺寸。
+  config.ieskf_target.armor = config.armor;
 
-  // 标定值必须是正的有限数，否则当作没标定。
-  // 弹道参数越界都是静默失效：重力为负会解出朝天的仰角，阻力系数为负会让
-  // 等效距离随距离指数缩短（越远打得越准，明显是错的），max_pitch 超过 90°
-  // 则失去保护意义。三者任一非法就退回结构体默认值。
-
-  // 这一段**允许为负**。它名义上是"串口发出 -> 电控执行"的传输耗时，但实际
-  // 标出来的是把下位机自身的前馈也算进去之后的净值：电控如果自己做了预测，
-  // 净值就会是负的。rm.cv.fans 的实测配置就是 send-to-control = -18e-3。
-  // 早先这里强制非负，会把这类合法的标定结果静默丢回"未标定"，然后 L5 一直
-  // 以 delay_not_calibrated 拒绝开火，而标定的人看不出是被这行拒的。
-  //
-  // 仍然要挡的是量纲写错（本项是 ms，写成 s 会大 1000 倍）和非有限值，所以
-  // 保留 ±100 ms 的范围检查——真实的传输耗时不可能有这个量级。
-  // 注意范围检查只管这一段：五段加起来的 beforeFire() 若为负，说明标定本身
-  // 有问题，那是要在曲线上看出来的事，不该由加载器悄悄改掉。
   const L5Control::FireConfig fire_defaults;
   if (!positiveFinite(config.fire.armor_width_small)) {
     config.fire.armor_width_small = fire_defaults.armor_width_small;
@@ -174,15 +301,14 @@ void normalize(AutoAimConfig& config)
   if (!positiveFinite(config.fire.min_pitch_tolerance)) {
     config.fire.min_pitch_tolerance = fire_defaults.min_pitch_tolerance;
   }
-
-  config.debug.overlay_every = std::max(config.debug.overlay_every, 1);
-
   const RuntimeSafetyConfig runtime_defaults;
   if (!std::isfinite(config.runtime.command_jump_threshold) ||
       config.runtime.command_jump_threshold < 0.0) {
     config.runtime.command_jump_threshold =
       runtime_defaults.command_jump_threshold;
   }
+
+  config.debug.overlay_every = std::max(config.debug.overlay_every, 1);
 }
 
 }  // namespace
@@ -202,7 +328,7 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   } else {
     if (inference["backend"]) {
       const std::string name = inference["backend"].as<std::string>();
-      const auto backend = L2Perception::inferenceBackendFromString(name);
+      const auto backend = L2Perception::parseBackend(name);
       if (!backend) {
         throw std::runtime_error(
           "inference.backend must be 'openvino' or 'tensorrt'; got " + name);
@@ -263,30 +389,29 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
       throw std::runtime_error("inference.normalization_divisor must be positive");
     }
 
-    // auto layout waits for the loaded model's output shape before choosing a preset.
+    // 输出契约只能整组由 layout 选；阈值在预设之上覆盖，顺序不能反。auto 时
+    // 预设要等模型加载后才定，这里只记下来，makeDetector 再覆盖一次。
     const YAML::Node decoder = inference["decoder"];
-    if (decoder) {
-      if (decoder["layout"]) {
-        const std::string layout = decoder["layout"].as<std::string>();
-        if (layout == "auto") {
-          config.auto_layout = true;
-        } else {
-          const auto preset = L2Perception::armorDecoderPreset(layout);
-          if (!preset) {
-            throw std::runtime_error(
-              "inference.decoder.layout must be 'auto', 'yolov5_22' or 'yolov8_21'; got " +
-              layout);
-          }
-          config.decoder = *preset;
+    if (decoder && decoder["layout"]) {
+      const std::string layout = decoder["layout"].as<std::string>();
+      if (layout == "auto") {
+        config.auto_layout = true;
+      } else {
+        const auto preset = L2Perception::decoderPreset(layout);
+        if (!preset) {
+          throw std::runtime_error(
+            "inference.decoder.layout must be 'auto', 'yolov5_22' or 'yolov8_21'; got " +
+            layout);
         }
+        config.decoder = *preset;
       }
-      DecoderThresholds& thresholds = config.decoder_thresholds;
-      readValue(decoder, "confidence_threshold", thresholds.confidence_threshold);
-      readValue(decoder, "minimum_confidence", thresholds.minimum_confidence);
-      readValue(decoder, "nms_iou_threshold", thresholds.nms_iou_threshold);
-      readValue(decoder, "nms_score_threshold", thresholds.nms_score_threshold);
-      applyThresholds(thresholds, config.decoder);
     }
+    DecoderThresholds& thresholds = config.decoder_thresholds;
+    readValue(decoder, "confidence_threshold", thresholds.confidence_threshold);
+    readValue(decoder, "minimum_confidence", thresholds.minimum_confidence);
+    readValue(decoder, "nms_iou_threshold", thresholds.nms_iou_threshold);
+    readValue(decoder, "nms_score_threshold", thresholds.nms_score_threshold);
+    applyThresholds(thresholds, config.decoder);
   }
 
   // 三个单列字段是同一份配置的一部分，回填进去，构造 Backend 时只传一个结构体。
@@ -297,45 +422,132 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(armor, "small_width_m", config.armor.small_width);
   readValue(armor, "big_width_m", config.armor.big_width);
   readValue(armor, "height_m", config.armor.height);
-  readValue(armor, "corner_noise_px", config.armor.corner_noise_px);
 
-  const YAML::Node tracker = root["tracker"];
-  readValue(tracker, "min_detect_count", config.tracker.min_detect_count);
-  readMilliseconds(
-    tracker, "max_frame_interval_ms", config.tracker.max_frame_interval);
+  const YAML::Node light_finder = root["light_finder"];
+  readValue(light_finder, "binary_threshold", config.light_finder.binary_threshold);
+  readValue(light_finder, "color_channel_diff", config.light_finder.color_channel_diff);
+  readValue(light_finder, "color_diff_threshold", config.light_finder.color_diff_threshold);
+  readValue(light_finder, "min_ratio", config.light_finder.min_ratio);
+  readValue(light_finder, "max_ratio", config.light_finder.max_ratio);
+  readValue(light_finder, "max_angle_deg", config.light_finder.max_angle_deg);
+  readValue(light_finder, "min_length_px", config.light_finder.min_length);
+  readValue(light_finder, "armor_margin", config.light_finder.armor_margin);
   readValue(
-    tracker, "max_temp_lost_count", config.tracker.max_temp_lost_count);
+    light_finder, "color_ratio_threshold", config.light_finder.color_ratio_threshold);
+  if (light_finder && light_finder["search"]) {
+    const std::string search = light_finder["search"].as<std::string>();
+    if (search == "contour") {
+      config.light_finder.search = L2Perception::LightSearch::Contour;
+    } else if (search == "profile") {
+      config.light_finder.search = L2Perception::LightSearch::Profile;
+    } else {
+      L6Telemetry::logWarn(
+        "light_finder.search must be 'contour' or 'profile', keep default; got", search);
+    }
+  }
   readValue(
-    tracker,
-    "outpost_max_temp_lost_count",
-    config.tracker.outpost_max_temp_lost_count);
+    light_finder, "profile_half_width_ratio", config.light_finder.profile_half_width_ratio);
+  readValue(
+    light_finder, "profile_half_width_min_px", config.light_finder.profile_half_width_min_px);
+  readValue(light_finder, "profile_extend_ratio", config.light_finder.profile_extend_ratio);
+  readValue(light_finder, "profile_min_contrast", config.light_finder.profile_min_contrast);
+  readValue(light_finder, "profile_saturation", config.light_finder.profile_saturation);
+  readValue(light_finder, "profile_diff_gain", config.light_finder.profile_diff_gain);
+  readValue(light_finder, "profile_end_level", config.light_finder.profile_end_level);
+  readValue(
+    light_finder, "profile_max_residual_px", config.light_finder.profile_max_residual_px);
 
-  // 传统灯条精修。默认值来自 sp_vision 的 standard3.yaml，按场地光照调
-  // binary_threshold 是最常动的一个。
-  const YAML::Node refiner = root["refiner"];
-  readValue(refiner, "enable", config.refiner.enable);
-  readValue(refiner, "binary_threshold", config.refiner.binary_threshold);
-  readValue(refiner, "min_lightbar_length_px", config.refiner.min_lightbar_length_px);
-  readValue(refiner, "max_angle_error_deg", config.refiner.max_angle_error_deg);
-  readValue(refiner, "min_lightbar_ratio", config.refiner.min_lightbar_ratio);
-  readValue(refiner, "max_lightbar_ratio", config.refiner.max_lightbar_ratio);
-  readValue(
-    refiner, "max_endpoint_distance_px", config.refiner.max_endpoint_distance_px);
 
-  // EKF 噪声。回放标定的主要旋钮，改这些必须重跑 track_diag 看 NIS。
-  const YAML::Node estimator = root["estimator"];
-  readValue(estimator, "q_translation", config.target.q_translation);
-  readValue(estimator, "q_rotation", config.target.q_rotation);
-  readValue(estimator, "outpost_q_translation", config.target.outpost_q_translation);
-  readValue(estimator, "outpost_q_rotation", config.target.outpost_q_rotation);
-  readValue(estimator, "angle_variance", config.target.angle_variance);
-  readValue(estimator, "distance_variance_factor", config.target.distance_variance_factor);
-  readValue(estimator, "armor_yaw_variance_base", config.target.armor_yaw_variance_base);
+  const YAML::Node number_classifier = root["number_classifier"];
+  readValue(number_classifier, "enable", config.number_classifier.enable);
+  if (number_classifier && number_classifier["model_path"]) {
+    config.number_classifier.model_path = number_classifier["model_path"].as<std::string>();
+  }
+  if (number_classifier && number_classifier["label_path"]) {
+    config.number_classifier.label_path = number_classifier["label_path"].as<std::string>();
+  }
+  if (number_classifier && number_classifier["on_reject"]) {
+    const std::string policy = number_classifier["on_reject"].as<std::string>();
+    if (policy == "drop") {
+      config.number_classifier.on_reject = L2Perception::RejectPolicy::Drop;
+    } else if (policy == "keep") {
+      config.number_classifier.on_reject = L2Perception::RejectPolicy::Keep;
+    } else {
+      throw std::runtime_error(
+        "number_classifier.on_reject must be 'drop' or 'keep'; got " + policy);
+    }
+  }
+  readValue(number_classifier, "min_confidence", config.number_classifier.min_confidence);
   readValue(
-    estimator, "armor_yaw_distance_divisor", config.target.armor_yaw_distance_divisor);
+    number_classifier, "large_center_distance_ratio",
+    config.number_classifier.large_center_distance_ratio);
 
-  // 不写这一项就表示还没在实车上标定：Planner 会把计划降级成 TrackOnly，
-  // 云台照常跟随但不允许开火。写了才算标定完成。
+  const YAML::Node ieskf = root["ieskf"];
+  readValue(ieskf, "tracking_thres", config.ieskf_tracker.tracking_thres);
+  readValue(ieskf, "lost_time_thres", config.ieskf_tracker.lost_time_thres);
+  readValue(
+    ieskf, "lost_time_thres_outpost", config.ieskf_tracker.lost_time_thres_outpost);
+  readMillisecondsAsSeconds(ieskf, "max_frame_gap_ms", config.ieskf_tracker.max_frame_gap);
+  readMillisecondsAsSeconds(
+    ieskf, "temp_lost_predict_ms", config.ieskf_tracker.temp_lost_predict_time);
+  readValue(ieskf, "init_roi", config.ieskf_tracker.init_roi);
+  readValue(ieskf, "iteration_num", config.ieskf_target.iteration_num);
+  readVector3(
+    ieskf, "body_acceleration", config.ieskf_target.noise.body_acceleration);
+  readValue(
+    ieskf, "yaw_acceleration", config.ieskf_target.noise.yaw_acceleration);
+  readVector3(
+    ieskf, "outpost_body_acceleration",
+    config.ieskf_target.noise.outpost_body_acceleration);
+  readValue(
+    ieskf, "outpost_yaw_acceleration",
+    config.ieskf_target.noise.outpost_yaw_acceleration);
+  readValue(ieskf, "radius_noise", config.ieskf_target.noise.radius);
+  readValue(ieskf, "height_noise", config.ieskf_target.noise.height);
+  readValue(
+    ieskf, "outpost_height_noise", config.ieskf_target.noise.outpost_height);
+  readValue(ieskf, "roll_pitch_noise", config.ieskf_target.noise.roll_pitch);
+  readValue(
+    ieskf, "sigma_along_by_length", config.ieskf_target.sigma_along_by_length);
+  readValue(
+    ieskf, "sigma_perp_by_length", config.ieskf_target.sigma_perp_by_length);
+  readValue(ieskf, "sigma_min_px", config.ieskf_target.sigma_min_px);
+  readValue(
+    ieskf, "isolated_light_sigma_scale",
+    config.ieskf_target.isolated_light_sigma_scale);
+  readValue(
+    ieskf, "armor_lights_depth_diff_sigma",
+    config.ieskf_target.armor_lights_depth_diff_sigma);
+  readValue(
+    ieskf, "enable_lights_measure",
+    config.ieskf_target.enable_lights_measure);
+  readValue(
+    ieskf, "light_match_length_ratio_gate",
+    config.ieskf_target.light_match_length_ratio_gate);
+  readValue(
+    ieskf, "light_match_angle_gate",
+    config.ieskf_target.light_match_angle_gate);
+  readValue(
+    ieskf, "light_match_chi2_gate", config.ieskf_target.light_match_chi2_gate);
+  readValue(
+    ieskf, "light_match_require_jumped",
+    config.ieskf_target.light_match_require_jumped);
+  readValue(ieskf, "match_gate", config.ieskf_target.match_gate);
+  readValue(
+    ieskf, "match_gate_not_all_init", config.ieskf_target.match_gate_not_all_init);
+  readValue(ieskf, "match_chi2_gate", config.ieskf_target.match_chi2_gate);
+  readValue(
+    ieskf, "weight_center_error", config.ieskf_target.weight_center_error);
+  readValue(
+    ieskf, "weight_angle_error", config.ieskf_target.weight_angle_error);
+  readValue(
+    ieskf, "weight_side_length_error", config.ieskf_target.weight_side_length_error);
+  readValue(ieskf, "initial_radius", config.ieskf_target.initial_radius);
+  readValue(
+    ieskf, "initial_radius_outpost", config.ieskf_target.initial_radius_outpost);
+  readValue(
+    ieskf, "initial_radius_base", config.ieskf_target.initial_radius_base);
+
   const YAML::Node fire = root["fire"];
   readValue(fire, "shoot_enable", config.fire.shoot_enable);
   readValue(fire, "armor_width_small_m", config.fire.armor_width_small);
@@ -349,9 +561,7 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 
   const YAML::Node runtime = root["runtime"];
   readDegrees(
-    runtime,
-    "command_jump_deg",
-    config.runtime.command_jump_threshold);
+    runtime, "command_jump_deg", config.runtime.command_jump_threshold);
 
   const YAML::Node debug = root["debug"];
   readValue(debug, "overlay", config.debug.overlay);
@@ -365,7 +575,7 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 
   L6Telemetry::logInfo(
     "auto-aim config loaded", path,
-    std::string{L2Perception::inferenceBackendName(config.inference_backend)},
+    std::string{L2Perception::backendName(config.inference_backend)},
     config.model_path.string(), config.inference_device);
   return config;
 }
@@ -373,6 +583,8 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 void applyThresholds(
   const DecoderThresholds& thresholds, L2Perception::ArmorDecoderConfig& decoder)
 {
+  // 越界不会报错，只会静默失效：置信度阈值 >= 1 一块板也检不出。越界时保留
+  // 预设值而不是某个固定数：两种模型的置信度分布不同，回退值不能混用。
   for (const auto& [value, target] : {
          std::pair{thresholds.confidence_threshold, &decoder.confidence_threshold},
          std::pair{thresholds.minimum_confidence, &decoder.minimum_confidence},

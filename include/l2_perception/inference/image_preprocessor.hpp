@@ -16,19 +16,19 @@ enum class LetterboxAlignment
 
 struct ImagePreprocessConfig
 {
-  // SP-Vision YOLOV5 将缩放图贴在左上角，右侧/下侧补纯黑。
+  // 默认把缩放后的图贴在左上角，右侧和下侧补纯黑。
   cv::Scalar padding_color{0.0, 0.0, 0.0};
   LetterboxAlignment alignment{LetterboxAlignment::TopLeft};
 };
 
-// 记录从原图到模型图的缩放与补边关系；Decoder 用它把模型关键点还原到原图。
-// SP 默认左上贴齐，但仍完整保存四边补边量，以支持显式选择 Centered。
+// 记录从原图到模型图的缩放与补边关系，解码时用它把模型输出的关键点还原回
+// 原图。四边补边量都存下来，居中贴齐时也适用。
 struct ImageTransform
 {
   cv::Size source_size{};
   cv::Size model_size{};
-  // SP YOLOV5 将 resize scale 保持为 double，解码关键点时执行 float/double
-  // 除法后再窄化为 Point2f。这里必须保留同一数值路径。
+  // 缩放系数保持 double：解码关键点时先做 float/double 除法再窄化成
+  // Point2f，换成 float 会改变数值结果。
   double source_to_model_scale{1.0};
   int pad_left{0};
   int pad_top{0};

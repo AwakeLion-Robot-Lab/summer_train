@@ -3,17 +3,14 @@
 namespace runtime {
 
 std::optional<L3Estimation::TargetState> toL4TargetState(
-  const std::optional<L3Estimation::TrackedTarget>& target) noexcept
+  const std::optional<L3Estimation::EskfTarget>& target) noexcept
 {
   if (!target) {
     return std::nullopt;
   }
 
   const Eigen::VectorXd state = target->ekf_x();
-  const Eigen::MatrixXd& covariance = target->ekf().P;
-  if (state.size() < L3Estimation::STATE_DIM ||
-      covariance.rows() < L3Estimation::STATE_DIM ||
-      covariance.cols() < L3Estimation::STATE_DIM) {
+  if (state.size() < L3Estimation::EskfTarget::kStateSize) {
     return std::nullopt;
   }
 
@@ -31,18 +28,36 @@ std::optional<L3Estimation::TargetState> toL4TargetState(
   snapshot.yaw = state[L3Estimation::YAW];
   snapshot.yaw_rate = state[L3Estimation::YAW_RATE];
   snapshot.radius = state[L3Estimation::RADIUS];
-  snapshot.radius_offset = state[L3Estimation::RADIUS_OFFSET];
-  snapshot.height_offset = state[L3Estimation::HEIGHT_OFFSET];
-  if (snapshot.armor_count == 3) {
-    if (state.size() < L3Estimation::TrackedTarget::kStateSize) {
-      return std::nullopt;
-    }
-    snapshot.three_armor_height_offsets = {0.0, state[11], state[12]};
+  // EskfTarget 对外第 9 维是第二组绝对半径（四板车）或 1 号板高度
+  // （三板目标）；Bruce0178 的 L4 则使用 r2-r1 和独立三板高度数组。
+  if (snapshot.armor_count == 4) {
+    snapshot.radius_offset = state[9] - state[8];
+    snapshot.height_offset = state[10];
+  } else {
+    snapshot.radius_offset = 0.0;
+    snapshot.height_offset = 0.0;
+    snapshot.three_armor_height_offsets = {0.0, state[9], state[10]};
   }
-  snapshot.covariance = covariance.topLeftCorner<
-    L3Estimation::STATE_DIM, L3Estimation::STATE_DIM>();
+
+  // 把 ESKF 的误差状态协方差投影到 L4 的十一维接口。半径在 ESKF 内部为
+  // log(r)，L4 使用线性半径及 r2-r1，因此这里显式乘雅可比。
+  Eigen::Matrix<double, L3Estimation::STATE_DIM,
+                L3Estimation::EskfTarget::kStateSize> jacobian =
+    Eigen::Matrix<double, L3Estimation::STATE_DIM,
+                  L3Estimation::EskfTarget::kStateSize>::Zero();
+  for (int index = 0; index < 8; ++index) {
+    jacobian(index, index) = 1.0;
+  }
+  jacobian(L3Estimation::RADIUS, 8) = state[8];
+  if (snapshot.armor_count == 4) {
+    jacobian(L3Estimation::RADIUS_OFFSET, 8) = -state[8];
+    jacobian(L3Estimation::RADIUS_OFFSET, 9) = state[9];
+    jacobian(L3Estimation::HEIGHT_OFFSET, 10) = 1.0;
+  }
+  snapshot.covariance =
+    jacobian * target->covariance() * jacobian.transpose();
   snapshot.timestamp = target->t();
-  snapshot.filter_state = *target;
+  snapshot.filter_state = target->snapshot();
 
   if (snapshot.robot_id < 0 ||
       (snapshot.armor_count != 3 && snapshot.armor_count != 4) ||

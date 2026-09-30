@@ -90,6 +90,7 @@ void normalize(SerialConfig &config) {
   config.command_timeout_ms = std::max(config.command_timeout_ms, 1);
   config.reconnect_interval_ms = std::max(config.reconnect_interval_ms, 1);
   config.rx_buffer_size = std::max<std::size_t>(config.rx_buffer_size, 1);
+  config.pose_wait_ms = std::max(config.pose_wait_ms, 0);
 }
 
 } // namespace
@@ -113,6 +114,7 @@ SerialConfig loadSerialConfig(const std::string &config_path) {
       readOptional(yaml, "rx_buffer_size", config.rx_buffer_size);
   config.packet_loss_check_enable = readOptional(
       yaml, "packet_loss_check_enable", config.packet_loss_check_enable);
+  config.pose_wait_ms = readOptional(yaml, "pose_wait_ms", config.pose_wait_ms);
   config.command_feedforward = readOptional(
       yaml, "command_feedforward", config.command_feedforward);
   config.R_imu_barrel =

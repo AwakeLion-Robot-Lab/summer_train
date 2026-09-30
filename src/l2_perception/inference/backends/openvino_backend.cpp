@@ -1,5 +1,7 @@
 #include "l2_perception/inference/backends/openvino_backend.hpp"
 
+#include "l6_telemetry/logger.hpp"
+
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -127,6 +129,26 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
       "OpenVinoBackend requires the original model shape [1, 3, H, W]");
   }
 
+  // 输出名必须在 PrePostProcessor 之前取。build() 会为输出插转换节点，新张量
+  // 不一定继承原名：OpenVINO 2026.3 会把 ovc 转出来的 output0 改成
+  // graph_output_cast_0，2024.6 不会。解码器按名字认输出契约，跟着 Runtime
+  // 版本变名字等于换个版本就报"no output named ..."。下游取张量本来就按下标
+  // （get_output_tensor(index)），build() 不会重排输出，所以按下标记名是稳的。
+  std::vector<std::string> output_names;
+  output_names.reserve(model->outputs().size());
+  for (std::size_t index = 0; index < model->outputs().size(); ++index) {
+    const auto& names = model->output(index).get_tensor().get_names();
+    if (names.empty()) {
+      // 无名输出交给下面的 compile_model 去报错；这里只保证不在取名时先抛。
+      output_names.push_back("output" + std::to_string(index));
+      L6Telemetry::logWarn(
+        "OpenVinoBackend: output", index, "has no name in the model; using",
+        output_names.back());
+    } else {
+      output_names.push_back(model->output(index).get_any_name());
+    }
+  }
+
   // 宿主输入固定为 U8 NHWC BGR。颜色、归一化、布局与 FP16/FP32 转换都编入模型图，
   // 避免 CPU 每帧创建约 4.7 MiB 的 float NCHW 缓冲区。
   ov::preprocess::PrePostProcessor prepost(model);
@@ -212,10 +234,8 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
 
   ov::CompiledModel compiled_model =
     impl_->core.compile_model(model, config.device, compile_properties);
-  std::vector<std::string> output_names;
-  output_names.reserve(compiled_model.outputs().size());
-  for (std::size_t index = 0; index < compiled_model.outputs().size(); ++index) {
-    output_names.push_back(compiled_model.output(index).get_any_name());
+  if (compiled_model.outputs().size() != output_names.size()) {
+    throw std::runtime_error("OpenVinoBackend: preprocessing changed the number of outputs");
   }
   auto request = std::make_shared<Impl::Request>(std::move(compiled_model));
 

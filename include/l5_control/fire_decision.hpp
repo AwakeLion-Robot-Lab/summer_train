@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l3_estimation/armor/target_estimator.hpp"
+#include "l3_estimation/armor/eskf_target.hpp"
 #include "l4_planning/types.hpp"
 #include "l5_control/reject_reason.hpp"
 
@@ -24,7 +24,7 @@ struct FireConfig {
 };
 
 struct FireInput {
-  std::optional<L3Estimation::TrackedTarget> target;
+  std::optional<L3Estimation::EskfTarget> target;
   L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
   L4Planning::AimPlan plan;
 

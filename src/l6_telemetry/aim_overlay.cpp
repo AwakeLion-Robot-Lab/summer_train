@@ -126,7 +126,7 @@ void drawAimOverlay(
 }
 
 std::optional<Eigen::Vector4d> plannedImpactArmorPose(
-  const std::optional<L3Estimation::TrackedTarget>& target,
+  const std::optional<L3Estimation::EskfTarget>& target,
   const L4Planning::AimPlan& plan)
 {
   if (!target || !plan.valid || plan.armor_id < 0 ||
@@ -134,7 +134,7 @@ std::optional<Eigen::Vector4d> plannedImpactArmorPose(
     return std::nullopt;
   }
 
-  L3Estimation::TrackedTarget predicted = *target;
+  L3Estimation::EskfTarget predicted = *target;
   predicted.predict(plan.impact_time);
   const auto predicted_armors = predicted.armor_xyza_list();
   const auto selected = static_cast<std::size_t>(plan.armor_id);
@@ -146,7 +146,7 @@ std::optional<Eigen::Vector4d> plannedImpactArmorPose(
 }
 
 std::optional<Eigen::Vector4d> trackingRedArmorPose(
-  const std::optional<L3Estimation::TrackedTarget>& target,
+  const std::optional<L3Estimation::EskfTarget>& target,
   L3Estimation::TrackState track_state,
   const L4Planning::AimPlan& plan)
 {

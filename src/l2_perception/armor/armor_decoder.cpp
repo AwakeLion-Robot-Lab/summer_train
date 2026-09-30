@@ -64,7 +64,7 @@ bool finiteCorners(const std::array<cv::Point2f, 4>& corners) noexcept
 
 }  // namespace
 
-std::size_t ArmorTensorContract::requiredFieldCount() const noexcept
+std::size_t ArmorTensorContract::fieldCount() const noexcept
 {
   // objectness 缺失时它不占字段，也不参与这个下界。
   const std::size_t objectness_fields = objectness_index ? *objectness_index + 1 : 0;
@@ -72,13 +72,13 @@ std::size_t ArmorTensorContract::requiredFieldCount() const noexcept
                    class_offset + class_count});
 }
 
-ArmorDecoderConfig yolov5_22DecoderConfig() noexcept
+ArmorDecoderConfig yolov5Preset() noexcept
 {
   // 默认构造就是这套契约，这里显式写出来是为了和 yolov8_21 并排可读。
   return ArmorDecoderConfig{};
 }
 
-ArmorDecoderConfig yolov8_21DecoderConfig() noexcept
+ArmorDecoderConfig yolov8Preset() noexcept
 {
   ArmorDecoderConfig config;
   auto& contract = config.contract;
@@ -105,18 +105,18 @@ ArmorDecoderConfig yolov8_21DecoderConfig() noexcept
   return config;
 }
 
-std::optional<ArmorDecoderConfig> armorDecoderPreset(std::string_view name)
+std::optional<ArmorDecoderConfig> decoderPreset(std::string_view name)
 {
   if (name == "yolov5_22") {
-    return yolov5_22DecoderConfig();
+    return yolov5Preset();
   }
   if (name == "yolov8_21") {
-    return yolov8_21DecoderConfig();
+    return yolov8Preset();
   }
   return std::nullopt;
 }
 
-ArmorDecoderConfig armorDecoderConfigFor(const std::vector<InferenceOutputSpec>& outputs)
+ArmorDecoderConfig decoderFor(const std::vector<InferenceOutputSpec>& outputs)
 {
   // 按形状认而不是按输出名：名字随导出方式和 Runtime 版本变（2025.4 从 PyTorch
   // 直转的 IR 输出没有名字），形状才是契约本身。两种排布的字段维不同，要求候选
@@ -125,12 +125,12 @@ ArmorDecoderConfig armorDecoderConfigFor(const std::vector<InferenceOutputSpec>&
       outputs.front().shape[0] == 1) {
     const InferenceOutputSpec& output = outputs.front();
     const auto& shape = output.shape;
-    for (auto preset : {yolov5_22DecoderConfig(), yolov8_21DecoderConfig()}) {
+    for (auto preset : {yolov5Preset(), yolov8Preset()}) {
       const bool candidates_first =
         preset.contract.tensor_layout == ArmorTensorLayout::CandidatesByFields;
       const std::size_t fields = candidates_first ? shape[2] : shape[1];
       const std::size_t candidates = candidates_first ? shape[1] : shape[2];
-      if (fields == preset.contract.requiredFieldCount() && candidates > fields) {
+      if (fields == preset.contract.fieldCount() && candidates > fields) {
         preset.contract.output_name = output.name;
         return preset;
       }
@@ -139,6 +139,53 @@ ArmorDecoderConfig armorDecoderConfigFor(const std::vector<InferenceOutputSpec>&
   throw std::runtime_error(
     "unknown armor model output; expected a single [1, N, 22] (yolov5_22) or "
     "[1, 21, N] (yolov8_21) tensor");
+}
+
+void ArmorDecoder::validate(const std::vector<InferenceOutputSpec>& outputs) const
+{
+  const ArmorTensorContract& contract = config_.contract;
+  const auto describe = [&outputs]() {
+    std::string text;
+    for (const auto& output : outputs) {
+      text += (text.empty() ? "" : ", ") + output.name + " [";
+      for (std::size_t index = 0; index < output.shape.size(); ++index) {
+        text += (index == 0 ? "" : ",") + std::to_string(output.shape[index]);
+      }
+      text += "]";
+    }
+    return text;
+  };
+
+  const auto found = std::find_if(
+    outputs.begin(), outputs.end(),
+    [&contract](const InferenceOutputSpec& output) { return output.name == contract.output_name; });
+  if (found == outputs.end()) {
+    // 输出名对不上几乎总是 layout 与模型不配，或者把灯条关键点模型当成了整板
+    // 模型（它的输出叫 output0、形状 [1, 11, A]），报错里直接点明。
+    throw std::runtime_error(
+      "armor model: no output named '" + contract.output_name + "' (model has " + describe() +
+      "). Check inference.decoder.layout: yolov5_22 expects 'output' [1, 25200, 22], "
+      "yolov8_21 expects 'output0' [1, 21, 6300]; light keypoint models are not armor models");
+  }
+
+  const auto& shape = found->shape;
+  const bool batched = shape.size() == 3;
+  if ((shape.size() != 2 && !batched) || (batched && shape[0] != 1)) {
+    throw std::runtime_error(
+      "armor model: output must be [N, F] or [1, N, F]; got " + describe());
+  }
+  const std::size_t offset = batched ? 1 : 0;
+  const std::size_t fields = contract.tensor_layout == ArmorTensorLayout::CandidatesByFields
+                               ? shape[offset + 1]
+                               : shape[offset];
+  // 要恰好相等而不是够用：字段多出来说明是别的契约，照读只会解出错位的角点。
+  // 例如带逐点可见度的 YOLOv8 [1, 25, N] 能过“够用”，却会把可见度当坐标读；
+  // 未命名的 yolov5 输出被后端记成 output0 时，候选维 25200 也能过。
+  if (fields != contract.fieldCount()) {
+    throw std::runtime_error(
+      "armor model: output has " + std::to_string(fields) + " fields but the layout expects " +
+      std::to_string(contract.fieldCount()) + "; got " + describe());
+  }
 }
 
 ArmorDecoder::ArmorDecoder(ArmorDecoderConfig config) : config_(std::move(config))
@@ -189,10 +236,8 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
     candidates_first ? output->shape[shape_offset] : output->shape[shape_offset + 1];
   const std::size_t field_count =
     candidates_first ? output->shape[shape_offset + 1] : output->shape[shape_offset];
-  // 要恰好相等而不是够用：字段多出来说明是别的契约，照读只会解出错位的角点。
-  // 例如带逐点可见度的 YOLOv8 [1, 25, N] 能过“够用”，却会把可见度当坐标读。
-  if (field_count != contract.requiredFieldCount()) {
-    throw std::invalid_argument("ArmorDecoder contract does not match the model output field count");
+  if (field_count < contract.fieldCount()) {
+    throw std::invalid_argument("ArmorDecoder contract exceeds the model output field count");
   }
 
   const std::span<const float> output_values = output->values();
@@ -283,6 +328,8 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
       best_class = argmaxClass(candidate);
     }
     detection.class_id = static_cast<int>(best_class) + contract.class_id_offset;
+    // 二次分类会改写 class_id，网络的原值留在 network_class_id 里备查。
+    detection.network_class_id = detection.class_id;
 
     // NMS 分数就是候选置信度本身。SP 用 sigmoid(objectness)，YOLOV8 用类别
     // 最大分，两者都已经由上面的 confidence 表示，不需要再开一个来源开关。
