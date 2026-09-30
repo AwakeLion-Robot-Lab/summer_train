@@ -6,7 +6,7 @@ latency:
   # 按目标有符号 yaw 角速度选择控制命令发布到弹丸实际离开枪口的延迟。
   # 与旧 L4 一致：只有 yaw_rate > decision_speed_rad_s 才使用高速档；
   # 负向旋转即使绝对速度很大也使用低速档。
-  high_speed_fire_delay_s: 0.030
+  high_speed_fire_delay_s: 0.020
   low_speed_fire_delay_s: 0.015
   decision_speed_rad_s: 8.0
 
@@ -28,17 +28,17 @@ prediction:
 ballistic:
   # 下位机尚未拿到有效弹速时，用该值继续计算弹道。
   # 回退值为有效正数时，L5 仍允许开火，因此需按实际弹速标定。
-  default_bullet_speed_mps: 27.0
+  default_bullet_speed_mps: 25.0
 
   # 重力加速度绝对值，单位 m/s^2，必须大于 0。
   gravity_mps2: 9.80665
 
   # false 使用真空抛物线模型；true 使用线性空气阻力模型。
-  enable_air_resistance: false
+  enable_air_resistance: true
 
   # 线性阻力模型 a_drag=-k*v 的系数 k，单位 s^-1。
   # 开启空气阻力后必须大于 0，需要根据实弹落点标定。
-  linear_drag_coefficient_per_s: 0.0
+  linear_drag_coefficient_per_s: 0.5
 
 selection:
   # 切换或首次锁定装甲板后，允许进入稳定计数的最大分轴瞄准误差。

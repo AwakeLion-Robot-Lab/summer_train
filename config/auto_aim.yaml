@@ -187,7 +187,7 @@ debug:
   # 节点分成 gimbal / serial / track / obs / ekf / aim / delay / fire 八支，其中
   # gimbal 是实测云台姿态、aim 是规划出的云台姿态，两者同图即跟随误差。
   # 角度一律 degree，时间一律 ms。
-  plot: false
+  plot: true
   plot_host: "127.0.0.1"
   plot_port: 9870
 
