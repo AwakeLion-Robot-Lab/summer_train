@@ -1960,7 +1960,7 @@ int main(int argc, char** argv)
       /// 调试输出
 
       if (target && filter_estimate) {
-        L6Telemetry::logDebugRaw(
+        LOG_DEBUG(
           "[" + std::to_string(frame_index) + "] estimator=" +
           "ieskf+endpoint state=" +
           std::string(stateName(tracker.state())) + ' ' +
@@ -1969,7 +1969,7 @@ int main(int argc, char** argv)
             *filter_estimate, target->last_id, target->lastNis(),
             target->lastNisDof()));
       } else {
-        L6Telemetry::logDebugRaw(
+        LOG_DEBUG(
           "[" + std::to_string(frame_index) + "] estimator=" +
           "ieskf+endpoint state=" +
           std::string(stateName(tracker.state())) + " target=none");

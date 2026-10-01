@@ -210,7 +210,7 @@ void PnpSolver::single_pnp(Armor &armor) const {
                      calibration_.distortion_coefficients, rvec, tvec, false,
                      cv::SOLVEPNP_IPPE);
   } catch (const cv::Exception &error) {
-    L6Telemetry::logWarn("PnpSolver solvePnP failed", error.what());
+    LOG_WARN("PnpSolver solvePnP failed", error.what());
     return;
   }
 
@@ -234,7 +234,7 @@ void PnpSolver::single_pnp(Armor &armor) const {
     cv::projectPoints(object_points, rvec, tvec, calibration_.camera_matrix,
                       calibration_.distortion_coefficients, reprojected_points);
   } catch (const cv::Exception &error) {
-    L6Telemetry::logWarn("PnpSolver pose conversion failed", error.what());
+    LOG_WARN("PnpSolver pose conversion failed", error.what());
     return;
   }
 
@@ -335,7 +335,7 @@ std::optional<double> PnpSolver::lights_depth_diff(
       translation_vectors, false, cv::SOLVEPNP_IPPE, cv::noArray(),
       cv::noArray());
   } catch (const cv::Exception& error) {
-    L6Telemetry::logWarn(
+    LOG_WARN(
       "PnpSolver depth-difference solvePnP failed", error.what());
     return std::nullopt;
   }
@@ -492,7 +492,7 @@ PnpSolver::reproject_armor(const Eigen::Vector3d &xyz_in_world, double yaw,
       object_points, rvec, tvec, calibration_.camera_matrix,
       calibration_.distortion_coefficients, image_points);
   } catch (const cv::Exception &error) {
-    L6Telemetry::logWarn("PnpSolver armor reprojection failed", error.what());
+    LOG_WARN("PnpSolver armor reprojection failed", error.what());
     return {};
   }
   return image_points;

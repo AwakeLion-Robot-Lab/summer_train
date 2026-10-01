@@ -75,7 +75,7 @@ std::optional<L1Sensor::WorkMode> parseWorkMode(const std::string& name)
   if (name == "small_buff") return L1Sensor::WorkMode::SmallBuff;
   if (name == "big_buff") return L1Sensor::WorkMode::BigBuff;
   if (name == "idle") return L1Sensor::WorkMode::Idle;
-  L6Telemetry::logError(
+  LOG_ERROR(
     "debug.force_work_mode is not a known mode, ignored:", name,
     "| valid: auto_aim outpost small_buff big_buff idle");
   return std::nullopt;
@@ -87,7 +87,7 @@ L2Perception::ArmorDetector loadDetector(const runtime::AutoAimConfig& config)
     return runtime::makeDetector(config);
   } catch (const std::exception& error) {
     // 模型或 SDK 不可用时只在启动阶段记录一次；空 Detector 会持续返回安全的空结果。
-    L6Telemetry::logError(
+    LOG_ERROR(
       "armor model or side-light model unavailable",
       std::string{L2Perception::backendName(config.inference_backend)},
       config.model_path.string(), error.what());
@@ -120,14 +120,14 @@ void AutoAimRuntime::run() {
   L1Sensor::SerialWorker serial(serial_config);
   const bool serial_started = serial.start();
   if (!serial_started && serial_config.enable) {
-    L6Telemetry::logWarn("Failed to start serial worker.");
+    LOG_WARN("Failed to start serial worker.");
   }
   // L3 EskfTracker 持有 PnP（仅整车初始化用）和 IESKF。标定缺失时 runtime 继续运行检测和显示，
   // 但后续不得生成有效瞄准/开火命令。
   std::optional<L3Estimation::EskfTracker> tracker;
   const auto& camera_calibration = camera->calibration();
   if (!camera_calibration) {
-    L6Telemetry::logWarn("Tracker disabled: camera calibration is missing");
+    LOG_WARN("Tracker disabled: camera calibration is missing");
   } else {
     tracker.emplace(
       *camera_calibration,
@@ -135,9 +135,9 @@ void AutoAimRuntime::run() {
       auto_aim_config.ieskf_tracker,
       auto_aim_config.ieskf_target);
     if (tracker->ready()) {
-      L6Telemetry::logInfo("L3 tracker configured");
+      LOG_INFO("L3 tracker configured");
     } else {
-      L6Telemetry::logWarn(
+      LOG_WARN(
         "Tracker disabled: calibration, armor, or tracker config is invalid");
     }
   }
@@ -180,7 +180,7 @@ void AutoAimRuntime::run() {
   // 调试旁路：强制 WorkMode。启动时解析一次，循环里只做覆盖。
   const auto forced_mode = parseWorkMode(auto_aim_config.debug.force_work_mode);
   if (forced_mode) {
-    L6Telemetry::logWarn(
+    LOG_WARN(
       "!!! debug.force_work_mode is ACTIVE:", L1Sensor::toString(*forced_mode),
       "- the MCU's WorkMode is being IGNORED. Clear this key before a match.");
   }
@@ -217,7 +217,7 @@ void AutoAimRuntime::run() {
       // 值，否则排查时会看不出电控到底给没给对模式。
       const L1Sensor::WorkMode mode = forced_mode.value_or(state->mode);
       if (mode != last_mode) {
-        L6Telemetry::logInfo(
+        LOG_INFO(
           "work mode ->", L1Sensor::toString(mode), "| tracker",
           tracker ? stateName(tracker->state()) : "disabled");
         last_mode = mode;
@@ -235,7 +235,7 @@ void AutoAimRuntime::run() {
           // 刚到手时它往往还在路上，直接查只能拿最新一包顶替，云台一转就
           // 错开几度。只等一个发包周期；等满说明串口断流，退回最新一包。
           if (!serial.waitPose(timestamp)) {
-            L6Telemetry::logDebug("gimbal pose wait timeout");
+            LOG_DEBUG("gimbal pose wait timeout");
           }
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 

@@ -91,7 +91,7 @@ std::optional<EskfTarget> EskfTracker::track(
 {
   clearFrame();
   if (!ready_ || !q_world_barrel) {
-    L6Telemetry::logWarn("EskfTracker: 未就绪或缺少枪管姿态，无法跟踪");
+    LOG_WARN("EskfTracker: 未就绪或缺少枪管姿态，无法跟踪");
     return std::nullopt;
   }
 
@@ -153,7 +153,7 @@ void EskfTracker::dropOnGap(TimePoint timestamp)
   backup_.lifecycle.reset();
   if (had_target) {
     ++drop_count_;
-    L6Telemetry::logWarn(
+    LOG_WARN(
       "EskfTracker: 帧间隔过长，目标复位",
       std::chrono::duration<double>(timestamp - *last_frame_).count());
   }
@@ -173,7 +173,7 @@ bool EskfTracker::advance(Slot & slot, Frame & frame, std::optional<ArmorName> p
   if (slot.lifecycle.isTracking() && slot.target.diverged()) {
     slot.lifecycle.reset();
     slot.used_lights.clear();
-    L6Telemetry::logWarn("EskfTracker: 目标发散，已复位");
+    LOG_WARN("EskfTracker: 目标发散，已复位");
   }
   return found;
 }

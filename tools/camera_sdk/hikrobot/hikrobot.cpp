@@ -7,6 +7,7 @@
 #define NEWVISION_HAS_LIBUSB 0
 #endif
 
+#include <format>
 #include <unordered_map>
 
 #include "l6_telemetry/logger.hpp"
@@ -21,13 +22,13 @@ HikRobot::HikRobot(double exposure_ms, double gain, const std::string &vid_pid)
   set_vid_pid(vid_pid);
 #if NEWVISION_HAS_LIBUSB
   if (libusb_init(NULL))
-    L6Telemetry::logWarn("Unable to init libusb!");
+    LOG_WARN("Unable to init libusb!");
 #else
-  L6Telemetry::logWarn("libusb header not found; USB reset is disabled.");
+  LOG_WARN("libusb header not found; USB reset is disabled.");
 #endif
 
   daemon_thread_ = std::thread{[this] {
-    L6Telemetry::logInfo("HikRobot's daemon thread started.");
+    LOG_INFO("HikRobot's daemon thread started.");
 
     capture_start();
 
@@ -44,7 +45,7 @@ HikRobot::HikRobot(double exposure_ms, double gain, const std::string &vid_pid)
 
     capture_stop();
 
-    L6Telemetry::logInfo("HikRobot's daemon thread stopped.");
+    LOG_INFO("HikRobot's daemon thread stopped.");
   }};
 }
 
@@ -53,7 +54,7 @@ HikRobot::~HikRobot() {
   if (daemon_thread_.joinable()) {
     daemon_thread_.join();
   }
-  L6Telemetry::logInfo("HikRobot destructed.");
+  LOG_INFO("HikRobot destructed.");
 }
 
 bool HikRobot::read(cv::Mat &img,
@@ -91,25 +92,25 @@ void HikRobot::capture_start() {
   MV_CC_DEVICE_INFO_LIST device_list;
   ret = MV_CC_EnumDevices(MV_USB_DEVICE, &device_list);
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_EnumDevices failed: {:#x}", ret);
+    LOG_WARN("MV_CC_EnumDevices failed: {:#x}", ret);
     return;
   }
 
   if (device_list.nDeviceNum == 0) {
-    L6Telemetry::logWarn("Not found camera!");
+    LOG_WARN("Not found camera!");
     return;
   }
 
   ret = MV_CC_CreateHandle(&handle_, device_list.pDeviceInfo[0]);
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_CreateHandle failed: {:#x}", ret);
+    LOG_WARN("MV_CC_CreateHandle failed: {:#x}", ret);
     handle_ = nullptr;
     return;
   }
 
   ret = MV_CC_OpenDevice(handle_);
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_OpenDevice failed: {:#x}", ret);
+    LOG_WARN("MV_CC_OpenDevice failed: {:#x}", ret);
     MV_CC_DestroyHandle(handle_);
     handle_ = nullptr;
     return;
@@ -124,12 +125,12 @@ void HikRobot::capture_start() {
 
   ret = MV_CC_StartGrabbing(handle_);
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_StartGrabbing failed: {:#x}", ret);
+    LOG_WARN("MV_CC_StartGrabbing failed: {:#x}", ret);
     return;
   }
 
   capture_thread_ = std::thread{[this] {
-    L6Telemetry::logInfo("HikRobot's capture thread started.");
+    LOG_INFO("HikRobot's capture thread started.");
 
     capturing_ = true;
 
@@ -144,7 +145,7 @@ void HikRobot::capture_start() {
       ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
       if (ret != MV_OK) {
         if (!capture_quit_.load()) {
-          L6Telemetry::logWarn("MV_CC_GetImageBuffer failed: {:#x}", ret);
+          LOG_WARN("MV_CC_GetImageBuffer failed: {:#x}", ret);
         }
         break;
       }
@@ -173,7 +174,7 @@ void HikRobot::capture_start() {
                       {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerRG2BGR}};
       const auto conversion = type_map.find(pixel_type);
       if (conversion == type_map.end()) {
-        L6Telemetry::logWarn("Unsupported HikRobot pixel type",
+        LOG_WARN("Unsupported HikRobot pixel type",
                              static_cast<int>(pixel_type));
         MV_CC_FreeImageBuffer(handle_, &raw);
         break;
@@ -182,7 +183,7 @@ void HikRobot::capture_start() {
       try {
         cv::cvtColor(img, dst_image, conversion->second);
       } catch (const cv::Exception &e) {
-        L6Telemetry::logWarn("HikRobot color conversion failed", e.what());
+        LOG_WARN("HikRobot color conversion failed", e.what());
         MV_CC_FreeImageBuffer(handle_, &raw);
         break;
       }
@@ -191,7 +192,7 @@ void HikRobot::capture_start() {
 
       ret = MV_CC_FreeImageBuffer(handle_, &raw);
       if (ret != MV_OK) {
-        L6Telemetry::logWarn("MV_CC_FreeImageBuffer failed: {:#x}", ret);
+        LOG_WARN("MV_CC_FreeImageBuffer failed: {:#x}", ret);
         break;
       }
 
@@ -201,7 +202,7 @@ void HikRobot::capture_start() {
     }
 
     capturing_ = false;
-    L6Telemetry::logInfo("HikRobot's capture thread stopped.");
+    LOG_INFO("HikRobot's capture thread stopped.");
   }};
 }
 
@@ -223,17 +224,17 @@ void HikRobot::capture_stop() {
 
   ret = MV_CC_StopGrabbing(handle);
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_StopGrabbing failed: {:#x}", ret);
+    LOG_WARN("MV_CC_StopGrabbing failed: {:#x}", ret);
   }
 
   ret = MV_CC_CloseDevice(handle);
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_CloseDevice failed: {:#x}", ret);
+    LOG_WARN("MV_CC_CloseDevice failed: {:#x}", ret);
   }
 
   ret = MV_CC_DestroyHandle(handle);
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_DestroyHandle failed: {:#x}", ret);
+    LOG_WARN("MV_CC_DestroyHandle failed: {:#x}", ret);
   }
 }
 
@@ -243,8 +244,8 @@ void HikRobot::set_float_value(const std::string &name, double value) {
   ret = MV_CC_SetFloatValue(handle_, name.c_str(), value);
 
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_SetFloatValue(\"{}\", {}) failed: {:#x}", name,
-                         value, ret);
+    LOG_WARN(std::format(
+      "MV_CC_SetFloatValue(\"{}\", {}) failed: {:#x}", name, value, ret));
     return;
   }
 }
@@ -255,8 +256,8 @@ void HikRobot::set_enum_value(const std::string &name, unsigned int value) {
   ret = MV_CC_SetEnumValue(handle_, name.c_str(), value);
 
   if (ret != MV_OK) {
-    L6Telemetry::logWarn("MV_CC_SetEnumValue(\"{}\", {}) failed: {:#x}", name,
-                         value, ret);
+    LOG_WARN(std::format(
+      "MV_CC_SetEnumValue(\"{}\", {}) failed: {:#x}", name, value, ret));
     return;
   }
 }
@@ -264,7 +265,7 @@ void HikRobot::set_enum_value(const std::string &name, unsigned int value) {
 void HikRobot::set_vid_pid(const std::string &vid_pid) {
   auto index = vid_pid.find(':');
   if (index == std::string::npos) {
-    L6Telemetry::logWarn("Invalid vid_pid: \"{}\"", vid_pid);
+    LOG_WARN("Invalid vid_pid:", vid_pid);
     return;
   }
 
@@ -275,7 +276,7 @@ void HikRobot::set_vid_pid(const std::string &vid_pid) {
     vid_ = std::stoi(vid_str, 0, 16);
     pid_ = std::stoi(pid_str, 0, 16);
   } catch (const std::exception &) {
-    L6Telemetry::logWarn("Invalid vid_pid: \"{}\"", vid_pid);
+    LOG_WARN("Invalid vid_pid:", vid_pid);
   }
 }
 
@@ -287,18 +288,18 @@ void HikRobot::reset_usb() const {
   // https://github.com/ralight/usb-reset/blob/master/usb-reset.c
   auto handle = libusb_open_device_with_vid_pid(NULL, vid_, pid_);
   if (!handle) {
-    L6Telemetry::logWarn("Unable to open usb!");
+    LOG_WARN("Unable to open usb!");
     return;
   }
 
   if (libusb_reset_device(handle))
-    L6Telemetry::logWarn("Unable to reset usb!");
+    LOG_WARN("Unable to reset usb!");
   else
-    L6Telemetry::logInfo("Reset usb successfully :)");
+    LOG_INFO("Reset usb successfully :)");
 
   libusb_close(handle);
 #else
-  L6Telemetry::logWarn(
+  LOG_WARN(
       "USB reset skipped because libusb support is not available.");
 #endif
 }

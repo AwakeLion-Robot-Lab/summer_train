@@ -24,7 +24,7 @@ SerialPort::SerialPort(SerialConfig config) : config_(std::move(config)) {
   serial_->setStopbits(serial::stopbits_one);
   serial_->setFlowcontrol(serial::flowcontrol_none);
   serial_->setTimeout(timeout);
-  L6Telemetry::logInfo("serial configured", config_.device, config_.baud_rate);
+  LOG_INFO("serial configured", config_.device, config_.baud_rate);
 }
 
 // 析构时自动关闭串口，避免文件句柄泄漏。
@@ -41,12 +41,12 @@ bool SerialPort::open() {
 
     serial_->open();
     open_failure_logged_ = false;
-    L6Telemetry::logInfo("serial opened", config_.device);
+    LOG_INFO("serial opened", config_.device);
     return isOpenLocked();
   } catch (const std::exception &e) {
     closeLocked();
     if (!open_failure_logged_) {
-      L6Telemetry::logWarn("serial open failed", config_.device, e.what());
+      LOG_WARN("serial open failed", config_.device, e.what());
       open_failure_logged_ = true;
     }
     return false;
@@ -65,10 +65,10 @@ void SerialPort::closeLocked() {
   try {
     if (isOpenLocked()) {
       serial_->close();
-      L6Telemetry::logInfo("serial closed", config_.device);
+      LOG_INFO("serial closed", config_.device);
     }
   } catch (const std::exception &e) {
-    L6Telemetry::logWarn("serial close failed", config_.device, e.what());
+    LOG_WARN("serial close failed", config_.device, e.what());
   }
 }
 
@@ -107,7 +107,7 @@ std::size_t SerialPort::read(std::span<std::uint8_t> buffer) {
           std::clamp<std::size_t>(serial_->available(), 1, buffer.size());
       return serial_->read(buffer.data(), size);
     } catch (const std::exception &e) {
-      L6Telemetry::logWarn("serial read failed", config_.device, e.what());
+      LOG_WARN("serial read failed", config_.device, e.what());
       close_after_error = true;
     }
   }
@@ -130,12 +130,12 @@ std::size_t SerialPort::write(std::span<const std::uint8_t> data) {
     try {
       const auto bytes_written = serial_->write(data.data(), data.size());
       if (bytes_written != data.size()) {
-        L6Telemetry::logWarn("serial write incomplete", bytes_written,
+        LOG_WARN("serial write incomplete", bytes_written,
                              data.size());
       }
       return bytes_written;
     } catch (const std::exception &e) {
-      L6Telemetry::logWarn("serial write failed", config_.device, e.what());
+      LOG_WARN("serial write failed", config_.device, e.what());
       close_after_error = true;
     }
   }

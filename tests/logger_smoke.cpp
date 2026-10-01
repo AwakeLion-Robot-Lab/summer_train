@@ -3,8 +3,8 @@
 int main()
 {
   L6Telemetry::initLogger();
-  L6Telemetry::logInfo("logger smoke test start");
-  L6Telemetry::logWarn("logger smoke test finish");
+  LOG_INFO("logger smoke test start");
+  LOG_WARN("logger smoke test finish");
   L6Telemetry::flushLogger();
   return 0;
 }

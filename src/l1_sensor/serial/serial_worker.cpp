@@ -24,7 +24,7 @@ SerialWorker::~SerialWorker() { stop(); }
 // 启动串口收发线程；串口暂时打不开时，线程内部会持续重连。
 bool SerialWorker::start() {
   if (!config_.enable) {
-    L6Telemetry::logInfo("serial worker disabled");
+    LOG_INFO("serial worker disabled");
     return false;
   }
 
@@ -45,11 +45,11 @@ bool SerialWorker::start() {
       rx_thread_.join();
     }
     port_.close();
-    L6Telemetry::logError("serial worker start failed", e.what());
+    LOG_ERROR("serial worker start failed", e.what());
     return false;
   }
 
-  L6Telemetry::logInfo("serial worker started", config_.device);
+  LOG_INFO("serial worker started", config_.device);
   return true;
 }
 
@@ -167,7 +167,7 @@ void SerialWorker::rxLoop() {
       for (const auto &state : states) {
         if (!gimbal_history_.empty() &&
             state.timestamp <= gimbal_history_.back().timestamp) {
-          L6Telemetry::logWarn(
+          LOG_WARN(
               "serial gimbal history timestamp is not increasing");
           continue;
         }
@@ -227,7 +227,7 @@ void SerialWorker::txLoop() {
     }
 
     if (command_expired) {
-      L6Telemetry::logWarn("serial command expired; sending safe command",
+      LOG_WARN("serial command expired; sending safe command",
                            command_timeout.count());
     }
 
@@ -283,7 +283,7 @@ std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
   std::lock_guard<std::mutex> lock(state_mutex_);
 
   if (gimbal_history_.empty()) {
-    L6Telemetry::logWarn("gimbal pose history empty");
+    LOG_WARN("gimbal pose history empty");
     return std::nullopt;
   }
 
@@ -296,12 +296,12 @@ std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
   };
 
   if (timestamp <= gimbal_history_.front().timestamp) {
-    L6Telemetry::logDebug("gimbal pose before history");
+    LOG_DEBUG("gimbal pose before history");
     return toBarrelPose(to_quaternion(gimbal_history_.front()));
   }
 
   if (timestamp >= gimbal_history_.back().timestamp) {
-    L6Telemetry::logDebug("gimbal pose after history");
+    LOG_DEBUG("gimbal pose after history");
     return toBarrelPose(to_quaternion(gimbal_history_.back()));
   }
 
@@ -313,7 +313,7 @@ std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
       });
 
   if (upper == gimbal_history_.begin() || upper == gimbal_history_.end()) {
-    L6Telemetry::logWarn("gimbal pose search invalid");
+    LOG_WARN("gimbal pose search invalid");
     return std::nullopt;
   }
 
@@ -323,7 +323,7 @@ std::optional<Eigen::Quaterniond> SerialWorker::gimbalPoseAt(
   const double interval =
       std::chrono::duration<double>(after.timestamp - before.timestamp).count();
   if (interval <= 0.0) {
-    L6Telemetry::logWarn("gimbal pose interval invalid");
+    LOG_WARN("gimbal pose interval invalid");
     return toBarrelPose(to_quaternion(before));
   }
 

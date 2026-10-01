@@ -17,7 +17,7 @@ namespace {
 
 [[noreturn]] void invalidCalibration(const std::string &path,
                                      const std::string &reason) {
-  L6Telemetry::logError("camera calibration invalid", path, reason);
+  LOG_ERROR("camera calibration invalid", path, reason);
   throw std::runtime_error("Invalid camera calibration '" + path +
                            "': " + reason);
 }

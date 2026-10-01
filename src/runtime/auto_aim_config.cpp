@@ -28,7 +28,7 @@ void readValue(
   try {
     value = section[key].as<T>();
   } catch (const YAML::Exception& error) {
-    L6Telemetry::logWarn("auto-aim config invalid field", key, error.what());
+    LOG_WARN("auto-aim config invalid field", key, error.what());
   }
 }
 
@@ -42,7 +42,7 @@ void readValue(const YAML::Node& section, const char* key, std::optional<float>&
   try {
     value = section[key].as<float>();
   } catch (const YAML::Exception& error) {
-    L6Telemetry::logWarn("auto-aim config invalid field", key, error.what());
+    LOG_WARN("auto-aim config invalid field", key, error.what());
   }
 }
 
@@ -93,7 +93,7 @@ void readVector3(
     parsed << vector[0].as<double>(), vector[1].as<double>(), vector[2].as<double>();
     value = parsed;
   } catch (const std::exception& error) {
-    L6Telemetry::logWarn("auto-aim config invalid field", key, error.what());
+    LOG_WARN("auto-aim config invalid field", key, error.what());
   }
 }
 
@@ -336,7 +336,7 @@ void normalize(AutoAimConfig& config)
   if (config.plan.impact.send_to_control &&
       !(std::isfinite(*config.plan.impact.send_to_control) &&
         *config.plan.impact.send_to_control >= 0.0)) {
-    L6Telemetry::logWarn("planning.send_to_control_ms is invalid, treated as uncalibrated");
+    LOG_WARN("planning.send_to_control_ms is invalid, treated as uncalibrated");
     config.plan.impact.send_to_control.reset();
   }
 
@@ -375,14 +375,14 @@ AutoAimConfig loadConfig(const std::string& path)
 {
   AutoAimConfig config;
   if (!std::filesystem::exists(path)) {
-    L6Telemetry::logWarn("auto-aim config not found, using defaults", path);
+    LOG_WARN("auto-aim config not found, using defaults", path);
     return config;
   }
 
   const YAML::Node root = YAML::LoadFile(path);
   const YAML::Node inference = root["inference"];
   if (!inference) {
-    L6Telemetry::logWarn("auto-aim inference config missing, using defaults", path);
+    LOG_WARN("auto-aim inference config missing, using defaults", path);
   } else {
     if (inference["backend"]) {
       const std::string name = inference["backend"].as<std::string>();
@@ -499,7 +499,7 @@ AutoAimConfig loadConfig(const std::string& path)
     } else if (search == "profile") {
       config.light_finder.search = L2Perception::LightSearch::Profile;
     } else {
-      L6Telemetry::logWarn(
+      LOG_WARN(
         "light_finder.search must be 'contour' or 'profile', keep default; got", search);
     }
   }
@@ -660,7 +660,7 @@ AutoAimConfig loadConfig(const std::string& path)
 
   normalize(config);
 
-  L6Telemetry::logInfo(
+  LOG_INFO(
     "auto-aim config loaded", path,
     std::string{L2Perception::backendName(config.inference_backend)},
     config.model_path.string(), config.inference_device);

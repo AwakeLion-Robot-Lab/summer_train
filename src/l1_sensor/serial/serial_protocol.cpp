@@ -50,7 +50,7 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
     const auto head_pos = std::find(rx_buffer_.begin(), rx_buffer_.end(), kSof);
 
     if (head_pos == rx_buffer_.end()) {
-      L6Telemetry::logWarn("serial protocol can't match sof");
+      LOG_WARN("serial protocol can't match sof");
       rx_buffer_.clear();
       break;
     }
@@ -65,7 +65,7 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
     const auto header_bytes = std::span<const std::uint8_t>{
         rx_buffer_.data(), offsetof(HeaderFrame, cmd_id)};
     if (!checkCrc8(header_bytes)) {
-      L6Telemetry::logWarn("serial protocol crc8 check failed");
+      LOG_WARN("serial protocol crc8 check failed");
       rx_buffer_.erase(rx_buffer_.begin());
       continue;
     }
@@ -73,7 +73,7 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
     HeaderFrame header;
     std::memcpy(&header, rx_buffer_.data(), sizeof(header));
     if (header.data_length > kMaxPayloadLength) {
-      L6Telemetry::logWarn("serial protocol payload length too large",
+      LOG_WARN("serial protocol payload length too large",
                            static_cast<int>(header.data_length));
       rx_buffer_.erase(rx_buffer_.begin());
       continue;
@@ -88,7 +88,7 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
     const auto packet_bytes =
         std::span<const std::uint8_t>{rx_buffer_.data(), frame_size};
     if (!checkCrc16(packet_bytes)) {
-      L6Telemetry::logWarn("serial protocol crc16 check failed");
+      LOG_WARN("serial protocol crc16 check failed");
       rx_buffer_.erase(rx_buffer_.begin());
       continue;
     }
@@ -105,7 +105,7 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       continue;
     }
 
-    L6Telemetry::logDebug("serial protocol ignored unsupported frame",
+    LOG_DEBUG("serial protocol ignored unsupported frame",
                           static_cast<int>(header.cmd_id));
     rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
   }
@@ -213,7 +213,7 @@ bool SerialProtocol::checkPacketLoss(std::uint8_t seq) {
   }
 
   if (seq == last_rx_seq_) {
-    L6Telemetry::logDebug("serial rx seq repeated", static_cast<int>(seq));
+    LOG_DEBUG("serial rx seq repeated", static_cast<int>(seq));
     return false;
   }
 
@@ -225,7 +225,7 @@ bool SerialProtocol::checkPacketLoss(std::uint8_t seq) {
 
   const auto dropped = static_cast<std::uint8_t>(seq - expected);
   dropped_packet_count_ += dropped;
-  L6Telemetry::logWarn("serial rx packet lost", static_cast<int>(dropped),
+  LOG_WARN("serial rx packet lost", static_cast<int>(dropped),
                        "last", static_cast<int>(last_rx_seq_), "current",
                        static_cast<int>(seq));
   last_rx_seq_ = seq;

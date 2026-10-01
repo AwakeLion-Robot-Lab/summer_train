@@ -22,7 +22,7 @@ T readOptional(const YAML::Node &node, const std::string &key,
   try {
     return node[key].as<T>();
   } catch (const YAML::Exception &e) {
-    L6Telemetry::logWarn("serial config invalid field", key, e.what());
+    LOG_WARN("serial config invalid field", key, e.what());
     return default_value;
   }
 }
@@ -39,13 +39,13 @@ Eigen::Matrix3d readRotation(const YAML::Node &node, const std::string &key,
   try {
     const YAML::Node &rows = node[key];
     if (!rows.IsSequence() || rows.size() != 3) {
-      L6Telemetry::logWarn("serial config rotation must have 3 rows", key);
+      LOG_WARN("serial config rotation must have 3 rows", key);
       return default_value;
     }
 
     for (std::size_t row = 0; row < 3; ++row) {
       if (!rows[row].IsSequence() || rows[row].size() != 3) {
-        L6Telemetry::logWarn("serial config rotation row must have 3 columns",
+        LOG_WARN("serial config rotation row must have 3 columns",
                              key);
         return default_value;
       }
@@ -55,7 +55,7 @@ Eigen::Matrix3d readRotation(const YAML::Node &node, const std::string &key,
       }
     }
   } catch (const YAML::Exception &e) {
-    L6Telemetry::logWarn("serial config invalid rotation", key, e.what());
+    LOG_WARN("serial config invalid rotation", key, e.what());
     return default_value;
   }
 
@@ -66,7 +66,7 @@ Eigen::Matrix3d readRotation(const YAML::Node &node, const std::string &key,
           kRotationTolerance &&
       std::abs(rotation.determinant() - 1.0) <= kRotationTolerance;
   if (!orthonormal) {
-    L6Telemetry::logWarn("serial config rotation is not a valid rotation", key);
+    LOG_WARN("serial config rotation is not a valid rotation", key);
     return default_value;
   }
 
@@ -76,12 +76,12 @@ Eigen::Matrix3d readRotation(const YAML::Node &node, const std::string &key,
 // 修正明显非法的串口参数，避免运行时除零或空设备名。
 void normalize(SerialConfig &config) {
   if (config.device.empty()) {
-    L6Telemetry::logWarn("serial config device empty, use default");
+    LOG_WARN("serial config device empty, use default");
     config.device = "/dev/ttyACM0";
   }
 
   if (config.baud_rate <= 0) {
-    L6Telemetry::logWarn("serial config baud rate invalid, use default");
+    LOG_WARN("serial config baud rate invalid, use default");
     config.baud_rate = 1000000;
   }
 
@@ -120,9 +120,9 @@ SerialConfig loadSerialConfig(const std::string &config_path) {
 
   // 这条外参一旦配错，整个世界系姿态都会错，因此启动时明确记录使用的约定。
   if (config.imuBarrelRotationNeeded()) {
-    L6Telemetry::logInfo("serial config applies R_imu_barrel conversion");
+    LOG_INFO("serial config applies R_imu_barrel conversion");
   } else {
-    L6Telemetry::logInfo(
+    LOG_INFO(
         "serial config assumes MCU reports pose in barrel frame");
   }
 

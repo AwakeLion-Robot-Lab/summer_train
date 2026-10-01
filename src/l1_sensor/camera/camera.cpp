@@ -18,7 +18,7 @@ Camera::Camera(const std::string &config_path) {
   if (const auto calibration = config["calibration"]) {
     calibration_ =
         loadCameraCalibration(calibration, config_path + ": calibration");
-    L6Telemetry::logInfo("camera calibration loaded", config_path, "image",
+    LOG_INFO("camera calibration loaded", config_path, "image",
                          calibration_->image_size.width,
                          calibration_->image_size.height,
                          "distortion_coefficients",

@@ -27,7 +27,7 @@ L2Perception::ArmorDetector makeDetector(const AutoAimConfig& config, bool guess
     if (!retry) {
       throw;
     }
-    L6Telemetry::logWarn(
+    LOG_WARN(
       "armor model failed on", inference.device, error.what(), "; falling back to CPU");
     inference.device = "CPU";
     armor_backend->load(inference);
@@ -54,7 +54,7 @@ L2Perception::ArmorDetector makeDetector(const AutoAimConfig& config, bool guess
       .decoder = decoder,
       .finder = config.light_finder,
       .number = config.number_classifier});
-  L6Telemetry::logInfo(
+  LOG_INFO(
     "armor model loaded", backend_name, inference.model_path.string(), inference.device,
     "layout", yolov8 ? "yolov8_21" : "yolov5_22", by_shape ? "(by shape)" : "(yaml)",
     "output", decoder.contract.output_name, "conf", decoder.confidence_threshold,

@@ -24,9 +24,9 @@ MindVision::MindVision(double exposure_ms, double gamma, const std::string & vid
 {
   set_vid_pid(vid_pid);
 #if NEWVISION_HAS_LIBUSB
-  if (libusb_init(NULL)) L6Telemetry::logWarn("Unable to init libusb!");
+  if (libusb_init(NULL)) LOG_WARN("Unable to init libusb!");
 #else
-  L6Telemetry::logWarn("libusb header not found; USB reset is disabled.");
+  LOG_WARN("libusb header not found; USB reset is disabled.");
 #endif
 
   try_open();
@@ -67,7 +67,7 @@ MindVision::~MindVision()
     capture_thread_.join();
   }
   close();
-  L6Telemetry::logInfo("Mindvision destructed.");
+  LOG_INFO("Mindvision destructed.");
 }
 
 bool MindVision::read(
@@ -141,7 +141,7 @@ void MindVision::open()
 
       if (status != CAMERA_STATUS_SUCCESS) {
         if (!stop_requested_.load()) {
-          L6Telemetry::logWarn("Camera dropped!");
+          LOG_WARN("Camera dropped!");
         }
         healthy_.store(false);
         break;
@@ -151,7 +151,7 @@ void MindVision::open()
       const auto release_status = CameraReleaseImageBuffer(handle_, raw);
       raw = nullptr;
       if (process_status != CAMERA_STATUS_SUCCESS || release_status != CAMERA_STATUS_SUCCESS) {
-        L6Telemetry::logWarn("MindVision image process or release failed.");
+        LOG_WARN("MindVision image process or release failed.");
         healthy_.store(false);
         break;
       }
@@ -164,7 +164,7 @@ void MindVision::open()
     healthy_.store(false);
   }};
 
-  L6Telemetry::logInfo("Mindvision opened.");
+  LOG_INFO("Mindvision opened.");
 }
 
 void MindVision::try_open()
@@ -178,7 +178,7 @@ void MindVision::try_open()
   } catch (const std::exception & e) {
     healthy_.store(false);
     close();
-    L6Telemetry::logWarn("{}", e.what());
+    LOG_WARN(e.what());
   }
 }
 
@@ -195,7 +195,7 @@ void MindVision::set_vid_pid(const std::string & vid_pid)
 {
   auto index = vid_pid.find(':');
   if (index == std::string::npos) {
-    L6Telemetry::logWarn("Invalid vid_pid: \"{}\"", vid_pid);
+    LOG_WARN("Invalid vid_pid:", vid_pid);
     return;
   }
 
@@ -206,7 +206,7 @@ void MindVision::set_vid_pid(const std::string & vid_pid)
     vid_ = std::stoi(vid_str, 0, 16);
     pid_ = std::stoi(pid_str, 0, 16);
   } catch (const std::exception &) {
-    L6Telemetry::logWarn("Invalid vid_pid: \"{}\"", vid_pid);
+    LOG_WARN("Invalid vid_pid:", vid_pid);
   }
 }
 
@@ -218,18 +218,18 @@ void MindVision::reset_usb() const
   // https://github.com/ralight/usb-reset/blob/master/usb-reset.c
   auto handle = libusb_open_device_with_vid_pid(NULL, vid_, pid_);
   if (!handle) {
-    L6Telemetry::logWarn("Unable to open usb!");
+    LOG_WARN("Unable to open usb!");
     return;
   }
 
   if (libusb_reset_device(handle))
-    L6Telemetry::logWarn("Unable to reset usb!");
+    LOG_WARN("Unable to reset usb!");
   else
-    L6Telemetry::logInfo("Reset usb successfully :)");
+    LOG_INFO("Reset usb successfully :)");
 
   libusb_close(handle);
 #else
-  L6Telemetry::logWarn("USB reset skipped because libusb support is not available.");
+  LOG_WARN("USB reset skipped because libusb support is not available.");
 #endif
 }
 

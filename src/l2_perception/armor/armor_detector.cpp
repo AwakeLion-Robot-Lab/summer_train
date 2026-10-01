@@ -183,7 +183,7 @@ ArmorFrame ArmorDetector::detectFrame(
     return frame;
   } catch (const std::exception& error) {
     // 一帧坏图或一次推理失败不该中断主循环，记日志后当这帧没检出。
-    L6Telemetry::logError("armor inference failed", error.what());
+    LOG_ERROR("armor inference failed", error.what());
     last_numbers_ = {};
     last_lights_.clear();
     last_timing_ = {};

@@ -76,7 +76,7 @@ int runCapture(int argc, char* argv[])
       .output_dir = std::filesystem::path{output_dir}}};
   L1Sensor::Camera camera{config_path};
 
-  L6Telemetry::logInfo(
+  LOG_INFO(
     "camera capture started",
     "config", config_path,
     "fps", fps,
@@ -107,7 +107,7 @@ int runCapture(int argc, char* argv[])
 
   camera.stop();
   cv::destroyWindow(kWindowName);
-  L6Telemetry::logInfo(
+  LOG_INFO(
     "camera capture stopped",
     "saved", saver.savedCount(),
     "output", saver.sessionDirectory().string());
@@ -125,7 +125,7 @@ int main(int argc, char* argv[])
     return result;
   } catch (const std::exception& error) {
     cv::destroyAllWindows();
-    L6Telemetry::logError("camera capture failed", error.what());
+    LOG_ERROR("camera capture failed", error.what());
     L6Telemetry::flushLogger();
     return 1;
   }

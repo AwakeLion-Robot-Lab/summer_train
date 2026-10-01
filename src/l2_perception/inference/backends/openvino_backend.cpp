@@ -141,7 +141,7 @@ void OpenVinoBackend::load(const InferenceModelConfig& config)
     if (names.empty()) {
       // 无名输出交给下面的 compile_model 去报错；这里只保证不在取名时先抛。
       output_names.push_back("output" + std::to_string(index));
-      L6Telemetry::logWarn(
+      LOG_WARN(
         "OpenVinoBackend: output", index, "has no name in the model; using",
         output_names.back());
     } else {
