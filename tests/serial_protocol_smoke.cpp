@@ -84,7 +84,9 @@ std::uint8_t txSequence(std::span<const std::uint8_t> bytes)
 
 int main()
 {
-  static_assert(sizeof(Protocol::RxPayload) == 18);
+  // roll / yaw / pitch / bullet_speed / heat 五个 float + enemy_color + mode，
+  // 和电控约定的线上格式，改了两边都要动。
+  static_assert(sizeof(Protocol::RxPayload) == 22);
 
   const auto first = makeStatePacket(10, 1.0F, 2.0F);
   const auto second = makeStatePacket(11, 3.0F, 4.0F);
