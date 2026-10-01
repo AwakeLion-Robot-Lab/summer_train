@@ -343,6 +343,9 @@ void normalize(AutoAimConfig& config)
   }
 
   config.debug.overlay_every = std::max(config.debug.overlay_every, 1);
+  if (config.debug.plot_port <= 0 || config.debug.plot_port > 65535) {
+    config.debug.plot_port = DebugConfig{}.plot_port;
+  }
 }
 
 }  // namespace
@@ -612,6 +615,9 @@ AutoAimConfig loadConfig(const std::string& path)
   const YAML::Node debug = root["debug"];
   readValue(debug, "overlay", config.debug.overlay);
   readValue(debug, "overlay_every", config.debug.overlay_every);
+  readValue(debug, "plot", config.debug.plot);
+  readValue(debug, "plot_host", config.debug.plot_host);
+  readValue(debug, "plot_port", config.debug.plot_port);
   readValue(debug, "force_work_mode", config.debug.force_work_mode);
 
   normalize(config);

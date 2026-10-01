@@ -22,6 +22,12 @@ struct DebugConfig {
   // 每 N 帧画一次。画面只是用来目视对齐，不必每帧都画。
   int overlay_every{1};
 
+  // PlotJuggler 遥测。与叠加层分开开关：上车查云台抖动时 NUC 没显示器，要的是
+  // 曲线；UDP 无连接，没人接收也不阻塞。
+  bool plot{false};
+  std::string plot_host{"127.0.0.1"};
+  int plot_port{9870};
+
   // 无视下位机上报的 WorkMode，强制按指定模式跑。空串表示不覆盖。
   // 只用于电控还没接好模式切换、但视觉侧要先把链路跑通的场合。
   // 这是**调试用的旁路**：正常比赛必须留空，由下位机决定何时进自瞄。
