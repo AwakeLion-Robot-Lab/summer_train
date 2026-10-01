@@ -56,8 +56,7 @@ int main()
     const std::optional<L3Estimation::EskfTarget> tracked = target;
 
     L4Planning::Plan plan;
-    plan.status = L4Planning::PlanStatus::FireReady;
-    plan.reason = L4Planning::PlanError::None;
+    plan.error = L4Planning::PlanError::None;
     plan.fire = L4Planning::FireReference{0, target.armor_xyza_list().front()};
 
     L5Control::FireDecision decision;

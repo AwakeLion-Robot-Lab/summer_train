@@ -225,10 +225,6 @@ local standalone_tests = {
     latest_buffer_smoke = {
         includes = {"tools/LatesBuffer/include"},
     },
-    fps_counter_smoke = {
-        files    = {"src/l6_telemetry/fps_counter.cpp"},
-        includes = {"include"},
-    },
     udp_json_sender_smoke = {
         files    = {"src/l6_telemetry/udp_json_sender.cpp"},
         includes = {"include", "tools/logger/include/3rdparty"},

@@ -7,213 +7,120 @@
 
 ```
 t_hit     = t_image + delay.beforeFire() + fly_time
-aim_point = 整车模型外推到 t_hit 后第 i 块板的位置
+aim_point = 整车模型外推到 t_hit 后选中那块板的位置
 fly_time  = 弹道( aim_point 的水平距离 d 和高度 h )
            ↑________________________________________|
 ```
 
-参考实现:sp_vision 的 `Aimer`、Climber_Vision 的 `Aimer`/`Planner`、talos 的 `L4_planning`。
-结构对标 sp 的 `Aimer`(选板内聚为私有方法,不单独立类),关键算法取 talos 的做法。
-
-## 组件
-
-| 组件 | 职责 |
-| --- | --- |
-| `Predictor` | 整车模型外推 + 展开物理装甲板,纯函数 |
-| `IBallisticModel` | 正向弹道:给定发射角算落点高度和飞行时间 |
-| `BallisticSolver` | 反向弹道:给定 (d, h, v0) 解 pitch 和 fly_time |
-| `Planner` | 编排逐板不动点迭代、选板、火控门控 |
-| `IPlanner` | 规划器接口,供后续 MPC / 五次多项式实现 |
+参考实现:sp_vision 的 `Aimer`。整个 L4 只有一个类 `Planner`(`l4_planning/armor/planner.hpp`),
+选板是它的私有方法 `choose()`,真空弹道是 `planner.cpp` 里的 `solveTrajectory()`。
 
 ## 坐标系:弹道直接在枪管系解
 
-`pnp_solver.cpp:249-251`:
-
-```cpp
-const Eigen::Vector3d xyz_in_barrel = R_camera2barrel_ * xyz_in_camera + t_camera2barrel_;
-const Eigen::Vector3d xyz_in_world  = R_barrel2world_ * xyz_in_barrel;   // 纯旋转
-```
-
-world 系原点**就是**枪管原点,枪口平移已经被 `t_camera2barrel_` 吸收。所以
-`d = hypot(x, y)`、`h = z` 直接可用,不需要再加枪口偏置。这正是
-`docs/pure_cpp_auto_aim_route.md:113` 要求的"弹道在枪口坐标解算",结构上已经满足。
-
----
+`PnpSolver` 把相机系观测先经 `T_barrel_camera` 变到枪管系,再用纯旋转 `R_world_barrel`
+变到世界系。world 系原点**就是**枪管原点,枪口平移已经被外参吸收,所以
+`d = hypot(x, y)`、`h = z` 直接可用,不需要再加枪口偏置。
 
 ## 一、外推必须同时推进中心和 yaw
 
-装甲板位置由 (旋转中心, 整车 yaw, 半径) 共同决定。改造前的 `Predictor::predict()`
-只有 `position += velocity * dt`,**没有推进 yaw** —— 小陀螺目标会被算成原地不动。
-`v_yaw` 取 10 rad/s 时,100 ms 延迟对应 57° 偏差,这恰恰是延迟补偿要解决的主要误差。
+装甲板位置由 (旋转中心, 整车 yaw, 半径) 共同决定。只推中心不推 yaw 时,小陀螺目标会被
+算成原地不动:`v_yaw` 取 10 rad/s 时,100 ms 延迟对应 57° 偏差,这恰恰是延迟补偿要解决的
+主要误差。`Planner` 在目标副本上调 `EskfTarget::predict()`,它按整车运动模型同时推进两者,
+`planner_smoke` 的 `testPredictAdvancesYaw` 钉住这一点。
 
-为此 `TargetState` 新增 `armor_num`、`second_radius`、`height_diff`,让 L4 能自行展开
-全部装甲板并外推,不必反向依赖 `Tracker`(那只能给当前帧的装甲板位置)。这保持了
-"跨层只暴露不可变数据快照"的约定,`Planner` 也因此可以脱离硬件单测。
+## 二、命中时刻迭代
 
-## 二、不动点迭代逐板跑,收敛后再选板
+与 sp 相同:先把目标外推到预计发射时刻(`delay.beforeFire()`),选板、解一次弹道得到
+初始飞行时间;之后每轮都从**同一个发射时刻状态**重新外推 `fly_time`、重新选板、重新解弹道,
+直到相邻两次飞行时间之差小于 `fly_time_tolerance`,或跑满 `max_iterations`。
 
-**这是与 sp / Climber 最重要的一处差异,取自 talos。**
+选板在循环内部,窗口边界附近换板会让飞行时间来回跳。双板同时在窗口内时的锁定迟滞
+(见下一节)压住了这种来回切换;`testSharedIterationProducesFiniteCommands` 扫过
+4 种转速 × 120 个 yaw 构型,要求每帧都有有限的命令角。
 
-sp 和 Climber 把选板放在迭代循环**内部**:每次迭代重新外推、重新选板、重新解弹道。
-问题是这个循环可能不收敛:
+## 三、选板
 
-```
-飞行时间变了 → 外推的 yaw 变了 → 选中的板变了 → 距离变了 → 飞行时间又变了
-```
+输出的 `Plan::aim` 和 `Plan::fire` 都对应一块真实装甲板,不生成车辆中心代理点:
 
-在窗口边界附近两块板交替胜出,`fly_time` 在两个吸引子之间来回跳,10 次迭代跑完仍不
-满足收敛判据 —— 而边界附近恰恰是最需要出解的时刻。
+- 目标尚未发生跳板(`EskfTarget::jumped` 为假)时固定用 0 号板:其余板的位置还只是初值。
+- 常规车:取与车心方向夹角在 `coming_angle` 内的板;两块都在时锁住其中一块,直到它离开
+  窗口才切换,只剩一块时解除锁定。
+- 前哨站(或半径异常的目标):按旋转方向用 `coming_angle` / `leaving_angle` 排除即将转走
+  的板,前哨站用单独的一组角度。
+- 窗口里一块都没有时规划失败(`PlanError::OutOfWindow`),云台保持上一条命令、关火。
+  高速小陀螺下这是正常的击发间歇。
 
-talos 的 `aim_generic` 反过来:对**每块板**各跑一次 `refine_flying_time`(板号在迭代
-中固定,目标不变,必然收敛),得到 N 组收敛解,然后在这 N 组里选板。代价是 N 倍的弹道
-求解,而弹道是闭式解,可以忽略。
+进自瞄后的头一次选板是例外:`reset()`(runtime 在 Idle 每帧调)标记新一轮自瞄,下一次成功
+规划若有两块候选板,锁离枪口最近的那块而不是更正对的那块,之后照常沿用锁、等它离开窗口再
+切。需要 `PlanInput::q_world_barrel`,缺省时退回原规则;前哨站的转向分支不受影响。回放统计
+(3 m,6 段录像):15~27% 的帧两条规则选的板不同,这些帧第一条命令离枪口的 yaw 差中位数
+少 5~8°,距离越近差得越多。
 
-`Planner::refineArmor()` 实现前者,`Planner::selectArmor()` 实现后者。
-`testPerArmorFixedPointAlwaysConverges` 扫过 4 种转速 × 120 个 yaw 构型,要求 480 帧
-全部收敛。
+## 四、弹道
 
-## 三、选板与火控分离
+真空闭式解:把 `tanθ` 当未知量的一元二次方程,两条解里取飞行时间短的低弧。判别式为负
+(打不到)时规划失败(`PlanError::BallisticFailed`)。
 
-改造前:反陀螺档在 coming/leaving 窗口里找不到板时返回"无瞄准点",`Plan::valid()` 为
-false。后果是**高速小陀螺的正常击发间隙里,云台会停止跟随** —— 等窗口回来时枪口已经
-指偏了。
+空气阻力暂不建模。以前有过一套 `BallisticSolver` + 阻力模型,但 `Planner` 从没接上它,
+已删除;要加阻力时在 `solveTrajectory()` 里换模型,并重跑 `planner_smoke` 的往返用例。
 
-talos 的 `ControlIntent` 把这件事拆成三态 variant:`TrackCommand`(跟随轨迹)、
-`ShotCommand`(直接瞄准,带 `degradation_reason`)、`HoldCommand`(无目标)。newvision 的
-L5 目前是桩,不值得为此上 variant,取其语义即可:
+## 五、弹速
 
-| 字段 | 含义 |
+下位机回传的弹速不可信(没发时是 0,或低于 `min_valid_bullet_speed`)时,用
+`default_bullet_speed`(23 m/s)解弹道,**计划照常有效、照常可开火**。切换到缺省值和切回
+实测值时各打一条日志,不是每帧都打。
+
+## 六、规划结果只有一个状态字段
+
+`Plan::error` 为 `PlanError::None` 时 `valid()` 为真,`aim` 与 `fire` 都已填好;否则本帧
+没有新的瞄准角,L5 保持上一条命令并关火。不再有"可以跟随但不许开火"的中间态:是否开火
+完全由 L5 判定,L4 只回答"有没有角度可打"。
+
+| `PlanError` | L5 的拒绝原因 |
 | --- | --- |
-| `Plan::status` | `Rejected` / `TrackOnly` / `FireReady` 三种互斥状态 |
-| `Plan::valid()` | 是否有可供云台跟随的 `aim` reference |
-| `Plan::fireAdmissible()` | 是否允许 L5 继续检查开火门禁 |
-| `Plan::reason` | 拒绝或降级的主原因 |
+| `None` | — |
+| `NoTarget` | `no_target` |
+| `OutOfWindow` | `out_of_window` |
+| `BallisticFailed` | `ballistic_failed` |
 
-于是 coming/leaving 窗口从**选板判据**改成**火控判据**。这也是它本来该在的位置:
-coming/leaving 回答的是"子弹飞到时这块板还正对枪口吗",那是开火问题不是指向问题。
-`testFireWindowGatesWithoutDroppingAim` 断言整圈 60 帧云台**帧帧有角度**,而可开火的
-只有 36 帧。
-
-选板改用 talos 的三级回退:**锁定板 → 前置窗口内夹角最小 → 全局夹角最小(标记降级)**。
-最后一级保证永远有输出。
-
-## 四、SP 选板策略
-
-当前 Planner 不保留未接入的 AimPhase 状态机，也不生成车辆中心代理点。无论转速高低，
-输出的 `Plan::aim` 和 `Plan::fire` 都对应一块真实装甲板：目标尚未发生跳板时固定使用
-0 号板；几何被多块板约束后，再按 SP 的窗口、转向和锁定规则选板。
-
-进自瞄后的头一次选板是例外：`reset()`（runtime 在 Idle 每帧调）标记新一轮自瞄，下一次成功
-规划若有两块候选板，锁离枪口最近的那块而不是更正对的那块，之后照常沿用锁、等它离开窗口再
-切。需要 `PlanInput::q_world_barrel`，缺省时退回原规则；前哨站的转向分支不受影响。回放统计
-（3 m，6 段录像）：15~27% 的帧两条规则选的板不同，这些帧第一条命令离枪口的 yaw 差中位数
-少 5~8°，距离越近差得越多。
-
-## 五、弹道:模型与求解器拆开
-
-talos 的 `core/trajectory` 把正向物理(`BallisticModel::compute_impact`)和反向求解
-(`TrajectorySolver::solve`)拆成两层。这里照搬:
-
-```cpp
-struct Impact { double z; double fly_time; };
-class IBallisticModel {
-  virtual std::optional<Impact> impact(double range, double pitch, double v0) const = 0;
-};
-```
-
-| 模型 | 正向解 |
-| --- | --- |
-| `VacuumModel` | `t = d/(v0 cosθ)`,`z = v0 sinθ·t - gt²/2` |
-| `LinearDragModel` | `t = (e^{kd}-1)/(k v0 cosθ)`,z 同上 |
-
-`BallisticSolver` 用真空闭式解(把 `tanθ` 当未知量的一元二次方程,取飞行时间短的低弧)
-作为初值:真空模型直接返回,有阻力时走 talos `DirectSolver` 的高度补偿迭代 —— 把实际落
-点与目标的高度差累加回瞄准高度,重新求角,直到落差小于 `height_tolerance`。这个迭代天然
-收敛到低弧,因为起点就在低弧一侧。
-
-**这样就不需要 Ceres。** Climber_Vision 的 `AirResistTrajectory` 在两个方向都加阻力,
-反解隐式方程只能上 Ceres;talos 的模型只在水平方向加阻力,换来正向闭式解。17mm 弹丸在
-10 m 内竖直速度远小于水平速度,这一项的影响比水平衰减小一个量级 —— 用一点物理精度换掉
-一个重型依赖,对 newvision 是划算的。
-
-`k = 0` 时 `LinearDragModel` 严格退化成真空解(用 `expm1` 处理 0/0),
-`testLinearDragDegradesToVacuum` 断言两者逐位一致。`k = 0.02` 时 6 m 处需要多抬 0.21°。
-
-## 六、弹速门限只留一处
-
-裁判系统上电初期回传 0 是正常的。此时用 `fallback_bullet_speed`(23 m/s)仍然解算并输出
-瞄准角,但把 `PlanError::BadBulletSpeed` 记进 `Plan`,由 L5 拒绝开火。
-
-门限**只在 `PlanConfig::min_valid_bullet_speed` 一处**。`BallisticSolver` 不再自带业务
-门槛,只拒绝数学上无解的输入(`v0 < 1e-3`)。两处各设一道且数值不一致的话,落在夹缝里的
-弹速会既不触发兜底、又被求解器拒绝,最后报成 `BallisticFailed` 而不是 `BadBulletSpeed`,
-把真正的原因藏掉。`testPlannerFlagsBadBulletSpeed` 专门盯住这个回归。
+L5 的每条拒绝原因只对应一种情况:规划失败时只记上表那一条,不会再叠一条 `aim_error`。
 
 ## 七、`plan_time` 由调用方传入
 
-sp_vision 的 `Aimer::aim` 在 `to_now` 分支里直接读 `steady_clock::now()`(`aimer.cpp:47`),
-这让 `aim()` 变成非纯函数,同一段回放跑两次结果不同。newvision 有离线回放 harness,
-`plan()` 必须保持纯函数:运行时传 `now()`,回放传录制的时间戳。
+sp_vision 的 `Aimer::aim` 在 `to_now` 分支里直接读 `steady_clock::now()`,这让 `aim()` 变成
+非纯函数,同一段回放跑两次结果不同。newvision 有离线回放 harness,`plan()` 必须保持纯函数:
+运行时传 `now()`,回放传录制的时间戳并置 `to_now = false`(`image_to_plan` 固定按 5 ms)。
 
 ## 延迟
 
-仍按 `Delay` 的五段拆分记录,不塌缩成标量:
+按 `Delay` 的五段拆分记录,不塌缩成标量:
 
 | 段 | 来源 |
 | --- | --- |
-| `image_to_plan` | 曝光时刻到规划时刻,直接可测 |
-| `plan_to_send` | 规划到下发,由 L5 回填 |
-| `send_to_control` | 需实车标定,来自 `PlanConfig`,未标定时为 0 |
-| `control_to_fire` | 需实车标定,来自 `PlanConfig`,未标定时为 0 |
-| `fire_to_hit` | 弹道解算填入 |
+| `image_to_plan` | 曝光时刻到规划时刻,runtime 实测 |
+| `plan_to_send` | 规划结束到串口发出,runtime 实测,用上一帧的值 |
+| `send_to_control` | 实车标定,`planning.send_to_control_ms`,不写按 0 |
+| `control_to_fire` | 按整车 v_yaw 分高低速两档,`high_speed_delay_ms` / `low_speed_delay_ms` |
+| `fire_to_hit` | 弹道飞行时间 |
 
-未标定的段保持 0 并由 `PlanConfig::fireDelayReady()` 拦住开火——**绝不用猜测值填补**,
-否则火控门禁会被静默绕过。
+## 给 MPC / 五次多项式留的位置
 
-Climber 按转速分了 `high_speed_delay_time` / `low_speed_delay_time` 两档常量延迟。那是
-把未标定的段用经验值顶上,与上面的约定冲突,**不采用**。
-
-## 给 MPC / 五次多项式留的接口
-
-`IPlanner` 与当前实现共同放在 `planner.hpp`,三种实现共用同一份输入输出:
-
-| 实现 | 状态 | 说明 |
-| --- | --- | --- |
-| `Setpoint` | **已实现**(`Planner`) | 只解命中点,速度和加速度保持 0 |
-| `QuinticSwitch` | 未实现 | 只在切板造成的轨迹断点处插入五次多项式过渡段 |
-| `TinyMpc` | 未实现 | 全程用 MPC 约束云台角加速度 |
-
-当前 `Plan` 只提供位置参考。轨迹规划器接入时,速度和加速度应作为一组可选 reference
-扩展,而不是重新铺成多个独立字段。**L5 不需要知道用的是哪一种。**
-
-当前 `PlanInput` 和 `PlanConfig` 只保留定点规划实际使用的数据，不提前铺设速度、加速度
-和云台约束字段。轨迹规划器真正接入时，再把起点状态和约束作为一个完整配置组加入，避免
-长期维护未使用、彼此可能不一致的占位成员。
-
-真要上 MPC 时,talos 和 Climber 走的是同一条路,可以直接抄:
-`ReferenceTrajectory`(4×horizon 的 `[yaw, yaw_rate, pitch, pitch_rate]` 状态矩阵,由
-`Aimer` 在 horizon 上逐点采样、有限差分出速度)+ TinyMPC 求解器。Climber 的
-`tasks/auto_aim/planner/tinympc/` 是可直接移植的实现。
+`Plan` 目前只提供位置参考。轨迹规划器接入时,速度和加速度应作为一组可选 reference 扩展,
+而不是重新铺成多个独立字段;起点状态和云台约束作为一个完整配置组加入 `PlanConfig`。
+`plan/mpc` 和 `plan/quintic-blend` 两条分支就是这样接的。
 
 ## 验证
 
 ```bash
-xmake run planner_smoke     # 16 个用例,无需硬件
+xmake run planner_smoke     # 无需硬件
+xmake run fire_decision_smoke
 ```
 
-覆盖:yaw 外推、平动外推、真空弹道往返一致性、`k=0` 退化、阻力抬头量与正向回代、弹道非法
-输入拒绝、求解器不含业务门限、档位阶梯的死区与计数迟滞、不动点收敛、弹速夹缝报错、
-无目标/丢失拒绝、可观测性门禁锁 0 号板、选板迟滞、火控门控不掉瞄准、中心代理点几何、
-480 构型逐板收敛。
+估计和规划数值的回归用 `track_diag` 的 `aim.csv` 逐字节比对。
 
 ## 未做的事
 
-- `plan_to_send` 需要 L5 回填后才有值。
-- **多目标加权选择**。talos 的 `armor_target_decider` 按 image_center / track_state / tof /
-  gimbal_effort / armor_name 五项加权打分,并用 `switch_margin` 做切换迟滞;
-  `docs/target_selection_and_vehicle_tracking.md` 描述的正是同一套设计。但 newvision 的
-  `Tracker` 目前只维护**一个** `TrackedTarget`,没有多候选可选,做这件事要先改 L3。
-- `Planner` 已在 `AutoAimRuntime` 中与 `FireDecider` / `Controller` /
-  `SerialWorker` 直接串联。
-- 空气阻力系数 `k` 需要实车打靶标定,默认 0(真空)。
+- **多目标加权选择**。`docs/target_selection_and_vehicle_tracking.md` 描述的打分与切换
+  迟滞需要 L3 维护多个候选目标,目前只有一个。
+- 空气阻力。
 - `FireConfig::shoot_enable` 保持 `false`,实车验收前不解锁开火。

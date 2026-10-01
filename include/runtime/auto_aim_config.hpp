@@ -6,7 +6,7 @@
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/types.hpp"
-#include "l4_planning/armor/types.hpp"
+#include "l4_planning/types.hpp"
 #include "l5_control/fire_decision.hpp"
 
 #include <filesystem>
@@ -25,7 +25,7 @@ struct DebugConfig {
   // 无视下位机上报的 WorkMode，强制按指定模式跑。空串表示不覆盖。
   // 只用于电控还没接好模式切换、但视觉侧要先把链路跑通的场合。
   // 这是**调试用的旁路**：正常比赛必须留空，由下位机决定何时进自瞄。
-  // 注意它不解除任何开火闸门，shoot_enable 和延迟链标定仍然各自独立生效。
+  // 注意它不解除开火闸门，shoot_enable 仍然独立生效。
   std::string force_work_mode{};
 };
 
@@ -68,7 +68,7 @@ struct AutoAimConfig {
   L3Estimation::ArmorConfig armor;
   L3Estimation::EskfTrackerConfig ieskf_tracker;
   L3Estimation::EskfTargetConfig ieskf_target;
-  L4Planning::ArmorPlanConfig plan;
+  L4Planning::PlanConfig plan;
   L5Control::FireConfig fire;
   DebugConfig debug;
 };

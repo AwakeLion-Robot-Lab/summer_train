@@ -7,18 +7,9 @@
 #include <utility>
 
 namespace L5Control {
-Controller::Controller() noexcept
-: Controller(FireConfig{})
-{
-}
 
 Controller::Controller(FireConfig fire_config) noexcept
-: command_jump_threshold_(
-    std::isfinite(fire_config.command_jump_threshold) &&
-        fire_config.command_jump_threshold >= 0.0
-      ? fire_config.command_jump_threshold
-      : FireConfig{}.command_jump_threshold),
-  fire_decider_(std::move(fire_config))
+: fire_decider_(std::move(fire_config))
 {
 }
 
@@ -38,26 +29,22 @@ std::optional<SerialCommand> Controller::update(
     }
   }
 
-  const bool angles_valid = actual_angles.has_value();
-
+  // 姿态缺失时写入 NaN，FireDecider 以 no_pose 关火；有效 Plan 仍照常下发跟随角。
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   FireInput input;
-  input.target = target;
+  if (target) {
+    input.target = target->name;
+  }
   input.track_state = track_state;
   input.plan = plan;
-  input.actual_yaw = angles_valid
-    ? (*actual_angles)[0]
-    : std::numeric_limits<double>::quiet_NaN();
-  input.actual_pitch = angles_valid
-    ? (*actual_angles)[1]
-    : std::numeric_limits<double>::quiet_NaN();
-  // 姿态缺失时写入 NaN，让 FireDecider 关闭开火；有效 Plan 仍可继续下发跟随角。
+  input.actual_yaw = actual_angles ? (*actual_angles)[0] : kNaN;
+  input.actual_pitch = actual_angles ? (*actual_angles)[1] : kNaN;
   input.command_jump = plan.valid() && last_command_ &&
     std::abs(L6Telemetry::limit_rad(plan.aim.yaw - last_command_->yaw)) >
-      command_jump_threshold_;
+      fire_decider_.config().command_jump_threshold;
 
-  const FireDecision decision = fire_decider_.decide(input);
-  last_decision_ = decision;
-  std::optional<SerialCommand> command = makeCommand(plan, decision);
+  last_decision_ = fire_decider_.decide(input);
+  std::optional<SerialCommand> command = makeCommand(plan, last_decision_);
   if (command) {
     last_command_ = command;
   } else {
@@ -79,7 +66,7 @@ std::optional<SerialCommand> Controller::safeHold() const
 }
 
 std::optional<SerialCommand> Controller::makeCommand(
-  const L4Planning::Plan& plan, const FireDecision& decision) const
+  const L4Planning::Plan& plan, const FireDecision& decision)
 {
   // 规划失败时不下发，交给下位机保持上一状态。
   // 角度的有限性由 Planner 在提交 Plan 前保证，这里不再验一遍。

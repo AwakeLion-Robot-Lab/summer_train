@@ -1,5 +1,6 @@
 #include "l4_planning/armor/planner.hpp"
 
+#include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 
 #include <chrono>
@@ -54,12 +55,11 @@ std::chrono::microseconds secondsToDuration(double seconds)
 Plan rejected(PlanError error)
 {
   Plan plan;
-  plan.reason = error;
+  plan.error = error;
   return plan;
 }
 
-template <typename Target>
-double centerYaw(const Target& target)
+double centerYaw(const L3Estimation::EskfTarget& target)
 {
   const Eigen::VectorXd x = target.ekf_x();
   return std::atan2(x[2], x[0]);
@@ -67,55 +67,50 @@ double centerYaw(const Target& target)
 
 }  // namespace
 
-Planner::Planner(ArmorPlanConfig config)
+Planner::Planner(PlanConfig config)
 : config_(std::move(config))
 {
 }
 
-Plan Planner::plan(const PlanInput& input)
+double Planner::bulletSpeed(double reported)
 {
-  return planTarget(
-    input.target, input.robot_state, input.plan_time, input.to_now,
-    input.plan_to_send, input.q_world_barrel);
+  const bool valid =
+    std::isfinite(reported) && reported >= config_.min_valid_bullet_speed;
+  if (!valid && !default_speed_) {
+    LOG_WARN(
+      "bullet speed from MCU invalid:", reported, "m/s, using default",
+      config_.default_bullet_speed, "m/s");
+  } else if (valid && default_speed_) {
+    LOG_INFO("bullet speed from MCU back:", reported, "m/s");
+  }
+  default_speed_ = !valid;
+  return valid ? reported : config_.default_bullet_speed;
 }
 
-template <typename Target>
-Plan Planner::planTarget(
-  const std::optional<Target>& input_target,
-  const L1Sensor::RobotState& robot_state,
-  TimePoint plan_time,
-  bool to_now,
-  double plan_to_send,
-  const std::optional<Eigen::Quaterniond>& q_world_barrel)
+Plan Planner::plan(const PlanInput& input)
 {
-  if (!input_target.has_value()) {
+  if (!input.target.has_value()) {
     return rejected(PlanError::NoTarget);
   }
 
-  Target target = *input_target;
+  L3Estimation::EskfTarget target = *input.target;
   const Eigen::VectorXd target_x = target.ekf_x();
 
   // 当前延迟分档使用有符号 yaw 角速度：只有正向超过阈值才使用高速延迟。
-  const double delay_time = target_x[7] > config_.impact.decision_speed
-    ? config_.impact.high_speed_delay_time
-    : config_.impact.low_speed_delay_time;
+  const double delay_time = target_x[7] > config_.decision_speed
+    ? config_.high_speed_delay_time
+    : config_.low_speed_delay_time;
 
-  double bullet_speed = robot_state.bullet_speed;
-  const bool bullet_speed_ok = config_.impact.bulletSpeedValid(bullet_speed);
-  if (!bullet_speed_ok) {
-    // 弹速异常时仍用回退值生成跟随角，但最终状态降级为 TrackOnly。
-    bullet_speed = config_.impact.fallback_bullet_speed;
-  }
+  const double bullet_speed = bulletSpeed(input.bullet_speed);
 
   Delay delay;
   // 实时运行直接测量曝光到规划的耗时；离线入口使用固定 5 ms。
-  delay.image_to_plan = to_now
-    ? std::chrono::duration<double>(plan_time - target.t()).count()
+  delay.image_to_plan = input.to_now
+    ? std::chrono::duration<double>(input.plan_time - target.t()).count()
     : 0.005;
-  // 规划到发送由 runtime 实测后回灌；串口到电控只能实车标定，未标定按 0 计，
-  // 同时把计划降级成 TrackOnly，不允许在缺段的延迟上开火。
-  delay.plan_to_send = plan_to_send;
-  delay.send_to_control = config_.impact.send_to_control.value_or(0.0);
+  // 规划到发送由 runtime 实测后回灌；串口到电控只能实车标定。
+  delay.plan_to_send = input.plan_to_send;
+  delay.send_to_control = config_.send_to_control;
   delay.control_to_fire = delay_time;
   const double before_fire = delay.beforeFire();
 
@@ -125,11 +120,11 @@ Plan Planner::planTarget(
 
   // barrel 系 x 轴就是出膛方向。
   std::optional<Eigen::Vector3d> muzzle;
-  if (entering_ && q_world_barrel) {
-    muzzle = *q_world_barrel * Eigen::Vector3d::UnitX();
+  if (entering_ && input.q_world_barrel) {
+    muzzle = *input.q_world_barrel * Eigen::Vector3d::UnitX();
   }
 
-  AimPoint final_aim = chooseAimPoint(target, muzzle);
+  AimPoint final_aim = choose(target, muzzle);
   if (!final_aim.valid) {
     return rejected(PlanError::OutOfWindow);
   }
@@ -144,16 +139,16 @@ Plan Planner::planTarget(
 
   double previous_fly_time = current_trajectory.fly_time;
   const double tolerance =
-    std::chrono::duration<double>(config_.impact.fly_time_tolerance).count();
+    std::chrono::duration<double>(config_.fly_time_tolerance).count();
 
-  for (int iteration = 0; iteration < config_.impact.max_iterations; ++iteration) {
+  for (int iteration = 0; iteration < config_.max_iterations; ++iteration) {
     // 飞行时间决定命中时刻，命中点又会改变飞行时间。每轮都从同一个发射时刻
     // 状态重新外推，避免把上一轮的 dt 重复累计。
-    Target iteration_target = target;
+    L3Estimation::EskfTarget iteration_target = target;
     const TimePoint predict_time = future + secondsToDuration(previous_fly_time);
     iteration_target.predict(predict_time);
 
-    final_aim = chooseAimPoint(iteration_target, muzzle);
+    final_aim = choose(iteration_target, muzzle);
     if (!final_aim.valid) {
       return rejected(PlanError::OutOfWindow);
     }
@@ -176,23 +171,12 @@ Plan Planner::planTarget(
   delay.fire_to_hit = current_trajectory.fly_time;
 
   Plan plan;
-  // 两种降级：回退弹速生成的解不能标成可开火；延迟链缺实车标定段时落点会
-  // 系统性偏早，同样只跟随。弹速优先报，因为它同时也让弹道解本身失真。
-  if (!bullet_speed_ok) {
-    plan.status = PlanStatus::TrackOnly;
-    plan.reason = PlanError::BadBulletSpeed;
-  } else if (!config_.impact.fireDelayReady()) {
-    plan.status = PlanStatus::TrackOnly;
-    plan.reason = PlanError::DelayNotCalibrated;
-  } else {
-    plan.status = PlanStatus::FireReady;
-    plan.reason = PlanError::None;
-  }
+  plan.error = PlanError::None;
   plan.aim = AimReference{
     point,
-    std::atan2(point.y(), point.x()) + config_.impact.yaw_offset,
+    std::atan2(point.y(), point.x()) + config_.yaw_offset,
     // 世界系约定 pitch 向下为正，因此弹道仰角在此取反。
-    -(current_trajectory.pitch + config_.impact.pitch_offset)};
+    -(current_trajectory.pitch + config_.pitch_offset)};
   plan.fire = FireReference{final_aim.armor_id, final_aim.xyza};
   plan.timing = PlanTiming{
     future + secondsToDuration(current_trajectory.fly_time),
@@ -208,29 +192,6 @@ Plan Planner::planTarget(
   return plan;
 }
 
-Plan Planner::plan(
-  const std::optional<L3Estimation::EskfTarget>& target,
-  const L1Sensor::RobotState& robot_state,
-  TimePoint plan_time,
-  bool to_now)
-{
-  PlanInput input;
-  input.target = target;
-  input.robot_state = robot_state;
-  input.plan_time = plan_time;
-  input.to_now = to_now;
-  return plan(input);
-}
-
-Plan Planner::plan(
-  std::nullopt_t,
-  const L1Sensor::RobotState&,
-  TimePoint,
-  bool)
-{
-  return rejected(PlanError::NoTarget);
-}
-
 void Planner::reset() noexcept
 {
   // runtime 只在 Idle、切能量机关和串口断开时调这里，都是一轮自瞄的边界。
@@ -238,11 +199,9 @@ void Planner::reset() noexcept
   entering_ = true;
 }
 
-// ---- 以下为私有实现 ----
-
-template <typename Target>
-Planner::AimPoint Planner::chooseAimPoint(
-  const Target& target, const std::optional<Eigen::Vector3d>& muzzle)
+Planner::AimPoint Planner::choose(
+  const L3Estimation::EskfTarget& target,
+  const std::optional<Eigen::Vector3d>& muzzle)
 {
   const Eigen::VectorXd ekf_x = target.ekf_x();
   const std::vector<Eigen::Vector4d> armors = target.armor_xyza_list();
@@ -277,7 +236,7 @@ Planner::AimPoint Planner::chooseAimPoint(
     std::vector<int> ids;
     ids.reserve(armors.size());
     for (std::size_t id = 0; id < armors.size(); ++id) {
-      if (std::abs(delta_angles[id]) > config_.selector.coming_angle) {
+      if (std::abs(delta_angles[id]) > config_.coming_angle) {
         continue;
       }
       ids.push_back(static_cast<int>(id));
@@ -317,11 +276,11 @@ Planner::AimPoint Planner::chooseAimPoint(
     return pointAt(ids[0]);
   }
 
-  double coming_angle = config_.selector.coming_angle;
-  double leaving_angle = config_.selector.leaving_angle;
+  double coming_angle = config_.coming_angle;
+  double leaving_angle = config_.leaving_angle;
   if (target.name == L3Estimation::ArmorName::Outpost) {
-    coming_angle = config_.selector.outpost_coming_angle;
-    leaving_angle = config_.selector.outpost_leaving_angle;
+    coming_angle = config_.outpost_coming_angle;
+    leaving_angle = config_.outpost_leaving_angle;
   }
 
   // 旋转目标先用 coming_angle 限制正面区域，再结合旋转方向和

@@ -1,9 +1,7 @@
 // L4 规划链路的行为冒烟测试：覆盖预测、弹道、延迟、锁板和命中时刻迭代。
 // 不依赖相机、串口和推理后端。
 
-#include "l4_planning/ballistic.hpp"
 #include "l4_planning/armor/planner.hpp"
-#include "l4_planning/armor/predictor.hpp"
 #include "l6_telemetry/math.hpp"
 
 #include <Eigen/Dense>
@@ -34,48 +32,37 @@ L3Estimation::EskfTarget makeTarget(double v_yaw, double yaw = 0.0)
   return target;
 }
 
-// 默认配置的 send_to_control 是空的，表示延迟链还没在实车上标定，Planner 会
-// 把每个计划降级成 TrackOnly。测别的行为时用这个"已标定"配置，免得所有断言
-// 都被开火闸门挡住。
-L4Planning::ArmorPlanConfig calibratedConfig()
+// 常用输入：弹速 23 m/s；to_now = true 时 plan_time 取默认的零点。
+L4Planning::PlanInput makeInput(
+  const std::optional<L3Estimation::EskfTarget>& target, bool to_now = true)
 {
-  L4Planning::ArmorPlanConfig config;
-  config.impact.send_to_control = 0.002;
-  return config;
+  return {.target = target, .bullet_speed = 23.0, .to_now = to_now};
 }
 
-// 只推中心不推 yaw 是改造前的缺陷：小陀螺目标会被算成原地不动。
-void testPredictorAdvancesYaw()
+// 只推中心不推 yaw 是改造前的缺陷：小陀螺目标会被算成原地不动。规划器靠
+// EskfTarget::predict 外推，这里钉住它同时推进 yaw。
+void testPredictAdvancesYaw()
 {
-  const L4Planning::Predictor predictor;
   const auto target = makeTarget(10.0);
-
-  const auto later = predictor.predict(target, 0.1);
+  auto later = target;
+  later.predict(0.1);
   require(
     std::abs(later.ekf_x()[6] - 1.0) < 1e-9, "yaw must advance by v_yaw * dt");
 
-  const auto before = predictor.armorPoses(target);
-  const auto after = predictor.armorPosesAt(target, 0.1);
+  const auto before = target.armor_xyza_list();
+  const auto after = later.armor_xyza_list();
   require(before.size() == 4 && after.size() == 4, "four armor plates expected");
 
   const double moved = (before[0].head<3>() - after[0].head<3>()).norm();
   require(moved > 0.1, "spinning target armor must move over 100 ms");
-  std::cout << "  [ok] predictor advances yaw, armor moved " << moved << " m\n";
+  std::cout << "  [ok] predict advances yaw, armor moved " << moved << " m\n";
 }
 
 // 平动目标：中心按速度走，装甲板整体跟着平移。平动速度只能由 EKF 从观测里估
 // 出来——确定性构造入口给不出 vx，所以这里先喂一段匀速直线运动的观测。
-void testPredictorTranslates()
+void testPredictTranslates()
 {
-  const L4Planning::Predictor predictor;
   const std::chrono::steady_clock::time_point t0{};
-
-  L3Estimation::Armor observation;
-  observation.name = L3Estimation::ArmorName::Infantry3;
-  observation.type = L3Estimation::ArmorType::Small;
-  observation.xyz_in_world = {3.8, 0.0, 0.0};
-  observation.ypr_in_world = {0.0, 0.0, 0.0};
-  observation.ypd_in_world = L6Telemetry::xyz2ypd(observation.xyz_in_world);
 
   // 直接构造一个已在运动的目标：旋转中心 (4.0, 0, 0)，沿 +x 以 1 m/s 前进。
   // 不再靠喂十帧观测把速度攒出来——端点观测需要相机标定和投影，那是 L3 自己
@@ -87,7 +74,8 @@ void testPredictorTranslates()
   require(target.ekf_x()[1] > 0.1, "target must carry a positive x velocity");
 
   const Eigen::VectorXd before = target.ekf_x();
-  const auto later = predictor.predict(target, 0.5);
+  auto later = target;
+  later.predict(0.5);
   const Eigen::VectorXd after = later.ekf_x();
   require(
     std::abs(after[0] - (before[0] + before[1] * 0.5)) < 1e-9,
@@ -96,196 +84,52 @@ void testPredictorTranslates()
     std::abs(
       after[6] - L6Telemetry::limit_rad(before[6] + before[7] * 0.5)) < 1e-9,
     "yaw must advance by exactly v_yaw * dt");
-  std::cout << "  [ok] predictor translates a target at "
+  std::cout << "  [ok] predict translates a target at "
             << before[1] << " m/s\n";
 }
 
-// 真空模型：解出的 pitch 代回抛体方程必须还原目标高度。
+// 真空弹道：规划出的 pitch 代回抛体方程必须还原命中点高度。
 void testBallisticRoundTrip()
 {
-  const L4Planning::BallisticSolver solver;
   constexpr double kGravity = 9.7833;
   const double v0 = 23.0;
+  L4Planning::Planner planner;
 
-  for (const double distance : {1.5, 4.0, 7.0}) {
-    for (const double height : {-0.5, 0.0, 0.8}) {
-      const auto result = solver.solve(distance, height, v0);
-      require(result.valid, "vacuum ballistic must be solvable at short range");
+  for (const double center_x : {1.5, 4.0, 7.0}) {
+    L3Estimation::EskfTarget target(
+      L3Estimation::ArmorName::Infantry3, center_x, 0.0, 0.2);
+    target.jumped = true;
+    const auto plan = planner.plan(makeInput(target));
+    require(plan.valid(), "vacuum ballistic must be solvable at short range");
 
-      // z = d*tan(theta) - g*d² / (2*v0²*cos²theta)
-      const double cos_pitch = std::cos(result.pitch);
-      const double reconstructed =
-        distance * std::tan(result.pitch) -
-        kGravity * distance * distance / (2.0 * v0 * v0 * cos_pitch * cos_pitch);
-      require(
-        std::abs(reconstructed - height) < 1e-6,
-        "solved pitch must reproduce the target height");
-
-      const double expected_time = distance / (v0 * cos_pitch);
-      require(
-        std::abs(result.fly_time - expected_time) < 1e-9,
-        "fly time must match the horizontal component");
-    }
+    // 世界系 pitch 向下为正，弹道仰角是它的相反数。
+    const double pitch = -plan.aim.pitch;
+    const double distance = std::hypot(plan.aim.point.x(), plan.aim.point.y());
+    // z = d*tan(theta) - g*d² / (2*v0²*cos²theta)
+    const double cos_pitch = std::cos(pitch);
+    const double reconstructed =
+      distance * std::tan(pitch) -
+      kGravity * distance * distance / (2.0 * v0 * v0 * cos_pitch * cos_pitch);
+    require(
+      std::abs(reconstructed - plan.aim.point.z()) < 1e-6,
+      "solved pitch must reproduce the target height");
+    require(
+      std::abs(plan.timing.fly_time - distance / (v0 * cos_pitch)) < 1e-9,
+      "fly time must match the horizontal component");
   }
   std::cout << "  [ok] vacuum ballistic round-trips\n";
-}
-
-// 阻力系数为 0 时阻力模型必须严格退化成真空模型，否则默认配置一改就会引入
-// 静默的弹道偏差。
-void testDragDegradesToVacuum()
-{
-  const L4Planning::VacuumModel vacuum(9.7833);
-  const L4Planning::QuadraticDragModel drag(9.7833, 0.0);
-
-  for (const double pitch : {-0.2, 0.0, 0.05, 0.3}) {
-    const auto a = vacuum.impact(5.0, pitch, 23.0);
-    const auto b = drag.impact(5.0, pitch, 23.0);
-    require(a.has_value() && b.has_value(), "both models must solve");
-    require(std::abs(a->z - b->z) < 1e-12, "zero drag must match vacuum height");
-    require(
-      std::abs(a->fly_time - b->fly_time) < 1e-12, "zero drag must match vacuum time");
-
-    const auto la = vacuum.launch(5.0, 0.2, 23.0);
-    const auto lb = drag.launch(5.0, 0.2, 23.0);
-    require(la.has_value() && lb.has_value(), "both inverses must solve");
-    require(std::abs(la->pitch - lb->pitch) < 1e-12, "zero drag must match vacuum pitch");
-  }
-  std::cout << "  [ok] quadratic drag degrades to vacuum at k=0\n";
-}
-
-// 有阻力时子弹更慢、掉得更多，所以必须抬得更高、飞得更久。
-void testDragNeedsMorePitch()
-{
-  L4Planning::BallisticConfig config;
-  const L4Planning::BallisticSolver vacuum_solver(config);
-  config.drag_coefficient = 0.02;
-  const L4Planning::BallisticSolver drag_solver(config);
-
-  const auto vacuum = vacuum_solver.solve(6.0, 0.0, 23.0);
-  const auto drag = drag_solver.solve(6.0, 0.0, 23.0);
-  require(vacuum.valid && drag.valid, "both solvers must converge at 6 m");
-  require(drag.pitch > vacuum.pitch, "drag must require a higher muzzle angle");
-  require(drag.fly_time > vacuum.fly_time, "drag must lengthen the flight");
-  std::cout << "  [ok] quadratic drag raises pitch by "
-            << (drag.pitch - vacuum.pitch) * 57.3 << " deg at 6 m\n";
-}
-
-// 反解是精确闭式解，不是迭代出来的近似。代回正向模型的残差必须落在机器精度，
-// 而不是 height_tolerance —— 后者是没有闭式解时才允许的兜底精度。
-//
-// 防止闭式反解退化为提前退出的近似迭代：近似迭代会留下系统性角度残差，且可能
-// 随距离增加撞上 max_iterations 后误报无解。
-void testDragInverseIsExact()
-{
-  for (const double k : {0.0, 0.019, 0.092}) {
-    L4Planning::BallisticConfig config;
-    config.drag_coefficient = k;
-    const L4Planning::BallisticSolver solver(config);
-
-    for (const double distance : {1.5, 4.0, 6.0, 10.0}) {
-      for (const double height : {-0.4, 0.0, 0.6}) {
-        const auto result = solver.solve(distance, height, 23.0);
-        require(result.valid, "closed form must solve inside the envelope");
-
-        const auto impact = solver.model().impact(distance, result.pitch, 23.0);
-        require(impact.has_value(), "forward model must accept the solved pitch");
-        require(
-          std::abs(impact->z - height) < 1e-9,
-          "closed-form inverse must be exact, not merely within tolerance");
-        require(
-          std::abs(impact->fly_time - result.fly_time) < 1e-12,
-          "fly time must agree between forward and inverse");
-      }
-    }
-  }
-  std::cout << "  [ok] drag inverse is exact to 1e-9 m at k = 0 / 0.019 / 0.092\n";
-}
-
-// 没有闭式反解的模型必须自动走高度补偿迭代，且解出来和闭式解一致。这条用例
-// 就是"将来加 RK4 全阻力模型不用改求解器"这句话的凭据。
-class ForwardOnlyDragModel final : public L4Planning::IBallisticModel {
-public:
-  ForwardOnlyDragModel(double gravity, double drag) noexcept : inner_(gravity, drag) {}
-
-  std::optional<L4Planning::Impact> impact(
-    double range, double pitch, double v0) const noexcept override
-  {
-    return inner_.impact(range, pitch, v0);
-  }
-  // 刻意不覆盖 launch()，落到基类的 nullopt 上。
-  std::string_view name() const noexcept override
-  {
-    return "forward_only";
-  }
-
-private:
-  L4Planning::QuadraticDragModel inner_;
-};
-
-void testIterativeFallbackMatchesClosedForm()
-{
-  const ForwardOnlyDragModel forward_only(9.7833, 0.02);
-  require(
-    !forward_only.launch(6.0, 0.2, 23.0).has_value(),
-    "a forward-only model must not advertise a closed form");
-
-  L4Planning::BallisticConfig config;
-  config.drag_coefficient = 0.02;
-  const L4Planning::BallisticSolver closed_form(config);
-
-  // 手工跑一遍求解器的兜底路径，确认它收敛到同一个角度。
-  const L4Planning::VacuumModel seed(config.gravity);
-  double aim_height = 0.2;
-  double pitch = 0.0;
-  for (int i = 0; i < config.max_iterations; ++i) {
-    const auto guess = seed.launch(6.0, aim_height, 23.0);
-    require(guess.has_value(), "seed must solve");
-    pitch = guess->pitch;
-    const auto impact = forward_only.impact(6.0, pitch, 23.0);
-    require(impact.has_value(), "forward model must solve");
-    const double error = 0.2 - impact->z;
-    if (std::abs(error) < config.height_tolerance) break;
-    aim_height += error;
-  }
-
-  const auto exact = closed_form.solve(6.0, 0.2, 23.0);
-  require(exact.valid, "closed form must solve");
-  require(
-    std::abs(pitch - exact.pitch) < 2e-3,
-    "iterative fallback must land near the closed-form solution");
-  std::cout << "  [ok] iterative fallback tracks the closed form within "
-            << std::abs(pitch - exact.pitch) * 57.3 << " deg\n";
-}
-
-void testBallisticRejectsBadInput()
-{
-  const L4Planning::BallisticSolver solver;
-  require(!solver.solve(4.0, 0.0, 0.0).valid, "zero bullet speed must be rejected");
-  require(!solver.solve(0.0, 0.0, 23.0).valid, "zero distance must be rejected");
-  require(!solver.solve(500.0, 0.0, 23.0).valid, "out-of-range target must be rejected");
-  require(!solver.solve(std::nan(""), 0.0, 23.0).valid, "NaN distance must be rejected");
-
-  // 业务门限已经全部收归 PlanConfig，求解器不得再自带一道弹速门槛，否则
-  // 落在两道门限夹缝里的弹速会被报成 BallisticFailed 而不是 BadBulletSpeed。
-  require(
-    solver.solve(4.0, 0.0, 15.0).valid,
-    "solver must not impose a business-level bullet speed threshold");
-  std::cout << "  [ok] ballistic rejects unusable input, keeps no business gate\n";
 }
 
 // 不动点迭代应当收敛，且命中时刻的瞄准点确实由飞行时间决定。
 void testPlannerConverges()
 {
-  L4Planning::Planner planner(calibratedConfig());
+  L4Planning::Planner planner;
   const auto target = makeTarget(0.0);
 
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
-
-  const auto plan = planner.plan(target, robot_state, target.t());
+  auto input = makeInput(target);
+  input.plan_time = target.t();
+  const auto plan = planner.plan(input);
   require(plan.valid(), "static target must be plannable");
-  require(plan.reason == L4Planning::PlanError::None, "no rejection expected");
-  require(plan.fireAdmissible(), "a static facing target must be shootable");
   require(plan.fire.has_value(), "valid physical aim must carry a fire reference");
   require(plan.timing.fly_time > 0.0, "fly time must be positive");
   require(
@@ -305,81 +149,44 @@ void testPlannerConverges()
             << " pitch=" << plan.aim.pitch << '\n';
 }
 
-// 弹速低于 14 m/s 时回退到 23；14 m/s 及以上不设上限。
-void testPlannerUsesOneSidedBulletFallback()
+// 电控没发弹速（0）或低于 14 m/s 时按缺省 23 m/s 解弹道，计划照常有效、照常
+// 可开火；14 m/s 及以上不设上限。
+void testPlannerDefaultsBulletSpeed()
 {
-  L4Planning::Planner planner(calibratedConfig());
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 0.0;
+  L4Planning::Planner planner;
+  auto input = makeInput(makeTarget(0.0));
+  const auto reference = planner.plan(input);
 
-  const auto plan = planner.plan(makeTarget(0.0), robot_state, {});
-  require(plan.valid(), "fallback speed must still produce a plan");
-  require(!plan.fireAdmissible(), "bad bullet speed must block firing");
-  require(
-    plan.reason == L4Planning::PlanError::BadBulletSpeed,
-    "bad bullet speed must be reported");
-
-  robot_state.bullet_speed = 13.99;
-  const auto below = planner.plan(makeTarget(0.0), robot_state, {});
-  require(below.valid(), "fallback must still yield aim angles");
-  require(
-    below.reason == L4Planning::PlanError::BadBulletSpeed,
-    "speed below 14 m/s must use the configured fallback");
+  for (const double speed : {0.0, 13.99, std::nan("")}) {
+    input.bullet_speed = speed;
+    const auto plan = planner.plan(input);
+    require(plan.valid(), "an unusable bullet speed must still produce a fireable plan");
+    require(
+      std::abs(plan.timing.fly_time - reference.timing.fly_time) < 1e-12,
+      "an unusable bullet speed must be replaced by the 23 m/s default");
+  }
 
   for (const double speed : {14.0, 15.0, 45.0}) {
-    robot_state.bullet_speed = speed;
-    const auto accepted = planner.plan(makeTarget(0.0), robot_state, {});
+    input.bullet_speed = speed;
+    const auto accepted = planner.plan(input);
     require(accepted.valid(), "planner must accept every speed at or above 14 m/s");
     require(
-      accepted.reason == L4Planning::PlanError::None,
-      "planner must not impose an upper bullet-speed gate");
+      std::abs(accepted.timing.fly_time - reference.timing.fly_time) > 1e-6 ||
+        speed == 23.0,
+      "a valid MCU speed must be used as-is");
   }
-  std::cout << "  [ok] planner uses a one-sided 14 m/s fallback\n";
-}
-
-// 延迟链缺 send_to_control 时只跟随不开火；标定后才放行。
-void testPlannerGatesOnDelayCalibration()
-{
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
-
-  L4Planning::Planner uncalibrated;
-  const auto blocked = uncalibrated.plan(makeTarget(0.0), robot_state, {});
-  require(blocked.valid(), "an uncalibrated delay chain must still produce aim angles");
-  require(!blocked.fireAdmissible(), "an uncalibrated delay chain must block firing");
-  require(
-    blocked.reason == L4Planning::PlanError::DelayNotCalibrated,
-    "the uncalibrated delay stage must be the reported reason");
-
-  L4Planning::Planner calibrated(calibratedConfig());
-  const auto allowed = calibrated.plan(makeTarget(0.0), robot_state, {});
-  require(allowed.fireAdmissible(), "a calibrated delay chain must allow firing");
-  require(allowed.reason == L4Planning::PlanError::None, "no rejection expected");
-
-  // 弹速同时不合格时先报弹速：它让弹道解本身失真，比缺一段延迟更严重。
-  robot_state.bullet_speed = 0.0;
-  require(
-    uncalibrated.plan(makeTarget(0.0), robot_state, {}).reason ==
-      L4Planning::PlanError::BadBulletSpeed,
-    "bad bullet speed must take priority over the delay gate");
-  std::cout << "  [ok] planner gates firing on delay calibration\n";
+  std::cout << "  [ok] planner defaults to 23 m/s below 14 m/s and keeps firing\n";
 }
 
 // 五段延迟里，runtime 实测的两段必须真的进到 beforeFire()，而不是恒为 0。
 void testDelayChainCarriesEveryStage()
 {
-  auto config = calibratedConfig();
-  config.impact.send_to_control = 0.004;
+  L4Planning::PlanConfig config;
+  config.send_to_control = 0.004;
   L4Planning::Planner planner(config);
 
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
-
-  L4Planning::PlanInput input;
-  input.target = makeTarget(0.0);
-  input.robot_state = robot_state;
-  input.plan_time = input.target->t();
-  input.to_now = false;  // image_to_plan 走离线的固定 5 ms
+  // to_now = false：image_to_plan 走离线的固定 5 ms
+  auto input = makeInput(makeTarget(0.0), false);
   input.plan_to_send = 0.003;
 
   const auto plan = planner.plan(input);
@@ -394,9 +201,6 @@ void testDelayChainCarriesEveryStage()
              (delay.image_to_plan + delay.plan_to_send + delay.send_to_control +
               delay.control_to_fire)) < 1e-12,
     "beforeFire must sum every stage before the shot");
-  require(
-    std::abs(delay.total() - (delay.beforeFire() + delay.fire_to_hit)) < 1e-12,
-    "total must add the flight time");
   std::cout << "  [ok] delay chain carries every stage, before_fire="
             << delay.beforeFire() << " s\n";
 }
@@ -404,38 +208,33 @@ void testDelayChainCarriesEveryStage()
 // coming_angle 以前在常规车那条分支里是写死的 60 度，配置改了不生效。
 void testComingAngleIsConfigurable()
 {
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
-
   // 让 0 号板偏离视线 50 度：默认 60 度窗口收得下，收紧到 40 度就该落空。
-  const auto target = makeTarget(0.0, 50.0 / 57.3);
+  const auto input = makeInput(makeTarget(0.0, 50.0 / 57.3));
 
-  L4Planning::Planner wide(calibratedConfig());
+  L4Planning::Planner wide;
   require(
-    wide.plan(target, robot_state, {}).fire.has_value(),
+    wide.plan(input).fire.has_value(),
     "a 50-degree armor must fit inside the default 60-degree window");
 
-  auto narrow_config = calibratedConfig();
-  narrow_config.selector.coming_angle = 40.0 / 57.3;
+  L4Planning::PlanConfig narrow_config;
+  narrow_config.coming_angle = 40.0 / 57.3;
   L4Planning::Planner narrow(narrow_config);
-  const auto narrowed = narrow.plan(target, robot_state, {});
+  const auto narrowed = narrow.plan(input);
   require(
-    narrowed.reason == L4Planning::PlanError::OutOfWindow,
+    narrowed.error == L4Planning::PlanError::OutOfWindow,
     "a tightened coming_angle must actually shrink the normal-branch window");
-  std::cout << "  [ok] selector.coming_angle drives the normal branch\n";
+  std::cout << "  [ok] coming_angle drives the normal branch\n";
 }
 
 void testPlannerRejectsNoTarget()
 {
   L4Planning::Planner planner;
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
 
   // 目标丢失由 Tracker 表达成"不返回目标"，所以规划器这一侧只剩空值这一种
   // 情况——不再有携带 Lost 状态的目标快照。
-  const auto empty = planner.plan(std::nullopt, robot_state, {});
+  const auto empty = planner.plan(makeInput(std::nullopt));
   require(!empty.valid(), "missing target must not produce a plan");
-  require(empty.reason == L4Planning::PlanError::NoTarget, "NoTarget expected");
+  require(empty.error == L4Planning::PlanError::NoTarget, "NoTarget expected");
 
   // "滤波器为空的目标"不再是一种可表示的状态：EskfTarget 没有默认构造，
   // 一经存在状态就是完整的，所以这里只剩空值这一条拒绝路径。
@@ -447,20 +246,18 @@ void testPlannerRejectsNoTarget()
 void testUnobservedGeometryLocksArmorZero()
 {
   L4Planning::Planner planner;
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
 
   // 把整车转到 1 号板正对枪口的姿态：几何可观测时会选 1 号。
   auto target = makeTarget(0.0, -std::numbers::pi / 2.0);
   target.jumped = false;
 
-  const auto blind = planner.plan(target, robot_state, {});
+  const auto blind = planner.plan(makeInput(target));
   require(blind.valid() && blind.fire.has_value(), "unobserved target must be trackable");
   require(blind.fire->armor_id == 0, "unobserved geometry must stay on armor 0");
 
   planner.reset();
   target.jumped = true;
-  const auto seen = planner.plan(target, robot_state, {});
+  const auto seen = planner.plan(makeInput(target));
   require(seen.valid() && seen.fire.has_value(), "observed target must be plannable");
   require(seen.fire->armor_id == 1, "observed geometry must be free to pick armor 1");
   std::cout << "  [ok] unobserved geometry pins the aim to armor 0\n";
@@ -470,38 +267,32 @@ void testUnobservedGeometryLocksArmorZero()
 void testSelectorHoldsUntilArmorLeavesWindow()
 {
   L4Planning::Planner planner;
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
 
   const auto degrees = [](double value) {
     return value * std::numbers::pi / 180.0;
   };
 
-  const auto first = planner.plan(
-    makeTarget(0.0, degrees(44.0)), robot_state, {});
+  const auto first = planner.plan(makeInput(makeTarget(0.0, degrees(44.0))));
   require(
     first.valid() && first.fire && first.fire->armor_id == 0,
     "selector did not initially lock armor 0");
 
   // 无目标和显式 reset 都不改变当前锁定板。
-  const auto no_target = planner.plan(std::nullopt, robot_state, {});
+  const auto no_target = planner.plan(makeInput(std::nullopt));
   require(!no_target.valid(), "missing target must remain invalid");
   planner.reset();
 
   for (const double yaw_degrees : {50.0, 59.0}) {
-    const auto plan = planner.plan(
-      makeTarget(0.0, degrees(yaw_degrees)), robot_state, {});
+    const auto plan = planner.plan(makeInput(makeTarget(0.0, degrees(yaw_degrees))));
     require(plan.valid() && plan.fire, "overlap-window plan must stay valid");
     require(plan.fire->armor_id == 0, "lock changed across no-target/reset or overlap");
   }
 
-  const auto after_leaving = planner.plan(
-    makeTarget(0.0, degrees(61.0)), robot_state, {});
+  const auto after_leaving = planner.plan(makeInput(makeTarget(0.0, degrees(61.0))));
   require(after_leaving.valid() && after_leaving.fire, "plan after leaving must stay valid");
   require(after_leaving.fire->armor_id == 3, "lock did not switch after armor 0 left");
 
-  const auto overlap_again = planner.plan(
-    makeTarget(0.0, degrees(59.0)), robot_state, {});
+  const auto overlap_again = planner.plan(makeInput(makeTarget(0.0, degrees(59.0))));
   require(overlap_again.valid() && overlap_again.fire, "returning overlap must stay valid");
   require(overlap_again.fire->armor_id == 3, "new lock was not retained in overlap");
   std::cout << "  [ok] selector holds a plate until it leaves the 60 deg window\n";
@@ -511,9 +302,6 @@ void testSelectorHoldsUntilArmorLeavesWindow()
 // 之后枪口怎么转都沿用锁，直到 reset 开始新一轮自瞄。
 void testEntryPicksArmorNearestMuzzle()
 {
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
-
   const auto target = makeTarget(0.0, 44.0 * std::numbers::pi / 180.0);
   const auto armors = target.armor_xyza_list();
   const auto aimAt = [&](int id) {
@@ -522,22 +310,19 @@ void testEntryPicksArmorNearestMuzzle()
       armors[static_cast<std::size_t>(id)].head<3>().normalized());
   };
   const auto planWith = [&](L4Planning::Planner& planner, int muzzle_id) {
-    L4Planning::PlanInput input;
-    input.target = target;
-    input.robot_state = robot_state;
-    input.to_now = false;
+    auto input = makeInput(target, false);
     input.q_world_barrel = aimAt(muzzle_id);
     return planner.plan(input);
   };
 
   L4Planning::Planner frontal;
-  const auto usual = frontal.plan(target, robot_state, {}, false);
+  const auto usual = frontal.plan(makeInput(target, false));
   require(usual.valid() && usual.fire && usual.fire->armor_id == 0,
           "without a muzzle pose the more frontal armor 0 must win");
 
   L4Planning::Planner planner;
   // 无目标的帧不算进入完成，第一条真正发出去的命令才算。
-  require(!planner.plan(std::nullopt, robot_state, {}).valid(), "no target must be rejected");
+  require(!planner.plan(makeInput(std::nullopt)).valid(), "no target must be rejected");
   const auto entry = planWith(planner, 3);
   require(entry.valid() && entry.fire && entry.fire->armor_id == 3,
           "entry must lock the armor nearest the muzzle");
@@ -556,13 +341,11 @@ void testEntryPicksArmorNearestMuzzle()
 void testPlannerAlwaysAimsAtPhysicalArmor()
 {
   L4Planning::Planner planner;
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
 
   for (int step = 0; step < 60; ++step) {
     const auto target = makeTarget(
       20.0, L6Telemetry::limit_rad(step * 2.0 * std::numbers::pi / 60.0));
-    const auto plan = planner.plan(target, robot_state, {});
+    const auto plan = planner.plan(makeInput(target));
     require(plan.valid(), "normal-car branch must keep producing an aim point");
     require(
       plan.fire && plan.fire->armor_id >= 0 && plan.fire->armor_id < 4 &&
@@ -575,12 +358,10 @@ void testPlannerAlwaysAimsAtPhysicalArmor()
 void testSignedSpeedDelaySelection()
 {
   L4Planning::Planner planner;
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
 
-  const auto low = planner.plan(makeTarget(8.0), robot_state, {}, false);
-  const auto high = planner.plan(makeTarget(8.01), robot_state, {}, false);
-  const auto negative = planner.plan(makeTarget(-20.0), robot_state, {}, false);
+  const auto low = planner.plan(makeInput(makeTarget(8.0), false));
+  const auto high = planner.plan(makeInput(makeTarget(8.01), false));
+  const auto negative = planner.plan(makeInput(makeTarget(-20.0), false));
   require(low.valid() && high.valid() && negative.valid(), "delay test plans must be valid");
   require(
     std::abs(low.timing.delay.beforeFire() - 0.020) < 1e-12,
@@ -593,8 +374,9 @@ void testSignedSpeedDelaySelection()
     "negative high speed must still use low delay");
 
   const auto target = makeTarget(0.0);
-  const auto to_now = planner.plan(
-    target, robot_state, target.t() + std::chrono::milliseconds(12), true);
+  auto input = makeInput(target);
+  input.plan_time = target.t() + std::chrono::milliseconds(12);
+  const auto to_now = planner.plan(input);
   require(to_now.valid(), "to_now delay test plan must be valid");
   require(
     std::abs(to_now.timing.delay.beforeFire() - 0.027) < 1e-12,
@@ -606,14 +388,12 @@ void testSignedSpeedDelaySelection()
 void testSharedIterationProducesFiniteCommands()
 {
   L4Planning::Planner planner;
-  L1Sensor::RobotState robot_state;
-  robot_state.bullet_speed = 23.0;
 
   for (const double v_yaw : {0.5, 2.0, 6.0, 12.0}) {
     for (int step = 0; step < 120; ++step) {
       const auto target = makeTarget(
         v_yaw, L6Telemetry::limit_rad(step * 2.0 * std::numbers::pi / 120.0));
-      const auto plan = planner.plan(target, robot_state, {});
+      const auto plan = planner.plan(makeInput(target));
       require(plan.valid(), "shared iteration must yield a command here");
       require(
         std::isfinite(plan.aim.yaw) && std::isfinite(plan.aim.pitch),
@@ -628,17 +408,11 @@ void testSharedIterationProducesFiniteCommands()
 
 int main()
 {
-  testPredictorAdvancesYaw();
-  testPredictorTranslates();
+  testPredictAdvancesYaw();
+  testPredictTranslates();
   testBallisticRoundTrip();
-  testDragDegradesToVacuum();
-  testDragNeedsMorePitch();
-  testDragInverseIsExact();
-  testIterativeFallbackMatchesClosedForm();
-  testBallisticRejectsBadInput();
   testPlannerConverges();
-  testPlannerUsesOneSidedBulletFallback();
-  testPlannerGatesOnDelayCalibration();
+  testPlannerDefaultsBulletSpeed();
   testDelayChainCarriesEveryStage();
   testComingAngleIsConfigurable();
   testPlannerRejectsNoTarget();

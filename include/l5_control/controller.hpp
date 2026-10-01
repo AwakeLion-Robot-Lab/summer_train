@@ -1,7 +1,6 @@
 #pragma once
 
 #include "l3_estimation/armor/eskf_target.hpp"
-#include "l3_estimation/types.hpp"
 #include "l4_planning/types.hpp"
 #include "l5_control/fire_decision.hpp"
 #include "l5_control/serial_command.hpp"
@@ -16,8 +15,7 @@ namespace L5Control {
 // 串口命令。内部保留上一条命令，用于命令跳变检查和安全保持。
 class Controller {
 public:
-  Controller() noexcept;
-  explicit Controller(FireConfig fire_config) noexcept;
+  explicit Controller(FireConfig fire_config = {}) noexcept;
 
   // actual_pose 是 L1 回传的枪管实际姿态；yaw/pitch 分解由 L5 完成。
   [[nodiscard]] std::optional<SerialCommand> update(
@@ -35,13 +33,11 @@ public:
 
   // 保持最后 yaw/pitch 并强制关火；尚未有过命令时返回空。
   [[nodiscard]] std::optional<SerialCommand> safeHold() const;
-  // 保留低层组装函数，供离线回放直接检查 FireDecision。
-  [[nodiscard]] std::optional<SerialCommand> makeCommand(
-    const L4Planning::Plan& plan, const FireDecision& decision) const;
+  // 规划失败时返回空。离线回放直接拿 FireDecision 组命令时也用它。
+  [[nodiscard]] static std::optional<SerialCommand> makeCommand(
+    const L4Planning::Plan& plan, const FireDecision& decision);
 
 private:
-  // 先于 fire_decider_ 声明：构造时要在 FireConfig 被移走之前读出阈值。
-  double command_jump_threshold_{0.0};
   FireDecider fire_decider_;
   std::optional<SerialCommand> last_command_;
   FireDecision last_decision_;

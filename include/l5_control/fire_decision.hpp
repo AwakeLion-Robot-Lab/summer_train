@@ -1,6 +1,7 @@
 #pragma once
 
-#include "l3_estimation/armor/eskf_target.hpp"
+#include "l3_estimation/armor/types.hpp"
+#include "l3_estimation/types.hpp"
 #include "l4_planning/types.hpp"
 #include "l5_control/reject_reason.hpp"
 
@@ -28,14 +29,12 @@ struct FireConfig {
 };
 
 struct FireInput {
-  // runtime 传完整目标；只拿得到目标类别的调用方（离线回放）可只填
-  // target_name。FireDecider 只读目标是否存在和 name，不依赖任何滤波器状态。
-  std::optional<L3Estimation::EskfTarget> target;
-  std::optional<L3Estimation::ArmorName> target_name;
+  // 目标类别，用来定板宽和后仰角；没有目标时为空。火控不读任何滤波器状态。
+  std::optional<L3Estimation::ArmorName> target;
   L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
   L4Planning::Plan plan;
 
-  // 必须是 L1 回传的实际云台角，而不是上一帧命令值。
+  // 必须是 L1 回传的实际云台角，而不是上一帧命令值；拿不到时填 NaN。
   double actual_yaw{0.0};
   double actual_pitch{0.0};
 
@@ -64,11 +63,10 @@ public:
   explicit FireDecider(FireConfig config = {}) noexcept;
 
   [[nodiscard]] FireDecision decide(const FireInput& input) const;
-  // 根据实体板尺寸、距离和朝向计算本帧 yaw/pitch 容差。
-  // 命中窗口。要板型定宽高，还要类别定后仰角——前哨站的板反着倾。
+  // 根据实体板尺寸、距离和朝向计算本帧 yaw/pitch 命中窗口。类别定板宽，
+  // 也定后仰角——前哨站的板反着倾。
   AimTolerance tolerance(
-    const L4Planning::Plan& plan, L3Estimation::ArmorType type,
-    L3Estimation::ArmorName name) const noexcept;
+    const L4Planning::Plan& plan, L3Estimation::ArmorName name) const noexcept;
   const FireConfig& config() const noexcept { return config_; }
 
 private:

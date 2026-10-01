@@ -166,15 +166,6 @@ double limit_rad(double angle)
   return limited;
 }
 
-Eigen::Matrix3d rpyToRotation(const Eigen::Vector3d& rpy)
-{
-  return (
-    Eigen::AngleAxisd(rpy.z(), Eigen::Vector3d::UnitZ()) *
-    Eigen::AngleAxisd(rpy.y(), Eigen::Vector3d::UnitY()) *
-    Eigen::AngleAxisd(rpy.x(), Eigen::Vector3d::UnitX()))
-    .toRotationMatrix();
-}
-
 Eigen::Matrix3d yprToRotation(const Eigen::Vector3d& ypr)
 {
   return (
@@ -189,16 +180,9 @@ Eigen::Vector3d rotationToYpr(const Eigen::Matrix3d& rotation)
   return eulers(rotation, 2, 1, 0);
 }
 
-Eigen::Vector3d rotationToRpy(const Eigen::Matrix3d& rotation)
-{
-  // Eigen 返回 [yaw, pitch, roll]，对外统一为 [roll, pitch, yaw]。
-  const Eigen::Vector3d ypr = rotation.eulerAngles(2, 1, 0);
-  return {ypr.z(), ypr.y(), ypr.x()};
-}
-
 Eigen::Quaterniond rpyToQuaternion(double roll, double pitch, double yaw)
 {
-  return Eigen::Quaterniond(rpyToRotation({roll, pitch, yaw})).normalized();
+  return Eigen::Quaterniond(yprToRotation({yaw, pitch, roll})).normalized();
 }
 
 Eigen::Quaterniond slerpQuaternion(

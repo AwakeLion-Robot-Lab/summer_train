@@ -301,14 +301,13 @@ void AutoAimRuntime::run() {
             const auto actual_pose = serial.gimbalPoseAt(plan_time);
 
             // L4: 预测命中时刻、选板并解算弹道。
-            L4Planning::PlanInput plan_input;
-            plan_input.target = target;
-            plan_input.robot_state = *state;
-            plan_input.plan_time = plan_time;
-            plan_input.to_now = true;
-            plan_input.plan_to_send = measured_plan_to_send;
-            plan_input.q_world_barrel = actual_pose;
-            plan = planner.plan(plan_input);
+            plan = planner.plan({
+              .target = target,
+              .bullet_speed = state->bullet_speed,
+              .plan_time = plan_time,
+              .to_now = true,
+              .plan_to_send = measured_plan_to_send,
+              .q_world_barrel = actual_pose});
 
             // L5: 开火判定、命令跳变检查和安全保持。
             const auto command = controller.update(

@@ -17,8 +17,7 @@ int main()
   delay.send_to_control = 0.003;
   delay.control_to_fire = 0.004;
   delay.fire_to_hit = 0.010;
-  if (std::abs(delay.beforeFire() - 0.010) > 1e-12 ||
-      std::abs(delay.total() - 0.020) > 1e-12) {
+  if (std::abs(delay.beforeFire() - 0.010) > 1e-12) {
     std::cerr << "Delay aggregation is incorrect\n";
     return 1;
   }
@@ -70,14 +69,11 @@ int main()
     return 5;
   }
 
-  // TrackOnly 是"跟随但不允许开火"，valid() 与 fireAdmissible() 必须分开——
-  // 二者一旦被合并，延迟未标定的降级路径就会静默变成允许开火。
+  // 默认构造的 Plan 是"没有目标"，不能被当成有效计划。
   L4Planning::Plan plan;
-  plan.status = L4Planning::PlanStatus::TrackOnly;
-  plan.reason = L4Planning::PlanError::BadBulletSpeed;
   L5Control::FireDecision fire;
   fire.reasons.push_back(L5Control::RejectReason::ShootDisabled);
-  if (!plan.valid() || plan.fireAdmissible() ||
+  if (plan.valid() || plan.error != L4Planning::PlanError::NoTarget ||
       L5Control::toString(fire.reasons.front()) != "shoot_disabled") {
     std::cerr << "Plan / FireDecision data contract is incorrect\n";
     return 6;

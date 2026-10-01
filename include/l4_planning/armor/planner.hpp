@@ -1,9 +1,7 @@
 #pragma once
 
-#include "l1_sensor/serial/robot_state.hpp"
 #include "l3_estimation/armor/eskf_target.hpp"
-#include "l3_estimation/armor/eskf_target.hpp"
-#include "l4_planning/armor/types.hpp"
+#include "l4_planning/types.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -14,7 +12,8 @@ namespace L4Planning {
 
 struct PlanInput {
   std::optional<L3Estimation::EskfTarget> target;
-  L1Sensor::RobotState robot_state;
+  // 下位机回传的弹速，m/s。没发（0）或不可信时 Planner 换成 default_bullet_speed。
+  double bullet_speed{0.0};
   TimePoint plan_time{};  // 本次规划开始的 steady_clock 时间
   bool to_now{true};      // 是否补偿 target.t() 到 plan_time 的已发生延迟
   // 上一帧实测的"规划结束 -> 串口发出"耗时，单位秒。本帧的值要等规划做完
@@ -25,35 +24,15 @@ struct PlanInput {
   std::optional<Eigen::Quaterniond> q_world_barrel;
 };
 
-class IPlanner {
-public:
-  virtual ~IPlanner() = default;
-
-  [[nodiscard]] virtual Plan plan(const PlanInput& input) = 0;
-  virtual void reset() noexcept = 0;
-};
-
 // 定点规划器：预测命中时刻、选择实体装甲板并解算 yaw/pitch。
-class Planner final : public IPlanner {
+class Planner {
 public:
-  explicit Planner(ArmorPlanConfig config = {});
+  explicit Planner(PlanConfig config = {});
 
-  [[nodiscard]] Plan plan(const PlanInput& input) override;
-  [[nodiscard]] Plan plan(
-    const std::optional<L3Estimation::EskfTarget>& target,
-    const L1Sensor::RobotState& robot_state,
-    TimePoint plan_time,
-    bool to_now = true);
-  // std::nullopt 的精确匹配，语义是 NoTarget。
-  [[nodiscard]] Plan plan(
-    std::nullopt_t,
-    const L1Sensor::RobotState& robot_state,
-    TimePoint plan_time,
-    bool to_now = true);
+  [[nodiscard]] Plan plan(const PlanInput& input);
 
-  // 标记一轮新的自瞄：下一次成功规划改按离枪口最近选板，见 chooseAimPoint。
-  void reset() noexcept override;
-  int lockedArmorId() const noexcept { return locked_id_; }
+  // 标记一轮新的自瞄：下一次成功规划改按离枪口最近选板，见 choose。
+  void reset() noexcept;
 
 private:
   struct AimPoint {
@@ -62,24 +41,18 @@ private:
     Eigen::Vector4d xyza{Eigen::Vector4d::Zero()};  // [x, y, z, normal_yaw]
   };
 
-  template <typename Target>
-  [[nodiscard]] Plan planTarget(
-    const std::optional<Target>& target,
-    const L1Sensor::RobotState& robot_state,
-    TimePoint plan_time,
-    bool to_now,
-    double plan_to_send,
-    const std::optional<Eigen::Quaterniond>& q_world_barrel);
-
   // muzzle 是枪口在世界系的单位指向，只在进自瞄后的头一次选板给。
-  template <typename Target>
-  AimPoint chooseAimPoint(
-    const Target& target, const std::optional<Eigen::Vector3d>& muzzle);
+  AimPoint choose(
+    const L3Estimation::EskfTarget& target,
+    const std::optional<Eigen::Vector3d>& muzzle);
+  // 下位机弹速不可信时换成缺省值；只在切换时打一条日志。
+  double bulletSpeed(double reported);
 
-  ArmorPlanConfig config_;
+  PlanConfig config_;
   int locked_id_{-1};
   // 构造即算一轮新的自瞄，reset() 再置回；第一次成功规划后清掉。
   bool entering_{true};
+  bool default_speed_{false};
 };
 
 }  // namespace L4Planning

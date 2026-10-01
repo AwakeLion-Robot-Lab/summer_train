@@ -17,10 +17,6 @@ FireDecision FireDecider::decide(const FireInput& input) const
 {
   FireDecision decision;
   const auto& plan = input.plan;
-  const bool has_target = input.target.has_value() || input.target_name.has_value();
-  const L3Estimation::ArmorName target_name = input.target.has_value()
-    ? input.target->name
-    : input.target_name.value_or(L3Estimation::ArmorName::Unknown);
 
   const auto reject = [&decision](RejectReason reason) {
     decision.reasons.push_back(reason);
@@ -34,7 +30,7 @@ FireDecision FireDecider::decide(const FireInput& input) const
     reject(RejectReason::CommandJump);
   }
 
-  if (!has_target) {
+  if (!input.target) {
     reject(RejectReason::NoTarget);
   } else {
     switch (input.track_state) {
@@ -51,75 +47,55 @@ FireDecision FireDecider::decide(const FireInput& input) const
     }
   }
 
-  if (!plan.valid()) {
-    reject(RejectReason::PlanInvalid);
-  }
-  if (plan.reason == L4Planning::PlanError::BallisticFailed) {
-    reject(RejectReason::BallisticInvalid);
-  }
-  if (plan.reason == L4Planning::PlanError::BadBulletSpeed) {
-    reject(RejectReason::BadBulletSpeed);
-  }
-  // 延迟链没标完就开火等于按偏早的落点打，验收前必须挡住。
-  if (plan.reason == L4Planning::PlanError::DelayNotCalibrated) {
-    reject(RejectReason::DelayNotCalibrated);
-  }
-  // 命中时刻没有板落在可击发窗口内。高速小陀螺时这是常态间歇，不是故障——
-  // 云台照常跟随，只是不开火。
-  if (plan.reason == L4Planning::PlanError::OutOfWindow) {
-    reject(RejectReason::OutsideHitWindow);
-  }
-  // TrackOnly 必须有一个可解释的降级原因；否则状态与原因自相矛盾，按无效计划
-  // 安全拒绝，避免没有任何拒绝项时 fire_feasible 被误判为 true。
-  if (plan.status == L4Planning::PlanStatus::TrackOnly &&
-      plan.reason != L4Planning::PlanError::BadBulletSpeed &&
-      plan.reason != L4Planning::PlanError::DelayNotCalibrated &&
-      plan.reason != L4Planning::PlanError::OutOfWindow) {
-    reject(RejectReason::PlanInvalid);
+  switch (plan.error) {
+    case L4Planning::PlanError::None:
+      break;
+    case L4Planning::PlanError::NoTarget:
+      // 没目标时上面已经记过。
+      if (input.target) {
+        reject(RejectReason::NoTarget);
+      }
+      break;
+    case L4Planning::PlanError::OutOfWindow:
+      reject(RejectReason::OutOfWindow);
+      break;
+    case L4Planning::PlanError::BallisticFailed:
+      reject(RejectReason::BallisticFailed);
+      break;
   }
 
-  // 只验 MCU 回传的实际角：plan.aim 的有限性由 Planner 保证。
-  if (!std::isfinite(input.actual_yaw) || !std::isfinite(input.actual_pitch)) {
-    // 无法计算实际瞄准误差时，本帧必须关火；前面已经收集的原因仍然保留。
-    reject(RejectReason::NonFinite);
-    decision.shoot = false;
-    return decision;
-  }
-
-  // 命中判据：实际枪管指向与规划角之差必须落在实体板的角度投影内。
-  const auto armor_type = has_target
-    ? L3Estimation::armorTypeOf(target_name)
-    : std::optional<L3Estimation::ArmorType>{};
-  decision.tolerance = tolerance(
-    plan, armor_type.value_or(L3Estimation::ArmorType::Small), target_name);
-  decision.yaw_error =
-    std::abs(L6Telemetry::limit_rad(plan.aim.yaw - input.actual_yaw));
-  decision.pitch_error =
-    std::abs(L6Telemetry::limit_rad(plan.aim.pitch - input.actual_pitch));
-
-  if (!decision.tolerance.valid) {
-    // 没有实体装甲板可判——中心档下这意味着这一帧本来就不该开火。
-    reject(RejectReason::AimError);
-  } else if (
-    decision.yaw_error > decision.tolerance.yaw ||
-    decision.pitch_error > decision.tolerance.pitch) {
-    reject(RejectReason::AimError);
+  // 瞄准误差只对成功的规划有意义：失败时没有要命中的板，原因上面已经记了。
+  // plan.aim 的有限性由 Planner 保证，这里只验 MCU 回传的实际角。
+  if (plan.valid()) {
+    if (!std::isfinite(input.actual_yaw) || !std::isfinite(input.actual_pitch)) {
+      reject(RejectReason::NoPose);
+    } else {
+      // 命中判据：实际枪管指向与规划角之差必须落在实体板的角度投影内。
+      decision.tolerance = tolerance(
+        plan, input.target.value_or(L3Estimation::ArmorName::Unknown));
+      decision.yaw_error =
+        std::abs(L6Telemetry::limit_rad(plan.aim.yaw - input.actual_yaw));
+      decision.pitch_error =
+        std::abs(L6Telemetry::limit_rad(plan.aim.pitch - input.actual_pitch));
+      if (!decision.tolerance.valid ||
+          decision.yaw_error > decision.tolerance.yaw ||
+          decision.pitch_error > decision.tolerance.pitch) {
+        reject(RejectReason::AimError);
+      }
+    }
   }
 
   // ShootDisabled 只控制最终输出，不改变理论开火窗口；因此关闭总开关时仍能
   // 通过 fire_feasible 观察判定时序。
-  const bool only_disabled = std::all_of(
+  decision.fire_feasible = std::all_of(
     decision.reasons.begin(), decision.reasons.end(),
     [](RejectReason reason) { return reason == RejectReason::ShootDisabled; });
-
-  decision.fire_feasible = only_disabled;
   decision.shoot = decision.fire_feasible && config_.shoot_enable;
   return decision;
 }
 
 AimTolerance FireDecider::tolerance(
-  const L4Planning::Plan& plan, L3Estimation::ArmorType type,
-  L3Estimation::ArmorName name) const noexcept
+  const L4Planning::Plan& plan, L3Estimation::ArmorName name) const noexcept
 {
   AimTolerance result;
   if (!plan.fire.has_value() || plan.fire->armor_id < 0) {
@@ -133,7 +109,8 @@ AimTolerance FireDecider::tolerance(
     return result;
   }
 
-  const double width = type == L3Estimation::ArmorType::Big
+  // 未知类别按小板算，窗口只会更紧。
+  const double width = L3Estimation::armorTypeOf(name) == L3Estimation::ArmorType::Big
                          ? config_.armor_width_big
                          : config_.armor_width_small;
 

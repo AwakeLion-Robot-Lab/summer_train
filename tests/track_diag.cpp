@@ -24,7 +24,6 @@
 #include "runtime/armor_detector_factory.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "l4_planning/armor/planner.hpp"
-#include "l4_planning/armor/predictor.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
@@ -323,7 +322,6 @@ int main(int argc, char* argv[])
     require(tracker.ready(), "EskfTracker 拒绝了该标定");
     L3Estimation::PnpSolver solver(calibration, armor_config);
     require(solver.ready(), "诊断用 PnpSolver 拒绝了该标定");
-    const L4Planning::Predictor predictor;
     L4Planning::Planner planner(runtime_config.plan);
     const double bullet_speed = cli.get<double>("bullet-speed");
     const bool use_net_roi = cli.get<bool>("net-roi");
@@ -355,7 +353,7 @@ int main(int argc, char* argv[])
 
     std::ofstream aim_csv(out_dir / "aim.csv");
     aim_csv << "frame,t,plan_valid,plan_armor_id,aim_x,aim_y,aim_z,"
-               "cmd_yaw_deg,cmd_pitch_deg,fly_time,before_fire,fire_admissible,"
+               "cmd_yaw_deg,cmd_pitch_deg,fly_time,before_fire,"
                "fire_delta_deg,aim_jump\n";
     aim_csv << std::fixed;
 
@@ -689,13 +687,12 @@ int main(int argc, char* argv[])
       }
 
       // L4 规划：瞄准点的稳定性只能在这里量，Tracker 自己不产生瞄准点。
-      L1Sensor::RobotState robot_state;
-      robot_state.bullet_speed = bullet_speed;
-      robot_state.mode = L1Sensor::WorkMode::AutoAim;
-      robot_state.rpy.yaw = gimbal_yaw;
-      robot_state.timestamp = timestamp;
       const auto t_l4_begin = std::chrono::steady_clock::now();
-      const auto plan = planner.plan(target, robot_state, timestamp, false);
+      const auto plan = planner.plan({
+        .target = target,
+        .bullet_speed = bullet_speed,
+        .plan_time = timestamp,
+        .to_now = false});
       ms_l4.push_back(std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_l4_begin).count());
       const int armor_id = plan.fire ? plan.fire->armor_id : -1;
@@ -726,7 +723,6 @@ int main(int argc, char* argv[])
               << plan.aim.point.z() << ',' << plan.aim.yaw * kRadToDeg << ','
               << plan.aim.pitch * kRadToDeg << ',' << plan.timing.fly_time << ','
               << plan.timing.delay.beforeFire() << ','
-              << (plan.fireAdmissible() ? 1 : 0) << ','
               << fire_facing * kRadToDeg << ',' << aim_jump << '\n';
 
       // 开环预测：缓存 t 时刻外推 predict_time 后的整车，等真到那一刻再对账。
@@ -735,7 +731,9 @@ int main(int argc, char* argv[])
         entry.made_at = timestamp;
         entry.valid_at = timestamp +
           std::chrono::microseconds(static_cast<long long>(predict_time * 1e6));
-        entry.armors = predictor.predict(*target, predict_time).armor_xyza_list();
+        auto predicted = *target;
+        predicted.predict(predict_time);
+        entry.armors = predicted.armor_xyza_list();
         entry.armors_hold = target->armor_xyza_list();
         entry.type = L3Estimation::armorTypeOf(target->name)
                        .value_or(L3Estimation::ArmorType::Small);

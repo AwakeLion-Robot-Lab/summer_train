@@ -55,9 +55,8 @@ void drawAimOverlay(
     }
   }
 
-  // 一行状态：跟踪状态、规划是否可开火、以及不开火的第一个原因。
+  // 一行状态：跟踪状态，以及不开火的第一个原因（规划失败也在里面）。
   std::string status = trackStateName(input.track_state);
-  status += input.plan.fireAdmissible() ? " | plan:fire-ready" : " | plan:track-only";
   if (!input.fire.reasons.empty()) {
     status += " | " + L5Control::toString(input.fire.reasons.front());
     if (input.fire.reasons.size() > 1) {

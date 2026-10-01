@@ -51,11 +51,6 @@ Eigen::Matrix3d yprToRotation(const Eigen::Vector3d& ypr);
 
 Eigen::Vector3d rotationToYpr(const Eigen::Matrix3d& rotation);
 
-// RPY 固定为 [roll, pitch, yaw]，旋转顺序为 Rz(yaw)Ry(pitch)Rx(roll)。
-Eigen::Matrix3d rpyToRotation(const Eigen::Vector3d& rpy);
-
-Eigen::Vector3d rotationToRpy(const Eigen::Matrix3d& rotation);
-
 Eigen::Vector3d xyz2ypd(const Eigen::Vector3d& xyz);
 
 Eigen::Quaterniond rpyToQuaternion(double roll, double pitch, double yaw);

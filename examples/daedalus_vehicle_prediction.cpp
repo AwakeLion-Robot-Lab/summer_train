@@ -4,7 +4,6 @@
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/vehicle_model.hpp"
-#include "l4_planning/armor/predictor.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "runtime/armor_detector_factory.hpp"
@@ -390,7 +389,6 @@ int main(int argc, char** argv)
     if (!tracker.ready() || !overlay_solver.ready()) {
       throw std::runtime_error("Daedalus calibration was rejected by L3");
     }
-    L4Planning::Predictor predictor;
 
     std::cout << "Daedalus whole-vehicle prediction viewer ready | camera="
               << calibration.image_size.width << 'x'
@@ -450,7 +448,8 @@ int main(int argc, char** argv)
 
       if (target) {
         const auto current_poses = target->armor_xyza_list();
-        const auto predicted = predictor.predict(*target, predict_seconds);
+        auto predicted = *target;
+        predicted.predict(predict_seconds);
         const auto predicted_poses = predicted.armor_xyza_list();
         const auto type = L3Estimation::armorTypeOf(target->name)
                             .value_or(L3Estimation::ArmorType::Small);

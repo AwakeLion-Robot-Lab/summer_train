@@ -189,11 +189,9 @@ int main()
     // Tracker 下发的是不带 filter_ 的 snapshot；L4 必须能直接消费这份 IESKF
     // 目标并在副本上做命中时刻外推。
     L4Planning::Planner planner;
-    L1Sensor::RobotState robot_state;
-    robot_state.bullet_speed = 23.0;
-    const auto plan = planner.plan(
-      std::optional<L3Estimation::EskfTarget>{target.snapshot()}, robot_state,
-      start, false);
+    const auto plan = planner.plan({
+      .target = target.snapshot(), .bullet_speed = 23.0, .plan_time = start,
+      .to_now = false});
     expect(plan.valid(), "L4 Planner 未接受 IESKF 目标快照");
 
     // 认错板号只是标签的循环平移：从 2 号板初始化，几何仍自洽，只是整车 yaw

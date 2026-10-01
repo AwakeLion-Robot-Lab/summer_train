@@ -12,14 +12,13 @@ namespace L4Planning {
 
 using TimePoint = std::chrono::steady_clock::time_point;
 
+// None 表示规划成功；其余都表示本帧没有可下发的瞄准角，L5 保持上一条命令并关火。
 enum class PlanError : std::uint8_t {
   None,
   NoTarget,
-  BadBulletSpeed,
-  // 延迟链还没在实车上标定完，只跟随不开火。
-  DelayNotCalibrated,
-  BallisticFailed,
-  OutOfWindow
+  // 命中时刻没有板在可击打窗口内（小陀螺的正常间歇）。
+  OutOfWindow,
+  BallisticFailed
 };
 
 // 一帧观测从曝光到命中的延迟链，所有字段单位均为秒。
@@ -34,24 +33,6 @@ struct Delay {
   {
     return image_to_plan + plan_to_send + send_to_control + control_to_fire;
   }
-
-  double total() const noexcept
-  {
-    return beforeFire() + fire_to_hit;
-  }
-};
-
-struct Ballistic {
-  double yaw{0.0};       // rad；当前求解器只解 pitch，保持为 0
-  double pitch{0.0};     // rad
-  double fly_time{0.0};  // s
-  bool valid{false};
-};
-
-enum class PlanStatus : std::uint8_t {
-  Rejected,   // 不产生新的瞄准命令
-  TrackOnly,  // 可以跟随，但本帧禁止开火
-  FireReady   // L4 允许开火，仍需经过 L5 判定
 };
 
 // 命中点及其对应的世界系枪管角命令。
@@ -63,9 +44,7 @@ struct AimReference {
 
 // L5 判定始终落在一块实体装甲板上；armor_pose = [x, y, z, normal_yaw]。
 struct FireReference {
-  // 命中目标面在各自规划器里的编号：装甲板是整车展开后的物理板编号，
-  // 符是叶片编号。字段名沿用 armor_ 前缀只是历史包袱，不是类型依赖——
-  // 共享层不引用任何 armor/ 头文件。等 buff 规划器落地再一起改名。
+  // 整车展开后的物理板编号，与 armor_xyza_list() 的下标一致。
   int armor_id{-1};
   Eigen::Vector4d armor_pose{Eigen::Vector4d::Zero()};
 
@@ -91,25 +70,18 @@ struct PlanTiming {
 };
 
 struct Plan {
-  PlanStatus status{PlanStatus::Rejected};
-  PlanError reason{PlanError::NoTarget};
+  PlanError error{PlanError::NoTarget};
   AimReference aim;
+  // 规划成功时必有；失败时为空。
   std::optional<FireReference> fire;
   PlanTiming timing;
 
   bool valid() const noexcept
   {
-    return status != PlanStatus::Rejected;
-  }
-
-  bool fireAdmissible() const noexcept
-  {
-    return status == PlanStatus::FireReady;
+    return error == PlanError::None;
   }
 };
 
-// 命中解算的共用参数：弹道、延迟链、弹速。与目标是装甲板还是符无关，
-// 两条规划链路用同一组。选板一类的目标专有参数放各自的 armor/ 或 buff/。
 struct PlanConfig {
   // 飞行时间与目标位置相互依赖，迭代到相邻两次飞行时间之差小于该阈值。
   int max_iterations{10};
@@ -122,25 +94,21 @@ struct PlanConfig {
   double yaw_offset{0.0};
   double pitch_offset{0.0};
 
-  double fallback_bullet_speed{23.0};
+  // 电控没发弹速、或发来的低于 min_valid_bullet_speed 时按它解弹道，照常开火。
+  double default_bullet_speed{23.0};
   double min_valid_bullet_speed{14.0};
 
-  // 串口发出到电控执行的耗时，只能在实车上标定，未标定时保持空值。
-  // 其余四段都是可算或可测的：image_to_plan 和 plan_to_send 由 runtime 实测，
-  // control_to_fire 用上面的高低速档，fire_to_hit 是弹道飞行时间。
-  std::optional<double> send_to_control;
+  // 串口发出到电控执行的耗时，只能在实车上标定，没标按 0。其余四段：
+  // image_to_plan 和 plan_to_send 由 runtime 实测，control_to_fire 用上面的
+  // 高低速档，fire_to_hit 是弹道飞行时间。
+  double send_to_control{0.0};
 
-  bool bulletSpeedValid(double speed) const noexcept
-  {
-    return std::isfinite(speed) && speed >= min_valid_bullet_speed;
-  }
-
-  // 延迟链是否已经完整到可以开火。缺这一段时目标外推的落点会系统性偏早，
-  // 所以 Planner 会把计划降级成 TrackOnly：云台照常跟随，但不允许开火。
-  bool fireDelayReady() const noexcept
-  {
-    return send_to_control.has_value();
-  }
+  // 选板：候选板进入可击打区域的角度，以及结合旋转方向排除即将离开的板的角度。
+  double coming_angle{60.0 / 57.3};
+  double leaving_angle{20.0 / 57.3};
+  // 前哨站转速固定且板面更窄，进入角放宽、离开角收紧，与普通车分开配。
+  double outpost_coming_angle{70.0 / 57.3};
+  double outpost_leaving_angle{30.0 / 57.3};
 };
 
 }  // namespace L4Planning

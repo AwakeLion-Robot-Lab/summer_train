@@ -42,16 +42,12 @@ L5Control::FireInput makeInput()
 {
   L5Control::FireInput input;
 
-  // 火控只读目标的 name（用来查板型换算角度容差），滤波器状态本身用不到，
-  // 所以用确定性构造入口给一个最简目标即可。跟踪状态由 Tracker 单独提供。
-  L3Estimation::EskfTarget target(
-    L3Estimation::ArmorName::Infantry3, 4.0, 0.0, 0.2);
-  input.target = target;
+  // 火控只读目标类别（用来查板型换算角度容差），不碰滤波器状态。
+  input.target = L3Estimation::ArmorName::Infantry3;
   input.track_state = L3Estimation::TrackState::Tracking;
 
   L4Planning::Plan plan;
-  plan.status = L4Planning::PlanStatus::FireReady;
-  plan.reason = L4Planning::PlanError::None;
+  plan.error = L4Planning::PlanError::None;
   plan.aim = {{4.0, 0.0, 0.1}, 0.0, 0.05};
   plan.fire = L4Planning::FireReference{0, {4.0, 0.0, 0.1, 0.0}};
   input.plan = plan;
@@ -90,25 +86,6 @@ void testShootEnableGatesOnlyTheOutput()
   std::cout << "  [ok] shoot_enable gates the output, not the judgement\n";
 }
 
-// 调用方不应为了让 L5 识别目标存在而伪造一个完整滤波器目标。火控实际只需要
-// 类别来确定板型与后仰角，所以 target_name 是最小契约。
-void testTargetNameOnlyInputIsAdmitted()
-{
-  const L5Control::FireDecider decider(makeConfig());
-  auto input = makeInput();
-  input.target_name = input.target->name;
-  input.target.reset();
-
-  const auto decision = decider.decide(input);
-  require(
-    !hasReason(decision, L5Control::RejectReason::NoTarget),
-    "target_name-only input must still count as a tracked target");
-  require(
-    decision.tolerance.valid && decision.fire_feasible,
-    "target_name-only input must use the same physical armor window");
-  std::cout << "  [ok] estimator-independent target identity reaches L5\n";
-}
-
 // 容差来自装甲板在该距离上张开的角度，所以必须随距离收紧，并停在下限上。
 void testToleranceShrinksWithDistance()
 {
@@ -144,7 +121,7 @@ void testBigArmorGetsWiderYawTolerance()
 
   auto small = makeInput();
   auto big = makeInput();
-  big.target->name = L3Estimation::ArmorName::Hero;
+  big.target = L3Estimation::ArmorName::Hero;
 
   const auto small_tolerance = decider.decide(small).tolerance;
   const auto big_tolerance = decider.decide(big).tolerance;
@@ -235,21 +212,20 @@ void testGimbalRangeIsNotFireGate()
   std::cout << "  [ok] gimbal ranges are not L5 fire gates\n";
 }
 
-// 瞄准误差和"窗口里没有板"是两回事，必须分别归因。
+// 瞄准误差和"窗口里没有板"是两回事，必须分别归因：规划失败时没有要命中的板，
+// 不能再把云台也算成没对准。
 void testWindowAndAimAreSeparateReasons()
 {
   const L5Control::FireDecider decider(makeConfig());
 
   auto out_of_window = makeInput();
-  out_of_window.plan.status = L4Planning::PlanStatus::TrackOnly;
-  out_of_window.plan.reason = L4Planning::PlanError::OutOfWindow;
+  out_of_window.plan.error = L4Planning::PlanError::OutOfWindow;
+  out_of_window.plan.fire.reset();
   const auto decision = decider.decide(out_of_window);
   require(
-    hasReason(decision, L5Control::RejectReason::OutsideHitWindow),
-    "an inadmissible plan must report OutsideHitWindow");
-  require(
-    !hasReason(decision, L5Control::RejectReason::AimError),
-    "a well-aimed gimbal must not also be blamed for the window");
+    decision.reasons.size() == 1 &&
+      hasReason(decision, L5Control::RejectReason::OutOfWindow),
+    "an out-of-window plan must report exactly out_of_window");
   std::cout << "  [ok] window and aim errors stay attributable\n";
 }
 
@@ -263,15 +239,12 @@ void testReasonsAreNotShortCircuited()
   auto input = makeInput();
   input.track_state = L3Estimation::TrackState::TempLost;
   input.command_jump = true;
-  input.plan.status = L4Planning::PlanStatus::TrackOnly;
-  input.plan.reason = L4Planning::PlanError::OutOfWindow;
   input.actual_yaw = 1.0;
 
   const auto decision = decider.decide(input);
   for (const auto reason :
        {L5Control::RejectReason::ShootDisabled, L5Control::RejectReason::TempLost,
-        L5Control::RejectReason::CommandJump,
-        L5Control::RejectReason::OutsideHitWindow, L5Control::RejectReason::AimError}) {
+        L5Control::RejectReason::CommandJump, L5Control::RejectReason::AimError}) {
     require(hasReason(decision, reason), "reason " + toString(reason) + " must be listed");
   }
   require(!decision.fire_feasible && !decision.shoot, "a broken frame must not fire");
@@ -279,7 +252,7 @@ void testReasonsAreNotShortCircuited()
             << " reject reasons reported without short-circuiting\n";
 }
 
-// 中心档瞄的是旋转圆上的代理点，没有实体板可判时不许开火。
+// 没有实体板可判时不许开火。
 void testMissingFireArmorBlocks()
 {
   const L5Control::FireDecider decider(makeConfig());
@@ -291,44 +264,40 @@ void testMissingFireArmorBlocks()
   require(
     !decision.fire_feasible && hasReason(decision, L5Control::RejectReason::AimError),
     "a plan without a physical fire armor must not fire");
-  std::cout << "  [ok] center-proxy frames without a physical plate are refused\n";
+  std::cout << "  [ok] frames without a physical plate are refused\n";
 }
 
-// 降级原因必须精确：弹速异常不是击发窗口异常；整个 Plan 无效也不等于弹道失败。
-void testPlanReasonsStayPrecise()
+// 每种失败只记一条原因，不再出现 plan_invalid 加具体原因的双记。
+void testEachFailureHasOneReason()
 {
   const L5Control::FireDecider decider(makeConfig());
+  const auto only = [&decider](const L5Control::FireInput& input, L5Control::RejectReason reason) {
+    const auto decision = decider.decide(input);
+    return decision.reasons.size() == 1 && decision.reasons.front() == reason &&
+           !decision.fire_feasible;
+  };
 
-  auto bad_speed = makeInput();
-  bad_speed.plan.status = L4Planning::PlanStatus::TrackOnly;
-  bad_speed.plan.reason = L4Planning::PlanError::BadBulletSpeed;
-  const auto speed_decision = decider.decide(bad_speed);
+  auto ballistic = makeInput();
+  ballistic.plan.error = L4Planning::PlanError::BallisticFailed;
+  ballistic.plan.fire.reset();
   require(
-    hasReason(speed_decision, L5Control::RejectReason::BadBulletSpeed) &&
-      !hasReason(speed_decision, L5Control::RejectReason::OutsideHitWindow),
-    "bad bullet speed must not masquerade as an armor-window failure");
-
-  // 延迟链没标完：只跟随不开火，而且要报成自己的原因，不能混进 PlanInvalid。
-  auto uncalibrated = makeInput();
-  uncalibrated.plan.status = L4Planning::PlanStatus::TrackOnly;
-  uncalibrated.plan.reason = L4Planning::PlanError::DelayNotCalibrated;
-  const auto uncalibrated_decision = decider.decide(uncalibrated);
-  require(
-    hasReason(uncalibrated_decision, L5Control::RejectReason::DelayNotCalibrated) &&
-      !hasReason(uncalibrated_decision, L5Control::RejectReason::PlanInvalid) &&
-      !uncalibrated_decision.fire_feasible,
-    "an uncalibrated delay chain must block firing under its own reason");
+    only(ballistic, L5Control::RejectReason::BallisticFailed),
+    "a ballistic failure must report exactly ballistic_failed");
 
   auto no_target = makeInput();
-  no_target.plan.status = L4Planning::PlanStatus::Rejected;
-  no_target.plan.reason = L4Planning::PlanError::NoTarget;
-  const auto rejected_decision = decider.decide(no_target);
+  no_target.target.reset();
+  no_target.plan.error = L4Planning::PlanError::NoTarget;
+  no_target.plan.fire.reset();
   require(
-    hasReason(rejected_decision, L5Control::RejectReason::PlanInvalid) &&
-      !hasReason(rejected_decision, L5Control::RejectReason::BallisticInvalid) &&
-      !hasReason(rejected_decision, L5Control::RejectReason::OutsideHitWindow),
-    "a rejected plan must retain its actual cause");
-  std::cout << "  [ok] plan reject reasons stay precise\n";
+    only(no_target, L5Control::RejectReason::NoTarget),
+    "a missing target must report no_target once");
+
+  auto no_pose = makeInput();
+  no_pose.actual_yaw = std::nan("");
+  require(
+    only(no_pose, L5Control::RejectReason::NoPose),
+    "a missing gimbal pose must report exactly no_pose");
+  std::cout << "  [ok] every failure maps to exactly one reason\n";
 }
 
 }  // namespace
@@ -345,9 +314,9 @@ void testVerticalWindowFollowsPlateTilt()
   // 同一个点、同一板型，只有类别不同——前哨站的板反着倾，于是只有 α 的符号变了。
   const auto windowAt = [&decider](double height_m, L3Estimation::ArmorName name) {
     L4Planning::Plan plan;
-    plan.status = L4Planning::PlanStatus::FireReady;
+    plan.error = L4Planning::PlanError::None;
     plan.fire = L4Planning::FireReference{0, {1.5, 0.0, height_m, 0.0}};
-    return decider.tolerance(plan, L3Estimation::ArmorType::Small, name).pitch;
+    return decider.tolerance(plan, name).pitch;
   };
 
   const auto kInfantry = L3Estimation::ArmorName::Infantry3;
@@ -373,10 +342,10 @@ void testVerticalWindowFollowsPlateTilt()
   const L5Control::FireConfig defaults;
   const L5Control::FireDecider clamped{defaults};
   L4Planning::Plan grazing;
-  grazing.status = L4Planning::PlanStatus::FireReady;
+  grazing.error = L4Planning::PlanError::None;
   grazing.fire = L4Planning::FireReference{0, {1.5, 0.0, 8.0, 0.0}};
   require(
-    clamped.tolerance(grazing, L3Estimation::ArmorType::Small, kInfantry).pitch >=
+    clamped.tolerance(grazing, kInfantry).pitch >=
       defaults.min_pitch_tolerance,
     "掠射时必须退到最小 pitch 容差而不是 0");
   std::cout << "  [ok] vertical window follows plate tilt and line of sight\n";
@@ -387,7 +356,6 @@ int main()
   testVerticalWindowFollowsPlateTilt();
   testAlignedShotIsAdmitted();
   testShootEnableGatesOnlyTheOutput();
-  testTargetNameOnlyInputIsAdmitted();
   testToleranceShrinksWithDistance();
   testBigArmorGetsWiderYawTolerance();
   testTiltedArmorNarrowsYawTolerance();
@@ -397,7 +365,7 @@ int main()
   testWindowAndAimAreSeparateReasons();
   testReasonsAreNotShortCircuited();
   testMissingFireArmorBlocks();
-  testPlanReasonsStayPrecise();
+  testEachFailureHasOneReason();
 
   std::cout << "fire decision smoke test passed\n";
   return 0;

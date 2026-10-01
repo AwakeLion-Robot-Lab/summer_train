@@ -342,21 +342,7 @@ public:
 
   void predict(double dt) { value_.predict(dt); }
 
-  L4Planning::Plan plan(
-    L4Planning::Planner& planner,
-    const L1Sensor::RobotState& robot_state,
-    L3Estimation::TimePoint plan_time,
-    bool to_now,
-    const Eigen::Quaterniond& q_world_barrel) const
-  {
-    L4Planning::PlanInput input;
-    input.target = value_;
-    input.robot_state = robot_state;
-    input.plan_time = plan_time;
-    input.to_now = to_now;
-    input.q_world_barrel = q_world_barrel;
-    return planner.plan(input);
-  }
+  const L3Estimation::EskfTarget& value() const noexcept { return value_; }
 
   double lastNis() const noexcept { return value_.lastNis(); }
   int lastNisDof() const noexcept { return value_.lastNisDof(); }
@@ -496,21 +482,6 @@ public:
 
   void reset() noexcept { tracker_.reset(); }
 
-  L4Planning::Plan plan(
-    L4Planning::Planner& planner,
-    const std::optional<ReplayTarget>& target,
-    const L1Sensor::RobotState& robot_state,
-    L3Estimation::TimePoint plan_time,
-    bool to_now,
-    const Eigen::Quaterniond& q_world_barrel) const
-  {
-    if (target) {
-      return target->plan(planner, robot_state, plan_time, to_now, q_world_barrel);
-    }
-    return planner.plan(
-      std::optional<L3Estimation::EskfTarget>{}, robot_state, plan_time, to_now);
-  }
-
 private:
   L3Estimation::EskfTracker tracker_;
 };
@@ -535,8 +506,6 @@ const char* planErrorName(L4Planning::PlanError error) noexcept
   switch (error) {
   case L4Planning::PlanError::None:            return "none";
   case L4Planning::PlanError::NoTarget:        return "no-target";
-  case L4Planning::PlanError::BadBulletSpeed:  return "bad-speed";
-  case L4Planning::PlanError::DelayNotCalibrated: return "delay-uncal";
   case L4Planning::PlanError::BallisticFailed: return "ballistic";
   case L4Planning::PlanError::OutOfWindow:     return "out-of-window";
   }
@@ -1537,7 +1506,6 @@ int main(int argc, char** argv)
     L5Control::FireConfig fire_config = runtime_config.fire;
     fire_config.shoot_enable = false;
     const L5Control::FireDecider fire_decider{fire_config};
-    const L5Control::Controller controller;
 
     cv::VideoCapture video(video_path);
     require(video.isOpened(), "无法打开录像：" + video_path);
@@ -1840,22 +1808,9 @@ int main(int argc, char** argv)
 
       /// L4 规划 -> L5 火控 -> 串口命令
 
-      // 回放没有裁判系统数据，弹速由命令行给定；模式和敌色按当前回放设定填，
-      // 其余字段保持默认。这份 RobotState 是合成的，真实性仅限于弹速和姿态。
-      L1Sensor::RobotState robot_state;
-      robot_state.bullet_speed = bullet_speed;
-      robot_state.enemy_color = enemy_color == L2Perception::ArmorColor::Red
-        ? L1Sensor::EnemyColor::Red
-        : enemy_color == L2Perception::ArmorColor::Blue
-        ? L1Sensor::EnemyColor::Blue
-        : L1Sensor::EnemyColor::Unknown;
-      robot_state.mode = aiming ? L1Sensor::WorkMode::AutoAim : L1Sensor::WorkMode::Idle;
+      // 回放没有裁判系统数据，弹速由命令行给定。
       const Eigen::Vector3d gimbal_ypr =
         L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0);
-      robot_state.rpy.yaw = gimbal_ypr[0];
-      robot_state.rpy.pitch = gimbal_ypr[1];
-      robot_state.rpy.roll = gimbal_ypr[2];
-      robot_state.timestamp = timestamp;
 
       // SP 的离线 auto_aim_test 以 to_now=false 调 Aimer，固定使用
       // 0.005 s 检测耗时，再叠加 Aimer 的高/低速延迟。
@@ -1868,7 +1823,12 @@ int main(int argc, char** argv)
         planner.reset();
       }
       const auto plan = aiming
-        ? tracker.plan(planner, target, robot_state, plan_time, false, q_world_barrel)
+        ? planner.plan({
+            .target = target ? std::optional{target->value()} : std::nullopt,
+            .bullet_speed = bullet_speed,
+            .plan_time = plan_time,
+            .to_now = false,
+            .q_world_barrel = q_world_barrel})
         : L4Planning::Plan{};
       clock.lap("L4 规划");
       const int plan_armor_id =
@@ -1876,7 +1836,7 @@ int main(int argc, char** argv)
 
       L5Control::FireInput fire_input;
       if (target) {
-        fire_input.target_name = target->name;
+        fire_input.target = target->name;
       }
       // 跟踪状态不再挂在目标上，火控要靠它区分 Tracking 和 TempLost。
       fire_input.track_state = tracker.state();
@@ -1914,7 +1874,7 @@ int main(int argc, char** argv)
       const auto fire_decision =
         aiming ? fire_decider.decide(fire_input) : L5Control::FireDecision{};
       const auto command = aiming
-        ? controller.makeCommand(plan, fire_decision)
+        ? L5Control::Controller::makeCommand(plan, fire_decision)
         : std::optional<L5Control::SerialCommand>{};
       clock.lap("L5 火控");
 
@@ -2136,7 +2096,7 @@ int main(int argc, char** argv)
               L6Telemetry::limit_rad(plan.aim.yaw - gimbal_ypr[0]) * kRadToDeg,
               L6Telemetry::limit_rad(plan.aim.pitch - gimbal_ypr[1]) * kRadToDeg,
               plan_armor_id, plan_armor_id)
-          : cv::format("CMD not sent (plan %s)", planErrorName(plan.reason)),
+          : cv::format("CMD not sent (plan %s)", planErrorName(plan.error)),
         {10, full_view ? 182 : 152},
         plan.valid() ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
       if (full_view) {
@@ -2228,14 +2188,13 @@ int main(int argc, char** argv)
       // L4 -> L5：这才是真正决定下位机动作的一组量。
       // cmd_yaw 是 world 系绝对方位角，和 gimbal_yaw 同一个基准，可以直接相减。
       data["plan_valid"] = plan.valid() ? 1 : 0;
-      data["plan_error"] = static_cast<int>(plan.reason);
+      data["plan_error"] = static_cast<int>(plan.error);
       data["plan_armor_id"] = plan_armor_id;
       data["plan_aim_on_armor"] = plan.fire.has_value() &&
           (plan.aim.point - plan.fire->point()).norm() < 1e-9
         ? 1
         : 0;
       data["fire_armor_id"] = plan_armor_id;
-      data["fire_admissible"] = plan.fireAdmissible() ? 1 : 0;
       if (plan.valid()) {
         data["cmd_yaw"] = plan.aim.yaw * kRadToDeg;
         data["cmd_pitch"] = plan.aim.pitch * kRadToDeg;

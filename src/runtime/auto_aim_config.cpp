@@ -290,80 +290,56 @@ void normalize(AutoAimConfig& config)
   // 端点观测和 PnP 必须引用同一套物理板尺寸。
   config.ieskf_target.armor = config.armor;
 
-  const L4Planning::ArmorPlanConfig plan_defaults;
-  config.plan.impact.max_iterations = std::max(config.plan.impact.max_iterations, 1);
-  config.plan.impact.fly_time_tolerance = std::max(
-    config.plan.impact.fly_time_tolerance, std::chrono::microseconds{1});
-  if (!std::isfinite(config.plan.impact.high_speed_delay_time) ||
-      config.plan.impact.high_speed_delay_time < 0.0) {
-    config.plan.impact.high_speed_delay_time = plan_defaults.impact.high_speed_delay_time;
+  const L4Planning::PlanConfig plan_defaults;
+  auto& plan = config.plan;
+  plan.max_iterations = std::max(plan.max_iterations, 1);
+  plan.fly_time_tolerance =
+    std::max(plan.fly_time_tolerance, std::chrono::microseconds{1});
+  for (const auto& [value, fallback] : {
+         std::pair{&plan.yaw_offset, plan_defaults.yaw_offset},
+         std::pair{&plan.pitch_offset, plan_defaults.pitch_offset}}) {
+    if (!std::isfinite(*value)) {
+      *value = fallback;
+    }
   }
-  if (!std::isfinite(config.plan.impact.low_speed_delay_time) ||
-      config.plan.impact.low_speed_delay_time < 0.0) {
-    config.plan.impact.low_speed_delay_time = plan_defaults.impact.low_speed_delay_time;
+  for (const auto& [value, fallback] : {
+         std::pair{&plan.high_speed_delay_time, plan_defaults.high_speed_delay_time},
+         std::pair{&plan.low_speed_delay_time, plan_defaults.low_speed_delay_time},
+         std::pair{&plan.decision_speed, plan_defaults.decision_speed},
+         std::pair{&plan.send_to_control, plan_defaults.send_to_control}}) {
+    if (!nonNegativeFinite(*value)) {
+      *value = fallback;
+    }
   }
-  if (!std::isfinite(config.plan.impact.decision_speed) ||
-      config.plan.impact.decision_speed < 0.0) {
-    config.plan.impact.decision_speed = plan_defaults.impact.decision_speed;
-  }
-  if (!std::isfinite(config.plan.impact.yaw_offset)) {
-    config.plan.impact.yaw_offset = plan_defaults.impact.yaw_offset;
-  }
-  if (!std::isfinite(config.plan.impact.pitch_offset)) {
-    config.plan.impact.pitch_offset = plan_defaults.impact.pitch_offset;
-  }
-  if (!positiveFinite(config.plan.impact.fallback_bullet_speed)) {
-    config.plan.impact.fallback_bullet_speed = plan_defaults.impact.fallback_bullet_speed;
-  }
-  if (!positiveFinite(config.plan.impact.min_valid_bullet_speed)) {
-    config.plan.impact.min_valid_bullet_speed = plan_defaults.impact.min_valid_bullet_speed;
-  }
-  if (!positiveFinite(config.plan.selector.coming_angle)) {
-    config.plan.selector.coming_angle = plan_defaults.selector.coming_angle;
-  }
-  if (!positiveFinite(config.plan.selector.leaving_angle)) {
-    config.plan.selector.leaving_angle = plan_defaults.selector.leaving_angle;
-  }
-  if (!positiveFinite(config.plan.selector.outpost_coming_angle)) {
-    config.plan.selector.outpost_coming_angle =
-      plan_defaults.selector.outpost_coming_angle;
-  }
-  if (!positiveFinite(config.plan.selector.outpost_leaving_angle)) {
-    config.plan.selector.outpost_leaving_angle =
-      plan_defaults.selector.outpost_leaving_angle;
-  }
-  // 标定值必须是正的有限数，否则当作没标定。
-  if (config.plan.impact.send_to_control &&
-      !(std::isfinite(*config.plan.impact.send_to_control) &&
-        *config.plan.impact.send_to_control >= 0.0)) {
-    LOG_WARN("planning.send_to_control_ms is invalid, treated as uncalibrated");
-    config.plan.impact.send_to_control.reset();
+  for (const auto& [value, fallback] : {
+         std::pair{&plan.default_bullet_speed, plan_defaults.default_bullet_speed},
+         std::pair{&plan.min_valid_bullet_speed, plan_defaults.min_valid_bullet_speed},
+         std::pair{&plan.coming_angle, plan_defaults.coming_angle},
+         std::pair{&plan.leaving_angle, plan_defaults.leaving_angle},
+         std::pair{&plan.outpost_coming_angle, plan_defaults.outpost_coming_angle},
+         std::pair{&plan.outpost_leaving_angle, plan_defaults.outpost_leaving_angle}}) {
+    if (!positiveFinite(*value)) {
+      *value = fallback;
+    }
   }
 
   const L5Control::FireConfig fire_defaults;
-  if (!positiveFinite(config.fire.armor_width_small)) {
-    config.fire.armor_width_small = fire_defaults.armor_width_small;
+  auto& fire = config.fire;
+  for (const auto& [value, fallback] : {
+         std::pair{&fire.armor_width_small, fire_defaults.armor_width_small},
+         std::pair{&fire.armor_width_big, fire_defaults.armor_width_big},
+         std::pair{&fire.armor_height, fire_defaults.armor_height},
+         std::pair{&fire.min_yaw_tolerance, fire_defaults.min_yaw_tolerance},
+         std::pair{&fire.min_pitch_tolerance, fire_defaults.min_pitch_tolerance}}) {
+    if (!positiveFinite(*value)) {
+      *value = fallback;
+    }
   }
-  if (!positiveFinite(config.fire.armor_width_big)) {
-    config.fire.armor_width_big = fire_defaults.armor_width_big;
+  if (!positiveFinite(fire.hit_margin_ratio) || fire.hit_margin_ratio > 1.0) {
+    fire.hit_margin_ratio = fire_defaults.hit_margin_ratio;
   }
-  if (!positiveFinite(config.fire.armor_height)) {
-    config.fire.armor_height = fire_defaults.armor_height;
-  }
-  if (!std::isfinite(config.fire.hit_margin_ratio) ||
-      config.fire.hit_margin_ratio <= 0.0 ||
-      config.fire.hit_margin_ratio > 1.0) {
-    config.fire.hit_margin_ratio = fire_defaults.hit_margin_ratio;
-  }
-  if (!positiveFinite(config.fire.min_yaw_tolerance)) {
-    config.fire.min_yaw_tolerance = fire_defaults.min_yaw_tolerance;
-  }
-  if (!positiveFinite(config.fire.min_pitch_tolerance)) {
-    config.fire.min_pitch_tolerance = fire_defaults.min_pitch_tolerance;
-  }
-  if (!std::isfinite(config.fire.command_jump_threshold) ||
-      config.fire.command_jump_threshold < 0.0) {
-    config.fire.command_jump_threshold = fire_defaults.command_jump_threshold;
+  if (!nonNegativeFinite(fire.command_jump_threshold)) {
+    fire.command_jump_threshold = fire_defaults.command_jump_threshold;
   }
 
   config.debug.overlay_every = std::max(config.debug.overlay_every, 1);
@@ -607,39 +583,21 @@ AutoAimConfig loadConfig(const std::string& path)
     ieskf, "initial_radius_base", config.ieskf_target.initial_radius_base);
 
   const YAML::Node planning = root["planning"];
-  readValue(planning, "max_iterations", config.plan.impact.max_iterations);
-  readMicroseconds(
-    planning, "fly_time_tolerance_us", config.plan.impact.fly_time_tolerance);
-  readMillisecondsAsSeconds(
-    planning, "high_speed_delay_ms", config.plan.impact.high_speed_delay_time);
-  readMillisecondsAsSeconds(
-    planning, "low_speed_delay_ms", config.plan.impact.low_speed_delay_time);
-  readValue(
-    planning, "decision_speed_rad_s", config.plan.impact.decision_speed);
-  readDegrees(planning, "yaw_offset_deg", config.plan.impact.yaw_offset);
-  readDegrees(planning, "pitch_offset_deg", config.plan.impact.pitch_offset);
-  readValue(
-    planning,
-    "fallback_bullet_speed_mps",
-    config.plan.impact.fallback_bullet_speed);
-  readValue(
-    planning,
-    "min_valid_bullet_speed_mps",
-    config.plan.impact.min_valid_bullet_speed);
-  readDegrees(
-    planning, "coming_angle_deg", config.plan.selector.coming_angle);
-  readDegrees(
-    planning, "leaving_angle_deg", config.plan.selector.leaving_angle);
-  readDegrees(
-    planning, "outpost_coming_angle_deg", config.plan.selector.outpost_coming_angle);
-  readDegrees(
-    planning, "outpost_leaving_angle_deg", config.plan.selector.outpost_leaving_angle);
-  // 不写这一项就表示还没在实车上标定：Planner 会把计划降级成 TrackOnly，
-  // 云台照常跟随但不允许开火。写了才算标定完成。
-  if (planning && planning["send_to_control_ms"]) {
-    config.plan.impact.send_to_control =
-      planning["send_to_control_ms"].as<double>() * 1e-3;
-  }
+  auto& plan = config.plan;
+  readValue(planning, "max_iterations", plan.max_iterations);
+  readMicroseconds(planning, "fly_time_tolerance_us", plan.fly_time_tolerance);
+  readMillisecondsAsSeconds(planning, "high_speed_delay_ms", plan.high_speed_delay_time);
+  readMillisecondsAsSeconds(planning, "low_speed_delay_ms", plan.low_speed_delay_time);
+  readValue(planning, "decision_speed_rad_s", plan.decision_speed);
+  readDegrees(planning, "yaw_offset_deg", plan.yaw_offset);
+  readDegrees(planning, "pitch_offset_deg", plan.pitch_offset);
+  readValue(planning, "default_bullet_speed_mps", plan.default_bullet_speed);
+  readValue(planning, "min_valid_bullet_speed_mps", plan.min_valid_bullet_speed);
+  readMillisecondsAsSeconds(planning, "send_to_control_ms", plan.send_to_control);
+  readDegrees(planning, "coming_angle_deg", plan.coming_angle);
+  readDegrees(planning, "leaving_angle_deg", plan.leaving_angle);
+  readDegrees(planning, "outpost_coming_angle_deg", plan.outpost_coming_angle);
+  readDegrees(planning, "outpost_leaving_angle_deg", plan.outpost_leaving_angle);
 
   const YAML::Node fire = root["fire"];
   readValue(fire, "shoot_enable", config.fire.shoot_enable);
@@ -647,10 +605,8 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(fire, "armor_width_big_m", config.fire.armor_width_big);
   readValue(fire, "armor_height_m", config.fire.armor_height);
   readValue(fire, "hit_margin_ratio", config.fire.hit_margin_ratio);
-  readDegrees(
-    fire, "min_yaw_tolerance_deg", config.fire.min_yaw_tolerance);
-  readDegrees(
-    fire, "min_pitch_tolerance_deg", config.fire.min_pitch_tolerance);
+  readDegrees(fire, "min_yaw_tolerance_deg", config.fire.min_yaw_tolerance);
+  readDegrees(fire, "min_pitch_tolerance_deg", config.fire.min_pitch_tolerance);
   readDegrees(fire, "command_jump_deg", config.fire.command_jump_threshold);
 
   const YAML::Node debug = root["debug"];
