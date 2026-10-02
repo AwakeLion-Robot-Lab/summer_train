@@ -10,20 +10,6 @@
 #include <opencv2/imgproc.hpp>
 
 namespace L6Telemetry {
-namespace {
-
-const char* trackStateName(L3Estimation::TrackState state) noexcept
-{
-  switch (state) {
-  case L3Estimation::TrackState::Lost:      return "lost";
-  case L3Estimation::TrackState::Detecting: return "detecting";
-  case L3Estimation::TrackState::Tracking:  return "tracking";
-  case L3Estimation::TrackState::TempLost:  return "temp-lost";
-  }
-  return "?";
-}
-
-}  // namespace
 
 void drawAimOverlay(
   cv::Mat& image, const AimOverlayInput& input,
@@ -56,7 +42,7 @@ void drawAimOverlay(
   }
 
   // 一行状态：跟踪状态，以及不开火的第一个原因（规划失败也在里面）。
-  std::string status = trackStateName(input.track_state);
+  std::string status = L3Estimation::toString(input.track_state);
   if (!input.fire.reasons.empty()) {
     status += " | " + L5Control::toString(input.fire.reasons.front());
     if (input.fire.reasons.size() > 1) {

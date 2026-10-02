@@ -52,17 +52,6 @@ constexpr bool isEnemyArmor(
          observed == enemyArmorColor(expected);
 }
 
-const char* stateName(L3Estimation::TrackState state) noexcept
-{
-  switch (state) {
-    case L3Estimation::TrackState::Lost: return "lost";
-    case L3Estimation::TrackState::Detecting: return "detecting";
-    case L3Estimation::TrackState::Tracking: return "tracking";
-    case L3Estimation::TrackState::TempLost: return "temp_lost";
-  }
-  return "unknown";
-}
-
 L2Perception::ArmorDetector loadDetector(const runtime::AutoAimConfig& config)
 {
   try {
@@ -183,7 +172,7 @@ void AutoAimRuntime::run() {
       if (mode != last_mode) {
         LOG_INFO(
           "work mode ->", L1Sensor::toString(mode), "| tracker",
-          tracker ? stateName(tracker->state()) : "disabled");
+          tracker ? L3Estimation::toString(tracker->state()) : "disabled");
         last_mode = mode;
       }
       switch (mode) {

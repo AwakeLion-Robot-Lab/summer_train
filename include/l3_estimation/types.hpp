@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 
 // L3 里与目标类型无关的公共定义。装甲板专有的类别、观测和配置在
 // armor/types.hpp，符的在 buff/ 下，顶层不认识任何具体目标。
@@ -17,5 +18,8 @@ enum class TrackState : std::uint8_t {
   Tracking,   // 稳定跟踪
   TempLost    // 短时丢失，继续输出预测状态
 };
+
+// 日志、叠加层和回放 CSV 共用这一份名字，各处自己写会拼法漂移。
+std::string toString(TrackState state);
 
 }  // namespace L3Estimation

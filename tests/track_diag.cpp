@@ -87,21 +87,6 @@ void require(bool condition, const std::string& message)
   }
 }
 
-const char* stateName(L3Estimation::TrackState state) noexcept
-{
-  switch (state) {
-  case L3Estimation::TrackState::Lost:
-    return "lost";
-  case L3Estimation::TrackState::Detecting:
-    return "detecting";
-  case L3Estimation::TrackState::Tracking:
-    return "tracking";
-  case L3Estimation::TrackState::TempLost:
-    return "temp_lost";
-  }
-  return "unknown";
-}
-
 L2Perception::ArmorColor parseEnemyColor(const std::string& value)
 {
   if (value == "red") return L2Perception::ArmorColor::Red;
@@ -568,7 +553,7 @@ int main(int argc, char* argv[])
 
       frame_csv << frame_index << ',' << pose.seconds << ',' << dt << ','
                 << gimbal_yaw * kRadToDeg << ',' << armors.size() << ','
-                << match_here << ',' << stateName(state) << ',';
+                << match_here << ',' << L3Estimation::toString(state) << ',';
       if (target) {
         // ekf_x() 布局：[cx, vcx, cy, vcy, cz, vcz, rot_z, vyaw, r1, P1, P2,
         // rot_y, rot_x]，半径已转回线性。姿态是完整 SO(3)，yaw 必须从旋转矩阵
@@ -616,7 +601,7 @@ int main(int argc, char* argv[])
       // 叠加层像素位置：整车中心 + 四块板的框心，外加当帧检出的板心作参照。
       {
         overlay_csv << frame_index << ',' << pose.seconds << ','
-                    << stateName(state) << ',';
+                    << L3Estimation::toString(state) << ',';
         const auto center_px = target
           ? projectWorldPoint(
               Eigen::Vector3d{

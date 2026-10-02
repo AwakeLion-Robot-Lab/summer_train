@@ -486,21 +486,6 @@ private:
   L3Estimation::EskfTracker tracker_;
 };
 
-std::string_view stateName(L3Estimation::TrackState state) noexcept
-{
-  switch (state) {
-  case L3Estimation::TrackState::Lost:
-    return "lost";
-  case L3Estimation::TrackState::Detecting:
-    return "detecting";
-  case L3Estimation::TrackState::Tracking:
-    return "tracking";
-  case L3Estimation::TrackState::TempLost:
-    return "temp_lost";
-  }
-  return "unknown";
-}
-
 const char* planErrorName(L4Planning::PlanError error) noexcept
 {
   switch (error) {
@@ -1587,7 +1572,7 @@ int main(int argc, char** argv)
         }
         std::cout << "[frame " << next_frame << "] "
                   << (aiming ? "切进自瞄" : "切回 Idle") << "，跟踪器 "
-                  << stateName(tracker.state()) << '\n';
+                  << L3Estimation::toString(tracker.state()) << '\n';
       }
     };
 
@@ -1923,7 +1908,7 @@ int main(int argc, char** argv)
         LOG_DEBUG(
           "[" + std::to_string(frame_index) + "] estimator=" +
           "ieskf+endpoint state=" +
-          std::string(stateName(tracker.state())) + ' ' +
+          L3Estimation::toString(tracker.state()) + ' ' +
           filterKinematicsText(*filter_estimate) + ' ' +
           filterGeometryText(
             *filter_estimate, target->last_id, target->lastNis(),
@@ -1932,7 +1917,7 @@ int main(int argc, char** argv)
         LOG_DEBUG(
           "[" + std::to_string(frame_index) + "] estimator=" +
           "ieskf+endpoint state=" +
-          std::string(stateName(tracker.state())) + " target=none");
+          L3Estimation::toString(tracker.state()) + " target=none");
       }
 
       if (full_view) {
@@ -2041,7 +2026,7 @@ int main(int argc, char** argv)
         img,
         cv::format(
           "frame=%d ieskf+endpoint state=%s target=%s det=%zu obs=%zu", frame_index,
-          std::string(stateName(tracker.state())).c_str(),
+          L3Estimation::toString(tracker.state()).c_str(),
           target ? armorClassName(target->name) : "-", armors.size(),
           observations.size()),
         {10, 32}, {255, 255, 255});
