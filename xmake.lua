@@ -29,9 +29,9 @@ option("use_openvino")
 option_end()
 
 option("openvino_root")
-    set_default("/opt/intel/openvino_2024.6.0")
+    set_default("")
     set_showmenu(true)
-    set_description("OpenVINO install prefix (the directory containing runtime/)")
+    set_description("OpenVINO install prefix (the directory containing runtime/); empty = auto-detect")
 option_end()
 
 option("use_tensorrt")
@@ -92,25 +92,95 @@ target("newvision")
     -- 使用覆盖语义，拆开写会让其中一个后端静默失效。
     on_load(function (target)
         if has_config("use_openvino") then
-            -- SP-Vision 固定使用 /opt/intel/openvino_2024.6.0。模型推理的最后几个
-            -- ulp 会随 Runtime 版本变化，而 SP 的 1 度离散 yaw 搜索会放大这种差异，
-            -- 所以本机存在同一 SDK 时优先与 SP 链接同一版本；其他机器再回退 pkg-config。
-            --
-            -- 换版本用 xmake f --openvino_root=/path/to/openvino（目录下要有
-            -- runtime/），换完所有离线基线都要重跑：ulp 级差异会一路传到 pred_px。
-            local sp_openvino_runtime = path.join(get_config("openvino_root") or
-                "/opt/intel/openvino_2024.6.0", "runtime")
-            local sp_openvino_include = path.join(sp_openvino_runtime, "include")
-            local sp_openvino_lib = path.join(sp_openvino_runtime, "lib", "intel64")
-            if os.isdir(sp_openvino_include) and os.isfile(path.join(sp_openvino_lib, "libopenvino.so")) then
-                target:add("includedirs", sp_openvino_include)
-                target:add("linkdirs", sp_openvino_lib, {public = true})
-                target:add("rpathdirs", sp_openvino_lib, {public = true})
+            -- 每台电脑的 OpenVINO 装在哪、装的哪一版都不一样，按下面的顺序找，
+            -- 第一个头文件和库都齐全的就用：
+            --   1. xmake f --openvino_root=<安装目录>（写错只警告，接着往下找）；
+            --   2. 环境变量 INTEL_OPENVINO_DIR（source setupvars.sh 之后就有）；
+            --   3. /opt/intel/openvino_2024.6.0：SP-Vision 固定用这一版。推理结果
+            --      最后几个 ulp 随 Runtime 版本变，SP 的 1 度离散 yaw 搜索会放大这种
+            --      差异，所以本机有这一版就和 SP 链同一版；
+            --   4. /opt/intel/openvino（官方安装说明里的软链），再是其余
+            --      /opt/intel/openvino*，按目录名倒序，新版本在前；
+            --   5. apt 装的系统版（/usr、/usr/local）；
+            --   6. pkg-config。
+            -- 压缩包装法的库在 runtime/lib/<arch>，arch 按目标架构取 intel64 或
+            -- aarch64：同一台机器上可能放着别的架构的包，只比版本号会挑中链不上的。
+            -- 用的是哪一份，xmake -v 会打印；换版本后离线基线都要重跑，ulp 级差异
+            -- 会一路传到 pred_px。
+            local ov_arch = target:is_arch("arm64", "aarch64") and "aarch64" or "intel64"
+            local ov_triplet = ov_arch == "aarch64" and "aarch64-linux-gnu" or "x86_64-linux-gnu"
+            local sp_root = "/opt/intel/openvino_2024.6.0"
+
+            -- 压缩包装法：<root>/runtime/{include,lib/<arch>}。
+            local function find_archive(root)
+                if root == nil or root == "" then
+                    return nil
+                end
+                local include = path.join(root, "runtime", "include")
+                local lib = path.join(root, "runtime", "lib", ov_arch)
+                if os.isfile(path.join(include, "openvino", "openvino.hpp")) and
+                   os.isfile(path.join(lib, "libopenvino.so")) then
+                    return {root = root, include = include, lib = lib}
+                end
+            end
+
+            -- 系统版在编译器和链接器的默认搜索路径里，不往 includedirs 里加：
+            -- -I/usr/include 会打乱 libstdc++ 的 #include_next <stdlib.h>。
+            local function find_system(prefix)
+                if not os.isfile(path.join(prefix, "include", "openvino", "openvino.hpp")) then
+                    return nil
+                end
+                for _, sub in ipairs({"lib/" .. ov_triplet, "lib64", "lib"}) do
+                    if os.isfile(path.join(prefix, sub, "libopenvino.so")) then
+                        return {root = prefix}
+                    end
+                end
+            end
+
+            local tried = {}
+            local function try_archive(root)
+                if root == nil or root == "" or tried[root] then
+                    return nil
+                end
+                tried[root] = true
+                return find_archive(root)
+            end
+
+            local configured = get_config("openvino_root") or ""
+            local found = try_archive(configured)
+            if not found and configured ~= "" and configured ~= sp_root then
+                cprint("${color.warning}openvino_root=%s 下没有 %s 的 OpenVINO，改为自动查找",
+                    configured, ov_arch)
+            end
+            found = found or try_archive(os.getenv("INTEL_OPENVINO_DIR"))
+                or try_archive(sp_root)
+                or try_archive("/opt/intel/openvino")
+            if not found then
+                local others = os.dirs("/opt/intel/openvino*")
+                table.sort(others, function (a, b) return a > b end)
+                for _, root in ipairs(others) do
+                    found = try_archive(root)
+                    if found then
+                        break
+                    end
+                end
+            end
+            found = found or find_system("/usr") or find_system("/usr/local")
+
+            if found then
+                vprint("OpenVINO: %s", found.root)
+                if found.include then
+                    target:add("includedirs", found.include)
+                    target:add("linkdirs", found.lib, {public = true})
+                    target:add("rpathdirs", found.lib, {public = true})
+                end
             else
                 import("lib.detect.find_package")
                 local openvino = find_package("pkgconfig::openvino", {version = true})
                 assert(openvino,
-                    "OpenVINO was not found; install 2024.6 like SP or expose it through pkg-config")
+                    "OpenVINO was not found (" .. ov_arch .. "); pass --openvino_root=<prefix>, " ..
+                    "source setupvars.sh, or expose it through pkg-config")
+                vprint("OpenVINO: pkg-config %s", openvino.version or "")
                 target:add("includedirs", openvino.includedirs)
                 if openvino.defines then
                     target:add("defines", openvino.defines)
