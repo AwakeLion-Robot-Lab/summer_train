@@ -4,6 +4,7 @@
 #include "l6_telemetry/math.hpp"
 #include <opencv2/highgui.hpp>
 
+#include <format>
 #include <numbers>
 #include <string>
 
@@ -30,7 +31,7 @@ std::optional<L1Sensor::WorkMode> parseWorkMode(const std::string& name)
 // PlotJuggler 遥测。分节点是硬要求：曝光时刻云台角 gimbal/、规划时刻云台角
 // gimbal_now/、真正下发的命令 cmd/ 必须落在不同分支上，三者同图才看得出
 // 跟随误差和振荡；观测计数 track/ 与滤波状态 ekf/ 同理。角度 degree、时间 ms。
-nlohmann::json telemetryFrame(const runtime::DebugFrame& in)
+nlohmann::json telemetryFrame(const runtime::DebugFrame& in, double fps)
 {
   constexpr double kRadToDeg = 180.0 / std::numbers::pi;
   const auto ms = [](auto duration) {
@@ -47,6 +48,7 @@ nlohmann::json telemetryFrame(const runtime::DebugFrame& in)
   // 平滑曲线画成台阶。在 PlotJuggler 的 UDP/JSON 插件里选它作 timestamp。
   data["t"] = std::chrono::duration<double>(in.timestamp.time_since_epoch()).count();
   data["aiming"] = in.aiming ? 1 : 0;
+  data["fps"] = fps;
 
   if (in.image_pose) {
     putYawPitch(data["gimbal"], *in.image_pose);
@@ -157,6 +159,7 @@ AutoAimDebug::AutoAimDebug(
   const std::optional<L1Sensor::CameraCalibration>& calibration)
     : overlay_(config.debug.overlay),
       overlay_every_(config.debug.overlay_every),
+      fps_start_(std::chrono::steady_clock::now()),
       calibration_(calibration)
 {
   // 叠加层默认关闭：imshow 的耗时会计进 image_to_plan，而且比赛用的机器
@@ -196,7 +199,7 @@ AutoAimDebug::~AutoAimDebug()
 void AutoAimDebug::record(cv::Mat& image, const DebugFrame& in)
 {
   if (plotter_) {
-    (void)plotter_->send(telemetryFrame(in));
+    (void)plotter_->send(telemetryFrame(in, fps_));
   }
   if (solver_ && in.tracker && frame_index_ % overlay_every_ == 0) {
     solver_->set_R_world_barrel(in.image_pose);
@@ -212,12 +215,24 @@ void AutoAimDebug::record(cv::Mat& image, const DebugFrame& in)
   }
 }
 
-bool AutoAimDebug::show(const cv::Mat& image)
+bool AutoAimDebug::show(cv::Mat& image)
 {
   ++frame_index_;
+  ++fps_frames_;
+  const auto now = std::chrono::steady_clock::now();
+  const double elapsed = std::chrono::duration<double>(now - fps_start_).count();
+  if (elapsed >= 1.0) {
+    fps_ = fps_frames_ / elapsed;
+    fps_frames_ = 0;
+    fps_start_ = now;
+  }
+
   if (!overlay_) {
     return true;
   }
+  // 状态行在 y=28，帧率写在它下面一行。
+  L6Telemetry::drawOutlinedText(
+    image, std::format("fps {:.1f}", fps_), {12, 56}, {255, 255, 255}, 0.7);
   cv::imshow("auto_aim", image);
   const int key = cv::waitKey(1);
   return key != 27 && key != 'q' && key != 'Q';
