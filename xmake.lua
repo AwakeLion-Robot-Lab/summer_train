@@ -78,8 +78,10 @@ target("newvision")
     add_includedirs("tools/camera_sdk/mindvision/include", {public = true})
     add_includedirs("tools/logger/include", {public = true})
     add_includedirs("tools/logger/include/3rdparty", {public = true})
-    add_linkdirs("tools/camera_sdk/hikrobot/lib/amd64", "tools/camera_sdk/mindvision/lib/amd64", {public = true})
-    add_rpathdirs("$(projectdir)/tools/camera_sdk/hikrobot/lib/amd64", "$(projectdir)/tools/camera_sdk/mindvision/lib/amd64", {public = true})
+    -- 两家 SDK 都带 amd64 / arm64 两套库；写死 amd64 时 Jetson 上会链到 x86 的 .so。
+    local sdk_arch = is_arch("arm64", "aarch64") and "arm64" or "amd64"
+    add_linkdirs("tools/camera_sdk/hikrobot/lib/" .. sdk_arch, "tools/camera_sdk/mindvision/lib/" .. sdk_arch, {public = true})
+    add_rpathdirs("$(projectdir)/tools/camera_sdk/hikrobot/lib/" .. sdk_arch, "$(projectdir)/tools/camera_sdk/mindvision/lib/" .. sdk_arch, {public = true})
     add_links("MvCameraControl", "MVSDK", "usb-1.0", {public = true})
     add_syslinks("pthread", "rt", {public = true})
     if has_config("use_xrepo_deps") then
@@ -331,12 +333,13 @@ local standalone_tests = {
     },
 }
 
--- 需要开关或平台才存在的目标。openvino 这几个都要模型；auto_aim_test 还要显示器。
+-- 需要开关或平台才存在的目标。inference 这几个都要模型，OpenVINO、TensorRT 开一个即可
+-- （Jetson 上只有 TensorRT）；auto_aim_test 还要显示器。
 local gated_tests = {
-    openvino_armor_smoke     = "use_openvino",
-    auto_aim_test            = "use_openvino",
-    track_diag               = "use_openvino",
-    light_noise              = "use_openvino",
+    openvino_armor_smoke     = "inference",
+    auto_aim_test            = "inference",
+    track_diag               = "inference",
+    light_noise              = "inference",
     serial_worker_smoke      = "linux",
 }
 
@@ -357,6 +360,8 @@ for _, source in ipairs(os.files("tests/*.cpp")) do
     local enabled = true
     if gate == "linux" then
         enabled = is_plat("linux")
+    elseif gate == "inference" then
+        enabled = has_config("use_openvino") or has_config("use_tensorrt")
     elseif gate then
         enabled = has_config(gate)
     end
