@@ -1,5 +1,5 @@
-// 侧边灯条相关的 smoke：在合成图上画几根灯条，逐条确认端点、形状门限、颜色
-// 判定、ROI 限制，以及剔除已检出装甲板自己的灯条。
+// 侧边灯条相关的 smoke：在合成图上画几根灯条，逐条确认剖面搜索的端点、方向
+// 门限、颜色判定，以及剔除已检出装甲板自己的灯条。
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/armor/light_detector.hpp"
 
@@ -15,7 +15,6 @@ namespace
 {
 
 using L2Perception::ArmorColor;
-using L2Perception::findLights;
 using L2Perception::Light;
 using L2Perception::LightFinderConfig;
 
@@ -26,8 +25,8 @@ void require(bool condition, const std::string& message)
   }
 }
 
-// 画一根灯条：先填一圈有色光晕，再填发白的核心。和实拍一样，只有核心能过
-// 灰度阈值，颜色只留在光晕里。
+// 画一根灯条：先填一圈有色光晕，再填发白的核心。和实拍一样，核心过曝发白，
+// 颜色只留在光晕里。
 void drawLight(
   cv::Mat& image, cv::Point2f center, float length, float width, float tilt_deg,
   const cv::Scalar& halo)
@@ -46,65 +45,11 @@ void drawLight(
   fill(0.0F, {255, 255, 255});
 }
 
-const Light* nearest(const std::vector<Light>& lights, cv::Point2f point)
-{
-  const Light* best = nullptr;
-  for (const Light& light : lights) {
-    if (best == nullptr || cv::norm(light.center - point) < cv::norm(best->center - point)) {
-      best = &light;
-    }
-  }
-  return best;
-}
-
 }  // namespace
 
 int main()
 {
   try {
-    // 门限写死，不用默认值：这里要确认的是门限本身在起作用，默认值会随录像
-    // 的曝光重新调。
-    LightFinderConfig config;
-    config.binary_threshold = 140;
-    config.max_ratio = 0.4F;
-    const cv::Scalar blue{255, 90, 20};
-    const cv::Scalar red{20, 60, 255};
-
-    cv::Mat image(400, 600, CV_8UC3, cv::Scalar{30, 30, 30});
-    drawLight(image, {100.0F, 100.0F}, 40.0F, 6.0F, 0.0F, blue);
-    drawLight(image, {300.0F, 100.0F}, 40.0F, 6.0F, 20.0F, red);
-    // 近似正方形的亮斑（弹丸、反光）和太宽的亮块（数字）都不是灯条。
-    cv::rectangle(image, cv::Rect(450, 80, 20, 20), {255, 255, 255}, cv::FILLED);
-    cv::rectangle(image, cv::Rect(100, 250, 30, 50), {255, 255, 255}, cv::FILLED);
-    // 横躺的细条：长宽比像灯条，但倾角不对。
-    drawLight(image, {400.0F, 300.0F}, 40.0F, 6.0F, 90.0F, blue);
-
-    const std::vector<Light> lights =
-      findLights(image, cv::Rect(0, 0, image.cols, image.rows), config);
-    require(lights.size() == 2, "expected exactly the two upright lights, got " +
-                                  std::to_string(lights.size()));
-
-    const Light* upright = nearest(lights, {100.0F, 100.0F});
-    require(upright != nullptr && cv::norm(upright->center - cv::Point2f{100.0F, 100.0F}) < 1.0,
-            "upright light center");
-    require(std::abs(upright->length - 40.0) < 2.0, "upright light length");
-    require(upright->top.y < upright->bottom.y, "top must be above bottom");
-    require(upright->tilt_angle_deg < 2.0F, "upright light tilt");
-    require(upright->color == ArmorColor::Blue, "blue halo must classify as blue");
-
-    const Light* tilted = nearest(lights, {300.0F, 100.0F});
-    require(std::abs(tilted->tilt_angle_deg - 20.0F) < 2.0F, "tilted light angle");
-    require(tilted->color == ArmorColor::Red, "red halo must classify as red");
-
-    // ROI 之外的灯条不找；返回坐标仍在原图上。
-    {
-      const std::vector<Light> in_roi =
-        findLights(image, cv::Rect(250, 50, 100, 100), config);
-      require(in_roi.size() == 1, "roi must limit the search");
-      require(cv::norm(in_roi.front().center - cv::Point2f{300.0F, 100.0F}) < 1.0,
-              "roi result must be in full-image coordinates");
-    }
-
     // insideArmor：板自己的灯条算板的，相邻板的灯条（3 m 处约 4 倍灯长开外）不算。
     {
       L2Perception::Armor armor;
@@ -139,8 +84,7 @@ int main()
       // 斜看的侧边灯条：核心宽 2 px、长 30 px。
       drawLight(scene, {100.0F, 220.0F}, 30.0F, 2.0F, 0.0F, dim_blue);
 
-      LightFinderConfig profile;
-      profile.search = L2Perception::LightSearch::Profile;
+      const LightFinderConfig profile;
       const auto hintAt = [](cv::Point2f center, float length, float tilt_deg) {
         const float rad = tilt_deg * static_cast<float>(CV_PI) / 180.0F;
         const cv::Point2f half(-std::sin(rad) * length * 0.5F, std::cos(rad) * length * 0.5F);
@@ -175,8 +119,8 @@ int main()
       require(thin.size() == 1, "profile must find a thin oblique light");
       require(std::abs(thin.front().length - 30.0) < 2.0, "thin light length");
 
-      // 车身倾斜时的侧面板：灯条在图像里斜 55°，超过 max_angle_deg。轮廓法按
-      // 图像竖直方向判会丢掉它，剖面搜索按预测方向判（预测偏 5°）要留下。
+      // 车身倾斜时的侧面板：灯条在图像里斜 55°，超过 max_angle_deg。剖面搜索
+      // 按预测方向判（预测偏 5°）而不是图像竖直方向，要留下。
       cv::Mat tilted_scene(200, 200, CV_8UC3, cv::Scalar{30, 30, 30});
       drawLight(tilted_scene, {100.0F, 100.0F}, 40.0F, 6.0F, 55.0F, dim_blue);
       const std::vector<Light> steep = L2Perception::searchLights(

@@ -23,45 +23,6 @@ ArmorDetector::ArmorDetector(
     throw std::invalid_argument("ArmorDetector: armor model backend is not loaded");
   }
   decoder_.validate(probeOutputSpecs(*armor_backend_));
-
-  // 模型或标签有问题就在启动阶段抛，别等到每帧把类别判成另一辆车。
-  if (config.number.enable) {
-    classifier_.load(config.number);
-  }
-}
-
-NumberStats ArmorDetector::classifyNumbers(
-  const cv::Mat& image, std::vector<Armor>& armors) const
-{
-  NumberStats stats;
-  if (!classifier_.ready()) {
-    return stats;
-  }
-  const bool drop = classifier_.config().on_reject == RejectPolicy::Drop;
-  std::erase_if(armors, [&](Armor & armor) {
-    const NumberResult result = classifier_.classify(image, armor.corners);
-    switch (result.verdict) {
-      case NumberVerdict::Accepted:
-        ++stats.accepted;
-        break;
-      case NumberVerdict::Negative:
-        ++stats.negative;
-        return drop;
-      case NumberVerdict::LowConfidence:
-        ++stats.low_confidence;
-        return drop;
-      case NumberVerdict::TypeMismatch:
-        ++stats.type_mismatch;
-        return drop;
-    }
-    // 只有采信时才改写类别；没采信的板类别保持网络的 argmax，class_source
-    // 也仍是 Network，离线统计才分得清哪一路给的编号。
-    armor.class_id = static_cast<int>(result.armor_class);
-    armor.class_source = ClassSource::Number;
-    armor.number_confidence = static_cast<float>(result.confidence);
-    return false;
-  });
-  return stats;
 }
 
 bool ArmorDetector::ready() const noexcept
@@ -89,12 +50,9 @@ double ArmorDetector::net_aspect_ratio() const noexcept
 }
 
 std::vector<Light> ArmorDetector::findSideLights(
-  const cv::Mat& image, const cv::Rect& roi, const std::vector<LightHint>& hints,
-  ArmorColor color) const
+  const cv::Mat& image, const std::vector<LightHint>& hints, ArmorColor color) const
 {
-  std::vector<Light> lights = finder_config_.search == LightSearch::Profile
-                                ? searchLights(image, hints, finder_config_, color)
-                                : findLights(image, roi, finder_config_, color);
+  std::vector<Light> lights = searchLights(image, hints, finder_config_, color);
 
   // 丢掉判不出颜色的灯条；指定了颜色就只留该颜色。判不出颜色的多是数字笔画
   // 和光晕，留着会被 L3 当成灯条去关联。
@@ -110,11 +68,9 @@ std::vector<Light> ArmorDetector::findSideLights(
 }
 
 ArmorFrame ArmorDetector::detectFrame(
-  const cv::Mat& image, const std::optional<cv::Rect>& light_roi,
-  const std::optional<cv::Rect>& net_roi, ArmorColor color,
+  const cv::Mat& image, const std::optional<cv::Rect>& net_roi, ArmorColor color,
   const std::vector<LightHint>& hints) const
 {
-  last_numbers_ = {};
   last_lights_.clear();
   last_timing_ = {};
   if (!ready() || image.empty() || image.type() != CV_8UC3) {
@@ -147,7 +103,7 @@ ArmorFrame ArmorDetector::detectFrame(
     frame.armors = decoder_.decode(armor_result, preprocessed.transform);
     last_timing_.decode = lap();
 
-    // 解码出的角点在裁剪图里，补偏移回原图。数字分类和下游都在原图坐标系。
+    // 解码出的角点在裁剪图里，补偏移回原图，下游都在原图坐标系。
     if (cropped) {
       const cv::Point2f offset(static_cast<float>(focus.x), static_cast<float>(focus.y));
       for (Armor& armor : frame.armors) {
@@ -158,24 +114,17 @@ ArmorFrame ArmorDetector::detectFrame(
       }
     }
 
-    // 数字二次分类：判不出的板在这里就被丢掉，不再进 L3 的关联。
-    last_numbers_ = classifyNumbers(image, frame.armors);
-    last_timing_.number = lap();
-
-    if (light_roi) {
-      const cv::Rect roi = *light_roi & image_rect;
-      if (roi.area() > 0) {
-        last_lights_ = findSideLights(image, roi, hints, color);
-        // 已检出装甲板自己的灯条已经作为板的角点进了观测，不能再以侧边灯条的
-        // 身份进一次；不管是不是正在跟踪的那辆车，都不是“侧边”灯条。
-        for (const Light& light : last_lights_) {
-          const bool owned = std::any_of(
-            frame.armors.begin(), frame.armors.end(), [&](const Armor& armor) {
-              return insideArmor(light, armor, finder_config_.armor_margin);
-            });
-          if (!owned) {
-            frame.lights.push_back(light);
-          }
+    if (!hints.empty()) {
+      last_lights_ = findSideLights(image, hints, color);
+      // 已检出装甲板自己的灯条已经作为板的角点进了观测，不能再以侧边灯条的
+      // 身份进一次；不管是不是正在跟踪的那辆车，都不是“侧边”灯条。
+      for (const Light& light : last_lights_) {
+        const bool owned = std::any_of(
+          frame.armors.begin(), frame.armors.end(), [&](const Armor& armor) {
+            return insideArmor(light, armor, finder_config_.armor_margin);
+          });
+        if (!owned) {
+          frame.lights.push_back(light);
         }
       }
     }
@@ -184,7 +133,6 @@ ArmorFrame ArmorDetector::detectFrame(
   } catch (const std::exception& error) {
     // 一帧坏图或一次推理失败不该中断主循环，记日志后当这帧没检出。
     LOG_ERROR("armor inference failed", error.what());
-    last_numbers_ = {};
     last_lights_.clear();
     last_timing_ = {};
     return {};

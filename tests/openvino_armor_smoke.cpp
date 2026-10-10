@@ -100,8 +100,8 @@ int main(int argc, char** argv)
       image = cv::Mat(1080, 1440, CV_8UC3, cv::Scalar(0, 0, 0));
     }
 
-    // 与实机同一个工厂组装：整板模型 + 数字分类，量到的就是实机 L2 的整帧耗时。
-    // detect() 不给 light_roi，侧边灯条那一路不参与计时。
+    // 与实机同一个工厂组装，量到的就是实机 L2 的整帧耗时。
+    // detect() 不给预测灯条，侧边灯条那一路不参与计时。
     runtime::AutoAimConfig detector_config = runtime_config;
     detector_config.inference.model_path = model_path;
     detector_config.inference.device = device;

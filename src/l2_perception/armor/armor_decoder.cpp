@@ -328,8 +328,6 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
       best_class = argmaxClass(candidate);
     }
     detection.class_id = static_cast<int>(best_class) + contract.class_id_offset;
-    // 二次分类会改写 class_id，网络的原值留在 network_class_id 里备查。
-    detection.network_class_id = detection.class_id;
 
     // NMS 分数就是候选置信度本身。SP 用 sigmoid(objectness)，YOLOV8 用类别
     // 最大分，两者都已经由上面的 confidence 表示，不需要再开一个来源开关。

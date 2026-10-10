@@ -425,13 +425,11 @@ int main(int argc, char** argv)
         throw std::runtime_error("Daedalus published an invalid barrel quaternion");
       }
 
-      const auto light_roi = tracker.lightRoi(
-        q_world_barrel, frame.capture_time, frame.image_bgr.size());
       const cv::Rect net_roi = tracker.netFocusRoi(
         q_world_barrel, frame.capture_time, frame.image_bgr.size(),
         detector.net_aspect_ratio());
       L2Perception::ArmorFrame perception = detector.detectFrame(
-        frame.image_bgr, light_roi, net_roi, options.enemy_color);
+        frame.image_bgr, net_roi, options.enemy_color);
       const std::vector<L2Perception::Armor> all_detections = perception.armors;
       if (options.enemy_color != L2Perception::ArmorColor::Unknown) {
         std::erase_if(

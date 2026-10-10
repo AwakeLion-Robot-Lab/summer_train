@@ -66,12 +66,6 @@ constexpr std::optional<bool> isLargeArmor(ArmorClass armor_class) noexcept
   return std::nullopt;
 }
 
-// 类别的来源。二次分类会改写 class_id，下游和离线工具要能区分两者。
-enum class ClassSource {
-  Network,  // 整板网络的类别 argmax
-  Number    // 已由数字分类器重判
-};
-
 // 整板网络检出的装甲板。
 struct Armor {
   // 顺序固定为：左上、右上、右下、左下；PnP 必须沿用同一顺序。
@@ -79,22 +73,17 @@ struct Armor {
   std::array<cv::Point2f, 4> corners{};
   // 四个角点的几何中心。
   cv::Point2f center{};
-  // 车辆类别编号，见 ArmorClass。二次分类开着时它是数字分类器的结果。
+  // 车辆类别编号，见 ArmorClass，即整板网络的类别 argmax。
   int class_id{-1};
-  // 网络给出的原始类别，二次分类改写 class_id 之后还能离线对比两路。
-  int network_class_id{-1};
-  ClassSource class_source{ClassSource::Network};
   ArmorColor color{ArmorColor::Unknown};
   // 网络置信度（yolov5 为 sigmoid 后的 objectness）。
   float confidence{0.0F};
-  // 数字分类器的 softmax 置信度；没跑二次分类时为 0。
-  float number_confidence{0.0F};
 
   // 这里不带三维位姿：PnP 是 L3 的事，位姿只存在 L3Estimation::Armor 上。
   // L2 再挂一份的话，两份迟早会有一份是陈的。
 };
 
-// 检出的单根灯条，坐标都在原图像素系，由 findLights 的传统二值化给出。它不带
+// 检出的单根灯条，坐标都在原图像素系，由 searchLights 的剖面搜索给出。它不带
 // 车辆编号，只有端点观测要用的上下端点和几何量；属于哪块装甲板、是左灯还是
 // 右灯，由 L3 按整车预测关联。
 struct Light {
@@ -119,7 +108,7 @@ struct LightHint {
   cv::Point2f bottom{};
 };
 
-// 一帧装甲感知的输出：网络检出的装甲板，以及 light_roi 内不属于任何检出
+// 一帧装甲感知的输出：网络检出的装甲板，以及沿预测灯条搜到、不属于任何检出
 // 装甲板的侧边灯条，后者交给 L3 做额外的端点观测。
 struct ArmorFrame {
   std::vector<Armor> armors;

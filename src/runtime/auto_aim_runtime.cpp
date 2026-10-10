@@ -196,17 +196,14 @@ void AutoAimRuntime::run() {
           }
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 
-          // L2: ROI 聚焦 + 检测，保留敌方装甲板。两个 ROI 都由上一帧的整车
-          // 状态外推到本帧曝光时刻：net_roi 喂灯条模型，远距小目标裁剪后再
-          // resize 相当于局部放大；light_roi 决定哪些灯条作为独立观测交给 L3，
-          // 越紧越不容易把别的车的灯条混进来。Lost/冷启动时前者退化为整图、
-          // 后者返回空，等价于全图检测、不给独立灯条。
-          std::optional<cv::Rect> light_roi;
+          // L2: ROI 聚焦 + 检测，保留敌方装甲板。网络 ROI 和侧边灯条的搜索
+          // 位置都由上一帧的整车状态外推到本帧曝光时刻：net_roi 喂整板模型，
+          // 远距小目标裁剪后再 resize 相当于局部放大；light_hints 是预测灯条，
+          // 只在它们附近找侧边灯条作为独立观测交给 L3。Lost/冷启动时前者退化
+          // 为整图、后者为空，等价于全图检测、不给独立灯条。
           std::optional<cv::Rect> net_roi;
           std::vector<L2Perception::LightHint> light_hints;
           if (tracker && tracker->ready()) {
-            light_roi =
-              tracker->lightRoi(image_pose, timestamp, frame.size());
             light_hints = tracker->lightHints(image_pose, timestamp);
             net_roi = tracker->netFocusRoi(
               image_pose, timestamp, frame.size(),
@@ -216,8 +213,7 @@ void AutoAimRuntime::run() {
           // L3 关联。装甲板在这里按同一颜色过滤。
           const auto detect = [&](const std::optional<cv::Rect>& roi) {
             auto result = armor_detector.detectFrame(
-              frame, light_roi, roi, enemyArmorColor(state->enemy_color),
-              light_hints);
+              frame, roi, enemyArmorColor(state->enemy_color), light_hints);
             std::erase_if(result.armors, [&state](const auto& armor) {
               return !isEnemyArmor(armor.color, state->enemy_color);
             });

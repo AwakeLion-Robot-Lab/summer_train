@@ -2,7 +2,6 @@
 
 #include "l2_perception/armor/armor_decoder.hpp"
 #include "l2_perception/armor/light_detector.hpp"
-#include "l2_perception/armor/number_classifier.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
 #include "l3_estimation/armor/eskf_tracker.hpp"
 #include "l3_estimation/armor/types.hpp"
@@ -65,11 +64,8 @@ struct AutoAimConfig {
   // 选预设，再套上 decoder_thresholds。
   bool auto_layout{false};
   DecoderThresholds decoder_thresholds;
-  // 侧边灯条：传统二值化检测的门限与判色阈值。这一路不走网络。
+  // 侧边灯条：剖面搜索的门限与判色阈值。这一路不走网络。
   L2Perception::LightFinderConfig light_finder;
-
-  // 数字二次分类：整板网络的类别在原图 ROI 上重判一次，判不准的板直接丢掉。
-  L2Perception::NumberClassifierConfig number_classifier;
 
   L3Estimation::ArmorConfig armor;
   L3Estimation::EskfTrackerConfig ieskf_tracker;

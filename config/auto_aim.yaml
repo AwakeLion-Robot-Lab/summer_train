@@ -41,31 +41,17 @@ inference:
     # nms_iou_threshold: 0.3
     # nms_score_threshold: 0.7
 
-# 侧边灯条：跟踪中在 L3 给的 light_roi 里用传统二值化找灯条（FYT 做法），剔掉
-# 属于已检出板的，剩下的交给 L3 按整车几何关联到邻板（门限见 ieskf.light_match_*）。
-# 补的是整板网络漏检的侧面那块板。
+# 侧边灯条：跟踪中沿 L3 预测的每根灯条做垂直剖面找亮度脊线（不二值化、不看
+# 长宽比），剔掉属于已检出板的，剩下的交给 L3 按整车几何关联到邻板（门限见
+# ieskf.light_match_*）。补的是整板网络漏检的侧面那块板。
 light_finder:
-  # 低曝光画面取 100~140，换曝光或场地后要重扫。
-  binary_threshold: 140
-  # 底图改用颜色差分（蓝 B−R、红 R−B），颜色未知时退回灰度。回放上 false 赢
-  # 六段：过曝灯条差分后只剩两条细边，会被 min_ratio 毙掉。
-  color_channel_diff: true
-  color_diff_threshold: 50
-  # 外接矩形 短边 / 长边，FYT 原值。
-  min_ratio: 0.08
-  max_ratio: 0.4
-  # 偏离参考方向的最大角度：contour 相对图像竖直，profile 相对预测灯条方向。
+  # 拟合直线偏离预测灯条方向的最大角度。
   max_angle_deg: 40.0
   min_length_px: 4.0
   # 灯条中心落在检出板外接框外扩这么多倍灯长的范围内，就算那块板自己的灯条。
   armor_margin: 0.5
   # R/B 能量比大于它判红、小于它的倒数判蓝，中间判未知并丢弃。
   color_ratio_threshold: 1.10
-  # contour：light_roi 内二值化找轮廓，上面几项门限都给它用。
-  # profile：沿 L3 预测的每根灯条做垂直剖面找亮度脊线，不二值化、不看长宽比，
-  #          只用 min_length_px / max_angle_deg / color_ratio_threshold 和下面几项。
-  # 回放上 contour 几乎采纳不到灯条（见 replay_ab_log 剖面搜索一节）。
-  search: profile
   # 垂直灯条方向搜索半宽 = max(下限, 系数 × 预测灯长)，单位 px。
   profile_half_width_ratio: 0.5
   profile_half_width_min_px: 4.0
@@ -82,18 +68,6 @@ light_finder:
   profile_end_level: 0.5
   # 各行脊线中心对拟合直线的 RMS 残差上限，px。
   profile_max_residual_px: 1.0
-
-number_classifier:
-  enable: false
-  model_path: "model/light_model/mlp.onnx"
-  label_path: "model/light_model/label.txt"
-  # 不采信这块板时：drop 丢掉（sp_vision 的做法），keep 保留网络给的类别。
-  # mlp.onnx 只认九类，遇到没见过的图案会一路判 negative，drop 会把整辆车筛掉。
-  on_reject: "drop"
-  # softmax 最大概率低于它就不采信。
-  min_confidence: 0.7
-  # 两灯条中心距 / 灯条长度 超过它按大板抠图。
-  large_center_distance_ratio: 3.2
 
 # 装甲板几何尺寸（米），PnP 物点和灯条端点观测共用。
 armor:

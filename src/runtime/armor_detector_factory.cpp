@@ -52,15 +52,11 @@ L2Perception::ArmorDetector makeDetector(const AutoAimConfig& config, bool guess
     std::move(armor_backend),
     L2Perception::ArmorDetectorConfig{
       .decoder = decoder,
-      .finder = config.light_finder,
-      .number = config.number_classifier});
+      .finder = config.light_finder});
   LOG_INFO(
     "armor model loaded", backend_name, inference.model_path.string(), inference.device,
     "layout", yolov8 ? "yolov8_21" : "yolov5_22", by_shape ? "(by shape)" : "(yaml)",
-    "output", decoder.contract.output_name, "conf", decoder.confidence_threshold,
-    "number", config.number_classifier.enable
-      ? config.number_classifier.model_path.string()
-      : std::string{"off"});
+    "output", decoder.contract.output_name, "conf", decoder.confidence_threshold);
 
   return detector;
 }

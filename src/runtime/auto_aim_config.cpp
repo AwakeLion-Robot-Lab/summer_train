@@ -123,19 +123,6 @@ void normalize(AutoAimConfig& config)
   // L2 阈值越界不会报错，只会静默失效：颜色比 <= 1 会让红蓝判定区间重叠。
   // 整板模型的置信度阈值在 applyThresholds 里挡。
   const L2Perception::LightFinderConfig light_finder_defaults;
-  if (!(config.light_finder.binary_threshold > 0 && config.light_finder.binary_threshold < 255)) {
-    config.light_finder.binary_threshold = light_finder_defaults.binary_threshold;
-  }
-  if (!(config.light_finder.color_diff_threshold > 0 &&
-        config.light_finder.color_diff_threshold < 255)) {
-    config.light_finder.color_diff_threshold = light_finder_defaults.color_diff_threshold;
-  }
-  if (!(config.light_finder.min_ratio >= 0.0F &&
-        config.light_finder.min_ratio < config.light_finder.max_ratio &&
-        config.light_finder.max_ratio <= 1.0F)) {
-    config.light_finder.min_ratio = light_finder_defaults.min_ratio;
-    config.light_finder.max_ratio = light_finder_defaults.max_ratio;
-  }
   if (!(config.light_finder.max_angle_deg > 0.0F && config.light_finder.max_angle_deg <= 90.0F)) {
     config.light_finder.max_angle_deg = light_finder_defaults.max_angle_deg;
   }
@@ -178,17 +165,6 @@ void normalize(AutoAimConfig& config)
   }
   if (!positiveFinite(finder.profile_max_residual_px)) {
     finder.profile_max_residual_px = light_finder_defaults.profile_max_residual_px;
-  }
-
-  const L2Perception::NumberClassifierConfig number_defaults;
-  // 置信度门限落到 [0, 1] 外等于放弃这道筛选或全盘拒绝，两种都不是想要的。
-  if (!(config.number_classifier.min_confidence >= 0.0 &&
-        config.number_classifier.min_confidence <= 1.0)) {
-    config.number_classifier.min_confidence = number_defaults.min_confidence;
-  }
-  if (!positiveFinite(config.number_classifier.large_center_distance_ratio)) {
-    config.number_classifier.large_center_distance_ratio =
-      number_defaults.large_center_distance_ratio;
   }
 
   // 整车 IESKF：状态机按真实时间计，过程噪声在车体系表达，端点观测的噪声
@@ -461,27 +437,11 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(armor, "height_m", config.armor.height);
 
   const YAML::Node light_finder = root["light_finder"];
-  readValue(light_finder, "binary_threshold", config.light_finder.binary_threshold);
-  readValue(light_finder, "color_channel_diff", config.light_finder.color_channel_diff);
-  readValue(light_finder, "color_diff_threshold", config.light_finder.color_diff_threshold);
-  readValue(light_finder, "min_ratio", config.light_finder.min_ratio);
-  readValue(light_finder, "max_ratio", config.light_finder.max_ratio);
   readValue(light_finder, "max_angle_deg", config.light_finder.max_angle_deg);
   readValue(light_finder, "min_length_px", config.light_finder.min_length);
   readValue(light_finder, "armor_margin", config.light_finder.armor_margin);
   readValue(
     light_finder, "color_ratio_threshold", config.light_finder.color_ratio_threshold);
-  if (light_finder && light_finder["search"]) {
-    const std::string search = light_finder["search"].as<std::string>();
-    if (search == "contour") {
-      config.light_finder.search = L2Perception::LightSearch::Contour;
-    } else if (search == "profile") {
-      config.light_finder.search = L2Perception::LightSearch::Profile;
-    } else {
-      LOG_WARN(
-        "light_finder.search must be 'contour' or 'profile', keep default; got", search);
-    }
-  }
   readValue(
     light_finder, "profile_half_width_ratio", config.light_finder.profile_half_width_ratio);
   readValue(
@@ -493,31 +453,6 @@ AutoAimConfig loadConfig(const std::string& path)
   readValue(light_finder, "profile_end_level", config.light_finder.profile_end_level);
   readValue(
     light_finder, "profile_max_residual_px", config.light_finder.profile_max_residual_px);
-
-
-  const YAML::Node number_classifier = root["number_classifier"];
-  readValue(number_classifier, "enable", config.number_classifier.enable);
-  if (number_classifier && number_classifier["model_path"]) {
-    config.number_classifier.model_path = number_classifier["model_path"].as<std::string>();
-  }
-  if (number_classifier && number_classifier["label_path"]) {
-    config.number_classifier.label_path = number_classifier["label_path"].as<std::string>();
-  }
-  if (number_classifier && number_classifier["on_reject"]) {
-    const std::string policy = number_classifier["on_reject"].as<std::string>();
-    if (policy == "drop") {
-      config.number_classifier.on_reject = L2Perception::RejectPolicy::Drop;
-    } else if (policy == "keep") {
-      config.number_classifier.on_reject = L2Perception::RejectPolicy::Keep;
-    } else {
-      throw std::runtime_error(
-        "number_classifier.on_reject must be 'drop' or 'keep'; got " + policy);
-    }
-  }
-  readValue(number_classifier, "min_confidence", config.number_classifier.min_confidence);
-  readValue(
-    number_classifier, "large_center_distance_ratio",
-    config.number_classifier.large_center_distance_ratio);
 
   const YAML::Node ieskf = root["ieskf"];
   readValue(ieskf, "tracking_thres", config.ieskf_tracker.tracking_thres);

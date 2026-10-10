@@ -323,7 +323,7 @@ int main(int argc, char* argv[])
     }
 
     std::ofstream obs_csv(out_dir / "obs.csv");
-    obs_csv << "frame,t,det,class_id,net_class_id,num_conf,name,conf,area,px_w,px_h,aspect\n";
+    obs_csv << "frame,t,det,class_id,name,conf,area,px_w,px_h,aspect\n";
     obs_csv << std::fixed;
 
     std::ofstream frame_csv(out_dir / "frame.csv");
@@ -379,10 +379,8 @@ int main(int argc, char* argv[])
     // L3 真正吃下去的那些：过了 matchLight 全部门限、进了 updateMulti 的
     // 独立灯条。与上面 L2 的检出量一起看，才知道关联门限收紧了多少。
     std::size_t side_light_used = 0;
-    std::size_t number_accepted = 0;
-    std::size_t number_dropped = 0;
     std::vector<double> ms_l2;
-    // 其中侧边灯条那一路（找灯条 + 判色 + 判重），只记 L3 给了 ROI 的帧。
+    // 其中侧边灯条那一路（找灯条 + 判色 + 判重），只记 L3 给了预测灯条的帧。
     std::vector<double> ms_side_light;
     std::vector<double> ms_l3;
     std::vector<double> ms_l4;
@@ -425,19 +423,16 @@ int main(int argc, char* argv[])
 
       // 与实跑路径一致：网络 ROI + 独立灯条都走一遍，否则诊断出来的
       // 观测维数和实际滤波器吃到的对不上。
-      const std::optional<cv::Rect> light_roi =
-        tracker.lightRoi(q_world_barrel, timestamp, img.size());
       const cv::Rect net_roi = use_net_roi
         ? tracker.netFocusRoi(
             q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio())
         : cv::Rect(0, 0, img.cols, img.rows);
       const auto light_hints = tracker.lightHints(q_world_barrel, timestamp);
       const auto t_l2_begin = std::chrono::steady_clock::now();
-      // 敌方颜色必须传进去：侧边灯条按它筛色，findLights 的通道相减也只在
-      // 颜色已知时才启用。不传等于把这条路默认关掉，而且会把友方灯条一起
-      // 喂进滤波器 —— auto_aim_test 一直是传的，两个回放器不能不一致。
-      auto detection_frame =
-        detector.detectFrame(img, light_roi, net_roi, enemy_color, light_hints);
+      // 敌方颜色必须传进去：侧边灯条按它筛色，剖面搜索的颜色差分底图也只在
+      // 颜色已知时才启用。不传会把友方灯条一起喂进滤波器 —— auto_aim_test
+      // 一直是传的，两个回放器不能不一致。
+      auto detection_frame = detector.detectFrame(img, net_roi, enemy_color, light_hints);
       const auto enemies = [enemy_color](std::vector<L2Perception::Armor> armors) {
         std::erase_if(armors, [enemy_color](const L2Perception::Armor& armor) {
           return enemy_color != L2Perception::ArmorColor::Unknown && armor.color != enemy_color;
@@ -450,7 +445,7 @@ int main(int argc, char* argv[])
       if (use_net_roi) {
         if (const auto init_roi = tracker.initRoi(
               armors, q_world_barrel, timestamp, img.size(), detector.net_aspect_ratio())) {
-          auto refined = detector.detectFrame(img, light_roi, *init_roi, enemy_color, light_hints);
+          auto refined = detector.detectFrame(img, *init_roi, enemy_color, light_hints);
           auto refined_armors = enemies(refined.armors);
           if (!refined_armors.empty()) {
             detection_frame = std::move(refined);
@@ -474,7 +469,7 @@ int main(int argc, char* argv[])
         if (used.isolated) ++side_light_used;
       }
       ms_l2.push_back(std::chrono::duration<double, std::milli>(t_l2_end - t_l2_begin).count());
-      if (light_roi) ms_side_light.push_back(detector.lastTiming().side_light);
+      if (!light_hints.empty()) ms_side_light.push_back(detector.lastTiming().side_light);
       ms_l3.push_back(std::chrono::duration<double, std::milli>(t_l3_end - t_l3_begin).count());
 
       // 观测明细。IESKF 的正常更新只吃类别和角点，不跑 PnP，所以这里只记 L2
@@ -487,8 +482,7 @@ int main(int argc, char* argv[])
         if (target && name == target->name) ++match_here;
 
         obs_csv << frame_index << ',' << pose.seconds << ',' << index << ','
-                << armor.class_id << ',' << detection.network_class_id << ','
-                << detection.number_confidence << ','
+                << armor.class_id << ','
                 << static_cast<int>(name) << ','
                 << armor.confidence << ',' << armor.area << ','
                 << quadWidth(detection.corners) << ',' << quadHeight(detection.corners) << ','
@@ -498,9 +492,6 @@ int main(int argc, char* argv[])
                 << '\n';
       }
       if (match_here > 1) ++double_update_frames;
-      // 数字二次分类丢掉的板：全局统计，判断门限是不是把有效观测也筛掉了。
-      number_accepted += detector.lastNumbers().accepted;
-      number_dropped += detector.lastNumbers().dropped();
 
       const auto state = tracker.state();
       if (state == L3Estimation::TrackState::Tracking) ++frames_tracking;
@@ -836,8 +827,6 @@ int main(int argc, char* argv[])
                                static_cast<double>(light_stats.passed))
                     : 0.0)
               << '\n'
-              << "数字分类采信/丢弃           " << number_accepted << " / "
-              << number_dropped << '\n'
               << "-- 滤波器 --\n"
               << "NIS  mean " << mean(nis_values) << "  p50 " << percentile(nis_values, 0.5)
               << "  p90 " << percentile(nis_values, 0.9)
