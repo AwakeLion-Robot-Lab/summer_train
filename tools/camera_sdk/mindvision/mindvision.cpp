@@ -121,7 +121,15 @@ void MindVision::open()
   CameraSetGamma(handle_, gamma_ * 1e2);                   // 设置伽马
   CameraSetIspOutFormat(handle_, CAMERA_MEDIA_TYPE_BGR8);  // 设置输出格式为BGR
   CameraSetTriggerMode(handle_, 0);                        // 设置为连续采集模式
-  CameraSetFrameSpeed(handle_, 1);                         // 设置为低帧率模式
+  // SDK 的帧率档位按 0..iFrameSpeedDesc-1 从低到高排列。固定写 1 在支持
+  // HIGH/SUPER 的相机上只会选到 NORMAL，直接限制相机输出帧率。
+  const int fastest_mode = camera_capbility.iFrameSpeedDesc > 0
+                             ? camera_capbility.iFrameSpeedDesc - 1
+                             : 0;
+  if (CameraSetFrameSpeed(handle_, fastest_mode) != CAMERA_STATUS_SUCCESS) {
+    L6Telemetry::logWarn("MindVision failed to select the fastest frame-rate mode",
+                         fastest_mode);
+  }
 
   CameraPlay(handle_);
 
@@ -132,8 +140,6 @@ void MindVision::open()
 
     healthy_.store(true);
     while (!stop_requested_.load()) {
-      std::this_thread::sleep_for(1ms);
-
       auto img = cv::Mat(height_, width_, CV_8UC3);
 
       auto status = CameraGetImageBuffer(handle_, &head, &raw, 100);

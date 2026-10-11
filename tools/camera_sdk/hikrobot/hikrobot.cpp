@@ -120,7 +120,10 @@ void HikRobot::capture_start() {
   set_enum_value("GainAuto", MV_GAIN_MODE_OFF);
   set_float_value("ExposureTime", exposure_us_);
   set_float_value("Gain", gain_);
-  MV_CC_SetFrameRate(handle_, 165);
+  // 使用 GenICam 节点显式打开帧率控制。旧的 MV_CC_SetFrameRate 接口已经被 SDK
+  // 标为 obsolete，而且原先没有检查返回值；部分固件上调用成功也不会启用限帧节点。
+  set_bool_value("AcquisitionFrameRateEnable", true);
+  set_float_value("AcquisitionFrameRate", 165.0);
 
   ret = MV_CC_StartGrabbing(handle_);
   if (ret != MV_OK) {
@@ -136,8 +139,6 @@ void HikRobot::capture_start() {
     MV_FRAME_OUT raw{};
 
     while (!capture_quit_.load()) {
-      std::this_thread::sleep_for(1ms);
-
       unsigned int ret;
       // USB 相机启动后的首帧可能超过 10 ms；原超时会把正常等待误判成
       // MV_E_NODATA，导致守护线程反复重置相机。
@@ -264,6 +265,14 @@ void HikRobot::set_float_value(const std::string &name, double value) {
     L6Telemetry::logWarn("MV_CC_SetFloatValue(\"{}\", {}) failed: {:#x}", name,
                          value, ret);
     return;
+  }
+}
+
+void HikRobot::set_bool_value(const std::string &name, bool value) {
+  const unsigned int ret = MV_CC_SetBoolValue(handle_, name.c_str(), value);
+  if (ret != MV_OK) {
+    L6Telemetry::logWarn("MV_CC_SetBoolValue(\"{}\", {}) failed: {:#x}",
+                         name, value, ret);
   }
 }
 

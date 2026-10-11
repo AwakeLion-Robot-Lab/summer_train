@@ -4,7 +4,7 @@
 # vid_pid: "f622:d13a" //需要更改
 
 camera_name: "hikrobot"
-exposure_ms: 2
+exposure_ms: 3
 gain: 16.0
 # lsusb | grep 2bdf
 vid_pid: "2bdf:0001"
@@ -36,4 +36,4 @@ calibration:
     translation: [0.06971, 0.0655, 0.040]
     # 实机击打微调量，单位为米，按 barrel 坐标轴表达：x 向前、y 向左、z 向上
     # 有效平移 = translation + translation_offset
-    translation_offset: [0.0, -0.0210, -0.010]
+    translation_offset: [0.0, -0.0150, -0.010]

@@ -31,7 +31,7 @@ struct EskfTargetConfig
 
   // 每次更新做几步高斯牛顿。观测模型强非线性（透视除法 + 畸变），迭代比单次
   // 线性化明显更稳。
-  int iteration_num{8};
+  int iteration_num{2};
 
   // 端点观测噪声，单位 px。每个端点的误差拆成沿灯条、垂直灯条两个方向，
   // sigma 取「系数 × 灯条像素长度」与 sigma_min_px 的较大值。垂直方向决定

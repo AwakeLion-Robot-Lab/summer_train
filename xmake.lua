@@ -92,14 +92,15 @@ end
 target("newvision")
     set_kind("static")
     add_files("src/**/*.cpp")
-    add_files("include/l4_planning/planner_config.cpp")
+    add_files("include/armor/l4_planning/planner_config.cpp")
+    add_files("tools/tiny_MPC/*.cpp")
     add_files("tools/camera_sdk/hikrobot/hikrobot.cpp")
     add_files("tools/camera_sdk/mindvision/mindvision.cpp")
     add_files("tools/serial/src/serial.cc")
     add_files("tools/serial/src/impl/unix.cc")
     add_headerfiles("include/**/*.hpp")
     add_headerfiles("tools/serial/include/**/*.h")
-    add_includedirs("include", {public = true})
+    add_includedirs("include", "include/armor", {public = true})
     add_includedirs("/usr/include/eigen3", {public = true})
     add_includedirs("tools/serial/include", {public = true})
     add_includedirs("tools/config_set/include", {public = true})
@@ -248,24 +249,24 @@ target("newvision")
 
 local standalone_tests = {
     logger_smoke = {
-        files    = {"src/l6_telemetry/logger.cpp"},
-        includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
+        files    = {"src/armor/l6_telemetry/logger.cpp"},
+        includes = {"include", "include/armor", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
     latest_buffer_smoke = {
         includes = {"tools/LatestBuffer/include"},
     },
     fps_counter_smoke = {
-        files    = {"src/l6_telemetry/fps_counter.cpp"},
-        includes = {"include"},
+        files    = {"src/armor/l6_telemetry/fps_counter.cpp"},
+        includes = {"include", "include/armor"},
     },
     udp_json_sender_smoke = {
-        files    = {"src/l6_telemetry/udp_json_sender.cpp"},
-        includes = {"include", "tools/logger/include/3rdparty"},
+        files    = {"src/armor/l6_telemetry/udp_json_sender.cpp"},
+        includes = {"include", "include/armor", "tools/logger/include/3rdparty"},
         syslinks = {"pthread"},
     },
     serial_protocol_smoke = {
-        files    = {"src/l1_sensor/serial/serial_protocol.cpp", "src/l6_telemetry/logger.cpp"},
-        includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
+        files    = {"src/armor/l1_sensor/serial/serial_protocol.cpp", "src/armor/l6_telemetry/logger.cpp"},
+        includes = {"include", "include/armor", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
     -- IESKF/车辆模型相关测试由完整 newvision 目标提供依赖。
 }
