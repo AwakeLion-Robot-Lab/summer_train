@@ -187,14 +187,17 @@ void AutoAimRuntime::run() {
           // 同 sp_vision：先等图像之后的那包姿态到齐，再前后两包插值。图像
           // 刚到手时它往往还在路上，直接查只能拿最新一包顶替，云台一转就
           // 错开几度。只等一个发包周期；等满说明串口断流，退回最新一包。
+          // 两边时间戳都是到手时刻，查姿态要先换到姿态时钟上的曝光时刻，见
+          // serial_config.yaml 的 pose_offset_ms。滤波器时间仍用图像时间戳。
+          const auto pose_time = serial_config.poseTime(timestamp);
           const auto wait_start = std::chrono::steady_clock::now();
-          const bool pose_ready = serial.waitPose(timestamp);
+          const bool pose_ready = serial.waitPose(pose_time);
           const double pose_wait_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - wait_start).count();
           if (!pose_ready) {
             LOG_DEBUG("gimbal pose wait timeout");
           }
-          const auto image_pose = serial.gimbalPoseAt(timestamp);
+          const auto image_pose = serial.gimbalPoseAt(pose_time);
 
           // L2: ROI 聚焦 + 检测，保留敌方装甲板。网络 ROI 和侧边灯条的搜索
           // 位置都由上一帧的整车状态外推到本帧曝光时刻：net_roi 喂整板模型，

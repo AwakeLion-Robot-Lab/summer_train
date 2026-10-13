@@ -2,11 +2,11 @@
 # 回放 A/B 的原始数据见 docs/replay_ab_log.md，判好坏一律用 track_diag 的 pred_px。
 inference:
   # openvino / tensorrt（后者要 xmake f --use_tensorrt=y，目前是桩）。
-  backend: "openvino"
+  backend: "tensorrt"
   # 已验证：yolov5.xml、szu-v5n.xml -> yolov5_22，szu-v8n-fp16.onnx -> yolov8_21。
   # 这份 onnx 就是 Models-main 的 Infantry-v8n-fp16-20260726，那边的 IR 在 CPU 上
   # 输出逐位相同。换模型后要重跑 track_diag。
-  model_path: "model/armor_model/szu-v8n-fp16.onnx"
+  model_path: "model/armor_model/szu-v8n-fp16.engine"
   # CPU / GPU（Intel 核显，要装 intel-opencl-icd）。GPU 加载失败会告警并退回 CPU。
   # i9-13980HX + UHD 核显上整段 L2：CPU 12.9 ms、GPU 10.6 ms；GPU 按 FP16 算，角点差
   # 不到 0.2 px（网络输入尺度）。回放工具不读这一项，要对齐实机得加 -d=GPU。
@@ -103,7 +103,10 @@ ieskf:
   radius_noise: 1.0e-7
   height_noise: 1.0e-7
   outpost_height_noise: 1.0e-7
-  roll_pitch_noise: 0.1
+  # 倾斜随机游走强度（rad²/s）：36 ms 下每帧约 0.11°。
+  # 0.1 会让旋转轴跟随单板端点误差摆动，抬高未观测侧板；回放对照见
+  # docs/repro_2_side_height_debug.md（含其他录像上的退化项）。
+  roll_pitch_noise: 0.0001
 
   # 端点像素 sigma = max(sigma_min_px, 系数 × 灯条长度)，沿 / 垂直灯条分开给；
   # 当前是 rmcs 的常数 R = 40 px²。尺度已在平台区，NIS 不是优化目标，两端点
@@ -154,8 +157,8 @@ planning:
   decision_speed_rad_s: 8.0
   #########静止靶须调########
   # yaw / pitch 固定零偏。pitch 零偏在加上弹道仰角之后才按世界系约定取反。
-  yaw_offset_deg: 0.0
-  pitch_offset_deg: 0.0
+  yaw_offset_deg: -0.75
+  pitch_offset_deg: -0.75
   ##########################
   # 电控没发弹速、或发来的低于 min_valid 时按 default 解弹道，照常开火。
   default_bullet_speed_mps: 23.0
@@ -167,17 +170,17 @@ planning:
   outpost_leaving_angle_deg: 30.0
 
   # "串口发出 -> 电控执行"的延迟，只能在实车上标；不写按 0。
-  send_to_control_ms: 5.0
+  send_to_control_ms: 7.0
 
 # L5 开火闸门。
 fire:
   # 发射总开关，验收前保持 false；关闭时仍计算 fire_feasible。
-  shoot_enable: false
+  shoot_enable: true
   # 只把板面中央这个比例视为可命中。
   hit_margin_ratio: 0.6
   # 由板尺寸和距离算出的 yaw / pitch 容差的下限。
   min_yaw_tolerance_deg: 1.2
-  min_pitch_tolerance_deg: 1.2
+  min_pitch_tolerance_deg: 1.0
   # yaw 命令与上一帧相比跳得超过它时，本帧以 command_jump 拒绝开火，命令照发。
   command_jump_deg: 10.0
 
@@ -202,4 +205,4 @@ debug:
   # 否则下位机说 Idle 时视觉仍然在动云台。启用时启动日志会打一条 WARN。
   #
   # 它不解除开火闸门：shoot_enable 仍然独立生效，所以强制自瞄不会导致意外开火。
-  force_work_mode: ""
+  force_work_mode: "auto_aim"

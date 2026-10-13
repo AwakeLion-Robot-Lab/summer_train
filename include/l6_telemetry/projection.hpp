@@ -10,22 +10,36 @@
 #include <stdexcept>
 #include <vector>
 
-// 针孔 + Brown-Conrady 畸变投影，模板化在标量类型上。照搬 awakening 的
-// utils::project_points_jets。
-//
-// 为什么不用 cv::projectPoints：它只认 double，自动微分穿不过去。整条链
-// 状态 → 板位姿 → 相机系 → 像素 必须是纯代数、处处可微的，Jet 才能一路走到
-// 底——这是灯条端点观测模型可行的技术前提。眼下 ObsBase 类型擦除后走的是中心
-// 差分，但观测模型本身保持模板化，将来去掉类型擦除即可直接换成 Jet 求 H。
+/**
+ * @file
+ * @brief 针孔 + Brown-Conrady 畸变投影，模板化在标量类型上
+ *
+ * 照搬 awakening 的 utils::project_points_jets。
+ *
+ * 为什么不用 cv::projectPoints：它只认 double，自动微分穿不过去。整条链
+ * 状态 → 板位姿 → 相机系 → 像素 必须是纯代数、处处可微的，Jet 才能一路走到
+ * 底——这是灯条端点观测模型可行的技术前提。眼下 ObsBase 类型擦除后走的是中心
+ * 差分，但观测模型本身保持模板化，将来去掉类型擦除即可直接换成 Jet 求 H。
+ */
 namespace L6Telemetry {
 
-// 把物点从自身坐标系经 pose_in_camera 变换到相机光学系，再投影成像素。
-//
-// pose_in_camera 是"物点所在坐标系 → 相机光学系（x 右 / y 下 / z 前）"的变换。
-//
-// 注意没有 Zc <= 0 的保护，与上游一致：板转到相机背面时 Xc/Zc 会翻符号甚至
-// 除零。调用方靠可见性筛选（按板法向排序只取最正对的几块）挡住，那是启发式
-// 而非保证。
+/**
+ * @brief 把物点从自身坐标系经 pose_in_camera 变换到相机光学系，再投影成像素
+ *
+ * 注意没有 Zc <= 0 的保护，与上游一致：板转到相机背面时 Xc/Zc 会翻符号甚至
+ * 除零。调用方靠可见性筛选（按板法向排序只取最正对的几块）挡住，那是启发式
+ * 而非保证。
+ *
+ * 内参或畸变系数为空时抛 std::runtime_error。
+ *
+ * @tparam T 标量类型，double 或 ceres::Jet
+ * @param object_points 物点，在物点自身坐标系下，meter
+ * @param pose_in_camera "物点所在坐标系 → 相机光学系（x 右 / y 下 / z 前）"的变换
+ * @param camera_matrix 3x3 内参，CV_64F
+ * @param distortion_coefficients 畸变系数 [k1, k2, p1, p2, k3]，不足五个的按 0，CV_64F
+ * @param image_points 输出的像素坐标，与 object_points 一一对应；object_points
+ *                     为空时不动它
+ */
 template <typename T>
 void projectPoints(
   const std::vector<cv::Point3f> & object_points,

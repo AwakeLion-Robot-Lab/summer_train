@@ -91,6 +91,12 @@ void normalize(SerialConfig &config) {
   config.reconnect_interval_ms = std::max(config.reconnect_interval_ms, 1);
   config.rx_buffer_size = std::max<std::size_t>(config.rx_buffer_size, 1);
   config.pose_wait_ms = std::max(config.pose_wait_ms, 0);
+  // 偏移是几毫秒的量，上百毫秒只可能是单位写错，按不补偿处理。
+  if (!std::isfinite(config.pose_offset_ms) ||
+      std::abs(config.pose_offset_ms) > 100.0) {
+    LOG_WARN("serial config pose_offset_ms out of [-100, 100], use 0");
+    config.pose_offset_ms = 0.0;
+  }
 }
 
 } // namespace
@@ -115,6 +121,8 @@ SerialConfig loadSerialConfig(const std::string &config_path) {
   config.packet_loss_check_enable = readOptional(
       yaml, "packet_loss_check_enable", config.packet_loss_check_enable);
   config.pose_wait_ms = readOptional(yaml, "pose_wait_ms", config.pose_wait_ms);
+  config.pose_offset_ms =
+      readOptional(yaml, "pose_offset_ms", config.pose_offset_ms);
   config.R_imu_barrel =
       readRotation(yaml, "R_imu_barrel", config.R_imu_barrel);
 

@@ -14,34 +14,53 @@
 #include <array>
 #include <vector>
 
-// 灯条端点观测：一根灯条上下两个端点的像素坐标
-// [u_top, v_top, u_bottom, v_bottom]，与 rmcs_auto_aim_v2 的做法相同。
-// 观测函数是「整车状态 → 灯条两端点的三维坐标 → 带畸变投影到像素」，滤波器
-// 拿它和检测到的端点直接相减。
-//
-// 观测停在像素而不是先做 PnP 再滤波：PnP 的误差各向异性且强相关（深度与 yaw
-// 量级差一两个数量级），配不出对角 R。端点是检测器的直接输出，误差结构在
-// 灯条自身的坐标系里写得干净，见 lightCov。
-//
-// 不再先折成 [角度, 中心, 长度] 再观测：UVL 是同两个端点的可逆映射，信息一
-// 样多，差别只在同一块对角 R 在两种参数化下代表的端点噪声不同——UVL 的对角
-// R 等价于端点之间带相关。换句话说换参数化换不来信息，只换来角度的 ±π 缠绕，
-// 以及中心用图像系、角度与长度用灯条系的混基。直接观测端点，残差就是普通减法。
+/**
+ * @file
+ * @brief 灯条端点观测与深度差观测
+ *
+ * 灯条端点观测：一根灯条上下两个端点的像素坐标 [u_top, v_top, u_bottom, v_bottom]，
+ * 与 rmcs_auto_aim_v2 的做法相同。观测函数是「整车状态 → 灯条两端点的三维坐标
+ * → 带畸变投影到像素」，滤波器拿它和检测到的端点直接相减。
+ *
+ * 观测停在像素而不是先做 PnP 再滤波：PnP 的误差各向异性且强相关（深度与 yaw
+ * 量级差一两个数量级），配不出对角 R。端点是检测器的直接输出，误差结构在
+ * 灯条自身的坐标系里写得干净，见 lightCov。
+ *
+ * 不再先折成 [角度, 中心, 长度] 再观测：UVL 是同两个端点的可逆映射，信息一
+ * 样多，差别只在同一块对角 R 在两种参数化下代表的端点噪声不同——UVL 的对角
+ * R 等价于端点之间带相关。换句话说换参数化换不来信息，只换来角度的 ±π 缠绕，
+ * 以及中心用图像系、角度与长度用灯条系的混基。直接观测端点，残差就是普通减法。
+ */
 namespace L3Estimation {
 
+/**
+ * @brief 端点观测向量的下标
+ */
 namespace endpoint
 {
 enum { TOP_U, TOP_V, BOTTOM_U, BOTTOM_V, kMeasureSize };
 }
 
+/// 端点观测的维数
 constexpr int kLightMeasureSize = endpoint::kMeasureSize;
+
+/// 端点观测向量 [u_top, v_top, u_bottom, v_bottom]
 using LightVector = Eigen::Matrix<double, kLightMeasureSize, 1>;
+
+/// 端点观测协方差
 using LightCov = Eigen::Matrix<double, kLightMeasureSize, kLightMeasureSize>;
 
-// 一根灯条上下两端点在装甲板系里的坐标，顺序是先上后下。板宽按 name 取大板
-// 或小板，左灯条在 +y 侧、右灯条在 -y 侧。
-//
-// 板系约定 x = 板面法向、y = 左、z = 上，与 PnpSolver 的物点同源。
+/**
+ * @brief 一根灯条上下两端点在装甲板系里的坐标
+ *
+ * 板宽按 name 取大板或小板，左灯条在 +y 侧、右灯条在 -y 侧。
+ * 板系约定 x = 板面法向、y = 左、z = 上，与 PnpSolver 的物点同源。
+ *
+ * @param name 车辆类别，决定板宽
+ * @param is_left true 为左灯条
+ * @param config 装甲板几何尺寸
+ * @return 两个物点，顺序是先上后下，meter
+ */
 inline std::vector<cv::Point3f> lightPoints3D(
   ArmorName name, bool is_left, const ArmorConfig & config)
 {
@@ -54,40 +73,70 @@ inline std::vector<cv::Point3f> lightPoints3D(
   return {{0.0F, y, half_height}, {0.0F, y, -half_height}};
 }
 
-// 一次端点观测的上下文：哪辆车的第几块板、左灯还是右灯、板的几何尺寸，以及
-// 那一帧的相机位姿和内参。观测函数里除状态外的量全在这里。
-//
-// camera_in_world 必须按图像曝光时刻取，不是"当前"位姿：图像与 IMU 的时间
-// 对齐就发生在取这个量的时候。
+/**
+ * @brief 一次端点观测的上下文
+ *
+ * 哪辆车的第几块板、左灯还是右灯、板的几何尺寸，以及那一帧的相机位姿和内参。
+ * 观测函数里除状态外的量全在这里。
+ *
+ * camera_in_world 必须按图像曝光时刻取，不是"当前"位姿：图像与 IMU 的时间
+ * 对齐就发生在取这个量的时候。
+ */
 struct LightContext
 {
+  /// 物理装甲板数量
   int armor_num{4};
+
+  /// 物理板编号
   int id{0};
+
+  /// 是否左灯条
   bool is_left{true};
+
+  /// 车辆类别
   ArmorName name{ArmorName::Unknown};
+
+  /// 装甲板几何尺寸
   ArmorConfig armor_config{};
-  // 相机光学系（x 右 / y 下 / z 前）在世界系下的位姿。
+
+  /// 相机光学系（x 右 / y 下 / z 前）在世界系下的位姿。
   Eigen::Isometry3d camera_in_world{Eigen::Isometry3d::Identity()};
+
+  /// 相机内参
   cv::Mat camera_matrix;
+
+  /// 畸变系数
   cv::Mat distortion_coefficients;
 };
 
+/**
+ * @brief 灯条端点观测函数 h(x)
+ */
 struct LightMeasure
 {
+  /// 像素点
   template <typename T>
   using ImagePoint = Eigen::Matrix<T, 2, 1>;
 
+  /// 观测上下文
   LightContext ctx;
 
-  // 状态 → 该灯条两端点的像素坐标：整车状态经 armorPose 得到板在世界系的
-  // 位姿 → 用 camera_in_world 的逆转到相机系 → 带畸变投影。
-  //
-  // 状态只从 armorPose 这一条路进来，其余（内参、外参、板尺寸、板编号）都是
-  // 常量，所以这个函数能对状态求导，滤波器才能反解状态。模板参数 T 同时吃
-  // double 和 ceres::Jet。
-  //
-  // rmcs 的解析 Jacobian 只用了针孔模型；这里 H 由滤波器对整条链做中心差分，
-  // 畸变自然算在里面。
+  /**
+   * @brief 状态 → 该灯条两端点的像素坐标
+   *
+   * 整车状态经 armorPose 得到板在世界系的位姿 → 用 camera_in_world 的逆转到
+   * 相机系 → 带畸变投影。
+   *
+   * 状态只从 armorPose 这一条路进来，其余（内参、外参、板尺寸、板编号）都是
+   * 常量，所以这个函数能对状态求导，滤波器才能反解状态。
+   *
+   * rmcs 的解析 Jacobian 只用了针孔模型；这里 H 由滤波器对整条链做中心差分，
+   * 畸变自然算在里面。
+   *
+   * @tparam T 标量类型，同时吃 double 和 ceres::Jet
+   * @param x 整车状态，长度 kStateSize
+   * @return 上、下两个端点的像素坐标
+   */
   template <typename T>
   std::array<ImagePoint<T>, 2> projectPointsOf(const T * x) const
   {
@@ -110,6 +159,12 @@ struct LightMeasure
     return {image_points[0], image_points[1]};
   }
 
+  /**
+   * @brief 观测函数，供滤波器调用
+   * @tparam T 标量类型
+   * @param x 整车状态，长度 kStateSize
+   * @param z 输出的观测向量，长度 kLightMeasureSize
+   */
   template <typename T>
   void operator()(const T * x, T * z) const
   {
@@ -120,7 +175,11 @@ struct LightMeasure
     z[endpoint::BOTTOM_V] = points[1].y();
   }
 
-  // 同一条投影链路，但直接返回两个像素点，给关联和叠加显示用。
+  /**
+   * @brief 同一条投影链路，但直接返回两个像素点，给关联和叠加显示用
+   * @param x 整车状态
+   * @return (上端点, 下端点)
+   */
   std::pair<cv::Point2f, cv::Point2f> projectedPoints(const Eigen::VectorXd & x) const
   {
     const auto points = projectPointsOf<double>(x.data());
@@ -129,7 +188,16 @@ struct LightMeasure
       cv::Point2f(static_cast<float>(points[1].x()), static_cast<float>(points[1].y()))};
   }
 
-  // 观测残差 z - z_pred。四维都是像素坐标，没有缠绕，普通减法即可。
+  /**
+   * @brief 观测残差 z - z_pred
+   *
+   * 四维都是像素坐标，没有缠绕，普通减法即可。
+   *
+   * @tparam T 标量类型
+   * @param z_pred 预测观测
+   * @param z 实际观测
+   * @return z - z_pred
+   */
   template <typename T>
   static Eigen::Matrix<T, kLightMeasureSize, 1> residual(
     const Eigen::Matrix<T, kLightMeasureSize, 1> & z_pred,
@@ -139,7 +207,15 @@ struct LightMeasure
   }
 };
 
-// 把检测到的两个像素端点排成观测向量，排布与 LightMeasure 的输出一致。
+/**
+ * @brief 把检测到的两个像素端点排成观测向量
+ *
+ * 排布与 LightMeasure 的输出一致。
+ *
+ * @param top 上端点
+ * @param bottom 下端点
+ * @return [u_top, v_top, u_bottom, v_bottom]
+ */
 inline LightVector toLight(const cv::Point2f & top, const cv::Point2f & bottom)
 {
   LightVector z;
@@ -147,8 +223,13 @@ inline LightVector toLight(const cv::Point2f & top, const cv::Point2f & bottom)
   return z;
 }
 
-// 由上指向下的灯条单位方向。两端点重合时方向无定义，返回 (0, 1)，调用方
-// 此时应当把两个方向的 sigma 取成一样，方向就不再起作用。
+/**
+ * @brief 由上指向下的灯条单位方向
+ * @param top 上端点
+ * @param bottom 下端点
+ * @return 单位方向；两端点重合时方向无定义，返回 (0, 1)，调用方此时应当把两个
+ *         方向的 sigma 取成一样，方向就不再起作用
+ */
 inline Eigen::Vector2d lightDirection(const cv::Point2f & top, const cv::Point2f & bottom)
 {
   const Eigen::Vector2d delta(bottom.x - top.x, bottom.y - top.y);
@@ -156,17 +237,25 @@ inline Eigen::Vector2d lightDirection(const cv::Point2f & top, const cv::Point2f
   return length > 1e-6 ? Eigen::Vector2d(delta / length) : Eigen::Vector2d(0.0, 1.0);
 }
 
-// 一根灯条的 4×4 观测协方差。
-//
-// 两个端点的定位误差按互相独立处理，所以是两个 2×2 块、块间为零。每块在灯条
-// 自身坐标系里是对角的——沿灯条 sigma_along、垂直灯条 sigma_perp——再旋到
-// 图像系：
-//   Σ = σ∥²·e·eᵀ + σ⊥²·(I − e·eᵀ)，e 为灯条方向。
-// 两个 sigma 相等时退化为各向同性，e 不再起作用。
-//
-// 块间为零是实测之后的选择，不是偷懒——上下端点的误差物理上确实相关（细亮斑
-// 横向整体平移），但把这个相关写进 R 在 pred_px 上不划算，数据见
-// docs/replay_ab_log.md 的端点观测噪声一节。别再重新推导一遍，那条链子很容易长出来。
+/**
+ * @brief 一根灯条的 4×4 观测协方差
+ *
+ * 两个端点的定位误差按互相独立处理，所以是两个 2×2 块、块间为零。每块在灯条
+ * 自身坐标系里是对角的——沿灯条 sigma_along、垂直灯条 sigma_perp——再旋到
+ * 图像系：
+ *   Σ = σ∥²·e·eᵀ + σ⊥²·(I − e·eᵀ)，e 为灯条方向。
+ * 两个 sigma 相等时退化为各向同性，e 不再起作用。
+ *
+ * 块间为零是实测之后的选择，不是偷懒——上下端点的误差物理上确实相关（细亮斑
+ * 横向整体平移），但把这个相关写进 R 在 pred_px 上不划算，数据见
+ * docs/replay_ab_log.md 的端点观测噪声一节。别再重新推导一遍，那条链子很容易长出来。
+ *
+ * @param top 检测到的上端点
+ * @param bottom 检测到的下端点
+ * @param sigma_along 沿灯条方向的端点噪声，px
+ * @param sigma_perp 垂直灯条方向的端点噪声，px
+ * @return 4×4 协方差，px²
+ */
 inline LightCov lightCov(
   const cv::Point2f & top, const cv::Point2f & bottom, double sigma_along,
   double sigma_perp)
@@ -183,18 +272,30 @@ inline LightCov lightCov(
   return cov;
 }
 
-// 一维观测：左右灯条中心在相机 z 轴上的深度差，配出完整一块板时才有。
-// 观测函数同样从整车状态出发，只是投影换成取两个灯条中心的相机系 z 之差。
-//
-// 只取 PnP 里对斜视姿态最有辨识度的这一维，抖动大的绝对深度和完整姿态不进
-// 滤波器。
+/// 深度差观测的维数。左右灯条中心在相机 z 轴上的深度差，配出完整一块板时才有。
+/// 只取 PnP 里对斜视姿态最有辨识度的这一维，抖动大的绝对深度和完整姿态不进
+/// 滤波器。
 constexpr int kDepthDiffMeasureSize = 1;
+
+/// 深度差观测向量
 using DepthDiffVector = Eigen::Matrix<double, kDepthDiffMeasureSize, 1>;
 
+/**
+ * @brief 深度差观测函数 h(x)
+ *
+ * 观测函数同样从整车状态出发，只是投影换成取两个灯条中心的相机系 z 之差。
+ */
 struct DepthDiffMeasure
 {
+  /// 观测上下文，is_left 不使用
   LightContext ctx;
 
+  /**
+   * @brief 观测函数，供滤波器调用
+   * @tparam T 标量类型，同时吃 double 和 ceres::Jet
+   * @param x 整车状态，长度 kStateSize
+   * @param z 输出的深度差（左 − 右），meter
+   */
   template <typename T>
   void operator()(const T * x, T * z) const
   {
@@ -219,6 +320,13 @@ struct DepthDiffMeasure
     z[0] = centerInCamera(true).z() - centerInCamera(false).z();
   }
 
+  /**
+   * @brief 观测残差 z - z_pred
+   * @tparam T 标量类型
+   * @param z_pred 预测观测
+   * @param z 实际观测
+   * @return z - z_pred
+   */
   template <typename T>
   static Eigen::Matrix<T, kDepthDiffMeasureSize, 1> residual(
     const Eigen::Matrix<T, kDepthDiffMeasureSize, 1>& z_pred,

@@ -4,20 +4,28 @@
 
 #include <Eigen/Core>
 
-// SO(3) 的指数与对数映射，模板化在标量类型上。
-//
-// 全程用 ceres:: 而不是 std::：ceres/jet.h 把 std 的数学函数重新导出到 ceres
-// 命名空间，所以同一份写法对 double 和 ceres::Jet 都成立。这是整条链路能被
-// 自动微分穿过去的前提——ESEKF 求 F = ∂(f(x̌ ⊞ δ) ⊟ f(x̌))/∂δ 就是把 Jet 播种
-// 成单位阵推过 ⊞ → f → ⊟。
-//
-// 误差状态滤波把姿态的所有运算都关进"小角度"这个安全区：δ 恒在零附近，所以
-// so3Exp 的泰勒分支才是常走的路径，而 so3Log 在 θ→π 处的奇异永远碰不到。
-// 推导见 docs/esekf_uvl_port.md 第 1 节。与 math.hpp 同属各层共用的数学工具，
-// 放在 L6 是沿用 math.hpp 的位置。
+/**
+ * @file
+ * @brief SO(3) 的指数与对数映射，模板化在标量类型上
+ *
+ * 全程用 ceres:: 而不是 std::：ceres/jet.h 把 std 的数学函数重新导出到 ceres
+ * 命名空间，所以同一份写法对 double 和 ceres::Jet 都成立。这是整条链路能被
+ * 自动微分穿过去的前提——ESEKF 求 F = ∂(f(x̌ ⊞ δ) ⊟ f(x̌))/∂δ 就是把 Jet 播种
+ * 成单位阵推过 ⊞ → f → ⊟。
+ *
+ * 误差状态滤波把姿态的所有运算都关进"小角度"这个安全区：δ 恒在零附近，所以
+ * so3Exp 的泰勒分支才是常走的路径，而 so3Log 在 θ→π 处的奇异永远碰不到。
+ * 推导见 docs/esekf_uvl_port.md 第 1 节。与 math.hpp 同属各层共用的数学工具，
+ * 放在 L6 是沿用 math.hpp 的位置。
+ */
 namespace L6Telemetry {
 
-// 反对称矩阵（hat 算子），把叉乘写成矩阵乘法：so3Hat(w) * v == w × v。
+/**
+ * @brief 反对称矩阵（hat 算子），把叉乘写成矩阵乘法：so3Hat(w) * v == w × v
+ * @tparam T 标量类型，double 或 ceres::Jet
+ * @param w 三维向量
+ * @return w^
+ */
 template <typename T>
 Eigen::Matrix<T, 3, 3> so3Hat(const Eigen::Matrix<T, 3, 1> & w)
 {
@@ -28,12 +36,18 @@ Eigen::Matrix<T, 3, 3> so3Hat(const Eigen::Matrix<T, 3, 1> & w)
   return result;
 }
 
-// 指数映射：旋转向量 → 旋转矩阵（罗德里格斯公式）。
-//
-//   R = I + A·φ^ + B·(φ^)²,   A = sin θ / θ,   B = (1 - cos θ) / θ²
-//
-// θ → 0 时 A、B 都是 0/0。极限存在（1 和 1/2），但浮点直接算得到 NaN，所以
-// 小角度必须走泰勒展开——这条分支在滤波器里是常态而非边界情况。
+/**
+ * @brief 指数映射：旋转向量 → 旋转矩阵（罗德里格斯公式）
+ *
+ *   R = I + A·φ^ + B·(φ^)²,   A = sin θ / θ,   B = (1 - cos θ) / θ²
+ *
+ * θ → 0 时 A、B 都是 0/0。极限存在（1 和 1/2），但浮点直接算得到 NaN，所以
+ * 小角度必须走泰勒展开——这条分支在滤波器里是常态而非边界情况。
+ *
+ * @tparam T 标量类型
+ * @param phi 旋转向量，rad
+ * @return 旋转矩阵
+ */
 template <typename T>
 Eigen::Matrix<T, 3, 3> so3Exp(const Eigen::Matrix<T, 3, 1> & phi)
 {
@@ -59,14 +73,20 @@ Eigen::Matrix<T, 3, 3> so3Exp(const Eigen::Matrix<T, 3, 1> & phi)
   return result;
 }
 
-// 对数映射：旋转矩阵 → 旋转向量，so3Exp 的逆。
-//
-//   cos θ = (tr(R) - 1) / 2            由迹取转角
-//   R - Rᵀ = 2 sin θ · a^              由反对称部分取转轴
-//   φ = θ / (2 sin θ) · vee(R - Rᵀ)
-//
-// θ → π 时 sin θ → 0，scale 会发散，这里**没有**保护。调用点只有 ⊞ 和 ⊟，
-// 两者的输入都保证接近单位阵，碰不到 π。若在别处复用要自己补。
+/**
+ * @brief 对数映射：旋转矩阵 → 旋转向量，so3Exp 的逆
+ *
+ *   cos θ = (tr(R) - 1) / 2            由迹取转角
+ *   R - Rᵀ = 2 sin θ · a^              由反对称部分取转轴
+ *   φ = θ / (2 sin θ) · vee(R - Rᵀ)
+ *
+ * θ → π 时 sin θ → 0，scale 会发散，这里**没有**保护。调用点只有 ⊞ 和 ⊟，
+ * 两者的输入都保证接近单位阵，碰不到 π。若在别处复用要自己补。
+ *
+ * @tparam T 标量类型
+ * @param rotation 旋转矩阵
+ * @return 旋转向量，rad
+ */
 template <typename T>
 Eigen::Matrix<T, 3, 1> so3Log(const Eigen::Matrix<T, 3, 3> & rotation)
 {

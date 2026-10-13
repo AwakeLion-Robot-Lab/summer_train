@@ -93,20 +93,25 @@ SerialProtocol::feed(std::span<const std::uint8_t> bytes) {
       continue;
     }
 
+    // seq 是所有合法接收帧共用的序列号。辅助帧也必须计入，否则它夹在
+    // 两个姿态帧之间时，会被误报成丢了一包姿态。
+    if (packet_loss_check_enable_) {
+      checkPacketLoss(header.seq);
+    }
+
     if (header.cmd_id == kRxCmdId && header.data_length == sizeof(RxPayload) &&
         frame_size == sizeof(RxPacket)) {
       RxPacket packet;
       std::memcpy(&packet, packet_bytes.data(), sizeof(packet));
-      if (packet_loss_check_enable_) {
-        checkPacketLoss(header.seq);
-      }
       rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
       states.push_back(toRobotState(packet));
       continue;
     }
 
-    LOG_DEBUG("serial protocol ignored unsupported frame",
-                          static_cast<int>(header.cmd_id));
+    if (ignored_command_ids_.insert(header.cmd_id).second) {
+      LOG_DEBUG("serial protocol ignored unsupported frame",
+                static_cast<int>(header.cmd_id));
+    }
     rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + frame_size);
   }
 
@@ -120,6 +125,7 @@ void SerialProtocol::reset() {
   rx_buffer_.clear();
   has_rx_seq_ = false;
   last_rx_seq_ = 0;
+  ignored_command_ids_.clear();
   next_tx_seq_ = 0;
   dropped_packet_count_ = 0;
 }

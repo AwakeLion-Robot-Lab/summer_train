@@ -14,6 +14,8 @@
 # Runtime-generated logs and traces
 /logs/*
 !/logs/.gitkeep
+/log/
+/MvSdkLog/
 
 # Test and coverage artifacts
 *.gcda

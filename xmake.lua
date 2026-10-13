@@ -331,6 +331,21 @@ local standalone_tests = {
         includes = {"include", "/usr/include/eigen3"},
         opencv   = {"opencv_core", "opencv_calib3d"},
     },
+    -- docs/light_update_derivation.md 的数字由它算出，只用 L3 头文件。
+    light_update_walkthrough = {
+        includes = {"include", "/usr/include/eigen3"},
+        opencv   = {"opencv_core"},
+    },
+    -- tools/pose_offset 的拟合核心只用 Eigen，合成数据检查，不要相机和串口。
+    pose_offset_smoke = {
+        files    = {"tools/pose_offset/pose_offset.cpp"},
+        includes = {"$(projectdir)", "/usr/include/eigen3"},
+    },
+    record_writer_smoke = {
+        files    = {"tools/record/record_writer.cpp"},
+        includes = {"$(projectdir)", "/usr/include/eigen3"},
+        opencv   = {"opencv_core", "opencv_videoio"},
+    },
 }
 
 -- 需要开关或平台才存在的目标。inference 这几个都要模型，OpenVINO、TensorRT 开一个即可
@@ -421,6 +436,28 @@ target("camera_calibrator")
     set_rundir("$(projectdir)")
     add_files("tools/camera_calibration/camera_calibrator.cpp")
     add_files("tools/camera_calibration/high_precision_calibrator.cpp")
+    add_includedirs("$(projectdir)")
+    add_deps("newvision")
+target_end()
+
+-- 图像与云台姿态时间戳的固定偏移标定，结果填 serial_config.yaml 的 pose_offset_ms。
+-- 要相机、串口和一块静止装甲板，用法见 tools/pose_offset/README.md。
+target("pose_offset_calib")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/pose_offset/pose_offset_calib.cpp")
+    add_files("tools/pose_offset/pose_offset.cpp")
+    add_includedirs("$(projectdir)")
+    add_deps("newvision")
+target_end()
+
+-- 实机录制 auto_aim_test 可直接回放的视频和 IMU 四元数。
+target("record")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/record/record.cpp", "tools/record/record_writer.cpp")
     add_includedirs("$(projectdir)")
     add_deps("newvision")
 target_end()

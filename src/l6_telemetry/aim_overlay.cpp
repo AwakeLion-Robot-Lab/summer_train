@@ -30,9 +30,10 @@ void drawAimOverlay(
     const auto type = L3Estimation::armorTypeOf(input.target->name)
                         .value_or(L3Estimation::ArmorType::Small);
     // 绿色：EKF 展开的全部物理装甲板，直接压在图像上，贴不贴板可以目视判断。
-    drawVehicle(
-      image, input.target->armor_xyza_list(), type, input.target->name, solver,
-      {0, 255, 0}, 2);
+    if (input.q_world_barrel) {
+      drawVehicle(
+        image, *input.target, calibration, *input.q_world_barrel, {0, 255, 0}, 2);
+    }
     // 红色：Plan 选中的命中时刻实体板，它领先绿框是延迟补偿的正常结果。
     if (input.plan.valid() && input.plan.fire.has_value()) {
       drawVehicle(
@@ -111,7 +112,62 @@ std::optional<cv::Point2f> projectWorldPoint(
   return cv::Point2f(projected[0]);
 }
 
-// 把一组整车装甲板位姿画成闭合四边形。
+std::vector<ArmorCorners> projectVehicleArmors(
+  const L3Estimation::EskfTarget& target,
+  const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Quaterniond& q_world_barrel)
+{
+  if (!target.initialized() || !calibration.barrelExtrinsicsReady() ||
+      calibration.camera_matrix.empty() || calibration.distortion_coefficients.empty()) {
+    return {};
+  }
+  const auto ctx = target.obsContext(
+    calibration, L3Estimation::cameraInWorld(calibration, q_world_barrel));
+  const Eigen::VectorXd state = target.rawState();
+  std::vector<ArmorCorners> result;
+  result.reserve(target.armor_num());
+  for (int id = 0; id < target.armor_num(); ++id) {
+    const auto pose_in_camera = ctx.camera_in_world.inverse() *
+      L3Estimation::VehicleModel::armorPose<double>(
+        state.data(), id, target.armor_num(), target.name);
+    for (bool left : {true, false}) {
+      for (const auto& point : L3Estimation::lightPoints3D(target.name, left, ctx.armor)) {
+        const Eigen::Vector3d in_camera =
+          pose_in_camera * Eigen::Vector3d(point.x, point.y, point.z);
+        if (!in_camera.allFinite() || in_camera.z() <= 1e-6) {
+          return {};
+        }
+      }
+    }
+    const auto left = ctx.project(id, true, state);
+    const auto right = ctx.project(id, false, state);
+    const ArmorCorners corners{left.first, right.first, right.second, left.second};
+    for (const auto& point : corners) {
+      if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+        return {};
+      }
+    }
+    result.push_back(corners);
+  }
+  return result;
+}
+
+void drawVehicle(
+  cv::Mat& image, const L3Estimation::EskfTarget& target,
+  const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Quaterniond& q_world_barrel, const cv::Scalar& color, int thickness,
+  cv::Point image_offset)
+{
+  for (const auto& corners : projectVehicleArmors(target, calibration, q_world_barrel)) {
+    for (std::size_t k = 0; k < corners.size(); ++k) {
+      cv::line(image, toPixel(corners[k]) + image_offset,
+               toPixel(corners[(k + 1) % corners.size()]) + image_offset,
+               color, thickness, cv::LINE_AA);
+    }
+  }
+}
+
+// 把一组仅带 yaw 的装甲板位姿画成闭合四边形（Plan 的兼容接口）。
 void drawVehicle(
   cv::Mat& image,
   const std::vector<Eigen::Vector4d>& armor_poses,

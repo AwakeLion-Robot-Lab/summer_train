@@ -15,62 +15,96 @@
 #include <numbers>
 #include <array>
 
-// 整车模型，四部分：十三维状态的布局、由状态算出每块装甲板位姿的结构先验、
-// 流形上的 ⊞/⊟，以及恒速度运动模型和过程噪声。
-//
-// 姿态用完整的 SO(3) 旋转向量而不是单个 yaw 标量，由此带来两件事：状态不住
-// 在向量空间，所以要有 ⊞/⊟ 和误差状态；过程噪声可以在车体系表达，"地面车不会
-// 突然上下加速"这个先验才有地方写。推导见 docs/esekf_uvl_port.md 第 2、3 节。
+/**
+ * @file
+ * @brief 整车模型
+ *
+ * 四部分：十三维状态的布局、由状态算出每块装甲板位姿的结构先验、流形上的
+ * ⊞/⊟，以及恒速度运动模型和过程噪声。
+ *
+ * 姿态用完整的 SO(3) 旋转向量而不是单个 yaw 标量，由此带来两件事：状态不住
+ * 在向量空间，所以要有 ⊞/⊟ 和误差状态；过程噪声可以在车体系表达，"地面车不会
+ * 突然上下加速"这个先验才有地方写。推导见 docs/esekf_uvl_port.md 第 2、3 节。
+ */
 namespace L3Estimation::VehicleModel {
 
-// 状态下标。
-//
-// 前九维（0..8）不可改动：L4 的 Planner 按下标直接读车心平面位置、角速度和
-// 第一组半径。代价是旋转三维不连续，z 在 6，y 和 x 挤到 11、12——把它们改
-// 连续就会占掉 VYAW 和 LOG_R1 的位置，破坏这个契约。
+/**
+ * @brief 状态下标
+ *
+ * 前九维（0..8）不可改动：L4 的 Planner 按下标直接读车心平面位置、角速度和
+ * 第一组半径。代价是旋转三维不连续，z 在 6，y 和 x 挤到 11、12——把它们改
+ * 连续就会占掉 VYAW 和 LOG_R1 的位置，破坏这个契约。
+ */
 namespace idx
 {
 enum {
-  CX, VCX,     // 车心 x 与其速度
-  CY, VCY,     // 车心 y 与其速度
-  CZ, VCZ,     // 车心 z 与其速度
-  ROT_Z,       // 整车姿态旋转向量的 z 分量
-  VYAW,        // 绕**车体** z 轴的角速度
-  LOG_R1,      // 第一组装甲板半径的对数
-  P1,          // 复用槽位，含义随目标类型变
-  P2,          // 同上
-  ROT_Y,       // 整车姿态旋转向量的 y 分量
-  ROT_X,       // 整车姿态旋转向量的 x 分量
-  kStateSize
+  CX, VCX,     ///< 车心 x 与其速度
+  CY, VCY,     ///< 车心 y 与其速度
+  CZ, VCZ,     ///< 车心 z 与其速度
+  ROT_Z,       ///< 整车姿态旋转向量的 z 分量
+  VYAW,        ///< 绕**车体** z 轴的角速度
+  LOG_R1,      ///< 第一组装甲板半径的对数
+  P1,          ///< 复用槽位，含义随目标类型变
+  P2,          ///< 同上
+  ROT_Y,       ///< 整车姿态旋转向量的 y 分量
+  ROT_X,       ///< 整车姿态旋转向量的 x 分量
+  kStateSize   ///< 状态维数
 };
 
 // P1 / P2 是复用槽位：同一个 double 在四板车和前哨上含义完全不同。碰这两个
 // 槽位的代码都要先按 ArmorName 分支，否则是静默算错。
-constexpr int LOG_R2 = P1;       // 四板车：第二组半径的对数
-constexpr int HEIGHT = P2;       // 四板车：奇偶板的高度差
-constexpr int OUTPOST_DZ1 = P1;  // 前哨站：1 号板相对 0 号板的高度
-constexpr int OUTPOST_DZ2 = P2;  // 前哨站：2 号板相对 0 号板的高度
+
+/// 四板车：第二组半径的对数
+constexpr int LOG_R2 = P1;
+
+/// 四板车：奇偶板的高度差
+constexpr int HEIGHT = P2;
+
+/// 前哨站：1 号板相对 0 号板的高度
+constexpr int OUTPOST_DZ1 = P1;
+
+/// 前哨站：2 号板相对 0 号板的高度
+constexpr int OUTPOST_DZ2 = P2;
 }  // namespace idx
 
+/// 状态维数
 constexpr int kStateSize = idx::kStateSize;
 static_assert(kStateSize == 13, "L4 与遥测按十三维读状态");
 
-// 旋转三维的下标，按 (x, y, z) 顺序排好，供 ⊞/⊟ 遍历。
+/// 旋转三维的下标，按 (x, y, z) 顺序排好，供 ⊞/⊟ 遍历。
 constexpr int kRotationIndex[3] = {idx::ROT_X, idx::ROT_Y, idx::ROT_Z};
 
-// 半径的物理范围，Motion::clamp 用它饱和。这类物理常量留在代码里，不出配置。
+/// 半径下限，meter。Motion::clamp 用它饱和；这类物理常量留在代码里，不出配置。
 constexpr double kMinArmorRadius = 0.05;
+
+/// 半径上限，meter
 constexpr double kMaxArmorRadius = 0.8;
-// 前哨站半径与转速由规则固定，不参与估计。
+
+/// 前哨站半径，meter。前哨站半径与转速由规则固定，不参与估计。
 constexpr double kOutpostRadius = 0.55 / 2.0;
+
+/// 前哨站转速，rad/s
 constexpr double kOutpostYawRate = 2.51;
-// 高度差与角速度的发散判据。超界不是估偏一点，而是关联错了，所以直接归零。
+
+/// 四板车高度差的发散判据，meter。超界不是估偏一点，而是关联错了，所以直接归零。
 constexpr double kMaxHeightOffset = 0.5;
+
+/// 前哨站高度偏移的发散判据，meter
 constexpr double kMaxOutpostHeightOffset = 0.3;
+
+/// 角速度的发散判据，rad/s
 constexpr double kMaxYawRate = 20.0;
 
-// 把角度折回 (-π, π]。用 floor 而不是分支：floor 的导数恒为零，加减 2π 不改
-// 变角度的物理含义，导数也就不变，Jet 穿过去是对的。
+/**
+ * @brief 把角度折回 (-π, π]
+ *
+ * 用 floor 而不是分支：floor 的导数恒为零，加减 2π 不改变角度的物理含义，
+ * 导数也就不变，Jet 穿过去是对的。
+ *
+ * @tparam T 标量类型，double 或 ceres::Jet
+ * @param angle 角度，rad
+ * @return 折回后的角度
+ */
 template <typename T>
 T normalizeAngle(T angle)
 {
@@ -78,7 +112,16 @@ T normalizeAngle(T angle)
   return angle - two_pi * ceres::floor((angle + T(std::numbers::pi)) / two_pi);
 }
 
-// 组合出 Rz(yaw)·Ry(pitch)。装甲板在车体系的姿态只用得到这两轴。
+/**
+ * @brief 组合出 Rz(yaw)·Ry(pitch)
+ *
+ * 装甲板在车体系的姿态只用得到这两轴。
+ *
+ * @tparam T 标量类型
+ * @param yaw 绕 z 轴转角，rad
+ * @param pitch 绕 y 轴转角，rad
+ * @return 旋转矩阵
+ */
 template <typename T>
 Eigen::Matrix<T, 3, 3> rotationZY(const T & yaw, const T & pitch)
 {
@@ -94,18 +137,33 @@ Eigen::Matrix<T, 3, 3> rotationZY(const T & yaw, const T & pitch)
   return result;
 }
 
+/**
+ * @brief 是否基地（大小基地都算）
+ * @param name 车辆类别
+ * @return 基地返回 true
+ */
 constexpr bool isBase(ArmorName name) noexcept
 {
   return name == ArmorName::BaseSmall || name == ArmorName::BaseLarge;
 }
 
-// 取第 id 块板的半径：四板车的奇数板用第二组，其余都用第一组，基地的板在
-// 中心、半径为 0。
-//
-// 两个条件缺一不可：三板车（前哨、基地）各板到轴心距离相同，共用第一组；
-// 四板车底盘不是正方形，前后一组、左右一组。
-//
-// 状态里存的是对数，exp 出来必然为正，半径保正不需要额外约束或投影。
+/**
+ * @brief 取第 id 块板的半径
+ *
+ * 四板车的奇数板用第二组，其余都用第一组，基地的板在中心、半径为 0。
+ *
+ * 两个条件缺一不可：三板车（前哨、基地）各板到轴心距离相同，共用第一组；
+ * 四板车底盘不是正方形，前后一组、左右一组。
+ *
+ * 状态里存的是对数，exp 出来必然为正，半径保正不需要额外约束或投影。
+ *
+ * @tparam T 标量类型
+ * @param x 整车状态，长度 kStateSize
+ * @param id 物理板编号
+ * @param armor_num 物理板数量
+ * @param name 车辆类别
+ * @return 半径，meter
+ */
 template <typename T>
 T armorRadius(const T * x, int id, int armor_num, ArmorName name)
 {
@@ -116,8 +174,15 @@ T armorRadius(const T * x, int id, int armor_num, ArmorName name)
   return ceres::exp(is_r2 ? x[idx::LOG_R2] : x[idx::LOG_R1]);
 }
 
-// 该目标是否只绕竖直轴转。前哨是固定装置绕竖直轴匀速转，基地不转，给它们估
-// roll/pitch 只会多出不可观测的自由度让滤波器漂。
+/**
+ * @brief 该目标是否只绕竖直轴转
+ *
+ * 前哨是固定装置绕竖直轴匀速转，基地不转，给它们估 roll/pitch 只会多出不可
+ * 观测的自由度让滤波器漂。
+ *
+ * @param name 车辆类别
+ * @return 前哨或基地返回 true
+ */
 constexpr bool yawOnlyTarget(ArmorName name) noexcept
 {
   return name == ArmorName::Outpost || name == ArmorName::BaseSmall ||
@@ -125,8 +190,16 @@ constexpr bool yawOnlyTarget(ArmorName name) noexcept
 }
 
 
-// 由状态里的旋转向量取指数映射得到整车姿态；只绕竖直轴的目标把 x、y 分量
-// 按 0 处理。
+/**
+ * @brief 由状态里的旋转向量取指数映射得到整车姿态
+ *
+ * 只绕竖直轴的目标把 x、y 分量按 0 处理。
+ *
+ * @tparam T 标量类型
+ * @param x 整车状态，长度 kStateSize
+ * @param name 车辆类别
+ * @return 车体系到世界系的旋转
+ */
 template <typename T>
 Eigen::Matrix<T, 3, 3> vehicleRotation(const T * x, ArmorName name)
 {
@@ -136,7 +209,13 @@ Eigen::Matrix<T, 3, 3> vehicleRotation(const T * x, ArmorName name)
   return L6Telemetry::so3Exp<T>(Eigen::Matrix<T, 3, 1>(x[idx::ROT_X], x[idx::ROT_Y], x[idx::ROT_Z]));
 }
 
-// 整车在世界系的位姿：平移取状态的车心三维，旋转取 vehicleRotation。
+/**
+ * @brief 整车在世界系的位姿：平移取状态的车心三维，旋转取 vehicleRotation
+ * @tparam T 标量类型
+ * @param x 整车状态，长度 kStateSize
+ * @param name 车辆类别
+ * @return 车体系到世界系的位姿
+ */
 template <typename T>
 Eigen::Transform<T, 3, Eigen::Isometry> vehiclePose(const T * x, ArmorName name)
 {
@@ -147,16 +226,26 @@ Eigen::Transform<T, 3, Eigen::Isometry> vehiclePose(const T * x, ArmorName name)
   return pose;
 }
 
-// 第 id 块装甲板在世界系的位姿：方位角按 θ = 2πi/N 定死，板心在车体系取
-// -r·(cosθ, sinθ)，高度按目标类型取 0、前哨的两个偏移或四板车的奇偶差，
-// 姿态取 Rz(θ)·Ry(后仰角)，最后左乘整车位姿。
-//
-// 这是整车估计的核心：方位角是常量、半径和高度差是状态量，于是"装甲板跳变"
-// 变成确定的刚体几何关系——看到的是哪块板、甚至只有一条灯条，都只是同一个
-// 十三维状态在不同 i 上的投影。
-//
-// 板心位置取负而姿态绕 z 转正，两者反向，所以板的 x 轴指向车心，可见面是
-// 它的 -x 侧；判可见性要用 -axis_x，搞反会把背面的板当成正对的。
+/**
+ * @brief 第 id 块装甲板在世界系的位姿
+ *
+ * 方位角按 θ = 2πi/N 定死，板心在车体系取 -r·(cosθ, sinθ)，高度按目标类型取 0、
+ * 前哨的两个偏移或四板车的奇偶差，姿态取 Rz(θ)·Ry(后仰角)，最后左乘整车位姿。
+ *
+ * 这是整车估计的核心：方位角是常量、半径和高度差是状态量，于是"装甲板跳变"
+ * 变成确定的刚体几何关系——看到的是哪块板、甚至只有一条灯条，都只是同一个
+ * 十三维状态在不同 i 上的投影。
+ *
+ * 板心位置取负而姿态绕 z 转正，两者反向，所以板的 x 轴指向车心，可见面是
+ * 它的 -x 侧；判可见性要用 -axis_x，搞反会把背面的板当成正对的。
+ *
+ * @tparam T 标量类型
+ * @param x 整车状态，长度 kStateSize
+ * @param id 物理板编号
+ * @param armor_num 物理板数量
+ * @param name 车辆类别
+ * @return 板系到世界系的位姿
+ */
 template <typename T>
 Eigen::Transform<T, 3, Eigen::Isometry> armorPose(
   const T * x, int id, int armor_num, ArmorName name)
@@ -196,6 +285,12 @@ Eigen::Transform<T, 3, Eigen::Isometry> armorPose(
 // 扰动一律取右乘（体坐标系）：过程噪声要在车体系表达，vyaw 也是绕车体 z 轴
 // 的角速度；改左乘的话 processNoise 里旋转块和 ROT_Z–VYAW 耦合块都得重写。
 
+/**
+ * @brief 取状态里的整车姿态，三个旋转分量都参与
+ * @tparam StateVector 状态向量类型，标量可为 double 或 Jet
+ * @param state 整车状态
+ * @return 车体系到世界系的旋转
+ */
 template <class StateVector>
 auto stateRotation(const StateVector & state)
 {
@@ -204,10 +299,17 @@ auto stateRotation(const StateVector & state)
     state[idx::ROT_X], state[idx::ROT_Y], state[idx::ROT_Z]));
 }
 
-// x̌ ⊞ δ：欧氏分量直接加，旋转三维右乘注入 R ← R·Exp(δ_rot) 再取对数写回。
-//
-// 循环里跳过旋转三维、循环外单独处理不是可以省的写法：循环后面要读
-// stateRotation(nominal)，这时旋转必须还是没被误加过的。
+/**
+ * @brief x̌ ⊞ δ：欧氏分量直接加，旋转三维右乘注入 R ← R·Exp(δ_rot) 再取对数写回
+ *
+ * 循环里跳过旋转三维、循环外单独处理不是可以省的写法：循环后面要读
+ * stateRotation(nominal)，这时旋转必须还是没被误加过的。
+ *
+ * @tparam DeltaVector 误差状态类型
+ * @tparam StateVector 名义状态类型
+ * @param delta 误差状态 δ
+ * @param nominal 名义状态 x̌，原地更新为 x̌ ⊞ δ
+ */
 template <class DeltaVector, class StateVector>
 void injectState(const DeltaVector & delta, StateVector & nominal)
 {
@@ -230,11 +332,19 @@ void injectState(const DeltaVector & delta, StateVector & nominal)
   nominal[idx::ROT_Z] = injected.z();
 }
 
-// x ⊟ x̌：先整体相减，再把旋转三维覆盖成 Log(Řᵀ·R)。injectState 的逆。
-//
-// 转置的位置必须与右乘配套。写成 Log(R·Řᵀ) 就不再互逆，而且不会报错——滤波
-// 器照跑，只是 Jacobian 全错、协方差没有意义、遇到大机动发散。
-// tests/vehicle_model_smoke.cpp 的第一条断言守的就是这个。
+/**
+ * @brief x ⊟ x̌：先整体相减，再把旋转三维覆盖成 Log(Řᵀ·R)。injectState 的逆
+ *
+ * 转置的位置必须与右乘配套。写成 Log(R·Řᵀ) 就不再互逆，而且不会报错——滤波
+ * 器照跑，只是 Jacobian 全错、协方差没有意义、遇到大机动发散。
+ * tests/vehicle_model_smoke.cpp 的第一条断言守的就是这个。
+ *
+ * @tparam StateVector 名义状态类型
+ * @tparam DeltaVector 误差状态类型
+ * @param nominal 参考点 x̌
+ * @param value 目标点 x
+ * @param delta 输出的误差状态 δ，满足 x̌ ⊞ δ = x
+ */
 template <class StateVector, class DeltaVector>
 void boxMinusState(const StateVector & nominal, const StateVector & value, DeltaVector & delta)
 {
@@ -252,28 +362,48 @@ void boxMinusState(const StateVector & nominal, const StateVector & value, Delta
 
 // --- 前哨站转向投票 -----------------------------------------------------
 
-// 前哨转速由规则固定，未知的只有转向，所以不交给滤波器估，而是攒够证据后
-// 直接钉死，少估一个自由度。
-//
-// 投票规则：开始后 1 秒内不投（等状态先收敛），之后每次 yaw 变化超过
-// 0.05 rad 就给计数器 ±1，累计绝对值超过 10 票才判定方向。门限取得高，是
-// 因为判错方向比判不出更糟：判不出只是退回按状态量推进，判错会让预测朝反
-// 方向跑。
+/**
+ * @brief 前哨站转向投票器
+ *
+ * 前哨转速由规则固定，未知的只有转向，所以不交给滤波器估，而是攒够证据后
+ * 直接钉死，少估一个自由度。
+ *
+ * 投票规则：开始后 1 秒内不投（等状态先收敛），之后每次 yaw 变化超过
+ * 0.05 rad 就给计数器 ±1，累计绝对值超过 10 票才判定方向。门限取得高，是
+ * 因为判错方向比判不出更糟：判不出只是退回按状态量推进，判错会让预测朝反
+ * 方向跑。
+ */
 struct Voter
 {
+  /**
+   * @brief 判定的转向
+   */
   enum class Direction
   {
-    Collecting,      // 证据不足，仍按状态量推进
-    Clockwise,       // +kOutpostYawRate
-    Counterclockwise // -kOutpostYawRate
+    Collecting,      ///< 证据不足，仍按状态量推进
+    Clockwise,       ///< +kOutpostYawRate
+    Counterclockwise ///< -kOutpostYawRate
   };
 
+  /// 当前判定
   Direction direction{Direction::Collecting};
+
+  /// 开始投票的时刻
   TimePoint start{};
+
+  /// 正向票减反向票
   int clockwise_count{0};
+
+  /// 上一次投票时的参考 yaw，rad
   double last_yaw{0.0};
+
+  /// 是否已有参考 yaw
   bool has_last_yaw{false};
 
+  /**
+   * @brief 清空票数，从 t 开始重新计时
+   * @param t 开始时刻
+   */
   void reset(TimePoint t) noexcept
   {
     direction = Direction::Collecting;
@@ -283,6 +413,11 @@ struct Voter
     has_last_yaw = false;
   }
 
+  /**
+   * @brief 拿一次整车 yaw 投票，规则见结构体说明
+   * @param yaw 更新后的整车 yaw，rad
+   * @param t 这次 yaw 的时刻
+   */
   void update(double yaw, TimePoint t) noexcept
   {
     if (t - start < std::chrono::milliseconds(1000)) {
@@ -311,7 +446,10 @@ struct Voter
     }
   }
 
-  // 转成喂给 Motion 的符号，0 表示还没判明。
+  /**
+   * @brief 转成喂给 Motion 的符号
+   * @return +1 / -1；0 表示还没判明
+   */
   int sign() const noexcept
   {
     switch (direction) {
@@ -328,17 +466,31 @@ struct Voter
 
 // --- 运动模型 -----------------------------------------------------------
 
-// 一步状态转移：车心按恒速度平移，姿态右乘绕车体 z 轴转 vyaw·dt，其余状态
-// 原样保留（即随机游走，由过程噪声描述），最后过一遍 clamp。
-//
-// 前哨的转向一旦判明，角速度就钉成规则常量；基地不转，整段旋转跳过。
+/**
+ * @brief 一步状态转移 f(x)
+ *
+ * 车心按恒速度平移，姿态右乘绕车体 z 轴转 vyaw·dt，其余状态原样保留（即随机
+ * 游走，由过程噪声描述），最后过一遍 clamp。
+ *
+ * 前哨的转向一旦判明，角速度就钉成规则常量；基地不转，整段旋转跳过。
+ */
 struct Motion
 {
+  /// 步长，s
   double dt{0.0};
+
+  /// 车辆类别
   ArmorName name{ArmorName::Unknown};
-  // 前哨站转向判明后角速度钉死为规则常量。0 表示尚未判明，按状态量推进。
+
+  /// 前哨站转向判明后角速度钉死为规则常量。0 表示尚未判明，按状态量推进。
   int outpost_direction{0};
 
+  /**
+   * @brief 状态转移
+   * @tparam T 标量类型，double 或 ceres::Jet
+   * @param x0 转移前的状态，长度 kStateSize
+   * @param x1 输出的转移后状态，长度 kStateSize
+   */
   template <typename T>
   void operator()(const T * x0, T * x1) const
   {
@@ -373,12 +525,19 @@ struct Motion
     clamp(x1);
   }
 
-  // 防发散的硬约束：半径饱和到物理范围内（估偏一点，拉回边界是合理的），
-  // 高度差和角速度超界则归零（几乎一定是关联错了，等于承认这一维没救、重来）。
-  // 前哨的半径直接按规则常量写死，基地的角速度恒为 0。
-  //
-  // 它在状态转移内部，Jet 会穿过这些分支。fmin/fmax 在边界处导数分段，理论上
-  // 让 F 在饱和瞬间不连续，实践中很少触发，是个已知的近似。
+  /**
+   * @brief 防发散的硬约束
+   *
+   * 半径饱和到物理范围内（估偏一点，拉回边界是合理的），高度差和角速度超界
+   * 则归零（几乎一定是关联错了，等于承认这一维没救、重来）。前哨的半径直接按
+   * 规则常量写死，基地的角速度恒为 0。
+   *
+   * 它在状态转移内部，Jet 会穿过这些分支。fmin/fmax 在边界处导数分段，理论上
+   * 让 F 在饱和瞬间不连续，实践中很少触发，是个已知的近似。
+   *
+   * @tparam T 标量类型
+   * @param x 整车状态，原地修改
+   */
   template <typename T>
   void clamp(T * x) const
   {
@@ -413,37 +572,59 @@ struct Motion
 
 // --- 过程噪声 -----------------------------------------------------------
 
-// 过程噪声强度。这些是靠回放标定的主要旋钮，所以出到配置；半径物理范围、
-// 前哨固定转速那类物理常量仍留在代码里。
+/**
+ * @brief 过程噪声强度
+ *
+ * 这些是靠回放标定的主要旋钮，所以出到配置；半径物理范围、前哨固定转速那类
+ * 物理常量仍留在代码里。
+ */
 struct NoiseConfig
 {
-  // 车体系加速度方差 [前, 左, 上]。三个数不相等正是在体系建 Q 的意义：地面
-  // 轮式车可以突然前后左右加速，但不会突然上下加速，而这句话只在车体系成立。
+  /// 车体系加速度方差 [前, 左, 上]。三个数不相等正是在体系建 Q 的意义：地面
+  /// 轮式车可以突然前后左右加速，但不会突然上下加速，而这句话只在车体系成立。
   Eigen::Vector3d body_acceleration{30.0, 30.0, 1.0};
-  // 绕车体 z 轴的角加速度方差。
+
+  /// 绕车体 z 轴的角加速度方差。
   double yaw_acceleration{30.0};
 
-  // 前哨站转速由规则固定、轨迹规整，过程噪声显著更小。
+  /// 前哨站的车体系加速度方差。前哨站转速由规则固定、轨迹规整，过程噪声显著更小。
   Eigen::Vector3d outpost_body_acceleration{1.0, 1.0, 1.0};
+
+  /// 前哨站的角加速度方差
   double outpost_yaw_acceleration{0.01};
 
-  // 半径与高度差的随机游走强度。
+  /// 物理半径的随机游走强度。
   double radius{1e-7};
+
+  /// 四板车高度差的随机游走强度
   double height{1e-7};
+
+  /// 前哨站高度偏移的随机游走强度
   double outpost_height{1e-7};
-  // 非 yaw 姿态漂移，吸收车体 roll/pitch 小幅误差、地面坡度和外参残差。
+
+  /// 非 yaw 姿态漂移，吸收车体 roll/pitch 小幅误差、地面坡度和外参残差。
   double roll_pitch{0.1};
 };
 
-// 按四步拼出过程噪声矩阵：① 平移的常加速度块，② yaw 的常角加速度块，
-// ③ roll/pitch 随机游走，④ 半径与高度随机游走。
-//
-// 前两块用同一套常加速度推导：未建模加速度当白噪声 a ~ N(0, σ²)，dt 内它对
-// 位置和速度的影响是 G = [½dt², dt]ᵀ，于是 2×2 块为
-// G σ² Gᵀ = σ² [[¼dt⁴, ½dt³], [½dt³, dt²]]，四个系数就是这么来的。
-//
-// 平移部分先在车体系建对角阵再按 Cov(Ra) = R Cov(a) Rᵀ 旋到世界系；yaw 部分
-// 不用旋，因为右乘扰动下误差状态本来就定义在体系里。
+/**
+ * @brief 拼出过程噪声矩阵 Q
+ *
+ * 按四步拼：① 平移的常加速度块，② yaw 的常角加速度块，③ roll/pitch 随机游走，
+ * ④ 半径与高度随机游走。
+ *
+ * 前两块用同一套常加速度推导：未建模加速度当白噪声 a ~ N(0, σ²)，dt 内它对
+ * 位置和速度的影响是 G = [½dt², dt]ᵀ，于是 2×2 块为
+ * G σ² Gᵀ = σ² [[¼dt⁴, ½dt³], [½dt³, dt²]]，四个系数就是这么来的。
+ *
+ * 平移部分先在车体系建对角阵再按 Cov(Ra) = R Cov(a) Rᵀ 旋到世界系；yaw 部分
+ * 不用旋，因为右乘扰动下误差状态本来就定义在体系里。
+ *
+ * @param x 当前名义状态，取整车姿态与半径
+ * @param dt 预测步长，s
+ * @param name 车辆类别，前哨用单独的噪声
+ * @param config 过程噪声强度
+ * @return kStateSize × kStateSize 的 Q
+ */
 inline Eigen::Matrix<double, kStateSize, kStateSize> processNoise(
   const Eigen::VectorXd & x, double dt, ArmorName name, const NoiseConfig & config)
 {
@@ -471,7 +652,7 @@ inline Eigen::Matrix<double, kStateSize, kStateSize> processNoise(
     for (int j = 0; j < 3; ++j) {
       const double value = acceleration_in_world(i, j);
       q(position_index[i], position_index[j]) = 0.25 * dt4 * value;
-      q(position_index[i], velocity_index[j]) = 0.5 * dt3 * value; 
+      q(position_index[i], velocity_index[j]) = 0.5 * dt3 * value;
       q(velocity_index[i], position_index[j]) = 0.5 * dt3 * value;
       q(velocity_index[i], velocity_index[j]) = dt2 * value;
     }

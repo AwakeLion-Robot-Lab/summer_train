@@ -13,8 +13,8 @@
 namespace L1Sensor {
 
 // 创建串口端口和协议解析器，并应用丢包检测开关配置。
-SerialWorker::SerialWorker(SerialConfig config)
-    : config_(std::move(config)), port_(config_) {
+SerialWorker::SerialWorker(SerialConfig config, bool receive_only)
+    : config_(std::move(config)), receive_only_(receive_only), port_(config_) {
   protocol_.setPacketLossCheckEnable(config_.packet_loss_check_enable);
 }
 
@@ -38,7 +38,9 @@ bool SerialWorker::start() {
 
   try {
     rx_thread_ = std::thread(&SerialWorker::rxLoop, this);
-    tx_thread_ = std::thread(&SerialWorker::txLoop, this);
+    if (!receive_only_) {
+      tx_thread_ = std::thread(&SerialWorker::txLoop, this);
+    }
   } catch (const std::exception &e) {
     running_ = false;
     if (rx_thread_.joinable()) {
@@ -275,6 +277,17 @@ bool SerialWorker::waitPose(
         return !gimbal_history_.empty() &&
                gimbal_history_.back().timestamp > timestamp;
       });
+}
+
+std::optional<std::pair<std::chrono::steady_clock::time_point,
+                        std::chrono::steady_clock::time_point>>
+SerialWorker::poseSpan() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (gimbal_history_.empty()) {
+    return std::nullopt;
+  }
+  return std::pair{gimbal_history_.front().timestamp,
+                   gimbal_history_.back().timestamp};
 }
 
 // 按时间戳查询云台姿态；找到前后两帧 RPY 后再转四元数并 slerp。
