@@ -1,4 +1,4 @@
-#include "l1_sensor/camera/camera_calibration.hpp"
+#include "sensor/camera/camera_calibration.hpp"
 #include "tools/camera_calibration/high_precision_calibrator.hpp"
 
 #include <chrono>

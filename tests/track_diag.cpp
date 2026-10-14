@@ -4,18 +4,18 @@
 // 它和 auto_aim_test 的分工：auto_aim_test 是人眼看单帧，这个是把整段录像的
 // 数量关系压成表格。诊断结论必须能被列出来的数字支撑，只截图看不出偏差是
 // 由观测跳变、yaw 搜索截断还是滤波器过程噪声引起的。
-#include "l1_sensor/camera/camera_calibration.hpp"
-#include "l1_sensor/serial/serial_config.hpp"
-#include "l2_perception/armor/armor_detector.hpp"
-#include "l3_estimation/armor/pnp_solver.hpp"
-#include "l3_estimation/armor/eskf_tracker.hpp"
+#include "sensor/camera/camera_calibration.hpp"
+#include "sensor/serial/serial_config.hpp"
+#include "l1_perception/armor/armor_detector.hpp"
+#include "l2_estimation/armor/pnp_solver.hpp"
+#include "l2_estimation/armor/eskf_tracker.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "runtime/armor_detector_factory.hpp"
 #include "runtime/l4_target_adapter.hpp"
-#include "l4_planning/planner.hpp"
-#include "l4_planning/planner_config.hpp"
-#include "l6_telemetry/logger.hpp"
-#include "l6_telemetry/math.hpp"
+#include "l3_planning/planner.hpp"
+#include "l3_planning/planner_config.hpp"
+#include "l5_telemetry/logger.hpp"
+#include "l5_telemetry/math.hpp"
 
 #include <Eigen/Geometry>
 

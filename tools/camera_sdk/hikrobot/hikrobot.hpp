@@ -9,7 +9,7 @@
 
 #include "MvCameraControl.h"
 #include "latest_buffer.hpp"
-#include "l1_sensor/camera/camera.hpp"
+#include "sensor/camera/camera.hpp"
 
 
 namespace io

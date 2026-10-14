@@ -1,6 +1,6 @@
 #pragma once
 
-#include "l2_perception/armor/armor_detector.hpp"
+#include "l1_perception/armor/armor_detector.hpp"
 #include "runtime/auto_aim_config.hpp"
 
 namespace runtime {

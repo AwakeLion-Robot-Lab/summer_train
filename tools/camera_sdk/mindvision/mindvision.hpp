@@ -7,7 +7,7 @@
 #include <thread>
 
 #include "CameraApi.h"
-#include "l1_sensor/camera/camera.hpp"
+#include "sensor/camera/camera.hpp"
 #include "latest_buffer.hpp"
 
 namespace io

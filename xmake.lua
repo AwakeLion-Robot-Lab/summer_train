@@ -84,6 +84,16 @@ option("cuda_root")
     set_description("CUDA SDK prefix (used only when use_tensorrt=y)")
 option_end()
 
+if has_config("use_openvino") then
+    target("rune_detect")
+        set_kind("binary")
+        set_default(false)
+        set_rundir("$(projectdir)")
+        add_files("tools/rune/rune_detect.cpp")
+        add_deps("newvision")
+    target_end()
+end
+
 if has_config("use_xrepo_deps") then
     add_requires("opencv", {optional = true})
     add_requires("yaml-cpp", {optional = true})
@@ -92,7 +102,7 @@ end
 target("newvision")
     set_kind("static")
     add_files("src/**/*.cpp")
-    add_files("include/armor/l4_planning/planner_config.cpp")
+    add_files("include/armor/l3_planning/planner_config.cpp")
     add_files("tools/tiny_MPC/*.cpp")
     add_files("tools/camera_sdk/hikrobot/hikrobot.cpp")
     add_files("tools/camera_sdk/mindvision/mindvision.cpp")
@@ -248,24 +258,37 @@ target("newvision")
 -- ---------------------------------------------------------------------------
 
 local standalone_tests = {
+    rune_pipeline_smoke = {
+        files = {
+            "src/rune/processor.cpp",
+            "src/rune/f1-observation/detection.cpp",
+            "src/rune/f1-observation/reobservation.cpp",
+            "src/rune/f2-building/builder.cpp",
+            "src/rune/f3-estimator/estimator.cpp",
+            "src/rune/f4-planning/ballistic_solver.cpp",
+            "src/rune/f4-planning/fire_control.cpp",
+        },
+        includes = {"include", "/usr/include/eigen3"},
+        opencv = {"opencv_core", "opencv_imgproc", "opencv_calib3d"},
+    },
     logger_smoke = {
-        files    = {"src/armor/l6_telemetry/logger.cpp"},
+        files    = {"src/armor/l5_telemetry/logger.cpp"},
         includes = {"include", "include/armor", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
     latest_buffer_smoke = {
         includes = {"tools/LatestBuffer/include"},
     },
     fps_counter_smoke = {
-        files    = {"src/armor/l6_telemetry/fps_counter.cpp"},
+        files    = {"src/armor/l5_telemetry/fps_counter.cpp"},
         includes = {"include", "include/armor"},
     },
     udp_json_sender_smoke = {
-        files    = {"src/armor/l6_telemetry/udp_json_sender.cpp"},
+        files    = {"src/armor/l5_telemetry/udp_json_sender.cpp"},
         includes = {"include", "include/armor", "tools/logger/include/3rdparty"},
         syslinks = {"pthread"},
     },
     serial_protocol_smoke = {
-        files    = {"src/armor/l1_sensor/serial/serial_protocol.cpp", "src/armor/l6_telemetry/logger.cpp"},
+        files    = {"src/sensor/serial/serial_protocol.cpp", "src/armor/l5_telemetry/logger.cpp"},
         includes = {"include", "include/armor", "tools/logger/include", "tools/logger/include/3rdparty"},
     },
     -- IESKF/车辆模型相关测试由完整 newvision 目标提供依赖。
@@ -274,6 +297,7 @@ local standalone_tests = {
 -- 需要开关或平台才存在的目标。openvino 这几个都要模型；
 -- auto_aim_test 还要显示器。
 local gated_tests = {
+    rune_detector_smoke      = "use_openvino",
     openvino_armor_smoke     = "use_openvino",
     auto_aim_test            = "use_openvino",
     track_diag               = "use_openvino",

@@ -40,6 +40,11 @@ packet_loss_check_enable: true
 # 仅当下位机固件已支持 cmd_id 0x0003 时启用；否则保持 false。
 command_feedforward: false
 
+# 下发给下位机的目标角微调，单位 deg；在编码前分别加到 yaw / pitch。
+# yaw 正方向遵循世界系右手系；下发 pitch 正方向为向下（与规划层相反）
+command_yaw_offset_deg: 0.0
+command_pitch_offset_deg: 0.0
+
 # 坐标系约定
 # ---------------------------------------------------------------------------
 # world  : 直接采用下位机 IMU 的绝对系 imu_abs，轴向与 IMU 一致。

@@ -1,0 +1,6 @@
+#  RP-26Rune five-keypoint model. Paths are relative to this configuration file.
+model_path: "../model/rune_model/model-0624.onnx"
+device: "CPU"
+confidence_threshold: 0.65
+keypoint_confidence_threshold: 0.5
+nms_distance_px: 30.0

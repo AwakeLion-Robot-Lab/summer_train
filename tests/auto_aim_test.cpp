@@ -6,22 +6,22 @@
 // 重投影平方和最小的世界系 yaw，曲线能直接看出该代价有几个坑、求解器落点
 // 是不是全局最小点。代价在整周有两个极小值是常态而不是异常，所以横轴画
 // 整周而不是开窗——开窗会把另一个坑藏起来，正好藏住最需要看见的东西。
-#include "l1_sensor/camera/camera_calibration.hpp"
-#include "l1_sensor/serial/serial_config.hpp"
-#include "l2_perception/armor/armor_detector.hpp"
-#include "l3_estimation/armor/pnp_solver.hpp"
-#include "l3_estimation/armor/eskf_tracker.hpp"
+#include "sensor/camera/camera_calibration.hpp"
+#include "sensor/serial/serial_config.hpp"
+#include "l1_perception/armor/armor_detector.hpp"
+#include "l2_estimation/armor/pnp_solver.hpp"
+#include "l2_estimation/armor/eskf_tracker.hpp"
 #include "runtime/armor_detector_factory.hpp"
 #include "runtime/auto_aim_config.hpp"
 #include "runtime/l4_target_adapter.hpp"
-#include "l4_planning/planner.hpp"
-#include "l4_planning/planner_config.hpp"
-#include "l5_control/controller.hpp"
-#include "l5_control/fire_decision.hpp"
-#include "l6_telemetry/aim_overlay.hpp"
-#include "l6_telemetry/logger.hpp"
-#include "l6_telemetry/math.hpp"
-#include "l6_telemetry/udp_json_sender.hpp"
+#include "l3_planning/planner.hpp"
+#include "l3_planning/planner_config.hpp"
+#include "l4_control/controller.hpp"
+#include "l4_control/fire_decision.hpp"
+#include "l5_telemetry/aim_overlay.hpp"
+#include "l5_telemetry/logger.hpp"
+#include "l5_telemetry/math.hpp"
+#include "l5_telemetry/udp_json_sender.hpp"
 
 #include <Eigen/Geometry>
 

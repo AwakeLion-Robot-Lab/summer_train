@@ -1,5 +1,5 @@
-#include "l1_sensor/camera/camera.hpp"
-#include "l6_telemetry/logger.hpp"
+#include "sensor/camera/camera.hpp"
+#include "l5_telemetry/logger.hpp"
 #include "tools/camera_calibration/timed_image_saver.hpp"
 
 #include <exception>
