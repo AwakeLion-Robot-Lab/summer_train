@@ -3,6 +3,11 @@
 /build/
 /install/
 /out/
+*.o
+*.obj
+*.d
+*.gch
+*.pch
 
 # CMake-generated files
 /CMakeCache.txt
@@ -14,6 +19,10 @@
 # Runtime-generated logs and traces
 /logs/*
 !/logs/.gitkeep
+
+# Local camera captures and generated calibration reports
+/calibration_images/
+/calibration_results/
 
 # Test and coverage artifacts
 *.gcda
@@ -28,9 +37,12 @@
 /.ccls-cache/
 /.idea/
 /.vscode/
+/.cache/
 *.swp
 *.swo
 *~
+*.tmp
+*.temp
 
 # OS-generated files
 .DS_Store
@@ -43,15 +55,12 @@ Thumbs.db
 
 # 离线回放录像：单个 avi 数百 MB，records/ 整体 3 GB，不进仓库
 /records/
-/tests/
-!/tests/
+/simulator/
+/video/
+
+# 本地测试数据默认忽略；统一保留 smoke 测试源码。
 /tests/*
-!/tests/rune_pipeline_smoke.cpp
-!/tests/rune_detector_smoke.cpp
+!/tests/*_smoke.cpp
 
 # OpenVINO GPU 编译时吐出的 kernel 诊断文件
 /kernel.errors.txt
-
-
-/simulator/
-/video/

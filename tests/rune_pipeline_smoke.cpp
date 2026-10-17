@@ -1,11 +1,12 @@
 #include "rune/processor.hpp"
 
-#include <cassert>
+#include <stdexcept>
 #include <chrono>
 #include <cmath>
 #include <memory>
 
 namespace {
+void check(bool value) { if (!value) throw std::runtime_error("rune pipeline check failed"); }
 class FakeBigModel final : public Rune::IBigMotionModel {
 public:
   Rune::Motion update(const Rune::Pose& pose) override {
@@ -29,7 +30,7 @@ int main() {
   empty.mode = Mode::Small;
   const auto no_target = Processor(Geometry{0.7, 0.07, 0.06})
     .process(empty, ControlInput{.command_at = now});
-  assert(no_target.status == Status::NoDetection && !no_target.found &&
+  check(no_target.status == Status::NoDetection && !no_target.found &&
          !no_target.fire);
 
   Pose pose;
@@ -43,45 +44,50 @@ int main() {
   input.bullet_speed_m_s = 28;
   input.fire_delay_s = 0.02;
 
-  PlanningStage planner({.shoot_enable = true});
-  const auto first = planner.plan(motion, Mode::Small, input);
-  assert(first.found && !first.fire && first.status == Status::AimNotReady);
-  assert(std::isfinite(first.yaw_rad) && std::isfinite(first.pitch_rad));
-
-  input.actual_yaw_rad = first.yaw_rad;
-  input.actual_pitch_rad = first.pitch_rad;
-  const auto shot = planner.plan(motion, Mode::Small, input);
-  assert(shot.found && shot.fire && shot.status == Status::Ready);
-  const auto repeated = planner.plan(motion, Mode::Small, input);
-  assert(repeated.found && !repeated.fire &&
-         repeated.status == Status::AlreadyFired);
-  planner.resetFireLatch();
-  assert(planner.plan(motion, Mode::Small, input).fire);
-
-  input.bullet_speed_m_s = 0;
-  const auto bad_speed = planner.plan(motion, Mode::Small, input);
-  assert(!bad_speed.found && !bad_speed.fire &&
-         bad_speed.status == Status::BallisticFailed);
-  input.bullet_speed_m_s = 28;
-  input.command_at = now + std::chrono::seconds(1);
-  const auto stale = planner.plan(motion, Mode::Small, input);
-  assert(!stale.found && !stale.fire);
-  input.command_at = now + std::chrono::milliseconds(20);
-  const auto big = planner.plan(motion, Mode::Big, input);
-  assert(!big.found && !big.fire);
-
-  EstimatorStage big_estimator({}, std::make_unique<FakeBigModel>());
-  const auto fitted_big = big_estimator.update(pose, Mode::Big);
-  const auto big_aim = planner.plan(fitted_big, Mode::Big, input);
-  assert(big_aim.found && !big_aim.fire);
+  PlanningConfig config;
+  config.small_warmup_s=config.big_warmup_s=0;
+  config.mpc.enable_mpc=false;
+  PlanningStage planner(config);
+  FireControlConfig fire;
+  fire.shoot_enable=true; fire.aim_settle_s=fire.idle_duration_s=0;
+  fire.require_rearm=true; fire.min_shot_interval_s=0;
+  ControlStage controller(fire);
+  const auto plan=planner.plan(motion,Mode::Small,input);
+  auto first=controller.update(plan,input);
+  check(first.found && !first.fire && first.status==Status::InvalidFeedback);
+  input.actual_yaw_rad=plan.yaw; input.actual_pitch_rad=plan.pitch;
+  const auto shot=controller.update(plan,input);
+  check(shot.found && shot.fire && shot.status==Status::Ready);
+  check(!controller.update(plan,input).fire);
+  controller.rearm();
+  check(controller.update(plan,input).fire);
+  input.bullet_speed_m_s=0;
+  const auto bad=planner.plan(motion,Mode::Small,input);
+  check(!bad.valid && bad.status==Status::BallisticFailed);
+  input.bullet_speed_m_s=28;
+  input.command_at=now+std::chrono::seconds(1);
+  check(!planner.plan(motion,Mode::Small,input).valid);
+  input.command_at=now+std::chrono::milliseconds(20);
+  const auto big=planner.plan(motion,Mode::Big,input);
+  check(big.valid && big.center_hold && !big.fire_permitted);
+  EstimatorStage big_estimator({},std::make_unique<FakeBigModel>());
+  const auto fitted_big=big_estimator.update(pose,Mode::Big);
+  const auto big_plan=planner.plan(fitted_big,Mode::Big,input);
+  check(big_plan.valid && !big_plan.center_hold && big_plan.fire_permitted);
 
   EstimatorStage estimator;
-  assert(!estimator.update(pose, Mode::Small).ready);
+  check(!estimator.update(pose, Mode::Small).ready);
   pose.captured_at += std::chrono::milliseconds(50);
   pose.phase_rad = 0.05;
-  assert(!estimator.update(pose, Mode::Small).ready);
+  check(!estimator.update(pose, Mode::Small).ready);
   pose.captured_at += std::chrono::milliseconds(50);
   pose.phase_rad = 0.1;
-  assert(estimator.update(pose, Mode::Small).ready);
-  assert(!estimator.update(pose, Mode::Big).ready);
+  check(!estimator.update(pose, Mode::Small).ready);
+  for (int i=3;i<=32;++i) {
+    pose.captured_at += std::chrono::milliseconds(50);
+    pose.phase_rad = .05*i;
+    const auto fitted=estimator.update(pose, Mode::Small);
+    if (i==32) check(fitted.ready && fitted.model==MotionModel::Linear);
+  }
+  check(!estimator.update(pose, Mode::Big).ready);
 }

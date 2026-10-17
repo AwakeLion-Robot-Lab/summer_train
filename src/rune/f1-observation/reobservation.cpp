@@ -8,7 +8,7 @@
 namespace Rune {
 
 std::optional<Observation> ObservationStage::run(const Region& region,
-                                                 Color color) const {
+                                                 Color color, Mode mode) const {
   if (region.bgr.empty() || region.bgr.type() != CV_8UC3) return std::nullopt;
   std::vector<cv::Mat> channels;
   cv::split(region.bgr, channels);
@@ -51,9 +51,16 @@ std::optional<Observation> ObservationStage::run(const Region& region,
       if (crosses) { arm_index = static_cast<int>(i); arm_area = area; }
     }
   }
-  if (armor_index < 0 || r_index < 0 || arm_index < 0) return std::nullopt;
+  const bool arm_only = mode == Mode::Big && region.keypoints.class_id == 1;
+  if (arm_only && arm_index < 0 && armor_index >= 0) {
+    arm_index = armor_index;
+    armor_index = -1;
+  }
+  if (r_index < 0 || arm_index < 0 || (!arm_only && armor_index < 0))
+    return std::nullopt;
 
   const auto to_full_image = [&](int index) {
+    if (index < 0) return std::vector<cv::Point>{};
     auto result = contours[index];
     for (auto& point : result) point += region.bounds.tl();
     return result;

@@ -23,6 +23,8 @@ class DetectionStage {
 public:
   explicit DetectionStage(double roi_scale = 2.0) : roi_scale_(roi_scale) {}
   [[nodiscard]] std::optional<Region> run(const Frame& frame) const;
+  // Includes activated blades as supporting observations, with owned ROIs.
+  [[nodiscard]] std::vector<Region> runAll(const Frame& frame) const;
 
 private:
   double roi_scale_;

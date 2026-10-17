@@ -1,3 +1,28 @@
+# 模式选择：1 = 装甲板，2 = 小能量机关，3 = 大能量机关。修改后重启程序。
+# 算法模式由此处决定，覆盖下位机 WorkMode；姿态、敌方颜色和弹速仍由串口提供。
+mode: 1
+
+# 能量机关使用独立检测器、运动模型和火控；弹道、延迟及 MPC 参数沿用 planner_config.yaml。
+rune:
+  # 相对于本 YAML 所在目录；网络参数和模型路径在该文件中配置。
+  detector_config: "rune_detector.yaml"
+  geometry:
+    # 必须填写实际测量值，单位米；0 表示未配置，仅检测、不输出有效瞄准命令。
+    radius_m: 0.0             # R 中心到靶心的距离
+    armor_half_width_m: 0.0   # 靶板半宽
+    armor_half_height_m: 0.0  # 靶板半高
+  small_warmup_s: 3.0
+  big_warmup_s: 6.0
+  # mpc_enable: true         # 不填写则沿用 planner_config.yaml 的 mpc.enable
+  fire:
+    shoot_enable: true      # 独立于下方装甲板 fire.shoot_enable
+    max_yaw_error_rad: 0.01
+    max_pitch_error_rad: 0.01
+    aim_settle_s: 0.03
+    idle_duration_s: 0.8
+    shoot_duration_s: 0.12
+    min_shot_interval_s: 0.3
+
 # 角度写度，时间按键名后缀写 ms / us，加载时换成弧度和秒；缺的键退回结构体默认值。
 # 回放 A/B 的原始数据见 docs/replay_ab_log.md，判好坏一律用 track_diag 的 pred_px。
 inference:
@@ -196,12 +221,3 @@ debug:
   plot: true
   plot_host: "127.0.0.1"
   plot_port: 9870
-  # 无视下位机上报的 WorkMode，强制按指定模式跑。留空 = 不覆盖（正常行为）。
-  # 取值：auto_aim / outpost / small_buff / big_buff / idle
-  #
-  # 只用于电控还没接好模式切换、视觉侧要先把链路跑通的场合。**比赛前必须清空**，
-  # 否则下位机说 Idle 时视觉仍然在动云台。启用时启动日志会打一条 WARN。
-  #
-  # 它不解除任何开火闸门：shoot_enable 和 planning.send_to_control_ms 的标定
-  # 状态仍然各自独立生效，所以强制自瞄不会导致意外开火。
-  force_work_mode: "auto_aim"

@@ -61,20 +61,6 @@ L2Perception::ArmorColor enemyArmorColor(
   return L2Perception::ArmorColor::Unknown;
 }
 
-std::optional<L1Sensor::WorkMode> parseWorkMode(const std::string& name)
-{
-  if (name.empty()) return std::nullopt;
-  if (name == "auto_aim") return L1Sensor::WorkMode::AutoAim;
-  if (name == "outpost") return L1Sensor::WorkMode::Outpost;
-  if (name == "small_buff") return L1Sensor::WorkMode::SmallBuff;
-  if (name == "big_buff") return L1Sensor::WorkMode::BigBuff;
-  if (name == "idle") return L1Sensor::WorkMode::Idle;
-  L6Telemetry::logError(
-    "debug.force_work_mode is not a known mode, ignored:", name,
-    "| valid: auto_aim outpost small_buff big_buff idle");
-  return std::nullopt;
-}
-
 L2Perception::ArmorDetector makeArmorDetector(
   const runtime::AutoAimConfig& config)
 {
@@ -118,15 +104,15 @@ AutoAimRuntime::AutoAimRuntime(const std::string &config_path)
 
 void AutoAimRuntime::run() {
   running_ = true;
-  const AutoAimConfig auto_aim_config =
-    loadAutoAimConfig("config/auto_aim.yaml");
+  AutoAimConfig auto_aim_config;
   L4Planning::PlannerTuning planner_tuning;
   try {
+    auto_aim_config = loadAutoAimConfig("config/auto_aim.yaml");
     planner_tuning = L4Planning::loadPlannerTuning(
       "config/planner_config.yaml");
   } catch (const std::exception& error) {
     L6Telemetry::logError(
-      "failed to load planner configuration", error.what());
+      "failed to load aiming configuration", error.what());
     running_ = false;
     return;
   }
@@ -136,8 +122,23 @@ void AutoAimRuntime::run() {
     active_camera_ = camera;
   }
   // 启动时只加载一次模型；每帧仅执行预处理、推理和 Decoder。
-  L2Perception::ArmorDetector armor_detector =
-    makeArmorDetector(auto_aim_config);
+  L2Perception::ArmorDetector armor_detector;
+  std::unique_ptr<RuneRuntime> rune;
+  if (auto_aim_config.mode == AimMode::Armor) {
+    armor_detector = makeArmorDetector(auto_aim_config);
+  } else {
+    try {
+      rune = std::make_unique<RuneRuntime>(auto_aim_config.rune, planner_tuning);
+      const auto& geometry = auto_aim_config.rune.geometry;
+      if (geometry.radius_m <= 0 || geometry.armor_half_width_m <= 0 ||
+          geometry.armor_half_height_m <= 0) {
+        L6Telemetry::logWarn(
+          "Rune detection enabled; aiming requires measured rune.geometry in config/auto_aim.yaml");
+      }
+    } catch (const std::exception& error) {
+      L6Telemetry::logError("rune pipeline unavailable", error.what());
+    }
+  }
 
   //配置并启动串口
   auto serial_config = L1Sensor::loadSerialConfig("config/serial_config.yaml");
@@ -152,7 +153,7 @@ void AutoAimRuntime::run() {
   const auto& camera_calibration = camera->calibration();
   if (!camera_calibration) {
     L6Telemetry::logWarn("Tracker disabled: camera calibration is missing");
-  } else {
+  } else if (auto_aim_config.mode == AimMode::Armor) {
     tracker.emplace(
       *camera_calibration,
       auto_aim_config.armor,
@@ -179,12 +180,21 @@ void AutoAimRuntime::run() {
 
   // 规划失败时不能只是“不更新命令”：上一条 shoot=true 在
   // command_timeout 内仍可能被重复发送。这里保留最后角度并立即关火。
-  const auto sendSafeHold = [&]() {
+  std::optional<L1Sensor::SerialCommand> last_command;
+  const auto sendCommand = [&](const L1Sensor::SerialCommand& command,
+                               bool single_shoot = false) {
     if (serial_started) {
-      if (const auto command = controller.safeHold()) {
-        serial.updateCommand(*command);
-      }
+      serial.updateCommand(command, single_shoot);
+      last_command = command;
     }
+  };
+  const auto sendSafeHold = [&]() {
+    if (!last_command) return;
+    auto command = *last_command;
+    command.shoot = false;
+    command.yaw_velocity = command.pitch_velocity = 0;
+    command.yaw_acceleration = command.pitch_acceleration = 0;
+    sendCommand(command);
   };
 
   const auto stopAimSession = [&]() {
@@ -192,6 +202,7 @@ void AutoAimRuntime::run() {
       tracker->reset();
     }
     planner.resetTracking();
+    if (rune) rune->suspend();
     sendSafeHold();
   };
 
@@ -220,12 +231,9 @@ void AutoAimRuntime::run() {
     L6Telemetry::logInfo(
       "telemetry enabled", plotter->host(), std::to_string(plotter->port()));
   }
-  const auto forced_mode = parseWorkMode(auto_aim_config.debug.force_work_mode);
-  if (forced_mode) {
-    L6Telemetry::logWarn(
-      "!!! debug.force_work_mode is ACTIVE:", L1Sensor::toString(*forced_mode),
-      "- the MCU's WorkMode is being IGNORED. Clear this key before a match.");
-  }
+  const auto selected_mode = workMode(auto_aim_config.mode);
+  L6Telemetry::logInfo("aiming mode selected by config/auto_aim.yaml:",
+                      static_cast<int>(auto_aim_config.mode), L1Sensor::toString(selected_mode));
   std::uint64_t plan_reject_count = 0;
   bool using_default_bullet_speed = false;
   /******************************** debug *********************************/
@@ -254,7 +262,7 @@ void AutoAimRuntime::run() {
     if (!serial_started || !state) {
       stopAimSession();
     } else {
-      const L1Sensor::WorkMode mode = forced_mode.value_or(state->mode);
+      const L1Sensor::WorkMode mode = selected_mode;
       switch (mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost:
@@ -348,7 +356,7 @@ void AutoAimRuntime::run() {
               target, track_state, plan, actual_pose,
               effective_bullet_speed_valid);
             if (command) {
-              serial.updateCommand(*command);
+              sendCommand(*command);
             }
           } else {
             // Idle 继续预热识别与预测，但不运行选板、不输出开火命令。
@@ -388,14 +396,56 @@ void AutoAimRuntime::run() {
         }
 
         case L1Sensor::WorkMode::SmallBuff:
-          // 小能量机后续从这个独立入口接入，不复用装甲板 Tracker。
-          stopAimSession();
+        case L1Sensor::WorkMode::BigBuff: {
+          if (!rune) {
+            sendSafeHold();
+            break;
+          }
+          Rune::Frame input;
+          input.bgr = frame;
+          input.captured_at = timestamp;
+          input.mode = mode == L1Sensor::WorkMode::SmallBuff
+              ? Rune::Mode::Small : Rune::Mode::Big;
+          (void)serial.waitPose(timestamp);
+          input.q_world_barrel = serial.gimbalPoseAt(timestamp);
+          if (camera_calibration) {
+            (void)Rune::applyCameraCalibration(input, *camera_calibration);
+          }
+          try {
+            rune->detect(input);
+            // 推理耗时计入图像年龄；规划及反馈使用推理完成后的时刻。
+            const auto feedback = serial.latestState();
+            const auto actual_pose = serial.latestGimbalPose();
+            const auto command_at = std::chrono::steady_clock::now();
+            if (feedback) {
+              if (auto command = rune->process(input, *feedback, actual_pose, command_at)) {
+                sendCommand(*command, true);
+              } else {
+                sendSafeHold();
+              }
+            } else {
+              rune->suspend();
+              sendSafeHold();
+            }
+          } catch (const std::exception& error) {
+            L6Telemetry::logError("rune frame processing failed", error.what());
+            rune->suspend();
+            sendSafeHold();
+          }
+          if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
+            for (const auto& points : input.detections) {
+              for (const auto& point : {points.top, points.left, points.right, points.bottom, points.center_r}) {
+                cv::circle(frame, point, 3, cv::Scalar(0, 255, 0), -1);
+              }
+            }
+            const auto& command = rune->lastCommand();
+            const std::string label = (mode == L1Sensor::WorkMode::SmallBuff ? "Small rune" : "Big rune") +
+                std::string(" status=") + std::to_string(static_cast<int>(command.status)) +
+                (command.using_mpc ? " MPC" : "") + (command.fire ? " FIRE" : "");
+            cv::putText(frame, label, {20, 40}, cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 255, 255}, 2);
+          }
           break;
-
-        case L1Sensor::WorkMode::BigBuff:
-          // 大能量机保留独立模型、跟踪和预测参数入口。
-          stopAimSession();
-          break;
+        }
 
         default:
           stopAimSession();

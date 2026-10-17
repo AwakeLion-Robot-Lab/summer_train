@@ -38,7 +38,8 @@ public:
   bool isRunning() const;
 
   // 更新待发送给下位机的最新控制命令，并续期其有效时间。
-  void updateCommand(const SerialCommand& command);
+  // single_shoot=true 时，shoot 位只在一次完整写入中置位；角度继续周期发送。
+  void updateCommand(const SerialCommand& command, bool single_shoot = false);
 
   // 获取最近一次成功解析出的机器人状态。
   std::optional<RobotState> latestState() const;
@@ -129,6 +130,8 @@ private:
   std::chrono::steady_clock::time_point last_command_update_{};
   bool has_command_ = false;
   bool command_timed_out_ = true;
+  bool single_shoot_ = false;
+  std::uint64_t command_generation_ = 0;
 
   mutable std::mutex sent_command_mutex_;
   std::optional<SerialCommand> latest_sent_command_;

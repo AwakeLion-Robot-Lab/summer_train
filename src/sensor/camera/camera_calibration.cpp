@@ -1,4 +1,5 @@
 #include "sensor/camera/camera_calibration.hpp"
+#include "rune/types.hpp"
 
 #include <cmath>
 #include <optional>
@@ -230,3 +231,20 @@ CameraCalibration loadCameraCalibration(const YAML::Node &node,
 }
 
 } // namespace L1Sensor
+
+namespace Rune {
+
+bool applyCameraCalibration(
+    Frame& frame, const L1Sensor::CameraCalibration& calibration) {
+  frame.camera_matrix.release();
+  frame.distortion.release();
+  frame.T_barrel_camera.reset();
+  if (frame.bgr.empty() || frame.bgr.size()!=calibration.image_size ||
+      calibration.camera_matrix.empty() || !calibration.T_barrel_camera) return false;
+  frame.camera_matrix=calibration.camera_matrix.clone();
+  frame.distortion=calibration.distortion_coefficients.clone();
+  frame.T_barrel_camera=calibration.T_barrel_camera;
+  return true;
+}
+
+}  // namespace Rune

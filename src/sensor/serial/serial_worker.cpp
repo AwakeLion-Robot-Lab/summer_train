@@ -81,7 +81,7 @@ void SerialWorker::stop() {
 bool SerialWorker::isRunning() const { return running_.load(); }
 
 // 更新发送线程下一次要发给下位机的控制命令。
-void SerialWorker::updateCommand(const SerialCommand &command) {
+void SerialWorker::updateCommand(const SerialCommand &command, bool single_shoot) {
   std::lock_guard<std::mutex> lock(command_mutex_);
   latest_command_ = command;
   constexpr double kDegToRad = std::numbers::pi / 180.0;
@@ -90,6 +90,8 @@ void SerialWorker::updateCommand(const SerialCommand &command) {
   last_command_update_ = std::chrono::steady_clock::now();
   has_command_ = true;
   command_timed_out_ = false;
+  single_shoot_ = single_shoot;
+  ++command_generation_;
 }
 
 // 获取最近一次从串口解析出的机器人状态。
@@ -216,6 +218,8 @@ void SerialWorker::txLoop() {
 
     SerialCommand command{};
     bool command_expired = false;
+    bool single_shoot = false;
+    std::uint64_t generation = 0;
     {
       std::lock_guard<std::mutex> lock(command_mutex_);
       const auto now = std::chrono::steady_clock::now();
@@ -224,6 +228,8 @@ void SerialWorker::txLoop() {
       if (command_is_fresh) {
         command = latest_command_;
         command_timed_out_ = false;
+        single_shoot = single_shoot_;
+        generation = command_generation_;
       } else {
         // 协议没有独立的 hold/valid
         // 位；保留最后设定值以避免云台突跳，强制关火。
@@ -245,6 +251,11 @@ void SerialWorker::txLoop() {
 
     const auto bytes = protocol_.encodeCommand(command);
     if (port_.write(bytes) == bytes.size()) {
+      if (single_shoot && command.shoot) {
+        std::lock_guard<std::mutex> lock(command_mutex_);
+        // 写串口期间可能收到新命令，不能清除新一代命令的射击位。
+        if (command_generation_ == generation) latest_command_.shoot = false;
+      }
       {
         std::lock_guard<std::mutex> lock(sent_command_mutex_);
         latest_sent_command_ = command;

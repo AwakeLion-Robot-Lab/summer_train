@@ -44,3 +44,13 @@ struct CameraCalibration {
 CameraCalibration loadCameraCalibration(const YAML::Node& node, const std::string& source_name);
 
 }  // namespace L1Sensor
+
+namespace Rune {
+
+struct Frame;
+
+// 将共享标定复制到已设置图像的能量机关帧；失败时清空旧标定。
+[[nodiscard]] bool applyCameraCalibration(
+    Frame& frame, const L1Sensor::CameraCalibration& calibration);
+
+}  // namespace Rune

@@ -1,4 +1,4 @@
-#  RP-26Rune five-keypoint model. Paths are relative to this configuration file.
+# RuneDetectionModel five-keypoint model. Paths are relative to this configuration file.
 model_path: "../model/rune_model/model-0624.onnx"
 device: "CPU"
 confidence_threshold: 0.65

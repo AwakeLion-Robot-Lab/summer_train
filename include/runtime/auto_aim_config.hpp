@@ -7,6 +7,7 @@
 #include "l2_estimation/armor/eskf_tracker.hpp"
 #include "l2_estimation/armor/types.hpp"
 #include "l4_control/fire_decision.hpp"
+#include "runtime/rune_runtime.hpp"
 
 #include <filesystem>
 #include <numbers>
@@ -14,6 +15,17 @@
 #include <string>
 
 namespace runtime {
+
+enum class AimMode { Armor = 1, SmallRune = 2, BigRune = 3 };
+
+[[nodiscard]] constexpr L1Sensor::WorkMode workMode(AimMode mode) {
+  switch (mode) {
+  case AimMode::Armor: return L1Sensor::WorkMode::AutoAim;
+  case AimMode::SmallRune: return L1Sensor::WorkMode::SmallBuff;
+  case AimMode::BigRune: return L1Sensor::WorkMode::BigBuff;
+  }
+  return L1Sensor::WorkMode::Idle;
+}
 
 // 调试叠加层。实机默认全关：cv::imshow 在 1440x1080 上要几毫秒，直接计入
 // image_to_plan；而且比赛用的 NUC 上根本没有显示器，无条件 namedWindow 会抛。
@@ -27,11 +39,6 @@ struct DebugConfig {
   std::string plot_host{"127.0.0.1"};
   int plot_port{9870};
 
-  // 无视下位机上报的 WorkMode，强制按指定模式跑。空串表示不覆盖。
-  // 只用于电控还没接好模式切换、但视觉侧要先把链路跑通的场合。
-  // 这是**调试用的旁路**：正常比赛必须留空，由下位机决定何时进自瞄。
-  // 注意它不解除任何开火闸门，shoot_enable 和延迟链标定仍然各自独立生效。
-  std::string force_work_mode{};
 };
 
 // runtime 胶水层只保留相邻控制命令的跳变保护；选板和开火规则仍由现有 L4/L5
@@ -50,6 +57,8 @@ struct DecoderThresholds {
 };
 
 struct AutoAimConfig {
+  AimMode mode{AimMode::Armor};
+  RuneRuntimeConfig rune;
   // 整板检测模型，输出契约由 decoder 的 layout 指定。
   std::filesystem::path model_path{"model/armor_model/yolov5.xml"};
   std::string inference_device{"CPU"};

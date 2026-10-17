@@ -322,6 +322,46 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   }
 
   const YAML::Node root = YAML::LoadFile(path);
+  if (root["mode"]) {
+    const int mode = root["mode"].as<int>();
+    if (mode < 1 || mode > 3) {
+      throw std::runtime_error("mode must be 1 (armor), 2 (small rune), or 3 (big rune)");
+    }
+    config.mode = static_cast<AimMode>(mode);
+  }
+  const YAML::Node rune = root["rune"];
+  config.rune.detector_config = std::filesystem::path(path).parent_path() / "rune_detector.yaml";
+  if (rune) {
+    if (rune["detector_config"]) {
+      const auto detector = std::filesystem::path(rune["detector_config"].as<std::string>());
+      config.rune.detector_config = detector.is_absolute()
+          ? detector : std::filesystem::path(path).parent_path() / detector;
+    }
+    const auto geometry = rune["geometry"];
+    if (geometry) {
+      if (geometry["radius_m"]) config.rune.geometry.radius_m = geometry["radius_m"].as<double>();
+      if (geometry["armor_half_width_m"]) config.rune.geometry.armor_half_width_m = geometry["armor_half_width_m"].as<double>();
+      if (geometry["armor_half_height_m"]) config.rune.geometry.armor_half_height_m = geometry["armor_half_height_m"].as<double>();
+      for (const double value : {config.rune.geometry.radius_m,
+                                config.rune.geometry.armor_half_width_m,
+                                config.rune.geometry.armor_half_height_m}) {
+        if (!std::isfinite(value) || value < 0) throw std::runtime_error("rune.geometry must contain finite, non-negative measured dimensions");
+      }
+    }
+    if (rune["mpc_enable"]) config.rune.mpc_enable = rune["mpc_enable"].as<bool>();
+    if (rune["small_warmup_s"]) config.rune.planning.small_warmup_s = rune["small_warmup_s"].as<double>();
+    if (rune["big_warmup_s"]) config.rune.planning.big_warmup_s = rune["big_warmup_s"].as<double>();
+    const auto fire = rune["fire"];
+    if (fire) {
+      if (fire["shoot_enable"]) config.rune.fire.shoot_enable = fire["shoot_enable"].as<bool>();
+      if (fire["aim_settle_s"]) config.rune.fire.aim_settle_s = fire["aim_settle_s"].as<double>();
+      if (fire["idle_duration_s"]) config.rune.fire.idle_duration_s = fire["idle_duration_s"].as<double>();
+      if (fire["shoot_duration_s"]) config.rune.fire.shoot_duration_s = fire["shoot_duration_s"].as<double>();
+      if (fire["min_shot_interval_s"]) config.rune.fire.min_shot_interval_s = fire["min_shot_interval_s"].as<double>();
+      if (fire["max_yaw_error_rad"]) config.rune.fire.max_yaw_error_rad = fire["max_yaw_error_rad"].as<double>();
+      if (fire["max_pitch_error_rad"]) config.rune.fire.max_pitch_error_rad = fire["max_pitch_error_rad"].as<double>();
+    }
+  }
   const YAML::Node inference = root["inference"];
   if (!inference) {
     L6Telemetry::logWarn("auto-aim inference config missing, using defaults", path);
@@ -569,7 +609,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(debug, "plot", config.debug.plot);
   readValue(debug, "plot_host", config.debug.plot_host);
   readValue(debug, "plot_port", config.debug.plot_port);
-  readValue(debug, "force_work_mode", config.debug.force_work_mode);
 
   normalize(config);
 

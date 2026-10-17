@@ -1,88 +1,164 @@
+// Algorithm reference: SZURPVision/RP-26Rune, PowerRunePlane.
+// See README.md and RP-26Rune-LICENSE in this directory.
+// R/inactive-seed layout selection also references Alliance-Algorithm/
+// rmcs_auto_aim_v2 (MIT); see ../f3-estimator/ALLIANCE-LICENSE.
 #include "rune/f2-building/builder.hpp"
+#include "rune/f2-building/builder_detail.hpp"
 
-#include <opencv2/calib3d.hpp>
-
-#include <array>
+#include <opencv2/core.hpp>
+#include <algorithm>
 #include <cmath>
+#include <numbers>
+#include <utility>
 
 namespace Rune {
+using namespace building_detail;
 
-std::optional<Pose> BuildingStage::run(const Observation& observation,
-                                       const Frame& frame) const {
-  if (!frame.T_barrel_camera || frame.camera_matrix.empty() ||
-      frame.camera_matrix.rows != 3 || frame.camera_matrix.cols != 3 ||
-      !std::isfinite(geometry_.radius_m) ||
-      !std::isfinite(geometry_.armor_half_width_m) ||
-      !std::isfinite(geometry_.armor_half_height_m) ||
-      !std::isfinite(geometry_.max_reprojection_error_px) ||
-      geometry_.radius_m <= 0 || geometry_.armor_half_width_m <= 0 ||
-      geometry_.armor_half_height_m <= 0 ||
-      geometry_.max_reprojection_error_px <= 0 ||
-      observation.armor.empty() || observation.arm.empty() ||
-      observation.center_r.empty()) return std::nullopt;
-
-  const double radius = geometry_.radius_m;
-  const double half_width = geometry_.armor_half_width_m;
-  const double half_height = geometry_.armor_half_height_m;
-  const std::vector<cv::Point3f> model{
-    {0, static_cast<float>(radius + half_height), 0},
-    {-static_cast<float>(half_width), static_cast<float>(radius), 0},
-    {static_cast<float>(half_width), static_cast<float>(radius), 0},
-    {0, static_cast<float>(radius - half_height), 0},
-    {0, 0, 0}};
-  const auto& k = observation.keypoints;
-  const std::vector<cv::Point2f> image{k.top, k.left, k.right, k.bottom, k.center_r};
-  cv::Mat rotation_vector, translation_vector, rotation;
-  try {
-    if (!cv::solvePnP(model, image, frame.camera_matrix, frame.distortion,
-                      rotation_vector, translation_vector, false,
-                      cv::SOLVEPNP_ITERATIVE)) return std::nullopt;
-    cv::Rodrigues(rotation_vector, rotation);
-  } catch (const cv::Exception&) { return std::nullopt; }
-
-  std::vector<cv::Point2f> projected;
-  try {
-    cv::projectPoints(model, rotation_vector, translation_vector,
-                      frame.camera_matrix, frame.distortion, projected);
-  } catch (const cv::Exception&) { return std::nullopt; }
-  double squared_error = 0.0;
-  for (std::size_t i = 0; i < image.size(); ++i) {
-    const cv::Point2f delta = image[i] - projected[i];
-    squared_error += delta.dot(delta);
-  }
-  if (!std::isfinite(squared_error) ||
-      std::sqrt(squared_error / image.size()) >
-        geometry_.max_reprojection_error_px) return std::nullopt;
-
-  cv::Mat r64, t64;
-  rotation.convertTo(r64, CV_64F);
-  translation_vector.convertTo(t64, CV_64F);
-  if (!cv::checkRange(r64) || !cv::checkRange(t64)) return std::nullopt;
-  Eigen::Matrix3d R;
-  for (int row = 0; row < 3; ++row)
-    for (int col = 0; col < 3; ++col) R(row, col) = r64.at<double>(row, col);
-  const Eigen::Vector3d t(t64.at<double>(0), t64.at<double>(1), t64.at<double>(2));
-  if (t.z() <= 0 || !frame.T_barrel_camera->matrix().allFinite())
-    return std::nullopt;
-
-  Pose pose;
-  const auto& transform = *frame.T_barrel_camera;
-  pose.center_barrel = transform * t;
-  pose.target_barrel = transform * (t + R * Eigen::Vector3d(0, radius, 0));
-  pose.normal_barrel = (transform.linear() * R.col(2)).normalized();
-  if (pose.normal_barrel.x() < 0) pose.normal_barrel = -pose.normal_barrel;
-  const Eigen::Vector3d up_projection = Eigen::Vector3d::UnitZ() -
-    pose.normal_barrel * pose.normal_barrel.z();
-  if (up_projection.norm() < 1e-3 || pose.target_barrel.x() <= 0 ||
-      !pose.center_barrel.allFinite() || !pose.target_barrel.allFinite())
-    return std::nullopt;
-  const Eigen::Vector3d up = up_projection.normalized();
-  const Eigen::Vector3d right = pose.normal_barrel.cross(up);
-  const Eigen::Vector3d radial = (pose.target_barrel - pose.center_barrel).normalized();
-  pose.phase_rad = std::atan2(radial.dot(right), radial.dot(up));
-  pose.activated = k.class_id == 1;
-  pose.captured_at = frame.captured_at;
-  return pose;
+void BuildingStage::reset() {
+  plane_window_.reset(); previous_.reset(); previous_frame_.reset();
 }
 
-}  // namespace Rune
+std::optional<Pose> BuildingStage::run(const Observation& observation,const Frame& frame) {
+  return run(std::vector<Observation>{observation},frame);
+}
+
+std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observations,const Frame& frame) {
+  const auto fail=[&]() -> std::optional<Pose> { reset(); return {}; };
+  try {
+    const auto& g=geometry_;
+    if (!validGeometry(g) || observations.empty() || observations.size()>32) return fail();
+    std::optional<Eigen::Matrix3d> orientation;
+    if (!worldRotation(frame,orientation)) return fail();
+    if (previous_frame_) {
+      const auto& before=*previous_frame_;
+      const double dt=std::chrono::duration<double>(frame.captured_at-before.captured_at).count();
+      const auto sameMat=[](const cv::Mat& a,const cv::Mat& b) {
+        if (a.empty() || b.empty()) return a.empty() && b.empty();
+        return a.size()==b.size() && a.type()==b.type() && cv::norm(a,b,cv::NORM_INF)<1e-12;
+      };
+      if (dt<=0 || dt>g.plane_window_max_gap_s || frame.mode!=before.mode || frame.color!=before.color ||
+          frame.world_frame_id!=before.world_frame_id ||
+          bool(frame.T_world_barrel)!=bool(before.T_world_barrel) ||
+          bool(frame.q_world_barrel)!=bool(before.q_world_barrel) ||
+          !sameMat(frame.camera_matrix,before.camera_matrix) || !sameMat(frame.distortion,before.distortion) ||
+          !frame.T_barrel_camera || !before.T_barrel_camera ||
+          (frame.T_barrel_camera->matrix()-before.T_barrel_camera->matrix()).norm()>1e-12) reset();
+    }
+    std::size_t reference=observations.size();
+    double best_score=-1e30;
+    for (std::size_t i=0;i<observations.size();++i) {
+      const auto& o=observations[i];
+      if (o.keypoints.class_id!=0 || !validObservation(o,false)) continue;
+      const double score=o.keypoints.confidence;
+      if (score>best_score) { best_score=score; reference=i; }
+    }
+    // Preserve the old single-small-activated diagnostic API; Processor itself
+    // requires an inactive target before invoking the solver.
+    if (reference==observations.size() && observations.size()==1 && frame.mode==Mode::Small &&
+        observations[0].keypoints.class_id==1) reference=0;
+    if (reference==observations.size()) return fail();
+    // In big rune, confidence order may change between the two inactive blades.
+    // Retain the previous physical target when it remains near its last position.
+    if (previous_ && previous_frame_ && frame.T_world_barrel && previous_frame_->T_world_barrel && frame.T_barrel_camera) {
+      const Eigen::Vector3d target_world=*previous_frame_->T_world_barrel*previous_->target_barrel;
+      const Eigen::Vector3d camera_point=frame.T_barrel_camera->inverse()*frame.T_world_barrel->inverse()*target_world;
+      if (camera_point.z()>0) {
+        cv::Mat camera,distortion;
+        if (!validCamera(frame,camera,distortion)) return fail();
+        const auto pixel=project(std::vector<cv::Point3d>{{camera_point.x(),camera_point.y(),camera_point.z()}},
+                                 Parameters::Zero(),camera,distortion)[0];
+        double nearest=1e30;
+        for (std::size_t i=0;i<observations.size();++i) {
+          const auto& o=observations[i];
+          if (o.keypoints.class_id!=0 || !validObservation(o,false)) continue;
+          const auto center=(cv::Point2d(o.keypoints.top)+cv::Point2d(o.keypoints.left)+
+                             cv::Point2d(o.keypoints.right)+cv::Point2d(o.keypoints.bottom))*0.25;
+          const double radius=cv::norm(center-cv::Point2d(o.keypoints.center_r));
+          const double distance=cv::norm(center-pixel)/std::max(2.0,radius);
+          if (distance<0.5 && distance<nearest) { nearest=distance; reference=i; }
+        }
+      }
+    }
+    // Try every inactive seed and distinct R hypothesis on initialization.
+    // Compare their full five-blade layouts before trusting NN confidence.
+    // Each trial starts from the SAME plane window: rejected PnP hypotheses
+    // must not contaminate temporal geometry history.
+    const PlaneWindow original_window=plane_window_;
+    PlaneWindow selected_window=original_window;
+    std::optional<Pose> pose;
+    double selected_confidence=-1;
+    const auto inactive_count=[&](const Pose& p) {
+      return std::count_if(p.blades.begin(),p.blades.end(),[](const auto& b){return !b.activated;});
+    };
+    std::vector<std::size_t> seeds;
+    for (std::size_t i=0;i<observations.size();++i)
+      if (observations[i].keypoints.class_id==0 && validObservation(observations[i],false)) seeds.push_back(i);
+    if (seeds.empty()) seeds.push_back(reference); // legacy activated diagnostic
+    std::stable_sort(seeds.begin(),seeds.end(),[&](auto a,auto b) {
+      return observations[a].keypoints.confidence>observations[b].keypoints.confidence;
+    });
+    if (previous_) {
+      const auto it=std::find(seeds.begin(),seeds.end(),reference);
+      if (it!=seeds.end()) std::rotate(seeds.begin(),it,it+1);
+    }
+    std::vector<std::size_t> icons;
+    for (std::size_t i=0;i<observations.size();++i) {
+      const auto& pixel=observations[i].keypoints.center_r;
+      if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y)) continue;
+      if (std::none_of(icons.begin(),icons.end(),[&](auto j) {
+        return cv::norm(pixel-observations[j].keypoints.center_r)<2;
+      })) icons.push_back(i);
+    }
+    unsigned trials=0;
+    for (const auto seed : seeds) {
+      for (const auto icon : icons) {
+        if (++trials>64) break;
+        auto hypothesis=observations;
+        hypothesis[seed].keypoints.center_r=observations[icon].keypoints.center_r;
+        hypothesis[seed].center_r=observations[icon].center_r;
+        plane_window_=original_window;
+        auto candidate=solve(hypothesis,frame,seed);
+        if (!candidate) continue;
+        const double error=candidate->reprojection_error_px+candidate->chamfer_error_px;
+        const double best_error=pose ? pose->reprojection_error_px+pose->chamfer_error_px : 1e30;
+        const bool same_layout=pose && inactive_count(*candidate)==inactive_count(*pose) &&
+          candidate->blades.size()==pose->blades.size();
+        const double confidence=observations[seed].keypoints.confidence;
+        if (!pose || inactive_count(*candidate)>inactive_count(*pose) ||
+            (inactive_count(*candidate)==inactive_count(*pose) && candidate->blades.size()>pose->blades.size()) ||
+            (same_layout && (error<best_error-0.25 ||
+              (std::abs(error-best_error)<=0.25 && confidence>selected_confidence)))) {
+          pose=std::move(candidate); selected_window=plane_window_; selected_confidence=confidence;
+        }
+      }
+      // Retain a valid previously selected physical target through confidence
+      // reversal. New target selection occurs only after that seed disappears.
+      if (previous_ && seed==reference && pose) break;
+      if (trials>=64) break;
+    }
+    plane_window_=selected_window;
+    if (!pose) return fail();
+    updatePhase(*pose);
+    pose->normal_vertical_component=std::abs(pose->normal_barrel.dot(pose->up_barrel));
+    if (!std::isfinite(pose->phase_rad) || pose->target_barrel.x()<=0) return fail();
+    if (previous_) {
+      Eigen::Vector3d previous_radial=previous_->target_barrel-previous_->center_barrel;
+      Eigen::Vector3d radial=pose->target_barrel-pose->center_barrel;
+      std::optional<Eigen::Matrix3d> old_orientation;
+      if (previous_frame_) worldRotation(*previous_frame_,old_orientation);
+      if (orientation && old_orientation) { radial=(*orientation)*radial; previous_radial=(*old_orientation)*previous_radial; }
+      pose->target_switched=radial.normalized().dot(previous_radial.normalized())<std::cos(std::numbers::pi/5);
+    }
+    pose->history_reset=!previous_.has_value();
+    previous_=*pose;
+    // Retain only metadata needed for continuity, never a full image/detection list.
+    Frame metadata;
+    metadata.captured_at=frame.captured_at; metadata.mode=frame.mode; metadata.color=frame.color;
+    metadata.T_barrel_camera=frame.T_barrel_camera; metadata.T_world_barrel=frame.T_world_barrel;
+    metadata.q_world_barrel=frame.q_world_barrel; metadata.world_frame_id=frame.world_frame_id;
+    metadata.camera_matrix=frame.camera_matrix.clone(); metadata.distortion=frame.distortion.clone();
+    previous_frame_=std::move(metadata);
+    return pose;
+  } catch (const cv::Exception&) { return fail(); }
+}
+} // namespace Rune

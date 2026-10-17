@@ -104,6 +104,9 @@ target("newvision")
     add_files("src/**/*.cpp")
     add_files("include/armor/l3_planning/planner_config.cpp")
     add_files("tools/tiny_MPC/*.cpp")
+    add_files("tools/geometry/*.cpp")
+    add_headerfiles("tools/geometry/*.hpp")
+    add_includedirs("tools", {public = true})
     add_files("tools/camera_sdk/hikrobot/hikrobot.cpp")
     add_files("tools/camera_sdk/mindvision/mindvision.cpp")
     add_files("tools/serial/src/serial.cc")
@@ -258,17 +261,70 @@ target("newvision")
 -- ---------------------------------------------------------------------------
 
 local standalone_tests = {
+    rune_planning_control_smoke = {
+        files = {"src/rune/f4-planning/*.cpp", "src/rune/f5-control/*.cpp",
+                 "src/armor/l3_planning/ballistic_solver.cpp",
+                 "tools/tiny_MPC/track_planner.cpp", "tools/tiny_MPC/samples.cpp"},
+        includes = {"include", "include/armor", "/usr/include/eigen3"},
+        opencv = {"opencv_core"},
+    },
+    rune_estimator_smoke = {
+        files = {"src/rune/f3-estimator/estimator.cpp",
+                 "src/rune/f3-estimator/motion/big_rune_motion.cpp",
+                 "src/rune/f3-estimator/motion/small_rune_motion.cpp",
+                 "src/rune/f3-estimator/motion/motion_fitter.cpp",
+                 "src/rune/f3-estimator/feature_filter.cpp",
+                 "src/rune/f3-estimator/association.cpp"},
+        includes = {"include", "/usr/include/eigen3"},
+        opencv = {"opencv_core", "opencv_calib3d"},
+    },
+    rune_joint_building_smoke = {
+        files = {
+            "src/rune/processor.cpp",
+            "src/rune/f1-observation/detection.cpp",
+            "src/rune/f1-observation/reobservation.cpp",
+            "src/rune/f2-building/*.cpp", "tools/geometry/*.cpp",
+            "src/rune/f3-estimator/estimator.cpp",
+            "src/rune/f3-estimator/motion/big_rune_motion.cpp",
+            "src/rune/f3-estimator/motion/small_rune_motion.cpp",
+            "src/rune/f3-estimator/motion/motion_fitter.cpp",
+            "src/rune/f3-estimator/feature_filter.cpp",
+            "src/rune/f3-estimator/association.cpp",
+            "src/rune/f4-planning/*.cpp",
+            "src/armor/l3_planning/ballistic_solver.cpp",
+            "tools/tiny_MPC/track_planner.cpp", "tools/tiny_MPC/samples.cpp",
+            "src/rune/f5-control/fire_control.cpp",
+        },
+        includes = {"include", "include/armor", "tools", "/usr/include/eigen3"},
+        opencv = {"opencv_core", "opencv_imgproc", "opencv_calib3d"},
+    },
+    rune_building_smoke = {
+        files = {"src/rune/f2-building/*.cpp", "tools/geometry/*.cpp",
+                 "src/sensor/camera/camera_calibration.cpp",
+                 "src/armor/l5_telemetry/logger.cpp"},
+        includes = {"include", "tools", "include/armor", "/usr/include/eigen3",
+                    "tools/logger/include", "tools/logger/include/3rdparty"},
+        opencv = {"opencv_core", "opencv_imgproc", "opencv_calib3d"},
+        syslinks = {"yaml-cpp"},
+    },
     rune_pipeline_smoke = {
         files = {
             "src/rune/processor.cpp",
             "src/rune/f1-observation/detection.cpp",
             "src/rune/f1-observation/reobservation.cpp",
-            "src/rune/f2-building/builder.cpp",
+            "src/rune/f2-building/*.cpp", "tools/geometry/*.cpp",
             "src/rune/f3-estimator/estimator.cpp",
-            "src/rune/f4-planning/ballistic_solver.cpp",
-            "src/rune/f4-planning/fire_control.cpp",
+            "src/rune/f3-estimator/motion/big_rune_motion.cpp",
+            "src/rune/f3-estimator/motion/small_rune_motion.cpp",
+            "src/rune/f3-estimator/motion/motion_fitter.cpp",
+            "src/rune/f3-estimator/feature_filter.cpp",
+            "src/rune/f3-estimator/association.cpp",
+            "src/rune/f4-planning/*.cpp",
+            "src/armor/l3_planning/ballistic_solver.cpp",
+            "tools/tiny_MPC/track_planner.cpp", "tools/tiny_MPC/samples.cpp",
+            "src/rune/f5-control/fire_control.cpp",
         },
-        includes = {"include", "/usr/include/eigen3"},
+        includes = {"include", "include/armor", "tools", "/usr/include/eigen3"},
         opencv = {"opencv_core", "opencv_imgproc", "opencv_calib3d"},
     },
     logger_smoke = {
@@ -302,11 +358,13 @@ local gated_tests = {
     auto_aim_test            = "use_openvino",
     track_diag               = "use_openvino",
     serial_worker_smoke      = "linux",
+    serial_single_shot_smoke = "linux",
 }
 
 -- serial_worker_smoke 用 pty 造串口，需要额外链 util。
 local extra_syslinks = {
     serial_worker_smoke = {"util"},
+    serial_single_shot_smoke = {"util"},
 }
 
 -- tests/main.cpp 是完整运行时的入口，目标名不叫 main。
