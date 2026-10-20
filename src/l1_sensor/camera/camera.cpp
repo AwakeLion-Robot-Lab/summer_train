@@ -55,6 +55,17 @@ void Camera::stop() {
   }
 }
 
+CameraStats Camera::stats() const {
+  return camera_ ? camera_->stats() : CameraStats{};
+}
+
+bool Camera::setExposureGain(double exposure_ms, double gain) {
+  if (!camera_) {
+    return false;
+  }
+  return camera_->setExposureGain(exposure_ms, gain);
+}
+
 const std::optional<CameraCalibration> &Camera::calibration() const noexcept {
   return calibration_;
 }

@@ -178,7 +178,7 @@ namespace eststack
                  * standard kalman gain is defined as K = PHT(HPHT + HvRHvT)^{-1}
                  * if measurement dimension >> state dimension (threshold is 3 times here), (HPHT+R) is hard to get inverse matrix
                  * we can use SMW equation, a.k.a. matrix inversion lemma (please refer to chapter 2.2.15, [3])
-                 * to get K = (P^{-1} + HT(HvRHv)^{-1} H)^{-1} HT(HvRHvT)^{-1} faster
+                 * to get K = (P^{-1} + HniT(HvRHv)^{-1} H)^{-1} HT(HvRHvT)^{-1} faster
                  */
                 constexpr int StateDim = eststack::getDimAtCompileTime<State>();
                 constexpr int MeasDim = eststack::getDimAtCompileTime<typename MeasurementModel::Measurement>();

@@ -39,6 +39,12 @@ public:
   [[nodiscard]] std::optional<SerialCommand> makeCommand(
     const L4Planning::Plan& plan, const FireDecision& decision) const;
 
+  // 在线调参：热更开火容差。不重置 last_command_ / last_decision_。
+  void setFireConfig(const FireConfig& config) noexcept
+  {
+    fire_decider_.setConfig(config);
+  }
+
 private:
   FireDecider fire_decider_;
   double command_jump_threshold_{0.0};

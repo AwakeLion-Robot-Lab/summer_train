@@ -174,6 +174,14 @@ void Tracker::reset() noexcept
   observations_.clear();
 }
 
+void Tracker::setTargetConfig(const TargetConfig& config) noexcept
+{
+  target_config_ = config;
+  if (target_) {
+    target_->setConfig(config);
+  }
+}
+
 bool Tracker::observationUsable(const Armor& armor) const noexcept
 {
   // 唯一的门限是"single_pnp 是否成功提交了位姿"：name 只在提交的那一步才被

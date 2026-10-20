@@ -266,6 +266,13 @@ void Planner::reset() noexcept
   has_last_shoot_ = false;
 }
 
+void Planner::setImpactConfig(const PlanConfig& impact) noexcept
+{
+  // 只替换 impact（延迟链、弹速、偏置）。ballistic.drag_coefficient 在
+  // BallisticSolver 构造时选定模型，这里不碰，改阻力仍要重启。
+  config_.impact = impact;
+}
+
 // ---- 以下为私有实现 ----
 
 AimState Planner::sampleTrajectory(

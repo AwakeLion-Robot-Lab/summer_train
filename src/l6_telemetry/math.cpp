@@ -191,8 +191,10 @@ Eigen::Vector3d rotationToYpr(const Eigen::Matrix3d& rotation)
 
 Eigen::Vector3d rotationToRpy(const Eigen::Matrix3d& rotation)
 {
-  // Eigen 返回 [yaw, pitch, roll]，对外统一为 [roll, pitch, yaw]。
-  const Eigen::Vector3d ypr = rotation.eulerAngles(2, 1, 0);
+  // 不直接使用 Eigen::eulerAngles：它会在 yaw 轻微跨过 0 时选择
+  // [yaw±pi, pi-pitch, roll±pi] 的等价分支。云台绝对角若采用该分支，
+  // 下一帧就会产生约 180° 的错误跳变。项目的 eulers() 固定返回规范分支。
+  const Eigen::Vector3d ypr = rotationToYpr(rotation);
   return {ypr.z(), ypr.y(), ypr.x()};
 }
 

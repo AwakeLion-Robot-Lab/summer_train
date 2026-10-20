@@ -1,0 +1,1011 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>FSVISION · 视觉调试工作台原型</title>
+  <style>
+    :root {
+      --bg: #0c0d0e;
+      --chrome: #121416;
+      --panel: #17191b;
+      --panel-hi: #1c1f21;
+      --line: #2a2e31;
+      --line-soft: #222528;
+      --ink: #eef0ed;
+      --muted: #8d9394;
+      --dim: #5d6365;
+      --amber: #d8a64b;
+      --blue: #6f9eff;
+      --mint: #63c49b;
+      --red: #e16355;
+      --mono: "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+      --sans: "Ubuntu Sans", "Noto Sans CJK SC", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: var(--sans);
+      font-size: 13px;
+      letter-spacing: .01em;
+    }
+
+    button, select { font: inherit; }
+
+    button {
+      color: inherit;
+      border: 0;
+      background: none;
+      cursor: pointer;
+    }
+
+    button:focus-visible, select:focus-visible {
+      outline: 1px solid var(--amber);
+      outline-offset: 2px;
+    }
+
+    .app {
+      height: 100%;
+      min-height: 680px;
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr);
+      grid-template-rows: 48px minmax(0, 1fr) 26px;
+      background: var(--bg);
+    }
+
+    .topbar {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      border-bottom: 1px solid var(--line);
+      background: #101214;
+    }
+
+    .brand {
+      width: 174px;
+      height: 100%;
+      padding: 0 18px;
+      display: flex;
+      align-items: center;
+      border-right: 1px solid var(--line);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .12em;
+    }
+
+    .crumbs {
+      min-width: 0;
+      padding: 0 18px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .crumbs strong { color: #d7dad7; font-weight: 520; }
+    .crumbs i { color: #454a4c; font-style: normal; }
+
+    .top-spacer { flex: 1; }
+
+    .connectivity {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      border-left: 1px solid var(--line);
+    }
+
+    .link-state {
+      height: 100%;
+      padding: 0 13px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      border-right: 1px solid var(--line-soft);
+      color: #afb4b3;
+      font: 10px var(--mono);
+      letter-spacing: .08em;
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--mint);
+      box-shadow: 0 0 0 2px rgba(99,196,155,.09);
+    }
+
+    .top-action {
+      width: 44px;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      border-left: 1px solid var(--line-soft);
+    }
+
+    .top-action:hover { color: var(--ink); background: #17191b; }
+
+    .sidebar {
+      grid-row: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      border-right: 1px solid var(--line);
+      background: #101214;
+    }
+
+    .nav-item {
+      position: relative;
+      height: 60px;
+      display: grid;
+      place-items: center;
+      color: #697073;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .nav-item svg { width: 18px; height: 18px; stroke-width: 1.45; }
+    .nav-item:hover { color: #cfd2d0; background: #151719; }
+    .nav-item.active { color: var(--amber); background: #181a1c; }
+    .nav-item.active::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 14px;
+      bottom: 14px;
+      width: 2px;
+      background: var(--amber);
+    }
+
+    .nav-item span {
+      position: absolute;
+      left: 49px;
+      z-index: 30;
+      padding: 7px 9px;
+      pointer-events: none;
+      opacity: 0;
+      color: #d8dbd8;
+      background: #222527;
+      border: 1px solid #35393b;
+      white-space: nowrap;
+      transform: translateX(-5px);
+      transition: opacity .15s ease, transform .15s ease;
+    }
+
+    .nav-item:hover span { opacity: 1; transform: translateX(0); }
+
+    .sidebar-bottom { margin-top: auto; }
+
+    .workspace {
+      grid-column: 2;
+      grid-row: 2;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(330px, 3fr) minmax(220px, 2fr);
+      background: var(--bg);
+    }
+
+    .upper {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(420px, 1.18fr) minmax(400px, .82fr);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section {
+      min-width: 0;
+      min-height: 0;
+      background: var(--panel);
+    }
+
+    .section + .section { border-left: 1px solid var(--line); }
+
+    .section-head {
+      height: 42px;
+      padding: 0 13px 0 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      background: #151719;
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 560;
+      letter-spacing: .04em;
+    }
+
+    .section-kicker {
+      color: var(--dim);
+      font: 9px var(--mono);
+      letter-spacing: .1em;
+    }
+
+    .head-spacer { flex: 1; }
+
+    .quiet-btn, .icon-btn, .select-control {
+      height: 27px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      color: #a8aead;
+      background: #1b1e20;
+      border: 1px solid #303437;
+      border-radius: 2px;
+    }
+
+    .quiet-btn { padding: 0 10px; font-size: 11px; }
+    .icon-btn { width: 29px; }
+    .quiet-btn:hover, .icon-btn:hover { color: #f1f2ef; border-color: #494e50; background: #202325; }
+    .quiet-btn.active { color: #18130b; border-color: var(--amber); background: var(--amber); }
+
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: #c3c7c5;
+      font: 10px var(--mono);
+    }
+
+    .live-badge::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--red);
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+
+    @keyframes pulse { 50% { opacity: .35; } }
+
+    .video-section { display: grid; grid-template-rows: 42px minmax(0, 1fr) 34px; }
+
+    .viewport {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      background: #090a0b;
+    }
+
+    .viewport video {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: contain;
+      background: #08090a;
+      filter: saturate(.84) contrast(1.04) brightness(.9);
+    }
+
+    .viewport::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(180deg, rgba(0,0,0,.14), transparent 16%, transparent 78%, rgba(0,0,0,.32));
+    }
+
+    .frame-readout {
+      position: absolute;
+      z-index: 2;
+      color: rgba(240,242,237,.82);
+      font: 10px var(--mono);
+      text-shadow: 0 1px 3px #000;
+    }
+
+    .frame-readout.top-left { top: 13px; left: 14px; }
+    .frame-readout.top-right { top: 13px; right: 14px; text-align: right; }
+    .frame-readout.bottom-left { left: 14px; bottom: 12px; }
+
+    .target-box {
+      position: absolute;
+      z-index: 3;
+      left: 51%;
+      top: 35%;
+      width: 17%;
+      height: 31%;
+      border: 1px solid var(--amber);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,.25);
+      opacity: .78;
+    }
+
+    .target-box::before {
+      content: "armor 3  ·  0.94";
+      position: absolute;
+      top: -20px;
+      left: -1px;
+      padding: 3px 5px;
+      color: #16130e;
+      background: var(--amber);
+      font: 9px var(--mono);
+      white-space: nowrap;
+    }
+
+    .aim-cross {
+      position: absolute;
+      z-index: 3;
+      left: 59.5%;
+      top: 50.5%;
+      width: 17px;
+      height: 17px;
+      transform: translate(-50%, -50%);
+      opacity: .9;
+    }
+
+    .aim-cross::before, .aim-cross::after {
+      content: "";
+      position: absolute;
+      background: var(--red);
+    }
+
+    .aim-cross::before { width: 17px; height: 1px; top: 8px; }
+    .aim-cross::after { width: 1px; height: 17px; left: 8px; }
+
+    .video-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px 0 15px;
+      border-top: 1px solid var(--line-soft);
+      background: #141618;
+      color: var(--muted);
+      font: 10px var(--mono);
+    }
+
+    .transport {
+      height: 100%;
+      padding: 0 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-right: 1px solid var(--line);
+    }
+
+    .transport button { color: #d7dad7; font-size: 14px; }
+    .transport button:hover { color: var(--amber); }
+    .video-toolbar strong { color: #d5d8d5; font-weight: 500; }
+    .video-toolbar .right { margin-left: auto; }
+
+    .plot-section { display: grid; grid-template-rows: 42px minmax(0, 1fr) 36px; }
+
+    .plot-stack {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 1fr 1fr;
+      background: #141618;
+    }
+
+    .plot {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .plot + .plot { border-top: 1px solid var(--line); }
+    .plot canvas { width: 100%; height: 100%; display: block; }
+
+    .plot-label {
+      position: absolute;
+      z-index: 2;
+      top: 10px;
+      left: 13px;
+      pointer-events: none;
+    }
+
+    .plot-label strong { display: block; font-size: 11px; font-weight: 540; }
+    .plot-label span { color: var(--dim); font: 9px var(--mono); }
+
+    .legend {
+      position: absolute;
+      z-index: 3;
+      top: 9px;
+      right: 12px;
+      display: flex;
+      gap: 12px;
+    }
+
+    .legend button {
+      padding: 2px 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: #a7adac;
+      font: 9px var(--mono);
+      border-bottom: 1px solid transparent;
+    }
+
+    .legend button:hover { color: #eef0ed; }
+    .legend button.muted { opacity: .35; text-decoration: line-through; }
+    .swatch { width: 10px; height: 2px; background: currentColor; }
+
+    .crosshair {
+      position: absolute;
+      z-index: 2;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      display: none;
+      pointer-events: none;
+      background: rgba(230,232,227,.35);
+    }
+
+    .plot:hover .crosshair { display: block; }
+
+    .plot-controls {
+      padding: 0 11px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+      background: #151719;
+    }
+
+    .range-choice {
+      height: 24px;
+      padding: 0 8px;
+      color: #7f8687;
+      border-left: 1px solid transparent;
+      border-right: 1px solid transparent;
+      font: 9px var(--mono);
+    }
+
+    .range-choice:hover { color: #d4d7d4; }
+    .range-choice.active { color: var(--amber); border-color: #34383a; background: #1c1f21; }
+
+    .metric-strip {
+      margin-left: auto;
+      display: flex;
+      height: 100%;
+    }
+
+    .metric {
+      min-width: 74px;
+      padding: 0 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      border-left: 1px solid var(--line-soft);
+    }
+
+    .metric span { color: var(--dim); font: 8px var(--mono); }
+    .metric strong { margin-top: 2px; font: 10px var(--mono); font-weight: 500; }
+
+    .lower {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(290px, .65fr);
+    }
+
+    .log-section { display: grid; grid-template-rows: 42px minmax(0, 1fr); }
+
+    .tabs { height: 100%; display: flex; align-items: stretch; gap: 4px; }
+    .tab {
+      position: relative;
+      padding: 0 10px;
+      color: #777e80;
+      font-size: 11px;
+    }
+
+    .tab.active { color: #e7e9e6; }
+    .tab.active::after {
+      content: "";
+      position: absolute;
+      left: 9px;
+      right: 9px;
+      bottom: -1px;
+      height: 2px;
+      background: var(--amber);
+    }
+
+    .log-table {
+      min-height: 0;
+      overflow: auto;
+      scrollbar-color: #3b3f41 #17191b;
+    }
+
+    .log-row {
+      min-height: 29px;
+      display: grid;
+      grid-template-columns: 92px 70px 90px minmax(0, 1fr);
+      align-items: center;
+      border-bottom: 1px solid #202326;
+      color: #a4aaa9;
+      font: 10px var(--mono);
+    }
+
+    .log-row:hover { background: #1b1e20; color: #d5d8d5; }
+    .log-row > span { padding: 0 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-row > span + span { border-left: 1px solid #202326; }
+    .log-row .time { color: #666e70; }
+    .log-row .level { color: var(--blue); }
+    .log-row.warn .level { color: var(--amber); }
+    .log-row.error { background: rgba(225,99,85,.035); }
+    .log-row.error .level, .log-row.error .message { color: var(--red); }
+
+    .inspect-section { display: grid; grid-template-rows: 42px minmax(0, 1fr); }
+
+    .inspect-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 8px 15px 14px;
+      background: #151719;
+    }
+
+    .inspect-group { padding: 9px 0 11px; border-bottom: 1px solid var(--line); }
+    .inspect-group:last-child { border-bottom: 0; }
+    .inspect-group h3 {
+      margin: 0 0 8px;
+      color: #6d7475;
+      font: 9px var(--mono);
+      font-weight: 500;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .kv {
+      min-height: 26px;
+      display: grid;
+      grid-template-columns: minmax(90px, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .kv span { color: #919797; font-size: 11px; }
+    .kv strong { color: #d8dbd8; font: 10px var(--mono); font-weight: 500; }
+    .kv strong.good { color: var(--mint); }
+    .kv strong.warn { color: var(--amber); }
+
+    .channel-list { display: grid; gap: 2px; }
+    .channel {
+      height: 27px;
+      padding: 0 5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #a7adac;
+      border: 1px solid transparent;
+      border-radius: 2px;
+      font: 10px var(--mono);
+    }
+
+    .channel:hover { border-color: #303436; background: #1a1d1f; }
+    .channel input { appearance: none; width: 9px; height: 9px; margin: 0; border: 1px solid #555b5d; }
+    .channel input:checked { border-color: currentColor; background: currentColor; box-shadow: inset 0 0 0 2px #151719; }
+    .channel:nth-child(1) { color: var(--amber); }
+    .channel:nth-child(2) { color: var(--blue); }
+    .channel:nth-child(3) { color: var(--mint); }
+    .channel:nth-child(4) { color: var(--red); }
+
+    .statusbar {
+      grid-column: 1 / -1;
+      grid-row: 3;
+      padding: 0 12px 0 17px;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      color: #656c6e;
+      background: #101214;
+      border-top: 1px solid var(--line);
+      font: 9px var(--mono);
+    }
+
+    .statusbar span + span { padding-left: 15px; border-left: 1px solid var(--line); }
+    .statusbar .status-right { margin-left: auto; display: flex; gap: 14px; }
+    kbd { padding: 1px 4px; color: #999f9f; background: #1a1d1f; border: 1px solid #333739; border-radius: 2px; font: 8px var(--mono); }
+
+    .paused .live-badge::before { animation: none; background: #6a7072; }
+    .paused .viewport video { opacity: .72; }
+
+    @media (max-width: 1100px) {
+      body { overflow: auto; }
+      .app { height: auto; min-height: 100%; grid-template-columns: 48px 1fr; }
+      .connectivity .link-state:nth-child(-n+2) { display: none; }
+      .workspace { grid-template-rows: auto auto; }
+      .upper { grid-template-columns: 1fr; }
+      .section + .section { border-left: 0; border-top: 1px solid var(--line); }
+      .video-section { height: 560px; }
+      .plot-section { height: 540px; }
+      .lower { grid-template-columns: 1fr; }
+      .log-section { height: 320px; }
+      .inspect-section { height: 350px; border-left: 0; border-top: 1px solid var(--line); }
+      .statusbar { position: sticky; bottom: 0; }
+    }
+
+    @media (max-width: 700px) {
+      .brand { width: 132px; padding: 0 12px; font-size: 12px; }
+      .crumbs { padding: 0 10px; }
+      .crumbs span, .connectivity { display: none; }
+      .upper { display: block; }
+      .video-section { height: 430px; }
+      .plot-section { height: 480px; }
+      .log-row { grid-template-columns: 76px 56px minmax(0, 1fr); }
+      .log-row .module { display: none; }
+      .metric:nth-child(-n+2) { display: none; }
+      .statusbar span:nth-child(n+3) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="brand">FSVISION</div>
+      <div class="crumbs"><strong>NX-07</strong><i>/</i><span>视觉调试</span><i>/</i><span>自动瞄准</span></div>
+      <div class="top-spacer"></div>
+      <div class="connectivity" aria-label="连接状态">
+        <div class="link-state"><i class="dot"></i>VIDEO</div>
+        <div class="link-state"><i class="dot"></i>DATA</div>
+        <div class="link-state"><i class="dot"></i>LOG</div>
+      </div>
+      <button class="top-action" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1-2.9 2.9-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21h-4v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1-2.9-2.9.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3v-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1 2.9-2.9.1.1a1.6 1.6 0 0 0 1.8.3 1.6 1.6 0 0 0 1-1.5V3h4v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1 2.9 2.9-.1.1a1.6 1.6 0 0 0-.3 1.8 1.6 1.6 0 0 0 1.5 1h.1v4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></svg>
+      </button>
+    </header>
+
+    <nav class="sidebar" aria-label="工作区">
+      <button class="nav-item active" aria-label="监视器">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="5" width="18" height="13" rx="1"/><path d="M8 21h8M12 18v3"/></svg><span>监视器</span>
+      </button>
+      <button class="nav-item" aria-label="时序">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 17 7 9l4 6 4-10 6 12"/></svg><span>时序信号</span>
+      </button>
+      <button class="nav-item" aria-label="记录">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>历史记录</span>
+      </button>
+      <button class="nav-item" aria-label="参数">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h7M15 6h5M4 12h3M11 12h9M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg><span>参数</span>
+      </button>
+      <div class="sidebar-bottom">
+        <button class="nav-item" aria-label="帮助">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.3 2.3 0 1 1 3.5 2c-.8.5-1.3 1-1.3 2M12 17h.01"/></svg><span>帮助</span>
+        </button>
+      </div>
+    </nav>
+
+    <main class="workspace">
+      <div class="upper">
+        <section class="section video-section">
+          <div class="section-head">
+            <h1 class="section-title">算法画面</h1>
+            <span class="section-kicker">CAMERA / OVERLAY</span>
+            <div class="head-spacer"></div>
+            <span class="live-badge" id="liveText">LIVE</span>
+            <button class="icon-btn" id="fullscreenBtn" title="画面全屏" aria-label="画面全屏">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
+            </button>
+          </div>
+          <div class="viewport" id="viewport">
+            <video id="camera" src="docs/armorVideo.mp4" autoplay muted loop playsinline></video>
+            <div class="frame-readout top-left">CAM-01 · 1000×720 · 30 FPS</div>
+            <div class="frame-readout top-right">TRACKING / ARMOR<br>EXPOSURE 2.4 ms</div>
+            <div class="frame-readout bottom-left" id="frameTime">T+ 00:00:00.000</div>
+            <div class="target-box" aria-hidden="true"></div>
+            <div class="aim-cross" aria-hidden="true"></div>
+          </div>
+          <div class="video-toolbar">
+            <div class="transport">
+              <button id="pauseBtn" title="暂停/继续">Ⅱ</button>
+              <button id="stepBtn" title="单步">›</button>
+            </div>
+            <span>FRAME <strong id="frameIndex">001842</strong></span>
+            <span>TRACK <strong>3</strong></span>
+            <span class="right">SYNC <strong>± 1.7 ms</strong></span>
+          </div>
+        </section>
+
+        <section class="section plot-section">
+          <div class="section-head">
+            <h2 class="section-title">实时信号</h2>
+            <span class="section-kicker">12.0 s WINDOW</span>
+            <div class="head-spacer"></div>
+            <button class="quiet-btn active" id="followBtn">跟随最新</button>
+            <button class="quiet-btn" id="clearBtn">清空</button>
+          </div>
+          <div class="plot-stack">
+            <div class="plot" data-plot="aim">
+              <div class="plot-label"><strong>Yaw 跟随</strong><span>ANGLE / degree</span></div>
+              <div class="legend">
+                <button data-line="aim"><i class="swatch" style="color:var(--amber)"></i>aim/yaw</button>
+                <button data-line="gimbal"><i class="swatch" style="color:var(--blue)"></i>gimbal/yaw</button>
+              </div>
+              <canvas id="aimChart"></canvas><i class="crosshair"></i>
+            </div>
+            <div class="plot" data-plot="delay">
+              <div class="plot-label"><strong>链路延迟</strong><span>LATENCY / ms</span></div>
+              <div class="legend">
+                <button data-line="plan"><i class="swatch" style="color:var(--mint)"></i>image_to_plan</button>
+                <button data-line="fire"><i class="swatch" style="color:var(--red)"></i>before_fire</button>
+              </div>
+              <canvas id="delayChart"></canvas><i class="crosshair"></i>
+            </div>
+          </div>
+          <div class="plot-controls">
+            <button class="range-choice">5 s</button>
+            <button class="range-choice active">12 s</button>
+            <button class="range-choice">30 s</button>
+            <div class="metric-strip">
+              <div class="metric"><span>FPS</span><strong id="fpsValue">29.8</strong></div>
+              <div class="metric"><span>LATENCY</span><strong id="latencyValue">18.4 ms</strong></div>
+              <div class="metric"><span>NIS</span><strong id="nisValue">2.71</strong></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="lower">
+        <section class="section log-section">
+          <div class="section-head">
+            <div class="tabs" role="tablist">
+              <button class="tab active" data-filter="all">运行日志</button>
+              <button class="tab" data-filter="event">关键事件</button>
+              <button class="tab" data-filter="warn">告警</button>
+            </div>
+            <div class="head-spacer"></div>
+            <button class="quiet-btn active" id="autoScrollBtn">自动滚动</button>
+            <button class="icon-btn" id="eraseLogsBtn" title="清空日志" aria-label="清空日志">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"><path d="m5 7 1 14h12l1-14M3 7h18M9 7V3h6v4M10 11v6M14 11v6"/></svg>
+            </button>
+          </div>
+          <div class="log-table" id="logTable" role="log" aria-live="polite"></div>
+        </section>
+
+        <aside class="section inspect-section">
+          <div class="section-head"><h2 class="section-title">会话检查器</h2><span class="section-kicker">SESSION #042</span></div>
+          <div class="inspect-body">
+            <div class="inspect-group">
+              <h3>Pipeline</h3>
+              <div class="kv"><span>运行状态</span><strong class="good">稳定</strong></div>
+              <div class="kv"><span>跟踪器</span><strong>TRACKING</strong></div>
+              <div class="kv"><span>观测数量</span><strong id="obsValue">4</strong></div>
+              <div class="kv"><span>开火判定</span><strong class="warn">YAW ERROR</strong></div>
+            </div>
+            <div class="inspect-group">
+              <h3>Visible channels</h3>
+              <div class="channel-list">
+                <label class="channel"><input type="checkbox" checked data-line="aim"> aim/yaw</label>
+                <label class="channel"><input type="checkbox" checked data-line="gimbal"> gimbal/yaw</label>
+                <label class="channel"><input type="checkbox" checked data-line="plan"> delay/image_to_plan</label>
+                <label class="channel"><input type="checkbox" checked data-line="fire"> delay/before_fire</label>
+              </div>
+            </div>
+            <div class="inspect-group">
+              <h3>Source</h3>
+              <div class="kv"><span>数据源</span><strong>/dev/shm</strong></div>
+              <div class="kv"><span>采样率</span><strong>60 Hz</strong></div>
+              <div class="kv"><span>缓存窗口</span><strong>720 samples</strong></div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <footer class="statusbar">
+      <span>profile: auto_aim</span><span>firmware: v2.6.3</span><span>clock: synchronized</span>
+      <div class="status-right"><span><kbd>Space</kbd> 暂停</span><span><kbd>F</kbd> 全屏</span><span><kbd>L</kbd> 标记事件</span></div>
+    </footer>
+  </div>
+
+  <script>
+    const app = document.getElementById('app');
+    const camera = document.getElementById('camera');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const frameTime = document.getElementById('frameTime');
+    const frameIndex = document.getElementById('frameIndex');
+    const aimCanvas = document.getElementById('aimChart');
+    const delayCanvas = document.getElementById('delayChart');
+    const logTable = document.getElementById('logTable');
+    const visible = { aim: true, gimbal: true, plan: true, fire: true };
+    let paused = false;
+    let phase = 0;
+    let frame = 1842;
+    let autoScroll = true;
+    let logTick = 0;
+
+    const logs = [
+      ['INFO', 'camera', '曝光完成，frame=1842  exposure=2.4ms', 'all'],
+      ['INFO', 'detector', '识别装甲板 id=3  confidence=0.94', 'event'],
+      ['INFO', 'tracker', 'EKF 更新成功  nis=2.71  obs=4', 'all'],
+      ['DEBUG', 'planner', 'aim yaw=-1.284°  pitch=2.071°', 'all'],
+      ['WARN', 'fire', '拒绝开火：yaw error 0.63° > 0.50°', 'warn'],
+      ['INFO', 'serial', '控制帧已发送  seq=8271  delay=1.8ms', 'all'],
+      ['INFO', 'tracker', '目标状态切换 DETECTING → TRACKING', 'event'],
+      ['DEBUG', 'latency', 'image_to_plan=9.8ms  before_fire=18.4ms', 'all']
+    ];
+
+    function clockText(offset = 0) {
+      const now = new Date(Date.now() + offset);
+      return now.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+    }
+
+    function addLog(entry) {
+      const [level, module, message, kind] = entry;
+      const row = document.createElement('div');
+      row.className = `log-row ${level.toLowerCase()} ${kind}`;
+      row.dataset.kind = kind;
+      row.innerHTML = `<span class="time">${clockText()}</span><span class="level">${level}</span><span class="module">${module}</span><span class="message">${message}</span>`;
+      logTable.appendChild(row);
+      if (logTable.children.length > 80) logTable.firstElementChild.remove();
+      if (autoScroll) logTable.scrollTop = logTable.scrollHeight;
+    }
+
+    logs.forEach((item, i) => setTimeout(() => addLog(item), i * 70));
+
+    function resizeCanvas(canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.floor(rect.width * ratio));
+      const height = Math.max(1, Math.floor(rect.height * ratio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      return { width, height, ratio };
+    }
+
+    function drawPlot(canvas, series, range, colors, keys) {
+      const { width: w, height: h, ratio } = resizeCanvas(canvas);
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+      const left = 44 * ratio, right = 12 * ratio, top = 35 * ratio, bottom = 20 * ratio;
+      const pw = w - left - right, ph = h - top - bottom;
+      ctx.lineWidth = 1 * ratio;
+      ctx.strokeStyle = '#25292b';
+      ctx.fillStyle = '#697072';
+      ctx.font = `${8 * ratio}px "Noto Sans Mono", monospace`;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let i = 0; i <= 4; i++) {
+        const y = top + ph * i / 4;
+        ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w - right, y); ctx.stroke();
+        const value = range.max - (range.max - range.min) * i / 4;
+        ctx.fillText(value.toFixed(range.decimals ?? 1), left - 7 * ratio, y);
+      }
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      for (let i = 0; i <= 6; i++) {
+        const x = left + pw * i / 6;
+        ctx.strokeStyle = i === 6 ? '#353a3c' : '#202427';
+        ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke();
+        ctx.fillStyle = '#5d6466';
+        ctx.fillText(`${-12 + i * 2}s`, x, top + ph + 6 * ratio);
+      }
+      series.forEach((values, index) => {
+        if (!visible[keys[index]]) return;
+        ctx.strokeStyle = colors[index];
+        ctx.lineWidth = (index === 0 ? 1.35 : 1.1) * ratio;
+        ctx.beginPath();
+        values.forEach((value, i) => {
+          const x = left + pw * i / (values.length - 1);
+          const y = top + (range.max - value) / (range.max - range.min) * ph;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      });
+    }
+
+    function generateSeries() {
+      const count = 150;
+      const aim = [], gimbal = [], plan = [], fire = [];
+      for (let i = 0; i < count; i++) {
+        const t = phase + i * .07;
+        const setpoint = Math.sin(t * .52) * 4.1 + Math.sin(t * .13) * 1.2;
+        aim.push(setpoint + Math.sin(t * 2.4) * .12);
+        gimbal.push(setpoint * .92 + Math.sin(t * 1.7 - .6) * .36);
+        plan.push(9.6 + Math.sin(t * .8) * 1.2 + Math.sin(t * 3.8) * .35);
+        fire.push(18.2 + Math.sin(t * .46 + .8) * 2.5 + Math.max(0, Math.sin(t * 2.2)) * 1.4);
+      }
+      return { aim, gimbal, plan, fire };
+    }
+
+    function render() {
+      const s = generateSeries();
+      drawPlot(aimCanvas, [s.aim, s.gimbal], { min: -7, max: 7, decimals: 1 }, ['#d8a64b', '#6f9eff'], ['aim', 'gimbal']);
+      drawPlot(delayCanvas, [s.plan, s.fire], { min: 0, max: 30, decimals: 0 }, ['#63c49b', '#e16355'], ['plan', 'fire']);
+      if (!paused) {
+        phase += .025;
+        frame += 1;
+        frameIndex.textContent = String(frame).padStart(6, '0');
+        frameTime.textContent = `T+ 00:00:${String(Math.floor((frame - 1842) / 30)).padStart(2, '0')}.${String((frame % 30) * 33).padStart(3, '0')}`;
+        document.getElementById('fpsValue').textContent = (29.8 + Math.sin(phase) * .13).toFixed(1);
+        document.getElementById('latencyValue').textContent = (18.4 + Math.sin(phase * .6) * 1.8).toFixed(1) + ' ms';
+        document.getElementById('nisValue').textContent = (2.71 + Math.sin(phase * .33) * .55).toFixed(2);
+        document.getElementById('obsValue').textContent = Math.sin(phase * .22) > .65 ? '3' : '4';
+      }
+      requestAnimationFrame(render);
+    }
+
+    function setPaused(next) {
+      paused = next;
+      app.classList.toggle('paused', paused);
+      pauseBtn.textContent = paused ? '▶' : 'Ⅱ';
+      document.getElementById('liveText').textContent = paused ? 'PAUSED' : 'LIVE';
+      if (paused) camera.pause(); else camera.play().catch(() => {});
+    }
+
+    pauseBtn.addEventListener('click', () => setPaused(!paused));
+    document.getElementById('stepBtn').addEventListener('click', () => {
+      if (!paused) setPaused(true);
+      camera.currentTime = Math.min(camera.duration || 999, camera.currentTime + 1 / 30);
+      frame += 1;
+    });
+
+    document.getElementById('fullscreenBtn').addEventListener('click', () => {
+      const viewport = document.getElementById('viewport');
+      if (document.fullscreenElement) document.exitFullscreen();
+      else viewport.requestFullscreen?.();
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => { phase = 0; });
+    document.getElementById('followBtn').addEventListener('click', (event) => event.currentTarget.classList.toggle('active'));
+    document.querySelectorAll('.range-choice').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.range-choice').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+    }));
+
+    function syncLineState(key, state) {
+      visible[key] = state;
+      document.querySelectorAll(`[data-line="${key}"]`).forEach(control => {
+        if (control.tagName === 'INPUT') control.checked = state;
+        else control.classList.toggle('muted', !state);
+      });
+    }
+
+    document.querySelectorAll('.legend button').forEach(button => button.addEventListener('click', () => {
+      const key = button.dataset.line;
+      syncLineState(key, !visible[key]);
+    }));
+    document.querySelectorAll('.channel input').forEach(input => input.addEventListener('change', () => syncLineState(input.dataset.line, input.checked)));
+
+    document.querySelectorAll('.plot').forEach(plot => {
+      const crosshair = plot.querySelector('.crosshair');
+      plot.addEventListener('mousemove', event => {
+        const rect = plot.getBoundingClientRect();
+        crosshair.style.left = `${Math.max(44, Math.min(rect.width - 12, event.clientX - rect.left))}px`;
+      });
+    });
+
+    document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(item => item.classList.remove('active'));
+      tab.classList.add('active');
+      const filter = tab.dataset.filter;
+      [...logTable.children].forEach(row => {
+        row.hidden = filter !== 'all' && row.dataset.kind !== filter && !(filter === 'warn' && row.classList.contains('error'));
+      });
+    }));
+
+    document.getElementById('autoScrollBtn').addEventListener('click', event => {
+      autoScroll = !autoScroll;
+      event.currentTarget.classList.toggle('active', autoScroll);
+    });
+    document.getElementById('eraseLogsBtn').addEventListener('click', () => { logTable.innerHTML = ''; });
+
+    setInterval(() => {
+      if (paused) return;
+      addLog(logs[logTick++ % logs.length]);
+    }, 1450);
+
+    document.addEventListener('keydown', event => {
+      if (event.code === 'Space' && event.target === document.body) { event.preventDefault(); setPaused(!paused); }
+      if (event.key.toLowerCase() === 'f') document.getElementById('fullscreenBtn').click();
+      if (event.key.toLowerCase() === 'l') addLog(['INFO', 'operator', '手动标记事件', 'event']);
+    });
+
+    window.addEventListener('resize', () => { phase += .001; });
+    camera.addEventListener('error', () => {
+      document.querySelector('.frame-readout.top-left').textContent = '演示视频未加载 · 请使用本地 HTTP 打开';
+    });
+    render();
+  </script>
+</body>
+</html>

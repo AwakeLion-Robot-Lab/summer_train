@@ -1,1 +1,5 @@
-// TODO: Declare the decoder that converts raw model results into BuffDetection values.
+#pragma once
+
+// 当前移植忠实采用源 RuneDetector 的传统颜色/轮廓路径，不经过神经网络张量，
+// 因此不存在需要在 L2 解码的模型输出。保留该独立文件作为后续模型方案的扩展点，
+// 不让它参与现有 BuffRuntime 链路。

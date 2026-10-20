@@ -1,0 +1,46 @@
+# 传统能量机关（打符）独立配置。该链路不读取 armor/YOLO 参数。
+detector:
+  min_distance_m: 1.7
+  max_distance_m: 5.0
+  #  - 检测距离：1.7～5.0 m
+  max_perspective_deg: 60.0
+  active_threshold: 0.2
+  match_threshold: 0.5
+
+tracker:
+  noise_x: 0.00001
+  noise_y: 0.00001
+  noise_z: 0.00001
+  noise_rotation_angle: 0.001
+  noise_rotation_speed: 1.0
+  noise_face_yaw: 0.00001
+  noise_observation: 20.0
+  gate_threshold: 13.816
+  init_seed_mean_error: 10.0
+  init_seed_max_error: 20.0
+  init_center_gate: 30.0
+  init_pitch_bound_deg: 20.0
+  diverge_face_angle_deg: 45.0
+  timeout_seconds: 1.5
+  inactive_timeout_ms: 100
+
+planning:
+  # 优先使用电控 RobotState.bullet_speed；无效时仅用此值继续计算跟随角。
+  fallback_bullet_speed_mps: 22.5
+  # 低于该值或非有限值视为电控弹速无效。
+  min_valid_bullet_speed_mps: 14.0
+  # false 时回退弹速只能跟随、不能开火；实车建议保持 false。
+  trust_fallback_bullet_speed: false
+  shoot_delay_ms: 40
+  yaw_offset_deg: 0.0
+  pitch_offset_deg: 0.0
+  idle_duration_ms: 400
+  shoot_duration_ms: 200
+
+control:
+  # 忠实源 Rune FireController 的自动开火语义；调试跟随时可改为 false。
+  shoot_enable: false
+
+debug:
+  overlay: false
+  plot: false

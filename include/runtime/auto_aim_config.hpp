@@ -7,10 +7,13 @@
 #include "l4_planning/armor/types.hpp"
 #include "l5_control/fire_decision.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <filesystem>
 #include <numbers>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace runtime {
 
@@ -26,6 +29,22 @@ struct DebugConfig {
   bool plot{false};
   std::string plot_host{"127.0.0.1"};
   int plot_port{9870};
+
+  // 远程 Web 调试（awakening 式旁路）：标注帧写 /dev/shm/newvision_frame，
+  // 时序写 newvision_data.json，由 web.py 转成 MJPEG 与曲线。
+  // 与 overlay 分开：无头 NUC 上 namedWindow 会抛，但 Web 仍然要能看图。
+  // 与 plot 共用 telemetryFrame 字段，PlotJuggler 可同时收 UDP。
+  bool web{false};
+  // 每 N 帧向 Web 后台线程提交一张标注图。后台只留最新帧，不阻塞视觉
+  // 主循环；默认 5 仍优先省 CPU，需要观察高速运动时可临时调小。
+  int web_frame_every{5};
+  // 非空时额外录制：series.jsonl + frames/*.jpg，供赛后回放。比赛留空。
+  std::string web_record_dir{};
+  // 录制帧数上限，<=0 表示不限。防止整场比赛录满磁盘。
+  int web_record_max_frames{3000};
+  // Web 热更的相机曝光/增益期望值。是否写入硬件由驱动决定。
+  std::optional<double> camera_exposure_ms;
+  std::optional<double> camera_gain;
 
   // 无视下位机上报的 WorkMode，强制按指定模式跑。空串表示不覆盖。
   // 只用于电控还没接好模式切换、但视觉侧要先把链路跑通的场合。
@@ -88,5 +107,11 @@ struct AutoAimConfig {
 // 把写了的阈值盖到 decoder 上。越界的值（不在 [0, 1]）丢掉、保留预设的。
 void applyThresholds(
   const DecoderThresholds& thresholds, L2Perception::ArmorDecoderConfig& decoder);
+
+// 在线调参白名单：把 WebCmd 的命令树热更新进 config。只认下列路径，
+// 其余忽略。**故意不包含 fire.shoot_enable**——总闸门只允许改 YAML。
+// 返回本次真正改动的键列表，供日志与前端回显。
+[[nodiscard]] std::vector<std::string> applyWebTuning(
+  AutoAimConfig& config, const nlohmann::json& command);
 
 }  // namespace runtime

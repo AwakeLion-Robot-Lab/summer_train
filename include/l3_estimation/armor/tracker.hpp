@@ -58,6 +58,10 @@ public:
   // 清空状态机、时间连续性记录和本帧观测。
   void reset() noexcept;
 
+  // 在线调参：热更 EKF 噪声。同时写进当前 target（若有），避免
+  // 只有重建 EKF 后才生效——那要等丢目标，调参时看不出差别。
+  void setTargetConfig(const TargetConfig& config) noexcept;
+
 private:
   // 筛掉 PnP 未成功提交的观测，并按图像中心距离生成候选列表。
   bool observationUsable(const Armor& armor) const noexcept;

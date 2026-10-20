@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>FSVISION · 视觉调试工作台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <script defer src="{{ url_for('static', filename='js/json_view.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/chart_logic.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/health_tri.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/params.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/replay.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/workspace.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/main.js') }}"></script>
+  </head>
+  <body data-logger-ws-port="{{ logger_ws_port }}">
+    <div class="app-shell">
+      <header id="header" class="topbar">
+        <a class="brand" href="#video-panel" aria-label="FSVISION 首页">FSVISION</a>
+        <div class="breadcrumbs" aria-label="当前位置"><strong>AW_Vision</strong><i>/</i><span>视觉调试</span><i>/</i><span>自动瞄准</span></div>
+        <div class="topbar-spacer"></div>
+        <p class="server-url">{{ server_url }}</p>
+        <div class="system-readout" aria-label="连接状态">
+          <div class="status-pill" id="video-status" data-state="pending"><span class="status-led"></span><span><b>VIDEO</b><small>等待帧</small></span></div>
+          <div class="status-pill" id="data-status" data-state="pending"><span class="status-led"></span><span><b>DATA</b><small>等待数据</small></span></div>
+          <div class="status-pill" id="log-status" data-state="pending"><span class="status-led"></span><span><b>LOG</b><small>等待 WS</small></span></div>
+        </div>
+        <div class="clock-readout"><span>LAST SAMPLE</span><strong id="sample-age">—</strong></div>
+      </header>
+
+      <nav class="side-rail" aria-label="工作区">
+        <a class="rail-item active" href="#video-panel" aria-label="监视器" title="监视器"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="5" width="18" height="13" rx="1"/><path d="M8 21h8M12 18v3"/></svg><span>监视器</span></a>
+        <a class="rail-item" href="#main-chart-panel" aria-label="时序信号" title="时序信号"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 17 7 9l4 6 4-10 6 12"/></svg><span>时序信号</span></a>
+        <button class="rail-item" type="button" data-open-drawer="tri-view-panel" aria-label="三视图" title="三视图"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg><span>三视图</span></button>
+        <button class="rail-item" type="button" data-open-drawer="params-panel" aria-label="在线调参" title="在线调参"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h7M15 6h5M4 12h3M11 12h9M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg><span>在线调参</span></button>
+        <button class="rail-item" type="button" data-open-drawer="replay-panel" aria-label="录制回放" title="录制回放"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/></svg><span>录制回放</span></button>
+        <button class="rail-item" type="button" data-open-drawer="individual-chart-panel" aria-label="独立通道" title="独立通道"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg><span>独立通道</span></button>
+      </nav>
+
+      <main class="workspace">
+        <div id="force-mode-alert" class="force-mode-alert" role="alert" hidden><span class="alert-beacon"></span><strong>强制模式已启用</strong><span id="force-mode-alert-copy">下位机 WorkMode 正被覆盖，比赛前必须清空。</span><button type="button" data-open-drawer="params-panel">前往处理</button></div>
+
+        <section class="core-workbench" aria-label="实时视觉调试">
+          <article class="work-panel video-panel" id="video-panel">
+            <div class="panel-titlebar"><div class="title-pair"><h1>算法画面</h1><span>CAMERA / OVERLAY</span></div><div class="title-actions"><span class="live-indicator" id="liveIndicator" data-state="on">LIVE</span><div class="video-rate-options" role="group" aria-label="视频刷新率"><button class="video-rate-option" type="button" data-video-rate="realtime" aria-pressed="false">实时</button><button class="video-rate-option active" type="button" data-video-rate="30" aria-pressed="true">30 FPS</button></div><button class="secondary live-toggle" type="button" id="liveToggleBtn" aria-pressed="false">关闭 LIVE</button><button class="icon-btn" type="button" id="fullscreenBtn" aria-label="全屏查看视频" title="全屏查看">⛶</button></div></div>
+            <div class="video-container">
+              <div class="video-placeholder" id="video-placeholder" aria-live="polite"><strong>等待视频帧</strong><small>检查算法进程与 debug.web</small></div>
+              <img src="{{ url_for('video_feed', fps=video_fps) }}" alt="实时算法标注视频流" id="video-stream" decoding="async" />
+              <div class="frame-readout frame-top-left">MJPEG · CAMERA 01 · <span id="videoFpsLabel">{{ video_fps }} FPS</span></div><div class="frame-readout frame-top-right">AUTO AIM / OVERLAY</div>
+            </div>
+            <div class="video-footer"><span id="video-caption">连接中</span><div class="video-metrics" aria-label="实时处理帧率"><span class="video-metric" id="cameraMetric" title="CAM：相机驱动实际采集帧率"><small>CAM</small><b id="cameraFps">—</b></span><span class="video-metric" id="algorithmMetric" title="ALG：主算法循环成功处理帧率"><small>ALG</small><b id="algorithmFps">—</b></span><span class="video-metric" id="webMetric" title="WEB：后台 JPEG 编码输出帧率"><small>WEB</small><b id="webFps">—</b></span></div></div>
+          </article>
+
+          <article class="work-panel telemetry-panel" id="main-chart-panel">
+            <div class="panel-titlebar"><div class="title-pair"><h2>实时信号</h2><span>PLOT / LIVE BUFFER</span></div><label class="toggle-line"><input type="checkbox" id="multiLineChart" checked /><span>显示总图</span></label></div>
+            <div class="chart-toolbar">
+              <div class="chart-presets" aria-label="曲线预设"><button type="button" data-chart-preset="tracking">跟随</button><button type="button" data-chart-preset="delay">延迟</button><button type="button" data-chart-preset="fire">开火</button><button type="button" data-chart-preset="buff">打符</button></div>
+              <label class="chart-search"><span>搜索字段</span><input id="chartKeySearch" type="search" placeholder="aim/ · delay/ · ekf/" autocomplete="off" /></label>
+              <div class="range-row"><label for="mainMaxPts">窗口点数</label><input type="number" id="mainMaxPts" value="200" min="10" max="1000" step="10" /><button type="button" id="applyMainRange">应用</button></div>
+            </div>
+            <details class="field-picker"><summary>可见信号 <span id="selected-key-count">0 项</span></summary><div class="chart-select-controls" id="chartSelectControls"></div></details>
+            <div class="chart-surface" id="main-chart-surface"><canvas id="mainChart" aria-label="实时遥测总图"></canvas></div>
+          </article>
+
+          <article class="work-panel log-panel" id="json-info">
+            <div class="panel-titlebar">
+              <div class="log-tabs" role="tablist"><button class="log-tab active" type="button" data-log-view="stream">运行日志</button><button class="log-tab" type="button" data-log-filter="WARN">警告</button><button class="log-tab" type="button" data-log-filter="ERROR">错误</button><button class="log-tab" type="button" data-log-view="snapshot">诊断快照</button></div>
+              <div class="title-actions"><label class="log-level">等级<select id="loggerLevel"><option>DEBUG</option><option selected>INFO</option><option>NOTICE</option><option>WARN</option><option>ERROR</option></select></label><button class="secondary" type="button" id="clearLoggerBtn">清空</button></div>
+            </div>
+            <div class="logger-table" id="logger-log" role="log" aria-live="polite"><div class="logger-empty">等待 aw_logger WebSocket…</div></div>
+            <div class="json-container" id="json-log-container" hidden><div id="json-log" class="empty-state">等待诊断事件…</div></div>
+          </article>
+
+          <article class="work-panel health-panel" id="health-panel">
+            <div class="panel-titlebar"><div class="title-pair"><h2>会话检查器</h2><span>PIPELINE / HEALTH</span></div><span class="panel-meta" id="health-summary">等待数据</span></div>
+            <div id="health-grid" class="health-grid"></div>
+          </article>
+        </section>
+
+        <section class="tool-drawer" id="tool-drawer" aria-label="辅助工作区">
+          <div class="drawer-tabs" role="tablist"><button type="button" class="drawer-tab active" data-drawer-target="tri-view-panel">三视图</button><button type="button" class="drawer-tab" data-drawer-target="params-panel">在线调参</button><button type="button" class="drawer-tab" data-drawer-target="replay-panel">录制回放</button><button type="button" class="drawer-tab" data-drawer-target="individual-chart-panel">独立通道</button><button type="button" class="drawer-collapse" id="drawerCollapse" aria-expanded="true">收起工作抽屉</button></div>
+          <div class="drawer-body">
+            <article class="drawer-panel active" id="tri-view-panel">
+              <div class="drawer-panel-head"><div><span class="panel-index">GEOMETRY</span><h2>目标三视图</h2></div><div class="drawer-panel-tools"><div class="legend-inline"><span><i class="legend-dot ekf"></i>EKF 估计</span><span><i class="legend-dot obs"></i>PnP 观测</span></div><div class="context-note"><button type="button" class="context-trigger" aria-describedby="tri-guide"><span>i</span>读图说明</button><div class="context-popover" id="tri-guide" role="tooltip"><strong>如何读图</strong><p>黄点是 EKF 估计的整车中心，绿点是当前 PnP 观测。两点持续分离通常表示坐标、标定或滤波参数异常；这里显示最新位置，不是历史轨迹。</p></div></div></div></div>
+              <div class="tri-view-grid"><div class="tri-cell"><h3>俯视 TOP <span>x 前后 · y 左右</span></h3><canvas id="triTop" width="360" height="190"></canvas></div><div class="tri-cell"><h3>侧视 SIDE <span>x 前后 · z 上下</span></h3><canvas id="triSide" width="360" height="190"></canvas></div><div class="tri-cell"><h3>正视 FRONT <span>y 左右 · z 上下</span></h3><canvas id="triFront" width="360" height="190"></canvas></div></div>
+              <p class="tri-caption" id="tri-caption">—</p>
+            </article>
+
+            <article class="drawer-panel" id="params-panel" hidden>
+              <div class="drawer-panel-head workspace-title"><div><span class="panel-index">CONTROL SURFACE</span><h2>在线调参</h2></div><div class="params-actions"><button type="button" id="applyParamsBtn">下发修改</button><button type="button" id="saveParamsBtn" class="secondary">写入 YAML</button><button type="button" id="reloadParamsBtn" class="secondary">重载</button><button type="button" id="clearParamsBtn" class="ghost-danger">清空覆盖</button></div></div>
+              <div class="params-context-row"><div class="params-legend"><span><i class="legend-swatch yaml"></i>YAML 初值</span><span><i class="legend-swatch dirty"></i>未下发修改</span><span><i class="legend-swatch runtime"></i>命令覆盖</span></div><div class="context-note"><button type="button" class="context-trigger" aria-describedby="params-guide"><span>i</span>调参须知</button><div class="context-popover params-guide" id="params-guide" role="tooltip"><p><strong>运行时热更与持久化相互独立。</strong> 下发写入 <code>/dev/shm/newvision_cmd.json</code>；只有“写入 YAML”会影响下次启动。</p><p><strong>建议一次只改一个参数。</strong> 观察曲线稳定后再继续；相机曝光与增益需要一起下发。</p></div></div></div>
+              <div class="force-mode-row"><div class="force-mode-copy"><span class="danger-label">高风险旁路</span><label for="forceWorkMode">强制 WorkMode</label><small id="force-mode-source">非空时忽略下位机模式，但不会解除开火总闸门。</small></div><select id="forceWorkMode"><option value="">空 · 听从下位机</option><option value="auto_aim">auto_aim</option><option value="outpost">outpost</option><option value="small_buff">small_buff</option><option value="big_buff">big_buff</option><option value="idle">idle</option></select><button type="button" id="applyForceModeBtn" class="danger">应用强制模式</button></div>
+              <div id="params-grid" class="params-grid" aria-live="polite"></div><p class="params-status" id="params-status" role="status">正在读取配置…</p>
+            </article>
+
+            <article class="drawer-panel" id="replay-panel" hidden>
+              <div class="drawer-panel-head workspace-title"><div><span class="panel-index">ARCHIVE</span><h2>录制回放</h2></div><button type="button" id="reloadReplaysBtn" class="secondary">刷新会话</button></div>
+              <p class="params-hint">读取 <code>records/&lt;session&gt;/</code> 下的 series.jsonl 与 frames/；长时序仅对浏览器绘制抽样。</p><div id="replay-list" class="replay-list"></div>
+              <div id="replay-view" class="replay-view" hidden><div class="replay-frame-wrap"><img id="replayImg" alt="录制回放帧" /></div><div class="replay-controls"><button type="button" id="replayPlayBtn">播放</button><input type="range" id="replayScrub" min="0" max="0" value="0" aria-label="回放帧位置" /><span id="replayPos" class="replay-pos">0 / 0</span></div><div class="chart-surface replay-chart-surface"><canvas id="replayChart" aria-label="回放时序图"></canvas></div></div>
+            </article>
+
+            <article class="drawer-panel" id="individual-chart-panel" hidden><div class="drawer-panel-head"><div><span class="panel-index">CHANNELS</span><h2>独立通道</h2></div><span class="panel-meta">按总图已选字段生成</span></div><div id="individualCharts"></div></article>
+          </div>
+        </section>
+      </main>
+
+      <footer class="statusbar"><span>profile: auto_aim</span><span>logger: aw_logger/msgpack</span><span>transport: shm + websocket</span><div class="statusbar-spacer"></div><span><kbd>V</kbd> LIVE 开关</span><span><kbd>F</kbd> 视频全屏</span><span><kbd>1–4</kbd> 工作抽屉</span></footer>
+    </div>
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

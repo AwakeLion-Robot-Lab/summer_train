@@ -1,0 +1,33 @@
+# Bevy RoboMaster 仿真器（Talos IPC v2）运行配置。
+camera_name: "talos"
+
+calibration:
+  image_width: 1440
+  image_height: 1080
+  camera_matrix:
+    - [1303.7, 0.0, 720.0]
+    - [0.0, 1303.7, 540.0]
+    - [0.0, 0.0, 1.0]
+  distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+  # Talos 的姿态已经是项目统一的 world<-barrel；这里仅描述 OpenCV
+  # 光学系（z前/x右/y下）到 barrel（x前/y左/z上）的固定外参。
+  T_barrel_camera:
+    rotation:
+      - [0.0, 0.0, 1.0]
+      - [-1.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0]
+    translation: [0.0, 0.0, 0.0]
+
+talos:
+  shm_dir: "/tmp"
+  enemy: "blue"
+  mode: "auto_aim"       # auto_aim / outpost / small_buff / big_buff / idle
+  bullet_speed: 25.0
+  shoot_enable: false     # 首次联调必须保持 false
+  timeout_ms: 50
+  default_distance_m: 1.0
+  # 仅仿真 I/O 安全门：相机视野内目标不应要求单帧大角跳转。超限时保持
+  # 当前世界姿态并禁火，同时记录 actual/desired/delta，避免坐标错误猛摆头。
+  max_yaw_jump_deg: 30.0
+  # 符中心高于机器人约 23°，从手动水平/略向下姿态切入时可能需要 30°以上。
+  max_pitch_jump_deg: 45.0

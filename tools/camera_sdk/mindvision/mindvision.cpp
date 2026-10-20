@@ -95,6 +95,11 @@ void MindVision::stop()
   buffer_.close();
 }
 
+L1Sensor::CameraStats MindVision::stats() const
+{
+  return {captured_frames_.load(), buffer_.droppedCount()};
+}
+
 void MindVision::open()
 {
   if (stop_requested_.load()) {
@@ -163,6 +168,7 @@ void MindVision::open()
       if (!buffer_.write({img, timestamp})) {
         break;
       }
+      captured_frames_.fetch_add(1);
     }
 
     healthy_.store(false);

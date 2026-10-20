@@ -78,6 +78,10 @@ void HikRobot::stop() {
   buffer.close();
 }
 
+L1Sensor::CameraStats HikRobot::stats() const {
+  return {captured_frames_.load(), buffer.droppedCount()};
+}
+
 void HikRobot::capture_start() {
   if (daemon_quit_.load()) {
     return;
@@ -214,6 +218,7 @@ void HikRobot::capture_start() {
       if (!buffer.write({img, timestamp})) {
         break;
       }
+      captured_frames_.fetch_add(1);
     }
 
     capturing_ = false;
@@ -263,6 +268,26 @@ void HikRobot::set_float_value(const std::string &name, double value) {
                          value, ret);
     return;
   }
+}
+
+bool HikRobot::setExposureGain(double exposure_ms, double gain) {
+  if (!handle_ || !std::isfinite(exposure_ms) || !std::isfinite(gain)) {
+    return false;
+  }
+  // 构造时 ExposureTime 用微秒，UI/配置用毫秒，这里保持同一约定。
+  const double exposure_us = exposure_ms * 1000.0;
+  if (exposure_us <= 0.0 || gain < 0.0) {
+    return false;
+  }
+  if (MV_CC_SetFloatValue(handle_, "ExposureTime", exposure_us) != MV_OK) {
+    return false;
+  }
+  if (MV_CC_SetFloatValue(handle_, "Gain", gain) != MV_OK) {
+    return false;
+  }
+  exposure_us_ = exposure_us;
+  gain_ = gain;
+  return true;
 }
 
 void HikRobot::set_enum_value(const std::string &name, unsigned int value) {

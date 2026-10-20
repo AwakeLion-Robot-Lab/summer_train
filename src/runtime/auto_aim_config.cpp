@@ -1,6 +1,7 @@
 #include "runtime/auto_aim_config.hpp"
 
 #include "l6_telemetry/logger.hpp"
+#include "l6_telemetry/web_cmd.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -309,6 +310,7 @@ void normalize(AutoAimConfig& config)
   }
 
   config.debug.overlay_every = std::max(config.debug.overlay_every, 1);
+  config.debug.web_frame_every = std::max(config.debug.web_frame_every, 1);
 
   const RuntimeSafetyConfig runtime_defaults;
   if (!std::isfinite(config.runtime.command_jump_threshold) ||
@@ -560,6 +562,10 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(debug, "plot", config.debug.plot);
   readValue(debug, "plot_host", config.debug.plot_host);
   readValue(debug, "plot_port", config.debug.plot_port);
+  readValue(debug, "web", config.debug.web);
+  readValue(debug, "web_frame_every", config.debug.web_frame_every);
+  readValue(debug, "web_record_dir", config.debug.web_record_dir);
+  readValue(debug, "web_record_max_frames", config.debug.web_record_max_frames);
   readValue(debug, "force_work_mode", config.debug.force_work_mode);
 
   normalize(config);
@@ -585,6 +591,192 @@ void applyThresholds(
       *target = *value;
     }
   }
+}
+
+namespace {
+
+bool takeNumber(const nlohmann::json& command, const char* path, double& out)
+{
+  const auto found = L6Telemetry::lookupPath(command, path);
+  if (found && found->is_number()) {
+    out = found->get<double>();
+    return true;
+  }
+  return false;
+}
+
+bool takeBool(const nlohmann::json& command, const char* path, bool& out)
+{
+  const auto found = L6Telemetry::lookupPath(command, path);
+  if (found && found->is_boolean()) {
+    out = found->get<bool>();
+    return true;
+  }
+  return false;
+}
+
+bool takeString(const nlohmann::json& command, const char* path, std::string& out)
+{
+  const auto found = L6Telemetry::lookupPath(command, path);
+  if (found && found->is_string()) {
+    out = found->get<std::string>();
+    return true;
+  }
+  return false;
+}
+
+void noteChanged(
+  std::vector<std::string>& changed, const char* key, double old_value, double new_value)
+{
+  if (old_value != new_value) {
+    changed.push_back(key);
+  }
+}
+
+}  // namespace
+
+std::vector<std::string> applyWebTuning(
+  AutoAimConfig& config, const nlohmann::json& command)
+{
+  constexpr double kDegToRad = std::numbers::pi / 180.0;
+  std::vector<std::string> changed;
+  if (!command.is_object()) {
+    return changed;
+  }
+
+  // plan.send_to_control_ms：延迟链标定，单位 ms → 存 optional 秒。
+  {
+    double value = 0.0;
+    if (takeNumber(command, "plan.send_to_control_ms", value) && std::isfinite(value) &&
+        value >= 0.0 && value < 500.0) {
+      const double seconds = value * 1e-3;
+      const double previous = config.plan.impact.send_to_control.value_or(-1.0);
+      config.plan.impact.send_to_control = seconds;
+      noteChanged(changed, "plan.send_to_control_ms", previous, seconds);
+    }
+    if (takeNumber(command, "plan.yaw_offset_deg", value) && std::isfinite(value)) {
+      const double radians = value * kDegToRad;
+      noteChanged(changed, "plan.yaw_offset_deg", config.plan.impact.yaw_offset, radians);
+      config.plan.impact.yaw_offset = radians;
+    }
+    if (takeNumber(command, "plan.pitch_offset_deg", value) && std::isfinite(value)) {
+      const double radians = value * kDegToRad;
+      noteChanged(
+        changed, "plan.pitch_offset_deg", config.plan.impact.pitch_offset, radians);
+      config.plan.impact.pitch_offset = radians;
+    }
+    if (takeNumber(command, "plan.fallback_bullet_speed", value) && std::isfinite(value) &&
+        value > 0.0) {
+      noteChanged(
+        changed, "plan.fallback_bullet_speed",
+        config.plan.impact.fallback_bullet_speed, value);
+      config.plan.impact.fallback_bullet_speed = value;
+    }
+  }
+
+  // target.*：EKF 过程/观测噪声。负值丢掉。
+  {
+    double value = 0.0;
+    if (takeNumber(command, "target.q_translation", value) && value > 0.0) {
+      noteChanged(changed, "target.q_translation", config.target.q_translation, value);
+      config.target.q_translation = value;
+    }
+    if (takeNumber(command, "target.q_rotation", value) && value > 0.0) {
+      noteChanged(changed, "target.q_rotation", config.target.q_rotation, value);
+      config.target.q_rotation = value;
+    }
+    if (takeNumber(command, "target.angle_variance", value) && value > 0.0) {
+      noteChanged(changed, "target.angle_variance", config.target.angle_variance, value);
+      config.target.angle_variance = value;
+    }
+    if (takeNumber(command, "target.distance_variance_factor", value) && value > 0.0) {
+      noteChanged(
+        changed, "target.distance_variance_factor",
+        config.target.distance_variance_factor, value);
+      config.target.distance_variance_factor = value;
+    }
+    if (takeNumber(command, "target.armor_yaw_variance_base", value) && value > 0.0) {
+      noteChanged(
+        changed, "target.armor_yaw_variance_base",
+        config.target.armor_yaw_variance_base, value);
+      config.target.armor_yaw_variance_base = value;
+    }
+    if (takeNumber(command, "target.armor_yaw_distance_divisor", value) && value > 0.0) {
+      noteChanged(
+        changed, "target.armor_yaw_distance_divisor",
+        config.target.armor_yaw_distance_divisor, value);
+      config.target.armor_yaw_distance_divisor = value;
+    }
+  }
+
+  // fire.*：容差。shoot_enable 故意不支持——总闸门只走 YAML。
+  {
+    double value = 0.0;
+    if (takeNumber(command, "fire.hit_margin_ratio", value) && value > 0.0 &&
+        value <= 1.0) {
+      noteChanged(changed, "fire.hit_margin_ratio", config.fire.hit_margin_ratio, value);
+      config.fire.hit_margin_ratio = value;
+    }
+    if (takeNumber(command, "fire.min_yaw_tolerance_deg", value) && value >= 0.0) {
+      const double radians = value * kDegToRad;
+      noteChanged(
+        changed, "fire.min_yaw_tolerance_deg", config.fire.min_yaw_tolerance, radians);
+      config.fire.min_yaw_tolerance = radians;
+    }
+    if (takeNumber(command, "fire.min_pitch_tolerance_deg", value) && value >= 0.0) {
+      const double radians = value * kDegToRad;
+      noteChanged(
+        changed, "fire.min_pitch_tolerance_deg", config.fire.min_pitch_tolerance, radians);
+      config.fire.min_pitch_tolerance = radians;
+    }
+  }
+
+  // debug.*：运行时立刻读得到，改动最直观。
+  {
+    std::string text;
+    if (takeString(command, "debug.force_work_mode", text)) {
+      if (text != config.debug.force_work_mode) {
+        config.debug.force_work_mode = text;
+        changed.push_back("debug.force_work_mode");
+      }
+    }
+    bool flag = false;
+    if (takeBool(command, "debug.overlay", flag)) {
+      if (flag != config.debug.overlay) {
+        config.debug.overlay = flag;
+        changed.push_back("debug.overlay");
+      }
+    }
+    double value = 0.0;
+    if (takeNumber(command, "debug.web_frame_every", value) && value >= 1.0) {
+      const int every = static_cast<int>(value);
+      if (every != config.debug.web_frame_every) {
+        config.debug.web_frame_every = every;
+        changed.push_back("debug.web_frame_every");
+      }
+    }
+  }
+
+  // camera.*：曝光/增益。只有 Hik 驱动支持热更，是否真的写进去由
+  // RuntimeIo::setExposureGain 的返回值决定；这里只改配置期望值。
+  {
+    double value = 0.0;
+    if (takeNumber(command, "camera.exposure_ms", value) && value > 0.0 &&
+        value < 1000.0) {
+      if (std::abs(config.debug.camera_exposure_ms.value_or(-1.0) - value) > 1e-9) {
+        config.debug.camera_exposure_ms = value;
+        changed.push_back("camera.exposure_ms");
+      }
+    }
+    if (takeNumber(command, "camera.gain", value) && value >= 0.0 && value < 40.0) {
+      if (std::abs(config.debug.camera_gain.value_or(-1.0) - value) > 1e-9) {
+        config.debug.camera_gain = value;
+        changed.push_back("camera.gain");
+      }
+    }
+  }
+
+  return changed;
 }
 
 }  // namespace runtime

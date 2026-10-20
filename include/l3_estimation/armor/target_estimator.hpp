@@ -77,6 +77,9 @@ public:
   // 有效更新达到门限且状态未发散后，目标保持收敛标志。
   bool converged();
 
+  // 在线调参：热更过程/观测噪声。下一帧 update()/predict() 起生效。
+  void setConfig(const TargetConfig& config) noexcept { config_ = config; }
+
 private:
   // 过程噪声与观测噪声，由 Tracker 从 auto_aim.yaml 透传。
   TargetConfig config_{};

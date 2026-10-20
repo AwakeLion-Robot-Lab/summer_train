@@ -18,9 +18,11 @@
 #include "l5_control/controller.hpp"
 #include "l5_control/fire_decision.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
+#include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 #include "l6_telemetry/udp_json_sender.hpp"
+#include "l6_telemetry/web_sink.hpp"
 
 #include <Eigen/Geometry>
 
@@ -89,8 +91,10 @@ const std::string kCommandLineKeys =
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
   "{plot-host | 127.0.0.1 | PlotJuggler 的 UDP 目标地址}"
   "{plot-port | 9870 | PlotJuggler 的 UDP 端口，0 表示不发}"
+  "{web | true | 向 FSVISION 网页发送标注帧与时序：true / false}"
+  "{web-frame-every | 1 | 每 N 帧向网页写一张 JPEG；1 为实时源帧}"
   "{conf | 0 | 覆盖检测分数门（confidence/minimum/nms_score 三者同时设为该值），<=0 保持 layout 预设}"
-  "{@input-path | records/3m_high | avi 和 txt 文件的路径（不含后缀）}";
+  "{@input-path | /home/rm/0915video/fast_run | avi 和 txt 文件的路径（不含后缀）}";
 
 struct PoseSample {
   double seconds{0.0};
@@ -704,6 +708,9 @@ int main(int argc, char** argv)
     const int start_index = cli.get<int>("start-index");
     const int end_index = cli.get<int>("end-index");
     const int wait_ms = cli.get<int>("wait");
+    const bool web_enabled = cli.get<bool>("web");
+    const int web_frame_every = cli.get<int>("web-frame-every");
+    require(web_frame_every >= 1, "web-frame-every 必须大于等于 1");
 
     // 叠加层口径。sp 视图刻意只保留 sp_vision auto_aim_test 画的那两样东西：
     // 当前 EKF 展开的全部装甲板（绿），和命中时刻瞄准的那块板（红）。这样
@@ -813,6 +820,19 @@ int main(int argc, char** argv)
         static_cast<std::uint16_t>(plot_port));
     }
 
+    // 离线回放复用实机同一个 WebSink。网页端因此可以直接查看标注帧、
+    // 曲线和 aw_logger 日志，不再依赖 auto_aim_test 的本地 OpenCV 窗口。
+    std::optional<L6Telemetry::WebSink> web_sink;
+    if (web_enabled) {
+      web_sink.emplace(200);
+      web_sink->writeEvent(
+        "replay_start",
+        nlohmann::json{{"input", input_path.string()},
+                       {"frame_every", web_frame_every}});
+      L6Telemetry::logInfo(
+        "FSVISION replay output enabled", "frame_every", web_frame_every);
+    }
+
     // 跳过 start-index 之前的帧，视频和文本必须同步前进。
     video.set(cv::CAP_PROP_POS_FRAMES, start_index);
     PoseSample skipped;
@@ -823,6 +843,10 @@ int main(int argc, char** argv)
     cv::Mat img;
     PoseSample pose;
     const auto t0 = std::chrono::steady_clock::now();
+    const double declared_source_fps = video.get(cv::CAP_PROP_FPS);
+    const double source_fps = std::isfinite(declared_source_fps)
+      ? declared_source_fps : 0.0;
+    L6Telemetry::FpsCounter processing_fps;
     std::size_t frames = 0;
     std::size_t observation_frames = 0;
     std::size_t valid_pnp_observations = 0;
@@ -872,6 +896,7 @@ int main(int argc, char** argv)
       if (img.empty()) {
         break;
       }
+      processing_fps.update();
       if (!readPose(text, pose)) {
         std::cout << "四元数文本已结束，回放停在最后一组配对帧\n";
         break;
@@ -1355,8 +1380,77 @@ int main(int argc, char** argv)
           data["pred_armor_yaw"] = *predicted_armor_yaw * kRadToDeg;
         }
       }
+
+      // FSVISION 使用与实机 telemetryFrame 相同的分组路径。保留上面的扁平键
+      // 给既有 PlotJuggler 配置，同时补齐网页默认曲线与健康面板所需字段。
+      data["gimbal"]["yaw"] = gimbal_ypr[0] * kRadToDeg;
+      data["gimbal"]["pitch"] = gimbal_ypr[1] * kRadToDeg;
+      data["gimbal"]["bullet_speed"] = bullet_speed;
+      data["track"]["state"] = static_cast<int>(tracker.state());
+      data["track"]["n_obs"] = static_cast<int>(observations.size());
+      data["track"]["resets"] = tracker.resetCount();
+      if (selected) {
+        const auto& observation = observations[*selected];
+        data["obs"]["x"] = observation.xyz_in_world[0];
+        data["obs"]["y"] = observation.xyz_in_world[1];
+        data["obs"]["z"] = observation.xyz_in_world[2];
+        data["obs"]["distance"] = observation.xyz_in_world.norm();
+        data["obs"]["yaw"] = observation.ypr_in_world[0] * kRadToDeg;
+        data["obs"]["yaw_raw"] = observation.yaw_raw * kRadToDeg;
+      }
+      if (target) {
+        const Eigen::VectorXd tx = target->ekf_x();
+        data["ekf"]["x"] = tx[0];
+        data["ekf"]["vx"] = tx[1];
+        data["ekf"]["y"] = tx[2];
+        data["ekf"]["vy"] = tx[3];
+        data["ekf"]["z"] = tx[4];
+        data["ekf"]["vz"] = tx[5];
+        data["ekf"]["a"] = tx[6] * kRadToDeg;
+        data["ekf"]["w"] = tx[7];
+        data["ekf"]["r"] = tx[8];
+        data["ekf"]["nis"] = target->ekf().last_nis;
+      }
+      data["aim"]["status"] = static_cast<int>(plan.status);
+      data["aim"]["reason"] = static_cast<int>(plan.reason);
+      if (plan.valid()) {
+        data["aim"]["yaw"] = plan.aim.yaw * kRadToDeg;
+        data["aim"]["pitch"] = plan.aim.pitch * kRadToDeg;
+        data["aim"]["shoot_yaw"] = plan.aim.shootYaw() * kRadToDeg;
+        data["aim"]["shoot_pitch"] = plan.aim.shootPitch() * kRadToDeg;
+      }
+      data["delay"]["image_to_plan"] = plan.timing.delay.image_to_plan * 1e3;
+      data["delay"]["plan_to_send"] = plan.timing.delay.plan_to_send * 1e3;
+      data["delay"]["send_to_control"] = plan.timing.delay.send_to_control * 1e3;
+      data["delay"]["control_to_fire"] = plan.timing.delay.control_to_fire * 1e3;
+      data["delay"]["fire_to_hit"] = plan.timing.delay.fire_to_hit * 1e3;
+      data["delay"]["before_fire"] = plan.timing.delay.beforeFire() * 1e3;
+      data["fire"]["feasible"] = fire_decision.fire_feasible ? 1 : 0;
+      data["fire"]["shoot"] = command && command->shoot ? 1 : 0;
+      data["fire"]["yaw_err"] = fire_decision.yaw_error * kRadToDeg;
+      data["fire"]["pitch_err"] = fire_decision.pitch_error * kRadToDeg;
+      data["fire"]["reason"] = fire_decision.reasons.empty()
+        ? -1
+        : static_cast<int>(fire_decision.reasons.front());
+
+      // 回放的 CAM 是视频文件声明的源帧率；ALG 是本机整条处理循环的实测速率。
+      data["runtime"]["camera_fps"] = source_fps;
+      data["runtime"]["algorithm_fps"] = processing_fps.fps();
+      data["runtime"]["algorithm_received"] = frames;
+      if (web_sink) {
+        const auto web_stats = web_sink->stats();
+        data["runtime"]["web_fps"] = web_stats.encode_fps;
+        data["runtime"]["web_submitted"] = web_stats.submitted_frames;
+        data["runtime"]["web_encoded"] = web_stats.encoded_frames;
+        data["runtime"]["web_dropped"] = web_stats.dropped_frames;
+        data["runtime"]["web_encode_ms"] = web_stats.encode_ms;
+      }
+
       if (plotter) {
         (void)plotter->send(data);
+      }
+      if (web_sink) {
+        web_sink->writeSeries(data);
       }
 
       if (show_plot) {
@@ -1368,7 +1462,13 @@ int main(int argc, char** argv)
             selected ? &observations[*selected] : nullptr, solver, ekf_armor_yaw,
             predicted_armor_yaw, frame_index));
       }
-      cv::resize(img, img, {}, 0.5, 0.5);  // 显示时缩小图片尺寸
+      // 本地窗口和网页共用半分辨率标注帧。网页面板本身远小于原始录像，发送
+      // 1440x1080 只会增加 JPEG 编码与带宽，不会增加可见细节。
+      cv::resize(img, img, {}, 0.5, 0.5);
+      if (web_sink &&
+          (frame_index - start_index) % web_frame_every == 0) {
+        web_sink->writeFrame(img);
+      }
       cv::imshow("reprojection", img);
       const int key = cv::waitKey(wait_ms);
       if (key == 'q' || key == 27) {
@@ -1379,6 +1479,10 @@ int main(int argc, char** argv)
       }
     }
 
+    if (web_sink) {
+      web_sink->writeEvent("replay_end", nlohmann::json{{"frames", frames}});
+      web_sink->flush();
+    }
     cv::destroyAllWindows();
     std::cout << "\n回放结束\n"
               << "帧数: " << frames << '\n'

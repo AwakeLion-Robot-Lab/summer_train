@@ -5,11 +5,9 @@
 #include <mutex>
 #include <string>
 
-namespace L1Sensor {
-class Camera;
-}
-
 namespace runtime {
+
+class RuntimeIo;
 
 class AutoAimRuntime {
 public:
@@ -19,8 +17,8 @@ public:
 
 private:
   std::atomic<bool> running_{false};
-  mutable std::mutex camera_mutex_;
-  std::shared_ptr<L1Sensor::Camera> active_camera_;
+  mutable std::mutex io_mutex_;
+  std::shared_ptr<RuntimeIo> active_io_;
   std::string config_path_;
 };
 

@@ -298,6 +298,20 @@ debug:
   plot_host: "127.0.0.1"
   plot_port: 9870
 
+  # 远程 Web 调试（旁路，可整体删）：标注帧写 /dev/shm/newvision_frame，
+  # 时序写 newvision_data.json，另开 python3 web.py 后浏览器看 http://<ip>:9000。
+  # 与 overlay 分开：无头 NUC 上 namedWindow 会抛，但 Web 仍要能看图。
+  # 与 plot 共用 telemetryFrame 字段；PlotJuggler 可继续收 9870。
+  # 实机调试时打开 web: true；比赛前改回 false。
+  web: true
+  # 每 N 帧向 Web 后台线程提交一张标注图。队列只留最新帧，不阻塞算法；
+  # 默认 5 优先省 CPU，需要观察高速运动时可临时调小到 1–2。
+  web_frame_every: 5
+  # 非空时录制 series.jsonl + frames/*.jpg 到该目录。比赛留空。
+  web_record_dir: ""
+  # 录制帧数上限；<=0 不限。实际时长随 web_frame_every 与相机帧率变化。
+  web_record_max_frames: 3000
+
   # 无视下位机上报的 WorkMode，强制按指定模式跑。留空 = 不覆盖（正常行为）。
   # 取值：auto_aim / outpost / small_buff / big_buff / idle
   #

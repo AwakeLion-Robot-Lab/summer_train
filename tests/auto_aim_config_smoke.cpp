@@ -72,12 +72,46 @@ void testMissingFileDegrades()
   std::cout << "  [ok] missing config degrades to defaults\n";
 }
 
+// 在线调参白名单：热更生效、单位换算正确、shoot_enable 永远不许碰。
+void testWebTuningWhitelist()
+{
+  constexpr double kRadToDeg = 180.0 / 3.141592653589793;
+  runtime::AutoAimConfig config;
+  const nlohmann::json command = {
+    {"plan", {{"send_to_control_ms", 12.5}}},
+    {"target", {{"q_translation", 250.0}}},
+    {"fire",
+     {{"hit_margin_ratio", 0.8},
+      {"min_yaw_tolerance_deg", 1.5},
+      {"shoot_enable", true}}},
+    {"debug", {{"force_work_mode", "auto_aim"}, {"overlay", true}}},
+    {"unknown", {{"whatever", 1.0}}},
+  };
+
+  const auto changed = runtime::applyWebTuning(config, command);
+  require(!changed.empty(), "tuning must report changes");
+  require(config.plan.impact.send_to_control.has_value(), "send_to_control missing");
+  require(
+    std::abs(*config.plan.impact.send_to_control - 0.0125) < 1e-9,
+    "send_to_control_ms must convert to seconds");
+  require(config.target.q_translation == 250.0, "q_translation must apply");
+  require(std::abs(config.fire.hit_margin_ratio - 0.8) < 1e-9, "hit_margin must apply");
+  require(
+    std::abs(config.fire.min_yaw_tolerance * kRadToDeg - 1.5) < 1e-9,
+    "min_yaw_tolerance must convert deg->rad");
+  require(config.debug.overlay, "overlay must apply");
+  require(config.debug.force_work_mode == "auto_aim", "force_work_mode must apply");
+  require(!config.fire.shoot_enable, "shoot_enable must stay false via web");
+  std::cout << "  [ok] web tuning whitelist, changed=" << changed.size() << "\n";
+}
+
 }  // namespace
 
 int main()
 {
   testRepositoryConfigLoads();
   testMissingFileDegrades();
+  testWebTuningWhitelist();
   std::cout << "auto aim config smoke test passed\n";
   return 0;
 }

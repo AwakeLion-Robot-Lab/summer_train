@@ -1,7 +1,5 @@
 #include "runtime/auto_aim_runtime.hpp"
-#include "l1_sensor/camera/camera.hpp"
-#include "l1_sensor/serial/serial_config.hpp"
-#include "l1_sensor/serial/serial_worker.hpp"
+#include "l1_sensor/buff/transform.hpp"
 #include "l2_perception/armor.hpp"
 #include "l2_perception/armor/armor_detector.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
@@ -9,10 +7,17 @@
 #include "l4_planning/armor/planner.hpp"
 #include "l5_control/controller.hpp"
 #include "l6_telemetry/aim_overlay.hpp"
+#include "l6_telemetry/buff/overlay.hpp"
+#include "l6_telemetry/fps_counter.hpp"
 #include "l6_telemetry/logger.hpp"
 #include "l6_telemetry/math.hpp"
 #include "l6_telemetry/udp_json_sender.hpp"
+#include "l6_telemetry/web_cmd.hpp"
+#include "l6_telemetry/web_sink.hpp"
 #include "runtime/auto_aim_config.hpp"
+#include "runtime/buff/buff_config.hpp"
+#include "runtime/buff/buff_runtime.hpp"
+#include "runtime/runtime_io.hpp"
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
@@ -42,6 +47,53 @@ bool isEnemyArmor(L2Perception::ArmorColor observed,
   }
 
   return false;
+}
+
+struct TalosMetrics {
+  std::uint64_t frames{};
+  std::uint64_t observations{};
+  std::uint64_t matches{};
+  double error_sum{};
+};
+
+// GroundTruth 只用于验收统计，结果绝不回灌检测、跟踪或规划。
+void updateTalosMetrics(
+  TalosMetrics& metrics,
+  const std::vector<L3Estimation::Armor>& observations,
+  const L1Sensor::talos::GroundTruthBatch& truth,
+  L1Sensor::EnemyColor enemy)
+{
+  const std::uint8_t team = enemy == L1Sensor::EnemyColor::Red ? 0 : 1;
+  constexpr double kMatchGateMeters = 0.6;
+  ++metrics.frames;
+  for (const auto& observation : observations) {
+    if (!observation.xyz_in_world.allFinite()) continue;
+    ++metrics.observations;
+    double best = kMatchGateMeters;
+    for (std::uint32_t index = 0;
+         index < truth.target_count && index < L1Sensor::talos::kMaxGroundTruthTargets;
+         ++index) {
+      const auto& target = truth.targets[index];
+      if (target.team != team) continue;
+      const Eigen::Vector3d position{
+        target.position[0], target.position[1], target.position[2]};
+      best = std::min(best, (observation.xyz_in_world - position).norm());
+    }
+    if (best < kMatchGateMeters) {
+      ++metrics.matches;
+      metrics.error_sum += best;
+    }
+  }
+  if (metrics.frames % 120 == 0) {
+    const double precision = metrics.observations == 0 ? 0.0
+      : static_cast<double>(metrics.matches) / metrics.observations;
+    const double mean_error = metrics.matches == 0 ? 0.0
+      : metrics.error_sum / metrics.matches;
+    L6Telemetry::logInfo(
+      "Talos GT armor metrics", "frames", metrics.frames,
+      "observations", metrics.observations, "matched", metrics.matches,
+      "precision", precision, "mean_error_m", mean_error);
+  }
 }
 
 // 把配置里的字符串解析成 WorkMode。空串或无法识别都返回空，表示不覆盖——
@@ -131,13 +183,21 @@ nlohmann::json telemetryFrame(
   const L4Planning::Plan& plan,
   const L5Control::FireDecision& fire,
   bool command_sent,
-  const L1Sensor::SerialWorker& serial,
+  const runtime::RuntimeIo& io,
   std::chrono::steady_clock::time_point timestamp,
   int detect_count,
   std::uint64_t tracker_resets,
   std::uint64_t plan_rejects,
   bool pose_ready,
   double pose_wait_ms);
+nlohmann::json buffTelemetryFrame(
+  const L1Sensor::RobotState& state,
+  const L3Estimation::Buff::Addition& addition,
+  const std::optional<L3Estimation::Buff::State>& buff_state,
+  const L4Planning::Buff::Plan& plan,
+  const std::optional<L5Control::SerialCommand>& command,
+  std::chrono::steady_clock::time_point timestamp,
+  bool command_sent);
 /********************************** debug **********************************/
 
 } // namespace
@@ -149,28 +209,33 @@ AutoAimRuntime::AutoAimRuntime(const std::string &config_path)
 
 void AutoAimRuntime::run() {
   running_ = true;
-  const AutoAimConfig auto_aim_config =
+  AutoAimConfig auto_aim_config =
     loadAutoAimConfig("config/auto_aim.yaml");
-  auto camera = std::make_shared<L1Sensor::Camera>(config_path_);
+  auto io = makeRuntimeIo(config_path_);
+  if (io->name() == "talos") {
+    // Talos 自己提供模式和弹速。硬件调试旁路若覆盖它，small/big_buff 配置会
+    // 永远进不了对应链路；信任 fallback 又会把仿真的 projectile.speed 丢掉。
+    auto_aim_config.debug.force_work_mode.clear();
+    auto_aim_config.plan.impact.trust_fallback_bullet_speed = false;
+  }
   {
-    std::lock_guard<std::mutex> lock(camera_mutex_);
-    active_camera_ = camera;
+    std::lock_guard<std::mutex> lock(io_mutex_);
+    active_io_ = io;
   }
   // 启动时只加载一次模型；每帧仅执行预处理、推理和 Decoder。
   L2Perception::ArmorDetector armor_detector =
     makeArmorDetector(auto_aim_config);
 
-  //配置并启动串口
-  auto serial_config = L1Sensor::loadSerialConfig("config/serial_config.yaml");
-  L1Sensor::SerialWorker serial(serial_config);
-  const bool serial_started = serial.start();
-  if (!serial_started && serial_config.enable) {
-    L6Telemetry::logWarn("Failed to start serial worker.");
+  const bool io_started = io->start();
+  if (!io_started) {
+    L6Telemetry::logWarn("Failed to start runtime I/O backend", io->name());
+  } else {
+    L6Telemetry::logInfo("runtime I/O backend started", io->name());
   }
   // L3 Tracker 持有 PnP 和 EKF。标定缺失时 runtime 继续运行检测和显示，
   // 但后续不得生成有效瞄准/开火命令。
   std::optional<L3Estimation::Tracker> tracker;
-  const auto& camera_calibration = camera->calibration();
+  const auto& camera_calibration = io->calibration();
   if (!camera_calibration) {
     L6Telemetry::logWarn("Tracker disabled: camera calibration is missing");
   } else {
@@ -187,33 +252,73 @@ void AutoAimRuntime::run() {
     }
   }
 
+  // 打符链路完全独立于装甲板链路；只在相机内参和枪管外参齐全时启用，
+  // 缺少外参不能用单位阵猜测，否则世界系姿态会整体偏转。
+  std::optional<runtime::buff::Runtime> buff_runtime;
+  std::optional<runtime::buff::Config> buff_runtime_config;
+  if (camera_calibration && camera_calibration->barrelExtrinsicsReady()) {
+    try {
+      buff_runtime_config = runtime::buff::loadConfig("config/buff.yaml");
+      buff_runtime.emplace(*camera_calibration, *buff_runtime_config);
+      L6Telemetry::logInfo("Buff runtime configured");
+    } catch (const std::exception& error) {
+      L6Telemetry::logError("Buff runtime unavailable", error.what());
+    }
+  } else {
+    L6Telemetry::logWarn(
+      "Buff runtime disabled: camera calibration or barrel extrinsics are missing");
+  }
+
   L4Planning::Planner planner(auto_aim_config.plan);
   L5Control::Controller controller(
     auto_aim_config.fire,
     auto_aim_config.runtime.command_jump_threshold);
 
-  // 规划失败时不能只是“不更新命令”：上一条 shoot=true 在
-  // command_timeout 内仍可能被重复发送。这里保留最后角度并立即关火。
-  const auto sendSafeHold = [&]() {
-    if (serial_started) {
-      if (const auto command = controller.safeHold()) {
-        serial.updateCommand(*command);
-      }
+  const auto publishCommand = [&io, io_started](
+                                const std::optional<L5Control::SerialCommand>& command) {
+    if (io_started && command) {
+      io->updateCommand(*command);
     }
   };
 
-  const auto stopAimSession = [&]() {
+  // 规划失败时不能只是“不更新命令”：上一条 shoot=true 在
+  // command_timeout 内仍可能被重复发送。这里保留最后角度并立即关火。
+  const auto sendAimSafeHold = [&]() {
+    publishCommand(controller.safeHold());
+  };
+
+  // 会话停止只负责重置算法状态，不直接写串口。否则从装甲板
+  // 切到打符时，旧链路的 safe-hold 会与新链路命令在同一帧竞争。
+  // 返回值留给调用方做过渡保底，最终每帧最多发布一条命令。
+  bool aim_session_active = false;
+  const auto stopAimSession = [&]() -> std::optional<L5Control::SerialCommand> {
+    if (!aim_session_active) return std::nullopt;
+    const auto safe_hold = controller.safeHold();
     if (tracker) {
       tracker->reset();
     }
     planner.reset();
-    sendSafeHold();
+    aim_session_active = false;
+    return safe_hold;
+  };
+
+  bool buff_session_active = false;
+  const auto stopBuffSession = [&]() -> std::optional<L5Control::SerialCommand> {
+    if (!buff_runtime || !buff_session_active) return std::nullopt;
+    // reset() 会清掉 L5 的最后角度，因此必须先取安全保持命令。
+    const auto safe_hold = buff_runtime->safeHold();
+    buff_runtime->reset();
+    buff_session_active = false;
+    return safe_hold;
   };
 
   /******************************** debug *********************************/
   // 叠加层默认关闭：imshow 的耗时会计进 image_to_plan，而且比赛用的机器
   // 没有显示器，无条件 namedWindow 会直接抛。
-  const bool overlay_enabled = auto_aim_config.debug.overlay;
+  bool overlay_enabled = auto_aim_config.debug.overlay;
+  const bool web_enabled = auto_aim_config.debug.web;
+  // 画与显分离：Web 也要标注图，但不能 namedWindow/imshow。
+  bool draw_debug = overlay_enabled || web_enabled;
   if (overlay_enabled) {
     cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
   }
@@ -221,7 +326,7 @@ void AutoAimRuntime::run() {
   // 叠加层要把世界系位姿投回图像，需要一个求解器。这里另建一个与 Tracker
   // 内部同参数的实例，只做重投影、不参与滤波——不为了画图去开 Tracker 的内部。
   std::optional<L3Estimation::PnpSolver> overlay_solver;
-  if (overlay_enabled && camera_calibration) {
+  if (draw_debug && camera_calibration) {
     overlay_solver.emplace(*camera_calibration, auto_aim_config.armor);
   }
 
@@ -235,10 +340,96 @@ void AutoAimRuntime::run() {
     L6Telemetry::logInfo(
       "telemetry enabled", plotter->host(), std::to_string(plotter->port()));
   }
+  // Web 与 PlotJuggler 消费同一份 telemetryFrame；WebSink 只在 web 打开时构造，
+  // 写 /dev/shm/newvision_*，由独立的 web.py 进程转成 HTTP。
+  std::optional<L6Telemetry::WebSink> web_sink;
+  if (web_enabled) {
+    web_sink.emplace(
+      200, auto_aim_config.debug.web_record_dir,
+      auto_aim_config.debug.web_record_max_frames);
+    L6Telemetry::logInfo("web debug enabled", "http://0.0.0.0:9000");
+    if (!auto_aim_config.debug.web_record_dir.empty()) {
+      L6Telemetry::logInfo(
+        "web recording to", auto_aim_config.debug.web_record_dir);
+    }
+  }
+  // 在线调参通道：与 WebSink 分开开关。poll 只读 shm，不进瞄准链路。
+  L6Telemetry::WebCmd web_cmd;
+  auto forced_mode = parseWorkMode(auto_aim_config.debug.force_work_mode);
+  const auto applyTuningIfAny = [&]() {
+    if (!web_cmd.poll()) {
+      return;
+    }
+    const auto changed = applyWebTuning(auto_aim_config, web_cmd.snapshot());
+    if (changed.empty()) {
+      return;
+    }
+    std::string joined;
+    for (const auto& key : changed) {
+      joined += joined.empty() ? key : ("," + key);
+    }
+    L6Telemetry::logWarn("web tuning applied", joined);
+    const bool forced_mode_changed = std::find(
+      changed.begin(), changed.end(), "debug.force_work_mode") != changed.end();
+    if (forced_mode_changed) {
+      forced_mode = parseWorkMode(auto_aim_config.debug.force_work_mode);
+      if (forced_mode) {
+        L6Telemetry::logWarn(
+          "!!! debug.force_work_mode changed at runtime:",
+          L1Sensor::toString(*forced_mode), "- the MCU's WorkMode is being IGNORED");
+      } else {
+        L6Telemetry::logInfo(
+          "debug.force_work_mode cleared at runtime; following MCU WorkMode");
+      }
+      if (web_sink) {
+        web_sink->writeEvent(
+          "force_mode_change",
+          forced_mode ? nlohmann::json{L1Sensor::toString(*forced_mode)}
+                      : nlohmann::json{"mcu"});
+      }
+    }
+    const bool overlay_changed = std::find(
+      changed.begin(), changed.end(), "debug.overlay") != changed.end();
+    if (overlay_changed &&
+        overlay_enabled != auto_aim_config.debug.overlay) {
+      try {
+        if (auto_aim_config.debug.overlay) {
+          cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
+        } else {
+          cv::destroyWindow("auto_aim");
+        }
+        overlay_enabled = auto_aim_config.debug.overlay;
+        draw_debug = overlay_enabled || web_enabled;
+        if (draw_debug && !overlay_solver && camera_calibration) {
+          overlay_solver.emplace(*camera_calibration, auto_aim_config.armor);
+        }
+      } catch (const cv::Exception& error) {
+        auto_aim_config.debug.overlay = overlay_enabled;
+        L6Telemetry::logWarn("web overlay toggle failed", error.what());
+      }
+    }
+    // 热更进活对象。Tracker 持有当前 EKF，必须连 target 一起改，
+    // 否则要等丢目标重建才生效，调参时看不出差别。
+    if (tracker) {
+      tracker->setTargetConfig(auto_aim_config.target);
+    }
+    planner.setImpactConfig(auto_aim_config.plan.impact);
+    controller.setFireConfig(auto_aim_config.fire);
+    if (auto_aim_config.debug.camera_exposure_ms && auto_aim_config.debug.camera_gain) {
+      const bool ok = io->setExposureGain(
+        *auto_aim_config.debug.camera_exposure_ms, *auto_aim_config.debug.camera_gain);
+      if (!ok) {
+        L6Telemetry::logWarn(
+          "camera exposure/gain not applied (driver does not support hot update)");
+      }
+    }
+    if (web_sink) {
+      web_sink->writeEvent("tuning_applied", joined);
+    }
+  };
   /******************************** debug *********************************/
 
-  // 调试旁路：强制 WorkMode。启动时解析一次，循环里只做覆盖。
-  const auto forced_mode = parseWorkMode(auto_aim_config.debug.force_work_mode);
+  // 调试旁路：强制 WorkMode。Web 热更会同步刷新 forced_mode。
   if (forced_mode) {
     L6Telemetry::logWarn(
       "!!! debug.force_work_mode is ACTIVE:", L1Sensor::toString(*forced_mode),
@@ -260,6 +451,49 @@ void AutoAimRuntime::run() {
   // L4 拒绝出计划的累计帧数。拒绝时 L5 会原样重发上一条命令（safeHold），
   // 云台角就此冻结一帧，所以这个数直接对应"命令被冻住了几帧"。
   std::uint64_t plan_reject_count = 0;
+  TalosMetrics talos_metrics;
+  // 事件边沿：只在变化时 writeEvent，避免每帧刷日志树。
+  std::optional<L1Sensor::WorkMode> last_mode_for_event;
+  std::uint64_t last_reset_for_event = 0;
+  int last_fire_reason_for_event = -1;
+
+  // CAM 是驱动线程实际采到的帧率；ALG 是主循环成功取帧的吞吐率。
+  // 两者分开后，一眼就能判断瓶颈在相机，还是算法来不及消费。
+  L6Telemetry::FpsCounter algorithm_fps;
+  auto camera_sample_at = std::chrono::steady_clock::now();
+  auto last_camera_frames = io->stats().camera_captured_frames;
+  double camera_fps = 0.0;
+  const auto updatePerformanceCounters = [&]() {
+    const auto now = std::chrono::steady_clock::now();
+    algorithm_fps.update(now);
+    const double elapsed =
+      std::chrono::duration<double>(now - camera_sample_at).count();
+    if (elapsed < 1.0) {
+      return;
+    }
+    const auto current = io->stats().camera_captured_frames;
+    const auto frames = current >= last_camera_frames
+      ? current - last_camera_frames : 0;
+    camera_fps = static_cast<double>(frames) / elapsed;
+    last_camera_frames = current;
+    camera_sample_at = now;
+  };
+  const auto appendPerformanceTelemetry = [&](nlohmann::json& data) {
+    const auto runtime_stats = io->stats();
+    data["runtime"]["camera_fps"] = camera_fps;
+    data["runtime"]["algorithm_fps"] = algorithm_fps.fps();
+    data["runtime"]["camera_captured"] = runtime_stats.camera_captured_frames;
+    data["runtime"]["camera_dropped"] = runtime_stats.camera_dropped_frames;
+    data["runtime"]["algorithm_received"] = runtime_stats.algorithm_received_frames;
+    if (web_sink) {
+      const auto web_stats = web_sink->stats();
+      data["runtime"]["web_fps"] = web_stats.encode_fps;
+      data["runtime"]["web_submitted"] = web_stats.submitted_frames;
+      data["runtime"]["web_encoded"] = web_stats.encoded_frames;
+      data["runtime"]["web_dropped"] = web_stats.dropped_frames;
+      data["runtime"]["web_encode_ms"] = web_stats.encode_ms;
+    }
+  };
 
   // 单线程同步是设计选择不是待办：自瞄的代价是开火那一刻的位置误差而不是
   // 帧率，异步流水线换来吞吐、代价是结果多滞后一帧，那一帧会进
@@ -268,18 +502,25 @@ void AutoAimRuntime::run() {
   // tools/LatestBuffer 是给将来的取图线程预留的，当前管线不用。
   while (running_) {
     //获取相机帧和时间辍
-    if (!camera->read(frame, timestamp)) {
+    if (!io->read(frame, timestamp)) {
       if (!running_) {
-        sendSafeHold();
         break;
       }
       // 读帧超时期间没有新观测，不继续续期上一帧的开火位。
-      sendSafeHold();
+      if (buff_session_active) {
+        publishCommand(stopBuffSession());
+      } else {
+        sendAimSafeHold();
+      }
       continue;
     }
-    const auto state = serial.latestState();
-    if (!serial_started || !state) {
-      stopAimSession();
+    updatePerformanceCounters();
+    bool wrote_web_series = false;
+    const auto state = io->latestState();
+    if (!io_started || !state) {
+      const auto aim_hold = stopAimSession();
+      const auto buff_hold = stopBuffSession();
+      publishCommand(buff_hold ? buff_hold : aim_hold);
     } else {
       // 覆盖只改分派用的模式，state 本身不动——遥测和日志仍然反映下位机
       // 真正上报的值，否则排查时会看不出电控到底给没给对模式。
@@ -287,6 +528,8 @@ void AutoAimRuntime::run() {
       switch (mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
+          const auto transition_hold = stopBuffSession();
+          aim_session_active = true;
           // L2: 检测并保留敌方装甲板。
           auto armors = armor_detector.detect(frame);
           std::erase_if(armors, [&state](const auto& armor) {
@@ -297,10 +540,10 @@ void AutoAimRuntime::run() {
           // 放在检测之后等，等待与检测重叠，不白白加延迟；等不到（串口断流）
           // 就用边界值，遥测里 pose_ready=0 会标出来。
           const auto wait_start = std::chrono::steady_clock::now();
-          const bool pose_ready = serial.waitPose(timestamp);
+          const bool pose_ready = io->waitPose(timestamp);
           const double pose_wait_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - wait_start).count();
-          const auto image_pose = serial.gimbalPoseAt(timestamp);
+          const auto image_pose = io->gimbalPoseAt(timestamp);
 
           // L3: PnP、状态机与整车 EKF。
           std::optional<L3Estimation::TrackedTarget> target;
@@ -311,11 +554,18 @@ void AutoAimRuntime::run() {
             ? tracker->state()
             : L3Estimation::TrackState::Lost;
 
+          if (tracker) {
+            if (const auto truth = io->groundTruth()) {
+              updateTalosMetrics(
+                talos_metrics, tracker->observations(), *truth, state->enemy_color);
+            }
+          }
+
           // 规划与开火判定使用推理结束时刻。
           const auto plan_time = std::chrono::steady_clock::now();
           // 这里要的是“现在”的云台角，不是过去某一时刻的插值。“现在”之后不可能
           // 有采样，走 gimbalPoseAt(now()) 只会每帧都撞越界分支、白白计一次数。
-          const auto actual_pose = serial.latestGimbalPose();
+          const auto actual_pose = io->latestGimbalPose();
 
           // L4: 预测命中时刻、选板并解算弹道。
           L4Planning::PlanInput plan_input;
@@ -336,11 +586,14 @@ void AutoAimRuntime::run() {
             plan,
             actual_pose);
 
+          // 从打符切回装甲板的首帧若还没有有效规划，保持打符
+          // 最后角度并关火，避免回跳到上一次装甲板会话的陈旧角度。
+          const auto command_to_publish =
+            transition_hold && !plan.valid() ? transition_hold : command;
+
           // L1: 下发 L5 生成的控制命令，并量出本帧规划到发送的耗时，
           // 供下一帧的延迟链使用。
-          if (command) {
-            serial.updateCommand(*command);
-          }
+          publishCommand(command_to_publish);
 
           // 规划到发送的实测耗时必须在 updateCommand 之后**立刻**取。
           // 放到叠加层之后的话，画图的几毫秒会被算进 plan_to_send，而恰恰
@@ -350,21 +603,34 @@ void AutoAimRuntime::run() {
 
           /*************************** debug ****************************/
           // 全部排在命令下发和延迟测量之后，不占用瞄准链路的时间预算。
-          if (plotter) {
+          if (plotter || web_sink) {
             // 三目里直接放 observations() 会按值合成公共类型，等于每帧拷一份
             // 整个 vector；用一个空的静态量接住 tracker 为空的分支。
             static const std::vector<L3Estimation::Armor> kNoObservations;
             const auto& observations =
               tracker ? tracker->observations() : kNoObservations;
-            (void)plotter->send(telemetryFrame(
+            auto data = telemetryFrame(
               image_pose, *state, observations, target, track_state, plan,
-              controller.lastDecision(), command.has_value(), serial,
+              controller.lastDecision(), command_to_publish.has_value(), *io,
               timestamp, tracker ? tracker->detectCount() : 0,
               tracker ? tracker->resetCount() : 0, plan_reject_count,
-              pose_ready, pose_wait_ms));
+              pose_ready, pose_wait_ms);
+            appendPerformanceTelemetry(data);
+            if (plotter) {
+              (void)plotter->send(data);
+            }
+            if (web_sink) {
+              web_sink->writeSeries(data);
+              wrote_web_series = true;
+            }
           }
-          if (overlay_solver && tracker &&
-              frame_index % auto_aim_config.debug.overlay_every == 0) {
+          // 画与显分离：imshow 只在 overlay 开启时才做；Web 要的只是标注帧。
+          // overlay_every 与 web_frame_every 独立，同一帧最多画一次。
+          const bool draw_this_frame =
+            overlay_solver && tracker &&
+            (frame_index % auto_aim_config.debug.overlay_every == 0 ||
+             (web_sink && frame_index % auto_aim_config.debug.web_frame_every == 0));
+          if (draw_this_frame) {
             overlay_solver->set_R_world_barrel(image_pose);
             L6Telemetry::drawAimOverlay(
               frame,
@@ -382,24 +648,112 @@ void AutoAimRuntime::run() {
         }
 
         case L1Sensor::WorkMode::SmallBuff:
-          // 小能量机后续从这个独立入口接入，不复用装甲板 Tracker。
-          stopAimSession();
-          break;
+        case L1Sensor::WorkMode::BigBuff: {
+          const auto transition_hold = stopAimSession();
+          if (!buff_runtime) {
+            publishCommand(transition_hold);
+            break;
+          }
+          buff_session_active = true;
 
-        case L1Sensor::WorkMode::BigBuff:
-          // 大能量机保留独立模型、跟踪和预测参数入口。
-          stopAimSession();
+          auto detections = buff_runtime->detect(frame, state->enemy_color);
+          const auto wait_start = std::chrono::steady_clock::now();
+          const bool pose_ready = io->waitPose(timestamp);
+          (void)pose_ready;
+          (void)wait_start;
+          const auto image_pose = io->gimbalPoseAt(timestamp);
+          if (!image_pose) {
+            publishCommand(transition_hold ? transition_hold : buff_runtime->safeHold());
+            break;
+          }
+
+          const auto camera_pose = L1Sensor::Buff::composeCameraPose(
+            *image_pose, *camera_calibration);
+          if (!camera_pose) {
+            publishCommand(transition_hold ? transition_hold : buff_runtime->safeHold());
+            break;
+          }
+          const auto plan_time = std::chrono::steady_clock::now();
+          const auto result = buff_runtime->update(
+            std::move(detections), camera_pose->q_world_camera,
+            camera_pose->t_world_camera,
+            timestamp, plan_time, state->bullet_speed);
+          // 新打符会话首帧尚未形成有效规划时，优先保持装甲板链路
+          // 的最后角度并关火；有效计划则只发布打符命令。
+          const auto command_to_publish =
+            transition_hold && !result.plan.valid ? transition_hold : result.command;
+          publishCommand(command_to_publish);
+          if (web_sink) {
+            auto data = buffTelemetryFrame(
+              *state, result.addition, result.state, result.plan,
+              command_to_publish, timestamp, command_to_publish.has_value());
+            appendPerformanceTelemetry(data);
+            web_sink->writeSeries(data);
+            wrote_web_series = true;
+          }
+          if (buff_runtime_config &&
+              (buff_runtime_config->overlay ||
+               (web_sink && frame_index % auto_aim_config.debug.web_frame_every == 0))) {
+            L6Telemetry::Buff::drawOverlay(
+              frame, result.detections, result.addition, result.plan);
+          }
           break;
+        }
 
         case L1Sensor::WorkMode::Idle:
         default:
-          stopAimSession();
+          {
+            const auto aim_hold = stopAimSession();
+            const auto buff_hold = stopBuffSession();
+            publishCommand(buff_hold ? buff_hold : aim_hold);
+          }
           break;
       }
     }
 
-    ++frame_index;
     /******************************* debug ********************************/
+    // Idle、相机状态未就绪等分支也持续发布性能指标，避免网页上的帧率冻结。
+    if (web_sink && !wrote_web_series) {
+      nlohmann::json data;
+      data["t"] = std::chrono::duration<double>(timestamp.time_since_epoch()).count();
+      appendPerformanceTelemetry(data);
+      web_sink->writeSeries(data);
+    }
+    // 在线调参：每 10 帧读一次 shm。文件不存在时 poll 立即返回，代价很小。
+    if (frame_index % 10 == 0) {
+      applyTuningIfAny();
+    }
+    // 关键事件进 Log 树：模式切换、EKF 重建、开火拒绝原因变化。
+    if (web_sink) {
+      if (state) {
+        if (last_mode_for_event != state->mode) {
+          web_sink->writeEvent(
+            "mode_change", std::string{L1Sensor::toString(state->mode)});
+          last_mode_for_event = state->mode;
+        }
+      }
+      if (tracker) {
+        const auto resets = tracker->resetCount();
+        if (resets != last_reset_for_event) {
+          web_sink->writeEvent("tracker_reset", static_cast<double>(resets));
+          last_reset_for_event = resets;
+        }
+      }
+      const int reason = controller.lastDecision().reasons.empty()
+        ? -1
+        : static_cast<int>(controller.lastDecision().reasons.front());
+      if (reason != last_fire_reason_for_event && reason >= 0) {
+        web_sink->writeEvent("fire_reject", reason);
+        last_fire_reason_for_event = reason;
+      }
+    }
+    // Web 写帧与 imshow 分开：writeFrame 只复制最新帧，缩放和 JPEG 压缩由
+    // 后台单槽线程完成，不会因为浏览器或无线网络变慢而反压视觉主循环。
+    // 与绘制共用同一个 frame_index：++ 在后面，保证「画的帧 == 写的帧」。
+    if (web_sink && frame_index % auto_aim_config.debug.web_frame_every == 0) {
+      web_sink->writeFrame(frame);
+    }
+    ++frame_index;
     if (overlay_enabled) {
       cv::imshow("auto_aim", frame);
       const int key = cv::waitKey(1);
@@ -410,13 +764,14 @@ void AutoAimRuntime::run() {
     /******************************* debug ********************************/
   }
 
-  stopAimSession();
-  serial.stop();
-  camera->stop();
+  const auto aim_hold = stopAimSession();
+  const auto buff_hold = stopBuffSession();
+  publishCommand(buff_hold ? buff_hold : aim_hold);
+  io->stop();
   {
-    std::lock_guard<std::mutex> lock(camera_mutex_);
-    if (active_camera_ == camera) {
-      active_camera_.reset();
+    std::lock_guard<std::mutex> lock(io_mutex_);
+    if (active_io_ == io) {
+      active_io_.reset();
     }
   }
   if (overlay_enabled) {
@@ -426,13 +781,13 @@ void AutoAimRuntime::run() {
 
 void AutoAimRuntime::stop() {
   running_ = false;
-  std::shared_ptr<L1Sensor::Camera> camera;
+  std::shared_ptr<RuntimeIo> io;
   {
-    std::lock_guard<std::mutex> lock(camera_mutex_);
-    camera = active_camera_;
+    std::lock_guard<std::mutex> lock(io_mutex_);
+    io = active_io_;
   }
-  if (camera) {
-    camera->stop();
+  if (io) {
+    io->stop();
   }
 }
 
@@ -455,7 +810,7 @@ nlohmann::json telemetryFrame(
   const L4Planning::Plan& plan,
   const L5Control::FireDecision& fire,
   bool command_sent,
-  const L1Sensor::SerialWorker& serial,
+  const runtime::RuntimeIo& io,
   std::chrono::steady_clock::time_point timestamp,
   int detect_count,
   std::uint64_t tracker_resets,
@@ -490,13 +845,14 @@ nlohmann::json telemetryFrame(
   // pose_wait 是检测做完后还要等姿态的时间；pose_ready=0 说明等满了也没等到。
   data["serial"]["pose_ready"] = pose_ready ? 1 : 0;
   data["serial"]["pose_wait"] = pose_wait_ms;
-  data["serial"]["rx"] = serial.receivedStateCount();
-  data["serial"]["rx_dropped"] = serial.droppedPacketCount();
-  data["serial"]["rx_skipped_bytes"] = serial.skippedByteCount();
-  data["serial"]["tx"] = serial.sentCommandCount();
-  data["serial"]["tx_failed"] = serial.failedCommandCount();
-  data["serial"]["pose_before_history"] = serial.poseBeforeHistoryCount();
-  data["serial"]["pose_after_history"] = serial.poseAfterHistoryCount();
+  const runtime::RuntimeIoStats io_stats = io.stats();
+  data["serial"]["rx"] = io_stats.received_states;
+  data["serial"]["rx_dropped"] = io_stats.dropped_packets;
+  data["serial"]["rx_skipped_bytes"] = io_stats.skipped_bytes;
+  data["serial"]["tx"] = io_stats.sent_commands;
+  data["serial"]["tx_failed"] = io_stats.failed_commands;
+  data["serial"]["pose_before_history"] = io_stats.pose_before_history;
+  data["serial"]["pose_after_history"] = io_stats.pose_after_history;
 
   // track: 状态机与本帧真正进滤波器的观测数量。
   data["track"]["state"] = static_cast<int>(track_state);
@@ -604,6 +960,71 @@ nlohmann::json telemetryFrame(
   data["fire"]["tol_pitch"] = fire.tolerance.pitch * kRadToDeg;
   data["fire"]["reason"] =
     fire.reasons.empty() ? -1 : static_cast<int>(fire.reasons.front());
+
+  return data;
+}
+
+// 打符遥测。与 armor 的 telemetryFrame 同一套约定：分支隔离、degree/ms。
+// buff/ 下是能量机关自己的状态，不与 armor 的 ekf/aim 混层。
+nlohmann::json buffTelemetryFrame(
+  const L1Sensor::RobotState& state,
+  const L3Estimation::Buff::Addition& addition,
+  const std::optional<L3Estimation::Buff::State>& buff_state,
+  const L4Planning::Buff::Plan& plan,
+  const std::optional<L5Control::SerialCommand>& command,
+  std::chrono::steady_clock::time_point timestamp,
+  bool command_sent)
+{
+  constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+  nlohmann::json data;
+
+  data["t"] = std::chrono::duration<double>(timestamp.time_since_epoch()).count();
+
+  data["gimbal"]["bullet_speed"] = state.bullet_speed;
+
+  data["buff"]["n_icon"] = static_cast<int>(addition.tracked.size());
+  data["buff"]["n_pred"] = static_cast<int>(addition.predicted.size());
+
+  if (buff_state) {
+    data["buff"]["x"] = buff_state->x;
+    data["buff"]["y"] = buff_state->y;
+    data["buff"]["z"] = buff_state->z;
+    data["buff"]["rot_speed"] = buff_state->rotation_speed;
+    data["buff"]["rot_angle"] = buff_state->rotation_angle * kRadToDeg;
+    data["buff"]["face_yaw"] = buff_state->face_yaw * kRadToDeg;
+    data["buff"]["update_count"] = static_cast<double>(buff_state->update_count);
+    data["buff"]["sine_valid"] = buff_state->sine_valid ? 1 : 0;
+    data["buff"]["sine_C"] = buff_state->sine_C;
+    data["buff"]["sine_v"] = buff_state->sine_v;
+    data["buff"]["sine_a"] = buff_state->sine_a;
+    data["buff"]["sine_omega"] = buff_state->sine_omega;
+    data["buff"]["sine_phase"] = buff_state->sine_phase * kRadToDeg;
+    data["buff"]["use_pred_speed"] = buff_state->use_prediction_speed ? 1 : 0;
+    data["buff"]["pred_cost"] = buff_state->prediction_cost;
+    int inactive = 0;
+    for (bool flag : buff_state->inactive) {
+      inactive += flag ? 1 : 0;
+    }
+    data["buff"]["inactive"] = inactive;
+  }
+
+  data["buff"]["plan_valid"] = plan.valid ? 1 : 0;
+  data["buff"]["degraded"] = plan.degraded ? 1 : 0;
+  data["buff"]["pre_aim"] = plan.pre_aim ? 1 : 0;
+  data["buff"]["shoot"] = plan.algorithm_shoot ? 1 : 0;
+  data["buff"]["blade"] = plan.blade_index;
+  data["buff"]["fly_time"] = plan.fly_time * 1e3;
+  data["buff"]["bullet_trusted"] = plan.bullet_speed.trusted ? 1 : 0;
+  if (plan.valid) {
+    data["aim"]["yaw"] = plan.yaw * kRadToDeg;
+    data["aim"]["pitch"] = plan.pitch * kRadToDeg;
+  }
+  if (command) {
+    data["aim"]["cmd_yaw"] = command->yaw * kRadToDeg;
+    data["aim"]["cmd_pitch"] = command->pitch * kRadToDeg;
+    data["fire"]["shoot"] = command->shoot ? 1 : 0;
+    data["fire"]["sent"] = command_sent ? 1 : 0;
+  }
 
   return data;
 }

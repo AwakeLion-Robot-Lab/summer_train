@@ -63,6 +63,8 @@ public:
     const L4Planning::Plan& plan, L3Estimation::ArmorType type,
     L3Estimation::ArmorName name) const noexcept;
   const FireConfig& config() const noexcept { return config_; }
+  // 在线调参：只换配置副本，不碰内部状态。shoot_enable 仍建议只在 YAML 改。
+  void setConfig(const FireConfig& config) noexcept { config_ = config; }
 
 private:
   FireConfig config_;

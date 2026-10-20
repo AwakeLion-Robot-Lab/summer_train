@@ -22,6 +22,7 @@ public:
     std::chrono::steady_clock::time_point & timestamp,
     std::chrono::milliseconds timeout) override;
   void stop() override;
+  L1Sensor::CameraStats stats() const override;
 
 private:
   struct CameraData
@@ -36,6 +37,7 @@ private:
   int width_ = 0;
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> healthy_{false};
+  std::atomic<std::uint64_t> captured_frames_{0};
   std::thread capture_thread_;
   std::thread daemon_thread_;
   tools::LatestBuffer<CameraData> buffer_;

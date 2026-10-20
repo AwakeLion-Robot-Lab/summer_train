@@ -6,6 +6,7 @@
 #undef ERROR
 #endif
 
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 
@@ -30,7 +31,15 @@ void initLogger()
   file->setMaxFileSize(1024 * 1024);
   file->setMaxBackupNum(3);
 
+#ifdef AW_LOGGER_ENABLE_WEBSOCKET
+  const char* configured_url = std::getenv("NEWVISION_LOG_WS_URL");
+  const std::string websocket_url = configured_url ? configured_url : "ws://127.0.0.1:1234";
+  auto websocket = std::make_shared<aw_logger::WebsocketAppender>(websocket_url);
+  websocket->setPattern("%t %p %i %f %n %l %m");
+  logger->setAppenders(console, file, websocket);
+#else
   logger->setAppenders(console, file);
+#endif
   logger->setThresholdLevel(aw_logger::LogLevel::level::DEBUG);
 }
 

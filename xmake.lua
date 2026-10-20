@@ -56,9 +56,19 @@ option("cuda_root")
     set_description("CUDA SDK prefix (used only when use_tensorrt=y)")
 option_end()
 
+option("web_logger")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Stream aw_logger records to the WebSocket relay on port 1234")
+option_end()
+
 if has_config("use_xrepo_deps") then
     add_requires("opencv", {optional = true})
     add_requires("yaml-cpp", {optional = true})
+end
+
+if has_config("web_logger") then
+    add_requires("ixwebsocket v11.4.6")
 end
 
 target("newvision")
@@ -86,11 +96,15 @@ target("newvision")
     add_rpathdirs("$(projectdir)/tools/camera_sdk/hikrobot/lib/amd64", "$(projectdir)/tools/camera_sdk/mindvision/lib/amd64", {public = true})
     add_links("MvCameraControl", "MVSDK", "usb-1.0", {public = true})
     add_syslinks("pthread", "rt", {public = true})
+    if has_config("web_logger") then
+        add_packages("ixwebsocket", {public = true})
+        add_defines("AW_LOGGER_ENABLE_WEBSOCKET", {public = true})
+    end
     if has_config("use_xrepo_deps") then
         add_packages("opencv", "yaml-cpp", {public = true})
     elseif has_config("use_system_deps") then
         add_includedirs("/usr/include/opencv4", {public = true})
-        add_links("opencv_core", "opencv_imgproc", "opencv_imgcodecs", "opencv_videoio", "opencv_calib3d", "opencv_dnn", "opencv_highgui", "yaml-cpp", {public = true})
+        add_links("opencv_core", "opencv_imgproc", "opencv_imgcodecs", "opencv_videoio", "opencv_calib3d", "opencv_dnn", "opencv_highgui", "opencv_ximgproc", "yaml-cpp", {public = true})
     end
     -- OpenVINO 与 TensorRT 共用一个 on_load；xmake 对同一 target 的多个 on_load
     -- 使用覆盖语义，拆开写会让其中一个后端静默失效。
@@ -99,7 +113,7 @@ target("newvision")
             -- SP-Vision 固定使用 /opt/intel/openvino_2024.6.0。模型推理的最后几个
             -- ulp 会随 Runtime 版本变化，而 SP 的 1 度离散 yaw 搜索会放大这种差异，
             -- 所以本机存在同一 SDK 时优先与 SP 链接同一版本；其他机器再回退 pkg-config。
-            local sp_openvino_runtime = "/opt/intel/openvino_2024.6.0/runtime"
+            local sp_openvino_runtime = "/opt/intel/openvino2026.3/runtime"
             local sp_openvino_include = path.join(sp_openvino_runtime, "include")
             local sp_openvino_lib = path.join(sp_openvino_runtime, "lib", "intel64")
             if os.isdir(sp_openvino_include) and os.isfile(path.join(sp_openvino_lib, "libopenvino.so")) then
@@ -206,6 +220,32 @@ target("newvision")
         end
     end)
 
+-- Buff 离线回放不进入默认构建，也不接触相机/串口；显式构建或运行时才生成。
+target("buff_video_replay")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/buff_video_replay.cpp")
+    add_deps("newvision")
+target_end()
+
+-- 与硬件主循环共用完整 L2-L5，仅把 RuntimeIo 切到 Talos 共享内存后端。
+target("talos_auto_aim")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/talos_auto_aim.cpp")
+    add_deps("newvision")
+target_end()
+
+target("talos_gimbal_check")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/talos_gimbal_check.cpp")
+    add_deps("newvision")
+target_end()
+
 
 -- ---------------------------------------------------------------------------
 -- 测试目标按 tests/*.cpp 递归生成，文件名即目标名。新增一个 smoke 只需把文件
@@ -234,6 +274,17 @@ local standalone_tests = {
         includes = {"include", "tools/logger/include/3rdparty"},
         syslinks = {"pthread"},
     },
+    web_sink_smoke = {
+        files    = {"src/l6_telemetry/web_sink.cpp"},
+        includes = {"include", "tools/logger/include/3rdparty"},
+        opencv   = {"opencv_core", "opencv_imgproc", "opencv_imgcodecs"},
+        syslinks = {"pthread"},
+    },
+    web_cmd_smoke = {
+        files    = {"src/l6_telemetry/web_cmd.cpp"},
+        includes = {"include", "tools/logger/include/3rdparty"},
+        syslinks = {"pthread"},
+    },
     serial_protocol_smoke = {
         files    = {"src/l1_sensor/serial/serial_protocol.cpp", "src/l6_telemetry/logger.cpp"},
         includes = {"include", "tools/logger/include", "tools/logger/include/3rdparty"},
@@ -249,6 +300,32 @@ local standalone_tests = {
     aim_smoother_smoke = {
         files    = {"src/l4_planning/aim_smoother.cpp"},
         includes = {"include"},
+    },
+    buff_math_smoke = {
+        files    = {
+            "src/l3_estimation/buff/energy_fitter.cpp",
+            "src/l1_sensor/buff/transform.cpp",
+            "src/l4_planning/buff/trajectory_solver.cpp",
+            "src/l4_planning/buff/attack_scheduler.cpp",
+            "src/l5_control/buff/controller.cpp",
+        },
+        includes = {"include", "/usr/include/eigen3"},
+        opencv   = {"opencv_core"},
+    },
+    talos_contract_smoke = {
+        files    = {
+            "src/l1_sensor/talos/gimbal_codec.cpp",
+            "src/l1_sensor/talos/talos_reader.cpp",
+            "src/l6_telemetry/math.cpp",
+        },
+        includes = {"include", "/usr/include/eigen3"},
+        opencv   = {"opencv_core"},
+        syslinks = {"pthread"},
+    },
+    talos_shm_smoke = {
+        files    = {"src/l1_sensor/talos/talos_reader.cpp"},
+        includes = {"include"},
+        syslinks = {"pthread"},
     },
 }
 
@@ -308,6 +385,10 @@ for _, source in ipairs(os.files("tests/*.cpp")) do
                         add_includedirs("/usr/include/opencv4")
                         add_links(table.unpack(spec.opencv))
                     end
+                end
+                if name == "logger_smoke" and has_config("web_logger") then
+                    add_packages("ixwebsocket")
+                    add_defines("AW_LOGGER_ENABLE_WEBSOCKET")
                 end
             else
                 add_deps("newvision")

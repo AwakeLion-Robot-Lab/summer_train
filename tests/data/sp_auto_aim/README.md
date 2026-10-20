@@ -32,6 +32,11 @@ xmake run auto_aim_test -- tests/data/sp_auto_aim/demo \
   -c=tests/data/sp_auto_aim/camera_calibration.yaml --convention=sp
 ```
 
+The replay publishes its annotated frame and telemetry to FSVISION by default.
+Start `web.py` and open port 9000 to inspect it in the browser. Use
+`--web=false` to disable this output, or `--web-frame-every=N` to adjust the
+JPEG source rate (default 1 for every replay frame; larger values use less CPU).
+
 `--calibration` defaults to `config/camera_config.yaml`, so this dataset needs `-c=` to point back at its
 own calibration. Flags must use `-c=value`; `cv::CommandLineParser` does not accept a space-separated
 `-c value`.

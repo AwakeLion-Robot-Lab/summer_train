@@ -36,6 +36,10 @@ public:
   int lockedArmorId() const noexcept { return locked_id_; }
   bool blending() const noexcept { return smoother_.blending(); }
 
+  // 在线调参：热更延迟链/弹道/偏置。BallisticSolver 的阻力模型在构造时定死，
+  // 所以 drag_coefficient 变化仍要重启；send_to_control 与角度偏置即时生效。
+  void setImpactConfig(const PlanConfig& impact) noexcept;
+
 private:
   struct AimPoint {
     bool valid{false};
