@@ -10,6 +10,16 @@ if is_plat("windows") then
     add_cxxflags("/utf-8")
 end
 
+-- 独立串口 Ping/Pong RTT 工具，不依赖相机、算法或主程序。
+target("serial_rtt")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/serial_rtt.cpp", "tools/serial/src/serial.cc", "tools/serial/src/impl/unix.cc")
+    add_includedirs("tools/serial/include")
+    add_syslinks("pthread")
+target_end()
+
 option("use_xrepo_deps")
     set_default(false)
     set_showmenu(true)
