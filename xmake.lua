@@ -102,6 +102,7 @@ end
 target("newvision")
     set_kind("static")
     add_files("src/**/*.cpp")
+    remove_files("src/runtime/auto_aim_runtime.cpp")
     add_files("include/armor/l3_planning/planner_config.cpp")
     add_files("tools/tiny_MPC/*.cpp")
     add_files("tools/geometry/*.cpp")
@@ -249,6 +250,13 @@ target("newvision")
         end
     end)
 
+target("auto_aim")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("src/runtime/auto_aim_runtime.cpp")
+    add_deps("newvision")
+target_end()
 
 -- ---------------------------------------------------------------------------
 -- 测试目标按 tests/*.cpp 递归生成，文件名即目标名。新增一个 smoke 只需把文件
@@ -367,13 +375,8 @@ local extra_syslinks = {
     serial_single_shot_smoke = {"util"},
 }
 
--- tests/main.cpp 是完整运行时的入口，目标名不叫 main。
-local renamed_tests = {
-    main = "auto_aim",
-}
-
 for _, source in ipairs(os.files("tests/*.cpp")) do
-    local name = renamed_tests[path.basename(source)] or path.basename(source)
+    local name = path.basename(source)
 
     local gate = gated_tests[name]
     local enabled = true

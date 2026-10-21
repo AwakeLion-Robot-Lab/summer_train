@@ -54,7 +54,8 @@ bool UdpJsonSender::send(const nlohmann::json& payload) noexcept
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto sent = ::sendto(socket_fd_, serialized.data(), serialized.size(), 0,
+  // 调试接收端或内核发送队列拥塞时丢弃本包，不能阻塞下一帧处理。
+  const auto sent = ::sendto(socket_fd_, serialized.data(), serialized.size(), MSG_DONTWAIT,
                              reinterpret_cast<const sockaddr*>(&destination_),
                              sizeof(destination_));
   return sent >= 0 && static_cast<std::size_t>(sent) == serialized.size();

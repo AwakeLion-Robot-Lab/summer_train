@@ -4,8 +4,13 @@ mode: 1
 
 # 能量机关使用独立检测器、运动模型和火控；弹道、延迟及 MPC 参数沿用 planner_config.yaml。
 rune:
-  # 相对于本 YAML 所在目录；网络参数和模型路径在该文件中配置。
-  detector_config: "rune_detector.yaml"
+  detector:
+    # 模型路径相对于本 YAML 所在目录。
+    model_path: "../model/rune_model/model-0624.onnx"
+    device: "CPU"
+    confidence_threshold: 0.65
+    keypoint_confidence_threshold: 0.5
+    nms_distance_px: 30.0
   geometry:
     # 必须填写实际测量值，单位米；0 表示未配置，仅检测、不输出有效瞄准命令。
     radius_m: 0.0             # R 中心到靶心的距离
@@ -213,7 +218,7 @@ runtime:
 # 调试叠加层。实机要关：imshow 要几毫秒并计进 image_to_plan，NUC 没显示器会直接抛。
 # 蓝框 = L2 原始角点，绿 = 滤波器展开的整车，红框 = 选中的命中板。
 debug:
-  overlay: true
+  overlay: false
   # 每 N 帧画一次。
   overlay_every: 1
 

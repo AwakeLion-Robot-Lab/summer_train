@@ -31,6 +31,38 @@
 
 namespace {
 
+using Clock = std::chrono::steady_clock;
+
+double milliseconds(Clock::time_point end, Clock::time_point begin) {
+  return std::chrono::duration<double, std::milli>(end - begin).count();
+}
+
+struct FrameTiming {
+  Clock::time_point captured_at{}, ready_at{}, queued_at{};
+  double pose_wait_ms{0}, detect_ms{0}, estimate_ms{0}, plan_control_ms{0};
+  unsigned detection_passes{0};
+};
+
+nlohmann::json pipelineTiming(const FrameTiming& timing,
+                              const L1Sensor::SerialWorker& serial) {
+  nlohmann::json data{
+      {"frame_age_at_read_ms", milliseconds(timing.ready_at, timing.captured_at)},
+      {"pose_wait_ms", timing.pose_wait_ms}, {"detect_ms", timing.detect_ms},
+      {"detection_passes", timing.detection_passes},
+      {"estimate_ms", timing.estimate_ms}, {"plan_control_ms", timing.plan_control_ms}};
+  if (timing.queued_at != Clock::time_point{}) {
+    data["image_to_queue_ms"] = milliseconds(timing.queued_at, timing.captured_at);
+    data["read_to_queue_ms"] = milliseconds(timing.queued_at, timing.ready_at);
+  }
+  // 串口线程异步发送；这组值属于最近一次已完成的命令，不与本帧耗时相加。
+  if (const auto sent = serial.latestCommandTiming()) {
+    data["serial_last_queue_ms"] = milliseconds(sent->write_started_at, sent->queued_at);
+    data["serial_last_write_ms"] = milliseconds(sent->write_completed_at, sent->write_started_at);
+    data["serial_last_sample_age_ms"] = milliseconds(Clock::now(), sent->write_completed_at);
+  }
+  return data;
+}
+
 // L1 的 enemy_color 是下位机给出的目标阵营；L2 的 ArmorColor 是图像识别结果。
 // 任何一侧未知时都不允许作为自瞄目标，避免误击友军。
 bool isEnemyArmor(L2Perception::ArmorColor observed,
@@ -178,6 +210,7 @@ void AutoAimRuntime::run() {
     auto_aim_config.fire,
     auto_aim_config.runtime.command_jump_threshold);
 
+  FrameTiming frame_timing;
   // 规划失败时不能只是“不更新命令”：上一条 shoot=true 在
   // command_timeout 内仍可能被重复发送。这里保留最后角度并立即关火。
   std::optional<L1Sensor::SerialCommand> last_command;
@@ -185,6 +218,7 @@ void AutoAimRuntime::run() {
                                bool single_shoot = false) {
     if (serial_started) {
       serial.updateCommand(command, single_shoot);
+      frame_timing.queued_at = Clock::now();
       last_command = command;
     }
   };
@@ -240,14 +274,10 @@ void AutoAimRuntime::run() {
 
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
-  // "规划结束 -> 串口发出"的实测耗时。本帧的值要等规划做完才知道，所以
-  // 用上一帧的量代入本帧的延迟链；这一段帧间基本恒定。
-  // 单线程同步是设计选择不是待办：自瞄的代价是开火那一刻的位置误差而不是
-  // 帧率，异步流水线换来吞吐、代价是结果多滞后一帧，那一帧会进
-  // Delay::image_to_plan 再被 v_yaw 放大成瞄准偏差。真正降低单帧延迟的并行
-  // 在推理内部（num_threads / scheduling_core_type），那层已经开着。
-  // tools/LatestBuffer 是给将来的取图线程预留的，当前管线不用。
+  // 相机驱动已用独立采集线程和 LatestBuffer 覆盖旧帧；这里同步处理最新图像。
+  // 图像年龄已包含曝光时间戳到规划开始的耗时，不能再叠加整帧处理耗时。
   while (running_) {
+    frame_timing = {};
     //获取相机帧和时间辍
     if (!camera->read(frame, timestamp)) {
       if (!running_) {
@@ -258,6 +288,10 @@ void AutoAimRuntime::run() {
       sendSafeHold();
       continue;
     }
+    frame_timing.captured_at = timestamp;
+    frame_timing.ready_at = Clock::now();
+    const auto pose_deadline = frame_timing.ready_at +
+        std::chrono::milliseconds(serial_config.pose_wait_ms);
     const auto state = serial.latestState();
     if (!serial_started || !state) {
       stopAimSession();
@@ -270,9 +304,11 @@ void AutoAimRuntime::run() {
           const bool aiming = mode != L1Sensor::WorkMode::Idle;
           // 等图像之后的姿态包到齐，再用前后两包插值，避免转动中把最新姿态
           // 当作曝光时刻姿态。
-          if (!serial.waitPose(timestamp)) {
+          const auto pose_wait_started = Clock::now();
+          if (!serial.waitPoseUntil(timestamp, pose_deadline)) {
             L6Telemetry::logDebug("gimbal pose wait timeout");
           }
+          frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 
           // L2: 用上一帧整车状态生成网络 ROI 和侧灯条 ROI；Lost 时网络 ROI
@@ -288,10 +324,13 @@ void AutoAimRuntime::run() {
               armor_detector.net_aspect_ratio());
           }
           const auto detect = [&](const std::optional<cv::Rect>& roi) {
+            const auto started = Clock::now();
             auto result = armor_detector.detectFrame(
               frame, light_roi, roi,
               enemyArmorColor(state->enemy_color),
               light_hints);
+            frame_timing.detect_ms += milliseconds(Clock::now(), started);
+            ++frame_timing.detection_passes;
             std::erase_if(result.armors, [&state](const auto& armor) {
               return !isEnemyArmor(armor.color, state->enemy_color);
             });
@@ -302,19 +341,26 @@ void AutoAimRuntime::run() {
             if (const auto init_roi = tracker->initRoi(
                   perception.armors, image_pose, timestamp, frame.size(),
                   armor_detector.net_aspect_ratio())) {
-              auto refined = detect(*init_roi);
-              if (!refined.armors.empty()) {
-                perception = std::move(refined);
+              // 初始化窗口若与首遍相同，再推理不会增加信息。
+              const cv::Rect image_rect(0, 0, frame.cols, frame.rows);
+              const cv::Rect first_roi = net_roi ? (*net_roi & image_rect) : image_rect;
+              if ((*init_roi & image_rect) != first_roi) {
+                auto refined = detect(*init_roi);
+                if (!refined.armors.empty()) {
+                  perception = std::move(refined);
+                }
               }
             }
           }
 
           // L3: 完整板与独立灯条联合关联，更新整车 IESKF。
           std::optional<L3Estimation::EskfTarget> target;
+          const auto estimate_started = Clock::now();
           if (tracker && tracker->ready()) {
             target = tracker->track(
               perception.armors, perception.lights, image_pose, timestamp);
           }
+          frame_timing.estimate_ms = milliseconds(Clock::now(), estimate_started);
           const auto track_state = tracker
             ? tracker->state()
             : L3Estimation::TrackState::Lost;
@@ -325,7 +371,7 @@ void AutoAimRuntime::run() {
             // L4/L5 保留 Bruce0178 分支现有实现：动态窗口选板、弹道迭代与
             // 开火闸门均不被目标分支覆盖。
             const auto plan_time = std::chrono::steady_clock::now();
-            const auto actual_pose = serial.gimbalPoseAt(plan_time);
+            const auto actual_pose = serial.latestGimbalPose();
             planner_context.planning_time = plan_time;
             auto planning_state = *state;
             planning_state.timestamp = plan_time;
@@ -358,24 +404,24 @@ void AutoAimRuntime::run() {
             if (command) {
               sendCommand(*command);
             }
+            frame_timing.plan_control_ms = milliseconds(Clock::now(), plan_time);
           } else {
             // Idle 继续预热识别与预测，但不运行选板、不输出开火命令。
             planner.resetTracking();
             sendSafeHold();
           }
 
-          // 规划到发送的实测耗时必须在 updateCommand 之后**立刻**取。
-          // 放到叠加层之后的话，画图的几毫秒会被算进 plan_to_send，而恰恰
-          // 只有开着叠加层调试时才会去看这个数。
           /*************************** debug ****************************/
-          // 全部排在命令下发和延迟测量之后，不占用瞄准链路的时间预算。
+          // 本帧命令已入队；这些工作仍会占用下一帧的处理时间。
           if (plotter) {
             static const std::vector<L3Estimation::Armor> kNoObservations;
-            (void)plotter->send(telemetryFrame(
+            auto telemetry = telemetryFrame(
               image_pose, *state, kNoObservations, target, track_state, plan,
               controller.lastDecision(), command.has_value(), serial, timestamp,
               tracker ? tracker->lastMatchCount() : 0,
-              tracker ? tracker->dropCount() : 0, plan_reject_count));
+              tracker ? tracker->dropCount() : 0, plan_reject_count);
+            telemetry["pipeline"] = pipelineTiming(frame_timing, serial);
+            (void)plotter->send(telemetry);
           }
           if (overlay_solver && tracker &&
               frame_index % auto_aim_config.debug.overlay_every == 0) {
@@ -406,13 +452,19 @@ void AutoAimRuntime::run() {
           input.captured_at = timestamp;
           input.mode = mode == L1Sensor::WorkMode::SmallBuff
               ? Rune::Mode::Small : Rune::Mode::Big;
-          (void)serial.waitPose(timestamp);
-          input.q_world_barrel = serial.gimbalPoseAt(timestamp);
           if (camera_calibration) {
             (void)Rune::applyCameraCalibration(input, *camera_calibration);
           }
           try {
+            // 检测只依赖图像：先推理，让串口接收线程同时补齐曝光后的姿态包。
+            const auto detect_started = Clock::now();
             rune->detect(input);
+            frame_timing.detect_ms = milliseconds(Clock::now(), detect_started);
+            frame_timing.detection_passes = 1;
+            const auto pose_wait_started = Clock::now();
+            (void)serial.waitPoseUntil(timestamp, pose_deadline);
+            frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
+            input.q_world_barrel = serial.gimbalPoseAt(timestamp);
             // 推理耗时计入图像年龄；规划及反馈使用推理完成后的时刻。
             const auto feedback = serial.latestState();
             const auto actual_pose = serial.latestGimbalPose();
@@ -427,10 +479,19 @@ void AutoAimRuntime::run() {
               rune->suspend();
               sendSafeHold();
             }
+            // Rune::process 包含轮廓、PnP、估计、规划及控制。
+            frame_timing.plan_control_ms = milliseconds(Clock::now(), command_at);
           } catch (const std::exception& error) {
             L6Telemetry::logError("rune frame processing failed", error.what());
             rune->suspend();
             sendSafeHold();
+          }
+          if (plotter) {
+            nlohmann::json telemetry{
+                {"t", std::chrono::duration<double>(timestamp.time_since_epoch()).count()},
+                {"mode", static_cast<int>(auto_aim_config.mode)},
+                {"pipeline", pipelineTiming(frame_timing, serial)}};
+            (void)plotter->send(telemetry);
           }
           if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
             for (const auto& points : input.detections) {
@@ -655,3 +716,12 @@ nlohmann::json telemetryFrame(
 
 }  // namespace
 /********************************** debug **********************************/
+
+int main()
+{
+  L6Telemetry::initLogger();
+  runtime::AutoAimRuntime runtime("config/camera_config.yaml");
+  runtime.run();
+  L6Telemetry::flushLogger();
+  return 0;
+}

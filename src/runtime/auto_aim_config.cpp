@@ -330,13 +330,9 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     config.mode = static_cast<AimMode>(mode);
   }
   const YAML::Node rune = root["rune"];
-  config.rune.detector_config = std::filesystem::path(path).parent_path() / "rune_detector.yaml";
   if (rune) {
-    if (rune["detector_config"]) {
-      const auto detector = std::filesystem::path(rune["detector_config"].as<std::string>());
-      config.rune.detector_config = detector.is_absolute()
-          ? detector : std::filesystem::path(path).parent_path() / detector;
-    }
+    config.rune.detector = Rune::KeypointDetectorConfig::fromYaml(
+        rune["detector"], std::filesystem::path(path).parent_path());
     const auto geometry = rune["geometry"];
     if (geometry) {
       if (geometry["radius_m"]) config.rune.geometry.radius_m = geometry["radius_m"].as<double>();

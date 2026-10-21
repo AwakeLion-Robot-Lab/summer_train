@@ -8,7 +8,7 @@
 namespace runtime {
 
 struct RuneRuntimeConfig {
-  std::filesystem::path detector_config{"config/rune_detector.yaml"};
+  Rune::KeypointDetectorConfig detector;
   Rune::Geometry geometry;
   Rune::PlanningConfig planning;
   Rune::FireControlConfig fire;

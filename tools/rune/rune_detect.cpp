@@ -13,7 +13,7 @@
 
 int main(int argc, char** argv) {
   try {
-    std::filesystem::path config{"config/rune_detector.yaml"};
+    std::filesystem::path config{"config/auto_aim.yaml"};
     std::string input, output;
     Rune::Mode mode = Rune::Mode::Small;
     int frames = 1;
@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
       const std::string flag = argv[arg];
       if (flag == "--help") {
         std::cout << "rune_detect --input IMAGE_OR_VIDEO [--mode small|big] "
-                     "[--config YAML] [--frames N] [--output IMAGE.png]\n";
+                     "[--config AUTO_AIM_YAML] [--frames N] [--output IMAGE.png]\n";
         return 0;
       }
       if (arg + 1 >= argc) throw std::invalid_argument("missing value for " + flag);

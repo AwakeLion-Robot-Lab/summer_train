@@ -65,6 +65,11 @@ void SerialWorker::stop() {
   if (!running_.exchange(false)) {
     return;
   }
+  {
+    // 与 wait_until 的谓词检查同步，避免停止通知落在检查与进入等待之间。
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    pose_cv_.notify_all();
+  }
 
   if (rx_thread_.joinable()) {
     rx_thread_.join();
@@ -129,6 +134,11 @@ std::optional<SerialCommand>
 SerialWorker::latestSentCommand() const {
   std::lock_guard<std::mutex> lock(sent_command_mutex_);
   return latest_sent_command_;
+}
+
+std::optional<SerialCommandTiming> SerialWorker::latestCommandTiming() const {
+  std::lock_guard<std::mutex> lock(sent_command_mutex_);
+  return latest_command_timing_;
 }
 
 // 返回通过 CRC 和协议长度检查后解析出的下位机状态帧数量。
@@ -208,6 +218,7 @@ void SerialWorker::txLoop() {
   const auto reconnect_interval =
       std::chrono::milliseconds(std::max(config_.reconnect_interval_ms, 1));
 
+  std::uint64_t timed_generation = 0;
   while (running_.load()) {
     const auto next_tick = std::chrono::steady_clock::now() + period;
 
@@ -220,6 +231,7 @@ void SerialWorker::txLoop() {
     bool command_expired = false;
     bool single_shoot = false;
     std::uint64_t generation = 0;
+    std::chrono::steady_clock::time_point queued_at{};
     {
       std::lock_guard<std::mutex> lock(command_mutex_);
       const auto now = std::chrono::steady_clock::now();
@@ -230,6 +242,7 @@ void SerialWorker::txLoop() {
         command_timed_out_ = false;
         single_shoot = single_shoot_;
         generation = command_generation_;
+        queued_at = last_command_update_;
       } else {
         // 协议没有独立的 hold/valid
         // 位；保留最后设定值以避免云台突跳，强制关火。
@@ -250,7 +263,9 @@ void SerialWorker::txLoop() {
     }
 
     const auto bytes = protocol_.encodeCommand(command);
+    const auto write_started_at = std::chrono::steady_clock::now();
     if (port_.write(bytes) == bytes.size()) {
+      const auto write_completed_at = std::chrono::steady_clock::now();
       if (single_shoot && command.shoot) {
         std::lock_guard<std::mutex> lock(command_mutex_);
         // 写串口期间可能收到新命令，不能清除新一代命令的射击位。
@@ -259,6 +274,11 @@ void SerialWorker::txLoop() {
       {
         std::lock_guard<std::mutex> lock(sent_command_mutex_);
         latest_sent_command_ = command;
+        if (generation != 0 && generation != timed_generation) {
+          latest_command_timing_ = SerialCommandTiming{
+              queued_at, write_started_at, write_completed_at};
+          timed_generation = generation;
+        }
       }
       sent_command_count_.fetch_add(1);
     } else {
@@ -292,12 +312,19 @@ Eigen::Quaterniond SerialWorker::toBarrelPose(
 
 bool SerialWorker::waitPose(
     std::chrono::steady_clock::time_point timestamp) const {
+  return waitPoseUntil(timestamp, std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(config_.pose_wait_ms));
+}
+
+bool SerialWorker::waitPoseUntil(
+    std::chrono::steady_clock::time_point timestamp,
+    std::chrono::steady_clock::time_point deadline) const {
   std::unique_lock<std::mutex> lock(state_mutex_);
-  return pose_cv_.wait_for(
-      lock, std::chrono::milliseconds(config_.pose_wait_ms), [&] {
-        return !gimbal_history_.empty() &&
-               gimbal_history_.back().timestamp > timestamp;
+  pose_cv_.wait_until(lock, deadline, [&] {
+        return !running_.load() || (!gimbal_history_.empty() &&
+               gimbal_history_.back().timestamp > timestamp);
       });
+  return !gimbal_history_.empty() && gimbal_history_.back().timestamp > timestamp;
 }
 
 // 按时间戳查询云台姿态；找到前后两帧 RPY 后再转四元数并 slerp。

@@ -16,7 +16,7 @@
 
 主程序 `auto_aim` 已接入独立的 `runtime::RuneRuntime`。在 `config/auto_aim.yaml` 顶层设置 `mode: 1` 为装甲板、`2` 为小能量机关、`3` 为大能量机关，修改后重启。该配置覆盖下位机 WorkMode；串口仍提供曝光姿态、当前姿态、敌方颜色与弹速。只加载选中模式的检测器，大小符的 f3 模型保持独立。
 
-能量机关参数位于同一文件的 `rune` 节点：`detector_config` 相对于该 YAML 目录；`geometry` 三项尺寸必须填写实测米制值，默认 0 时仅检测；`fire.shoot_enable` 独立于装甲板开关，默认关闭。弹道、弹速回退、出膛延迟及 MPC 调参复用 `config/planner_config.yaml`，可用 `rune.mpc_enable` 单独覆盖 MPC 开关。相机标定复用 `sensor/camera/camera_calibration.hpp`，反馈过期、颜色未知或姿态缺失时中断跟踪并保持最后方向、关火。当前没有定位平移输入，不启用依赖完整公共坐标位姿的平面滑窗。
+能量机关参数位于同一文件的 `rune` 节点：`detector` 配置检测模型、设备及阈值，模型路径相对于该 YAML 目录；`geometry` 三项尺寸必须填写实测米制值，默认 0 时仅检测；`fire.shoot_enable` 独立于装甲板开关，默认关闭。弹道、弹速回退、出膛延迟及 MPC 调参复用 `config/planner_config.yaml`，可用 `rune.mpc_enable` 单独覆盖 MPC 开关。相机标定复用 `sensor/camera/camera_calibration.hpp`，反馈过期、颜色未知或姿态缺失时中断跟踪并保持最后方向、关火。当前没有定位平移输入，不启用依赖完整公共坐标位姿的平面滑窗。
 
 运行时在关键点推理完成后取得规划时刻及最新反馈。能量机关命令通过 `SerialWorker::updateCommand(command, true)` 下发，单发位在一次完整串口写入后清除，角度仍周期发送；装甲板继续使用原有持续开火语义。`auto_aim_mode_smoke` 覆盖配置与传感器适配，`serial_single_shot_smoke` 用伪串口验证单发与超时。
 
@@ -70,13 +70,13 @@ xmake run rune_detector_smoke
 xmake run rune_detect --input /path/to/rune.mp4 --mode big --frames 30 --output build/rune_result.png
 ```
 
-检测入口不需要相机标定，可独立回放图像。默认使用 CPU，阈值与设备可在 `config/rune_detector.yaml` 中修改，模型相对路径以配置文件所在目录为基准。工具不下发云台或开火指令。
+检测入口不需要相机标定，可独立回放图像。默认使用 CPU，阈值与设备可在 `config/auto_aim.yaml` 的 `rune.detector` 节点中修改，模型相对路径以配置文件所在目录为基准。工具不下发云台或开火指令。
 
 ```cpp
 #include "rune/f1-observation/keypoint_detector.hpp"
 
 Rune::OpenVinoKeypointDetector detector(
-    Rune::KeypointDetectorConfig::load("config/rune_detector.yaml"));
+    Rune::KeypointDetectorConfig::load("config/auto_aim.yaml"));
 // 每帧在调用 rune.process(frame, control) 前：
 frame.detections = detector.detect(frame.bgr, frame.mode);
 ```

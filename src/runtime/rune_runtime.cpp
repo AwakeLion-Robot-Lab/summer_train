@@ -25,7 +25,7 @@ RuneRuntime::RuneRuntime(const RuneRuntimeConfig& config,
                          std::unique_ptr<Rune::IKeypointDetector> detector)
     : detector_(detector ? std::move(detector)
                          : std::make_unique<Rune::OpenVinoKeypointDetector>(
-                               Rune::KeypointDetectorConfig::load(config.detector_config))),
+                               config.detector)),
       processor_(config.geometry, {}, planningConfig(config, tuning), {}, config.fire),
       tuning_(tuning), max_feedback_age_s_(config.fire.max_plan_age_s) {}
 

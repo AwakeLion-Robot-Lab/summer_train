@@ -20,6 +20,12 @@
 
 namespace L1Sensor {
 
+struct SerialCommandTiming {
+  std::chrono::steady_clock::time_point queued_at{};
+  std::chrono::steady_clock::time_point write_started_at{};
+  std::chrono::steady_clock::time_point write_completed_at{};
+};
+
 class SerialWorker {
 public:
   explicit SerialWorker(SerialConfig config);
@@ -62,6 +68,9 @@ public:
   // 返回最近一次完整写入串口的命令；未成功发送过时返回空。
   std::optional<SerialCommand> latestSentCommand() const;
 
+  // 最近一条新命令首次完整写入的时间；周期重发不会覆盖。不是 MCU 执行时间。
+  std::optional<SerialCommandTiming> latestCommandTiming() const;
+
   // 返回本 worker 生命周期内成功解析出的下位机状态帧数量。
   std::uint64_t receivedStateCount() const;
 
@@ -79,6 +88,10 @@ public:
 
   // 阻塞到收到一包时间戳晚于图像的姿态，或等满 pose_wait_ms。
   bool waitPose(std::chrono::steady_clock::time_point timestamp) const;
+
+  // 与其他计算共享绝对截止时间，避免计算结束后又等一遍完整超时。
+  bool waitPoseUntil(std::chrono::steady_clock::time_point timestamp,
+                     std::chrono::steady_clock::time_point deadline) const;
 
   // 最新一次云台姿态，不做插值。"现在"之后不可能有采样，所以想要当前姿态时
   // 用这个而不是 gimbalPoseAt(now())——后者会无谓地走一遍越界分支并计数，
@@ -135,6 +148,7 @@ private:
 
   mutable std::mutex sent_command_mutex_;
   std::optional<SerialCommand> latest_sent_command_;
+  std::optional<SerialCommandTiming> latest_command_timing_;
 };
 
 }  // namespace L1Sensor

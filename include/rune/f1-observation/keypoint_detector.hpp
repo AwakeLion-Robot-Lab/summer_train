@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 
+namespace YAML { class Node; }
+
 namespace Rune {
 
 struct KeypointDetectorConfig {
@@ -15,8 +17,11 @@ struct KeypointDetectorConfig {
   float keypoint_confidence_threshold{0.5F};
   float nms_distance_px{30.0F};
 
-  // Relative model paths are resolved from the YAML file's directory.
+  // Load rune.detector from auto_aim.yaml. Explicit relative model paths are
+  // resolved from the YAML file's directory.
   [[nodiscard]] static KeypointDetectorConfig load(const std::filesystem::path& yaml);
+  [[nodiscard]] static KeypointDetectorConfig fromYaml(
+      const YAML::Node& node, const std::filesystem::path& base_dir);
 };
 
 // Synchronous, single-thread use. Published head: 3 classes + 5 (x,y,score)

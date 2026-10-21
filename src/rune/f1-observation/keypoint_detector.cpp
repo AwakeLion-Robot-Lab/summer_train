@@ -47,16 +47,26 @@ struct Candidate {
 }  // namespace
 
 KeypointDetectorConfig KeypointDetectorConfig::load(const std::filesystem::path& yaml) {
-  const auto node = YAML::LoadFile(yaml.string());
+  const auto root = YAML::LoadFile(yaml.string());
+  const auto rune = root["rune"];
+  return fromYaml(rune ? rune["detector"] : YAML::Node{}, yaml.parent_path());
+}
+
+KeypointDetectorConfig KeypointDetectorConfig::fromYaml(
+    const YAML::Node& node, const std::filesystem::path& base_dir) {
   KeypointDetectorConfig config;
-  config.model_path = node["model_path"].as<std::string>();
+  if (!node || node.IsNull()) return config;
+  if (!node.IsMap()) throw std::invalid_argument("rune.detector must be a map");
+  if (node["model_path"]) {
+    config.model_path = node["model_path"].as<std::string>();
+    if (!config.model_path.empty() && config.model_path.is_relative())
+      config.model_path = (base_dir / config.model_path).lexically_normal();
+  }
   config.device = node["device"].as<std::string>(config.device);
   config.confidence_threshold = node["confidence_threshold"].as<float>(config.confidence_threshold);
   config.keypoint_confidence_threshold =
     node["keypoint_confidence_threshold"].as<float>(config.keypoint_confidence_threshold);
   config.nms_distance_px = node["nms_distance_px"].as<float>(config.nms_distance_px);
-  if (config.model_path.is_relative())
-    config.model_path = (yaml.parent_path() / config.model_path).lexically_normal();
   validateConfig(config);
   return config;
 }
@@ -113,9 +123,8 @@ std::vector<Keypoints> OpenVinoKeypointDetector::detect(const cv::Mat& bgr, Mode
   const int resized_height = std::clamp(static_cast<int>(std::round(bgr.rows * scale)), 1, height);
   const int pad_x = (width - resized_width) / 2;
   const int pad_y = (height - resized_height) / 2;
-  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(height) * width * 3);
+  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(height) * width * 3, 114);
   cv::Mat letterbox(height, width, CV_8UC3, pixels.data());
-  letterbox.setTo(cv::Scalar(114, 114, 114));
   cv::Mat content = letterbox(cv::Rect(pad_x, pad_y, resized_width, resized_height));
   if (content.size() == bgr.size()) bgr.copyTo(content);
   else cv::resize(bgr, content, content.size(), 0, 0, cv::INTER_LINEAR);
