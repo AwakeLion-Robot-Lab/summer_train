@@ -588,7 +588,7 @@ void TensorRtBackend::load(const InferenceModelConfig& config)
       next->input_width = shape[3];
       next->input_byte_count = byteCount(shapeElementCount(shape, name), data_type, name);
     } else if (io_mode == nvinfer1::TensorIOMode::kOUTPUT) {
-      OutputBinding output;
+      Impl::OutputBinding output;
       output.name = name;
       output.shape = staticShape(next->engine->getTensorShape(tensor_name), name);
       output.element_count = shapeElementCount(output.shape, name);

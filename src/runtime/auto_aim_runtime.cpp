@@ -311,13 +311,10 @@ void AutoAimRuntime::run() {
           frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
           const auto image_pose = serial.gimbalPoseAt(timestamp);
 
-          // L2: 用上一帧整车状态生成网络 ROI 和侧灯条 ROI；Lost 时网络 ROI
-          // 自动退化为整图。侧灯条作为额外端点观测交给 IESKF。
-          std::optional<cv::Rect> light_roi;
+          // L2: 生成网络 ROI 与侧灯条的预测端点；Lost 时网络 ROI 退化为整图。
           std::optional<cv::Rect> net_roi;
           std::vector<L2Perception::LightHint> light_hints;
           if (tracker && tracker->ready()) {
-            light_roi = tracker->lightRoi(image_pose, timestamp, frame.size());
             light_hints = tracker->lightHints(image_pose, timestamp);
             net_roi = tracker->netFocusRoi(
               image_pose, timestamp, frame.size(),
@@ -326,7 +323,7 @@ void AutoAimRuntime::run() {
           const auto detect = [&](const std::optional<cv::Rect>& roi) {
             const auto started = Clock::now();
             auto result = armor_detector.detectFrame(
-              frame, light_roi, roi,
+              frame, roi,
               enemyArmorColor(state->enemy_color),
               light_hints);
             frame_timing.detect_ms += milliseconds(Clock::now(), started);

@@ -183,7 +183,10 @@ public:
   // 半径的物理量纲做判断，log 表示不能泄漏出去。
   Eigen::VectorXd ekf_x() const;
   const State & rawState() const noexcept { return x_; }
-  const Covariance & covariance() const noexcept { return covariance_; }
+  // 活滤波器只保存一份 P；无滤波器的规划快照仍携带对应时刻的 P。
+  const Covariance & covariance() const noexcept {
+    return filter_ ? filter_->covariance() : covariance_;
+  }
   TimePoint t() const noexcept { return t_; }
   int armor_num() const noexcept;
 

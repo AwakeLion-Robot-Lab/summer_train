@@ -130,7 +130,6 @@ void EskfTarget::reset(
     VM::Motion{.dt = 0.005, .name = name}, zero_q, inject, box_minus, p0);
   filter_->setState(x_);
   filter_->setIterationNum(config_.iteration_num);
-  covariance_ = p0;
 
   voter_.reset(timestamp);
 
@@ -170,7 +169,6 @@ void EskfTarget::predictEkf(TimePoint timestamp, std::optional<TimePoint> hold_f
   });
 
   x_ = filter_->predict();
-  covariance_ = filter_->covariance();
   t_ = timestamp;
 }
 
@@ -223,7 +221,6 @@ int EskfTarget::update(
   }
 
   x_ = filter_->updateMulti(observations);
-  covariance_ = filter_->covariance();
   t_ = timestamp;
 
   // 先验线性化点上的创新量（滤波器在第 0 轮迭代记下），两个诊断量都从它来。
@@ -361,7 +358,7 @@ EskfTarget EskfTarget::snapshot() const
   EskfTarget copy;
   copy.config_ = config_;
   copy.x_ = x_;
-  copy.covariance_ = covariance_;
+  copy.covariance_ = covariance();
   copy.t_ = t_;
   copy.name = name;
   copy.jumped = jumped;
