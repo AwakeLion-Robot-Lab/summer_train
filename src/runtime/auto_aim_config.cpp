@@ -567,6 +567,17 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   readValue(debug, "web_record_dir", config.debug.web_record_dir);
   readValue(debug, "web_record_max_frames", config.debug.web_record_max_frames);
   readValue(debug, "force_work_mode", config.debug.force_work_mode);
+  std::string forced_color;
+  readValue(debug, "force_enemy_color", forced_color);
+  if (forced_color == "red") {
+    config.debug.force_enemy_color = L1Sensor::EnemyColor::Red;
+  } else if (forced_color == "blue") {
+    config.debug.force_enemy_color = L1Sensor::EnemyColor::Blue;
+  } else if (!forced_color.empty()) {
+    L6Telemetry::logWarn(
+      "invalid debug.force_enemy_color; expected red, blue or empty; following MCU:",
+      forced_color);
+  }
 
   normalize(config);
 

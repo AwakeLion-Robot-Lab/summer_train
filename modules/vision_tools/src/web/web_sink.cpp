@@ -1,4 +1,4 @@
-#include "l6_telemetry/web_sink.hpp"
+#include "vision_tools/web/web_sink.hpp"
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -20,9 +20,6 @@
 namespace L6Telemetry {
 namespace {
 
-constexpr const char* kFramePath = "/dev/shm/newvision_frame";
-constexpr const char* kSeriesPath = "/dev/shm/newvision_data.json";
-constexpr const char* kLogPath = "/dev/shm/newvision_log.json";
 constexpr std::size_t kFrameMapSize = 2 * 1024 * 1024;
 constexpr auto kSeriesFlushInterval = std::chrono::milliseconds(200);
 constexpr int kFrameMaxWidth = 960;
@@ -69,12 +66,14 @@ bool writeJsonAtomic(const char* path, const nlohmann::json& value)
 
 }  // namespace
 
-WebSink::WebSink(int max_samples, std::string record_dir, int record_max_frames)
+WebSink::WebSink(int max_samples, std::string record_dir, int record_max_frames,
+                 std::string ipc_prefix)
   : max_samples_(max_samples > 0 ? max_samples : 200),
     record_dir_(std::move(record_dir)),
+    ipc_prefix_(std::move(ipc_prefix)),
     record_max_frames_(record_max_frames)
 {
-  frame_fd_ = ::open(kFramePath, O_CREAT | O_RDWR, 0666);
+  frame_fd_ = ::open((ipc_prefix_ + "_frame").c_str(), O_CREAT | O_RDWR, 0666);
   if (frame_fd_ >= 0) {
     if (::ftruncate(frame_fd_, static_cast<off_t>(kFrameMapSize)) == 0) {
       void* mapped = ::mmap(
@@ -91,6 +90,7 @@ WebSink::WebSink(int max_samples, std::string record_dir, int record_max_frames)
     std::filesystem::create_directories(record_dir_, error);
     std::filesystem::create_directories(record_dir_ + "/frames", error);
     series_file_ = std::fopen((record_dir_ + "/series.jsonl").c_str(), "ab");
+    frame_index_file_ = std::fopen((record_dir_ + "/frames/index.jsonl").c_str(), "ab");
   }
 
   if (frame_map_) {
@@ -119,6 +119,10 @@ WebSink::~WebSink()
     std::fclose(static_cast<std::FILE*>(series_file_));
     series_file_ = nullptr;
   }
+  if (frame_index_file_) {
+    std::fclose(static_cast<std::FILE*>(frame_index_file_));
+    frame_index_file_ = nullptr;
+  }
   if (frame_map_) {
     ::munmap(frame_map_, frame_map_size_);
     frame_map_ = nullptr;
@@ -129,7 +133,8 @@ WebSink::~WebSink()
   }
 }
 
-void WebSink::writeFrame(const cv::Mat& annotated)
+void WebSink::writeFrame(const cv::Mat& annotated, std::uint64_t source_frame,
+                         double capture_seconds)
 {
   if (!frame_map_ || annotated.empty()) {
     return;
@@ -147,6 +152,8 @@ void WebSink::writeFrame(const cv::Mat& annotated)
       dropped_frames_.fetch_add(1, std::memory_order_relaxed);
     }
     pending_frame_ = std::move(copy);
+    pending_source_frame_ = source_frame;
+    pending_capture_seconds_ = capture_seconds;
     frame_pending_ = true;
   }
   frame_cv_.notify_one();
@@ -169,6 +176,8 @@ void WebSink::frameWorkerLoop()
 
   while (true) {
     cv::Mat frame;
+    std::uint64_t source_frame = 0;
+    double capture_seconds = 0.0;
     {
       std::unique_lock<std::mutex> lock(frame_mutex_);
       frame_cv_.wait(lock, [this] { return frame_stop_ || frame_pending_; });
@@ -176,12 +185,14 @@ void WebSink::frameWorkerLoop()
         break;
       }
       frame = std::move(pending_frame_);
+      source_frame = pending_source_frame_;
+      capture_seconds = pending_capture_seconds_;
       frame_pending_ = false;
       frame_encoding_ = true;
     }
 
     try {
-      encodeAndPublishFrame(std::move(frame));
+      encodeAndPublishFrame(std::move(frame), source_frame, capture_seconds);
     } catch (const cv::Exception&) {
       // 调试输出失败不能终止视觉主程序；下一帧仍可继续尝试。
     }
@@ -211,7 +222,8 @@ void WebSink::frameWorkerLoop()
   frame_drained_cv_.notify_all();
 }
 
-void WebSink::encodeAndPublishFrame(cv::Mat frame)
+void WebSink::encodeAndPublishFrame(cv::Mat frame, std::uint64_t source_frame,
+                                    double capture_seconds)
 {
   const auto encode_started = std::chrono::steady_clock::now();
   cv::Mat output;
@@ -253,12 +265,24 @@ void WebSink::encodeAndPublishFrame(cv::Mat frame)
       return;
     }
     char name[64];
-    std::snprintf(name, sizeof(name), "/frames/frame_%06zu.jpg", frame_seq_++);
+    const std::size_t recorded_index = frame_seq_;
+    std::snprintf(name, sizeof(name), "/frames/frame_%06zu.jpg", recorded_index);
     const std::string path = record_dir_ + name;
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (file) {
-      std::fwrite(buffer.data(), 1, buffer.size(), file);
-      std::fclose(file);
+      const bool written = std::fwrite(buffer.data(), 1, buffer.size(), file) == buffer.size();
+      const bool closed = std::fclose(file) == 0;
+      if (written && closed) {
+        ++frame_seq_;
+      }
+      if (written && closed && frame_index_file_) {
+        const nlohmann::json entry = {
+          {"index", recorded_index}, {"source_frame", source_frame},
+          {"t", capture_seconds}};
+        const std::string line = entry.dump() + "\n";
+        std::fwrite(line.data(), 1, line.size(), static_cast<std::FILE*>(frame_index_file_));
+        std::fflush(static_cast<std::FILE*>(frame_index_file_));
+      }
     }
   }
 }
@@ -373,12 +397,12 @@ void WebSink::flushSeriesLocked()
   for (std::size_t index = 0; index < keys_.size(); ++index) {
     data[keys_[index]] = series_[index];
   }
-  writeJsonAtomic(kSeriesPath, data);
+  writeJsonAtomic((ipc_prefix_ + "_data.json").c_str(), data);
 }
 
 void WebSink::flushLogLocked()
 {
-  writeJsonAtomic(kLogPath, log_);
+  writeJsonAtomic((ipc_prefix_ + "_log.json").c_str(), log_);
 }
 
 }  // namespace L6Telemetry

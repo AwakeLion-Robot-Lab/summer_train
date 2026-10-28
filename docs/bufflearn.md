@@ -2,7 +2,7 @@
 
 > 本文按当前工作区代码整理，目标是回答三件事：Buff 代码在哪里、每一帧怎样从图像走到控制命令、学习和调试时应该先看什么。
 >
-> 当前实现来自传统 Rune 路线，主链路是颜色与轮廓检测，不是神经网络检测。仓库中的 `model/buff_model/` 虽然包含 YOLOv8 pose 模型，但尚未接入运行时。
+> 更新：运行时已接入 `model/buff_model/buff.onnx`。当前默认采用网络找靶面和判状态、传统方法提取中心 R 与 PnP 十字端点；`detector.method: traditional` 可恢复本手册下述传统检测路径。模型配置和几何适配说明见 [buff.md](buff.md)。下文跟踪、规划说明仍适用。
 
 ## 1. 先记住这 8 个结论
 
@@ -20,10 +20,10 @@
 7. L4 不只做简单的 `距离 / 弹速`。它迭代“目标未来位置 ↔ 带重力和阻力的飞行时间”，最多 5 次，然后叠加 `shoot_delay` 与本帧算法延迟。
 8. 当前默认不会实弹开火：`config/buff.yaml` 的 `control.shoot_enable` 为 `false`；Talos 还有第二层 `config/talos.yaml: talos.shoot_enable` 闸门。
 
-> **当前硬件配置提醒：** `config/auto_aim.yaml` 目前写着
-> `debug.force_work_mode: "auto_aim"`。硬件运行时它会覆盖下位机上报的
-> `SmallBuff/BigBuff`，所以当前配置下 Buff 分支实际上进不去。学习时可显式改成
-> `small_buff`/`big_buff`，正常联调与比赛前应清空，让下位机决定模式。Talos 后端会在代码中自动清除此覆盖，使用 `config/talos.yaml` 的模式。
+> **当前硬件配置提醒：** `config/auto_aim.yaml` 的 `debug.force_work_mode`
+> 目前为 `small_buff`，硬件运行时强制走 Buff 分支；清空后跟随下位机模式。
+> `debug.force_enemy_color` 可设为 `red`/`blue`，空串跟随下位机目标颜色。
+> Talos 后端清除这两个覆盖，使用 `config/talos.yaml` 的配置。
 
 ## 2. 一帧数据怎样流动
 
@@ -68,7 +68,7 @@ flowchart LR
 | 层 | 文件 | 作用 | 当前状态 |
 |---|---|---|---|
 | 配置 | `config/buff.yaml` | 检测、跟踪、规划、控制参数 | 生效 |
-| 配置 | `config/auto_aim.yaml` | `force_work_mode` 可覆盖下位机模式；当前值会阻止硬件进入 Buff | 生效 |
+| 配置 | `config/auto_aim.yaml` | `force_work_mode`/`force_enemy_color` 覆盖模式/目标颜色 | 生效 |
 | 配置 | `config/talos.yaml` | Talos 敌方颜色、模式、弹速及第二层开火许可 | Talos 生效 |
 | L1 | `include/l1_sensor/buff/transform.hpp`、`src/l1_sensor/buff/transform.cpp` | 合成相机世界位姿，避免光学轴换轴做两次 | 生效 |
 | L1 | `include/l1_sensor/serial/robot_state.hpp` | `EnemyColor`、`SmallBuff/BigBuff`、实时弹速 | 生效 |
@@ -88,22 +88,22 @@ flowchart LR
 | Runtime | `src/runtime/buff/buff_config.cpp` | YAML 读取、兼容旧字段、部分关键坏值回退 | 生效 |
 | Runtime | `src/runtime/auto_aim_runtime.cpp` | 模式路由、姿态对时、命令发布与模式切换 | 生效 |
 | L6 | `src/l6_telemetry/buff/overlay.cpp` | 检测、关联、规划状态叠加 | 生效，需开关或回放工具 |
-| 工具 | `tools/buff_video_replay.cpp` | 不开相机/串口的 L2～L5 视频回放 | 生效，首选学习工具 |
+| 工具 | `tools/replay/buff_video_replay.cpp` | 不开相机/串口的 L2～L5 视频回放 | 生效，首选学习工具 |
 
-### 3.2 存在但未接线的内容
+### 3.2 模型接入与其他预留内容
 
 | 文件/字段 | 现状 |
 |---|---|
-| `model/buff_model/buff.onnx/.xml/.bin` | 模型存在，但 `Buff::Detector` 未加载它 |
-| `include/l2_perception/buff/buff_decoder.hpp` | 只有说明，没有解码接口 |
-| `src/l2_perception/buff/buff_decoder.cpp` | 空实现 |
+| `model/buff_model/buff.onnx/.xml/.bin` | 默认启用 ONNX，模型路径由 buff.yaml 指定 |
+| `include/l2_perception/buff/buff_decoder.hpp` | 模型解码接口 |
+| `src/l2_perception/buff/buff_decoder.cpp` | 四类/四点解码、颜色筛选、NMS 和原图坐标还原 |
 | `Config::plot` / `debug.plot` | YAML 能读取，但 Buff 运行时没有发送或落盘逻辑 |
 | `L6Telemetry::Buff::csvHeader()/toCsv()` | CSV 序列化函数存在，但主循环没有调用 |
 | `State::aimpoints()` | 已实现，但当前 Planner 自己计算攻击点，没有调用它 |
 | `TargetEstimator::converge()` | 恒返回 `true`，当前也没有调用；真正预热门限在 Planner 内 |
 
 模型 XML 自带的元数据为：YOLOv8n pose、输入 `1×3×640×640`、4 个类别
-`BR/BW/RR/RW`、每个目标 4 个二维关键点、输出 `1×16×8400`。这些信息只说明模型资产的契约，不代表当前算法在使用它；类别缩写在本工程中也没有进一步解释。模型元数据声明 AGPL-3.0，未来接线时还应同时确认使用和分发边界。
+`BR/BW/RR/RW`、每个目标 4 个二维关键点、输出 `1×16×8400`。B/R 前缀表示蓝/红，R/W 后缀对应待打/已激活；待打靶的关键点不是现有 PnP 的十字外端点，需要 ROI 几何精修。模型元数据声明 AGPL-3.0。
 
 ## 4. 坐标系与角度约定
 

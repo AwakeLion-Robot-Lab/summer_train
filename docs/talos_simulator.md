@@ -254,10 +254,10 @@ Talos 安全门只保护仿真 I/O，不能替代实车电控限位、模式和�
 | 命令编码/解码 | `src/l1_sensor/talos/gimbal_codec.cpp` |
 | 共享内存 | `src/l1_sensor/talos/talos_reader.cpp` |
 | 仿真 Runtime I/O | `src/runtime/runtime_io.cpp` |
-| 方向验收 | `tools/talos_gimbal_check.cpp`、`tests/talos_contract_smoke.cpp` |
+| 方向验收 | `tools/talos/talos_gimbal_check.cpp`、`tests/talos_contract_smoke.cpp` |
 | 仿真执行 | `bevy_robomaster_simulator/src/talos/plugin.rs` |
 | 仿真姿态发布 | `bevy_robomaster_simulator/src/talos/capture.rs` |
-| 打符回放 | `tools/buff_video_replay.cpp`、`docs/buff.md` |
+| 打符回放 | `tools/replay/buff_video_replay.cpp`、`docs/buff.md` |
 
 提交前运行：
 

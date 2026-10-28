@@ -6,6 +6,14 @@
 int main()
 {
   const auto config = runtime::buff::loadConfig("config/buff.yaml");
+  if (!config.detector.use_model ||
+      config.detector.model.model_path != "model/buff_model/buff.onnx" ||
+      config.detector.model.model_color_order != L2Perception::ModelColorOrder::Rgb ||
+      std::abs(config.detector.decoder.confidence_threshold - 0.5F) > 1e-6 ||
+      std::abs(config.detector.decoder.nms_iou_threshold - 0.45F) > 1e-6) {
+    std::cerr << "Buff model config smoke test failed\n";
+    return 1;
+  }
   if (std::abs(config.detector.min_distance - 1.7) > 1e-12 ||
       std::abs(config.detector.max_distance - 5.0) > 1e-12 ||
       std::abs(config.planner.fallback_bullet_speed - 22.5) > 1e-12 ||

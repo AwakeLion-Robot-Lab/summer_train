@@ -4,6 +4,7 @@ let replayFrames = 0;
 let replayPlaying = false;
 let replayTimer = null;
 let activeReplay = "";
+let replayTimes = [];
 
 function replayStatus(text) { const el = document.getElementById("replayPos"); if (el) el.textContent = text; }
 
@@ -30,16 +31,25 @@ function showReplayFrame(index) {
 
 function stopReplayPlayback() {
   replayPlaying = false;
-  if (replayTimer) { window.clearInterval(replayTimer); replayTimer = null; }
+  if (replayTimer) { window.clearTimeout(replayTimer); replayTimer = null; }
   const button = document.getElementById("replayPlayBtn"); if (button) button.textContent = "播放";
 }
 
 async function loadReplay(name, frames) {
-  stopReplayPlayback(); activeReplay = name; replayFrames = frames;
+  stopReplayPlayback(); activeReplay = name; replayFrames = frames; replayTimes = [];
   const view = document.getElementById("replay-view"); if (view) view.hidden = false;
   const scrub = document.getElementById("replayScrub");
   if (scrub) { scrub.max = String(Math.max(0, frames - 1)); scrub.value = "0"; scrub.oninput = () => showReplayFrame(Number(scrub.value)); }
   showReplayFrame(0); replayStatus("正在加载曲线…");
+  try {
+    const response = await fetch(`/replays/${encodeURIComponent(name)}/frame-times`, { cache: "no-store" });
+    const data = await response.json();
+    if (response.ok && Array.isArray(data.frames)) {
+      data.frames.forEach((row) => {
+        if (Number.isInteger(row.index) && row.index >= 0 && Number.isFinite(row.t)) replayTimes[row.index] = row.t;
+      });
+    }
+  } catch (_) { /* Old recordings use the legacy 50 ms interval. */ }
   try {
     const response = await fetch(`/replays/${encodeURIComponent(name)}/series?max_points=${REPLAY_MAX_POINTS}`, { cache: "no-store" });
     const data = await response.json();
@@ -79,11 +89,19 @@ function initReplay() {
     if (replayPlaying) { stopReplayPlayback(); return; }
     if (replayFrames <= 0) return;
     replayPlaying = true; document.getElementById("replayPlayBtn").textContent = "暂停";
-    replayTimer = window.setInterval(() => {
+    const advance = () => {
       const scrub = document.getElementById("replayScrub"); const next = Number(scrub?.value || 0) + 1;
       if (next >= replayFrames) { stopReplayPlayback(); return; }
-      showReplayFrame(next);
-    }, 50);
+      const previous = next - 1;
+      const delta = replayTimes[next] - replayTimes[previous];
+      const delay = Number.isFinite(delta) && delta > 0 ? delta * 1000 : 50;
+      replayTimer = window.setTimeout(() => {
+        if (!replayPlaying) return;
+        showReplayFrame(next);
+        advance();
+      }, delay);
+    };
+    advance();
   });
   loadReplays();
 }

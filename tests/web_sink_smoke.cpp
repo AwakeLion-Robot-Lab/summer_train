@@ -150,7 +150,7 @@ int main()
     const std::string record_dir = "/tmp/newvision_web_record";
     std::filesystem::remove_all(record_dir);
     L6Telemetry::WebSink recorder(8, record_dir);
-    recorder.writeFrame(frame);
+    recorder.writeFrame(frame, 42, 12.5);
     recorder.writeSeries(sample);
     recorder.flush();
 
@@ -163,6 +163,17 @@ int main()
     if (!std::filesystem::exists(record_dir + "/frames/frame_000000.jpg")) {
       std::cerr << "web_sink_smoke: FAIL record frame missing\n";
       return 11;
+    }
+    std::string index_jsonl;
+    if (!readFile((record_dir + "/frames/index.jsonl").c_str(), index_jsonl)) {
+      std::cerr << "web_sink_smoke: FAIL frame index missing\n";
+      return 18;
+    }
+    const auto frame_index = nlohmann::json::parse(index_jsonl);
+    if (frame_index["index"] != 0 || frame_index["source_frame"] != 42 ||
+        frame_index["t"] != 12.5) {
+      std::cerr << "web_sink_smoke: FAIL frame index contents\n";
+      return 19;
     }
     std::printf("web_sink_smoke: ok record_dir\n");
   }

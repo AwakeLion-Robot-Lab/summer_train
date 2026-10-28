@@ -8,6 +8,7 @@
 #include "l6_telemetry/buff/overlay.hpp"
 #include "runtime/buff/buff_config.hpp"
 #include "runtime/buff/buff_runtime.hpp"
+#include "vision_tools/replay/frame_timeline.hpp"
 
 #include <Eigen/Geometry>
 
@@ -24,13 +25,17 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <numbers>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -41,14 +46,16 @@ const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
   "{calibration c | config/camera_config.yaml | 相机标定 YAML，支持本工程和 ROS camera_info 格式}"
   "{buff-config b | config/buff.yaml | Buff 参数 YAML}"
-  "{enemy | red | 敌方颜色：red / blue}"
-  "{wait w | 1 | 正常播放时每帧等待毫秒数，0 表示从首帧单步}"
+  "{enemy | blue | 敌方颜色：red / blue}"
+  "{wait w | 1 | all 模式每帧最少等待毫秒数，0 表示从首帧单步}"
   "{start-index s | 0 | 起始帧下标}"
   "{end-index e | 0 | 结束帧下标，0 表示到视频末尾}"
   "{output o | | 导出标注视频；留空表示不导出}"
   "{overwrite | false | 允许覆盖已存在的导出视频}"
   "{show-original | false | 同步显示未绘制标注的原始视频窗口}"
-  "{sync-playback | true | 检测足够快时按源视频 FPS 控制播放节奏}"
+  "{playback-mode | realtime | all 逐帧处理；realtime 落后时跳帧追赶源视频时间}"
+  "{timing-source | auto | auto 优先读取同名 TXT 采集时间；video 使用 AVI FPS；pose 强制 TXT}"
+  "{sync-playback | true | all 模式检测足够快时按源视频 FPS 控制播放节奏}"
   "{headless | false | 不创建窗口，只统计或导出视频}"
   "{@input | | 输入视频路径}";
 //xmake run buff_video_replay --calibration=/home/rm/FosuVision-main/src/ros2_hik_camera-main/config/camera_info.yaml --enemy=red /home/rm/FosuVision-main/src/rm_auto_aim/armor_detector/test/buffVideo.avi
@@ -63,6 +70,15 @@ L1Sensor::EnemyColor parseEnemyColor(const std::string& text)
   if (text == "red") return L1Sensor::EnemyColor::Red;
   if (text == "blue") return L1Sensor::EnemyColor::Blue;
   throw std::runtime_error("enemy 必须是 red 或 blue");
+}
+
+enum class PlaybackMode { All, Realtime };
+
+PlaybackMode parsePlaybackMode(const std::string& text)
+{
+  if (text == "all") return PlaybackMode::All;
+  if (text == "realtime") return PlaybackMode::Realtime;
+  throw std::runtime_error("playback-mode 必须是 all 或 realtime");
 }
 
 // ROS camera_info.yaml 把矩阵写成 {rows, cols, data}，本工程则使用二维数组。
@@ -277,7 +293,10 @@ int outputFourcc(const std::filesystem::path& path)
 
 struct Statistics {
   std::uint64_t processed{0};
+  std::uint64_t skipped{0};
   std::uint64_t observation_frames{0};
+  std::uint64_t model_frames{0};
+  std::uint64_t model_detections{0};
   std::uint64_t paired_frames{0};
   std::uint64_t plan_frames{0};
   std::uint64_t plan_box_frames{0};
@@ -287,6 +306,9 @@ struct Statistics {
   int last_plan_box_frame{-1};
   double detect_ms{0.0};
   double update_ms{0.0};
+  double decode_ms{0.0};
+  double overlay_ms{0.0};
+  double write_ms{0.0};
 };
 
 double percent(std::uint64_t value, std::uint64_t total)
@@ -323,6 +345,10 @@ int main(int argc, char** argv)
     const bool overwrite = cli.get<bool>("overwrite");
     const bool show_original = cli.get<bool>("show-original");
     const bool sync_playback = cli.get<bool>("sync-playback");
+    const PlaybackMode playback_mode =
+      parsePlaybackMode(cli.get<std::string>("playback-mode"));
+    const vision_tools::TimingSource timing_source =
+      vision_tools::parseTimingSource(cli.get<std::string>("timing-source"));
 
     require(!input.empty(), "必须提供输入视频路径");
     require(wait_ms >= 0, "wait 不能为负数");
@@ -352,9 +378,14 @@ int main(int argc, char** argv)
 
     cv::VideoCapture video(input.string());
     require(video.isOpened(), "无法打开视频：" + input.string());
-    double fps = video.get(cv::CAP_PROP_FPS);
-    if (!std::isfinite(fps) || fps <= 0.0) fps = 30.0;
+    double video_fps = video.get(cv::CAP_PROP_FPS);
+    if (!std::isfinite(video_fps) || video_fps <= 0.0) video_fps = 30.0;
     const int total_frames = static_cast<int>(video.get(cv::CAP_PROP_FRAME_COUNT));
+    const vision_tools::FrameTimeline timeline =
+      vision_tools::loadFrameTimeline(input, video_fps, total_frames, timing_source);
+    require(timeline.capture_seconds.empty() ||
+              start_index < static_cast<int>(timeline.capture_seconds.size()),
+            "start-index 超出录制时间戳范围");
     const cv::Size video_size{
       static_cast<int>(video.get(cv::CAP_PROP_FRAME_WIDTH)),
       static_cast<int>(video.get(cv::CAP_PROP_FRAME_HEIGHT))};
@@ -365,22 +396,31 @@ int main(int argc, char** argv)
 
     video.set(cv::CAP_PROP_POS_FRAMES, start_index);
     int frame_index = start_index;
-    bool paused = wait_ms == 0;
+    bool paused = !headless && wait_ms == 0;
     bool quit = false;
     cv::VideoWriter writer;
+    cv::Mat last_canvas;
     Statistics statistics;
     const auto epoch = std::chrono::steady_clock::time_point{};
-    auto next_frame_deadline = std::chrono::steady_clock::now();
-    const auto source_frame_period =
-      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-        std::chrono::duration<double>{1.0 / fps});
+    auto playback_origin = std::chrono::steady_clock::now();
+    int playback_origin_frame = start_index;
+    const auto playbackDeadline = [&](int index) {
+      return playback_origin +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>{
+            timeline.secondsAt(index) - timeline.secondsAt(playback_origin_frame)});
+    };
 
     std::cout << "input=" << input << "  resolution=" << video_size.width << 'x'
               << video_size.height << "  fps=" << std::fixed << std::setprecision(3)
-              << fps << "  frames=" << total_frames << '\n';
+              << video_fps << "  frames=" << total_frames
+              << "  timing=" << (timeline.capture_seconds.empty() ? "video" : "pose")
+              << "  capture_fps=" << timeline.fps() << '\n';
     std::cout << "enemy=" << cli.get<std::string>("enemy")
               << "  calibration=" << calibration_path
-              << "  buff_config=" << buff_config_path << '\n';
+              << "  buff_config=" << buff_config_path
+              << "  playback_mode="
+              << (playback_mode == PlaybackMode::Realtime ? "realtime" : "all") << '\n';
     std::cout << "offline safety: camera disabled, serial disabled, shoot output forced false\n";
     if (!headless) {
       std::cout << "keys: SPACE pause/resume, N step, A/D +/-1s, J/L +/-5s, "
@@ -391,19 +431,55 @@ int main(int argc, char** argv)
       }
     }
 
+    const auto replay_begin = std::chrono::steady_clock::now();
+    playback_origin = replay_begin;
     // GUI 暂停期间不重复解码同一帧；只有明确单步或恢复播放才进入下一轮。
     while (!quit) {
       if (end_index > 0 && frame_index > end_index) break;
+      if (playback_mode == PlaybackMode::Realtime && !paused) {
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed_seconds =
+          std::chrono::duration<double>(now - playback_origin).count();
+        int target = timeline.frameAt(
+          timeline.secondsAt(playback_origin_frame) +
+          std::max(0.0, elapsed_seconds));
+        if (total_frames > 0) target = std::min(target, total_frames - 1);
+        if (end_index > 0) target = std::min(target, end_index);
+        while (frame_index < target) {
+          if (!video.grab()) {
+            quit = true;
+            break;
+          }
+          ++frame_index;
+          ++statistics.skipped;
+          // 被跳过的帧沿用上一张标注画面，导出视频仍保持源时间轴长度。
+          if (writer.isOpened() && !last_canvas.empty()) {
+            const auto write_begin = std::chrono::steady_clock::now();
+            writer.write(last_canvas);
+            statistics.write_ms += std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - write_begin).count();
+          }
+        }
+        if (quit) break;
+        if (headless && frame_index > target) {
+          std::this_thread::sleep_until(playbackDeadline(frame_index));
+        }
+      }
       cv::Mat frame;
+      const auto decode_begin = std::chrono::steady_clock::now();
       if (!video.read(frame) || frame.empty()) break;
+      statistics.decode_ms += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - decode_begin).count();
 
-      const double seconds = static_cast<double>(frame_index) / fps;
+      const double seconds = timeline.secondsAt(frame_index);
       const auto timestamp = epoch +
         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>{seconds});
 
       const auto detect_begin = std::chrono::steady_clock::now();
       auto detections = runtime.detect(frame, enemy_color);
+      statistics.model_frames += !detections.model_detections.empty();
+      statistics.model_detections += detections.model_detections.size();
       const double detect_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - detect_begin).count();
       const bool has_observation =
@@ -435,18 +511,28 @@ int main(int argc, char** argv)
       statistics.detect_ms += detect_ms;
       statistics.update_ms += update_ms;
 
-      cv::Mat canvas = frame.clone();
-      drawReplayOverlay(canvas, result, calibration,
-                        static_cast<std::uint64_t>(frame_index), seconds,
-                        detect_ms, update_ms);
+      cv::Mat canvas;
+      if (!headless || !output.empty()) {
+        const auto overlay_begin = std::chrono::steady_clock::now();
+        canvas = frame.clone();
+        drawReplayOverlay(canvas, result, calibration,
+                          static_cast<std::uint64_t>(frame_index), seconds,
+                          detect_ms, update_ms);
+        statistics.overlay_ms += std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - overlay_begin).count();
+      }
 
       if (!output.empty()) {
         if (!writer.isOpened()) {
-          require(writer.open(output.string(), outputFourcc(output), fps,
+          require(writer.open(output.string(), outputFourcc(output), timeline.fps(),
                               canvas.size(), true),
                   "无法创建导出视频：" + output.string());
         }
+        const auto write_begin = std::chrono::steady_clock::now();
         writer.write(canvas);
+        statistics.write_ms += std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - write_begin).count();
+        if (playback_mode == PlaybackMode::Realtime) last_canvas = canvas;
       }
 
       if (headless) {
@@ -464,14 +550,18 @@ int main(int argc, char** argv)
       cv::imshow("buff video replay", canvas);
       bool advance = false;
       bool seeked = false;
-      if (!paused && sync_playback) {
-        next_frame_deadline += source_frame_period;
-      }
       while (!advance && !seeked && !quit) {
         int delay_ms = std::max(wait_ms, 1);
-        if (!paused && sync_playback) {
+        if (!paused && playback_mode == PlaybackMode::Realtime) {
+          const auto deadline = playbackDeadline(frame_index + 1);
           const double remaining_ms = std::chrono::duration<double, std::milli>(
-            next_frame_deadline - std::chrono::steady_clock::now()).count();
+            deadline - std::chrono::steady_clock::now()).count();
+          delay_ms = remaining_ms > 0.0
+            ? std::max(1, static_cast<int>(std::ceil(remaining_ms))) : 1;
+        } else if (!paused && sync_playback) {
+          const double remaining_ms = std::chrono::duration<double, std::milli>(
+            playbackDeadline(frame_index + 1) -
+            std::chrono::steady_clock::now()).count();
           if (remaining_ms > 0.0) {
             delay_ms = std::max(delay_ms,
                                 static_cast<int>(std::ceil(remaining_ms)));
@@ -489,17 +579,18 @@ int main(int argc, char** argv)
           paused = !paused;
           if (!paused) {
             // 暂停时间不能算进视频时钟，否则恢复时会误判落后数秒。
-            next_frame_deadline = std::chrono::steady_clock::now();
+            playback_origin = std::chrono::steady_clock::now();
+            playback_origin_frame = frame_index + 1;
             advance = true;
           }
         } else if (ascii == 'n' || ascii == '.') {
           advance = true;
         } else {
           int target = frame_index;
-          if (ascii == 'a') target -= static_cast<int>(std::llround(fps));
-          else if (ascii == 'd') target += static_cast<int>(std::llround(fps));
-          else if (ascii == 'j') target -= static_cast<int>(std::llround(fps * 5.0));
-          else if (ascii == 'l') target += static_cast<int>(std::llround(fps * 5.0));
+          if (ascii == 'a') target = timeline.frameAt(seconds - 1.0);
+          else if (ascii == 'd') target = timeline.frameAt(seconds + 1.0);
+          else if (ascii == 'j') target = timeline.frameAt(seconds - 5.0);
+          else if (ascii == 'l') target = timeline.frameAt(seconds + 5.0);
           else if (ascii == 'r') target = start_index;
           else continue;
 
@@ -511,12 +602,17 @@ int main(int argc, char** argv)
           runtime.reset();
           frame_index = target;
           paused = true;
-          next_frame_deadline = std::chrono::steady_clock::now();
+          last_canvas.release();
+          playback_origin = std::chrono::steady_clock::now();
+          playback_origin_frame = target;
           seeked = true;
         }
       }
       if (!seeked) ++frame_index;
     }
+
+    const double replay_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - replay_begin).count();
 
     writer.release();
     if (!headless) {
@@ -526,6 +622,11 @@ int main(int argc, char** argv)
 
     std::cout << std::fixed << std::setprecision(3)
               << "processed=" << statistics.processed
+              << " skipped=" << statistics.skipped
+              << " wall_fps="
+              << (replay_seconds > 0.0 ? statistics.processed / replay_seconds : 0.0)
+              << " model_frames=" << statistics.model_frames
+              << " model_detections=" << statistics.model_detections
               << " observation=" << statistics.observation_frames
               << " (" << percent(statistics.observation_frames, statistics.processed) << "%)"
               << " paired=" << statistics.paired_frames
@@ -541,6 +642,11 @@ int main(int argc, char** argv)
               << (statistics.processed ? statistics.detect_ms / statistics.processed : 0.0)
               << " avg_update_ms="
               << (statistics.processed ? statistics.update_ms / statistics.processed : 0.0)
+              << " avg_decode_ms="
+              << (statistics.processed ? statistics.decode_ms / statistics.processed : 0.0)
+              << " avg_overlay_ms="
+              << (statistics.processed ? statistics.overlay_ms / statistics.processed : 0.0)
+              << " total_write_ms=" << statistics.write_ms
               << '\n';
     if (!output.empty()) std::cout << "annotated_video=" << output << '\n';
     return 0;

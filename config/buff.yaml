@@ -1,5 +1,16 @@
-# 传统能量机关（打符）独立配置。该链路不读取 armor/YOLO 参数。
+# 能量机关（打符）独立配置，不读取装甲板模型参数。
 detector:
+  # model：网络找靶面/判状态，传统方法提取中心 R 和 PnP 十字端点。
+  # traditional：完整旧版颜色/轮廓检测。修改后重启。
+  method: "model"
+  inference:
+    model_path: "model/buff_model/buff.onnx"
+    # 当前核显驱动编译失败，先使用 CPU；选 GPU 时失败会明确告警并回退 CPU。
+    device: "CPU"
+    # 按模型元数据 BR/BW/RR/RW 解码，BGR 相机图必须转 RGB。
+    model_color_order: "rgb"
+    confidence_threshold: 0.5
+    nms_iou_threshold: 0.45
   min_distance_m: 1.7
   max_distance_m: 5.0
   #  - 检测距离：1.7～5.0 m
@@ -22,7 +33,7 @@ tracker:
   init_pitch_bound_deg: 20.0
   diverge_face_angle_deg: 45.0
   timeout_seconds: 1.5
-  inactive_timeout_ms: 100
+  inactive_timeout_ms: 150
 
 planning:
   # 优先使用电控 RobotState.bullet_speed；无效时仅用此值继续计算跟随角。
@@ -42,5 +53,5 @@ control:
   shoot_enable: false
 
 debug:
-  overlay: false
+  overlay: true
   plot: false

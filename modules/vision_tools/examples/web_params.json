@@ -1,0 +1,11 @@
+[
+  {
+    "key": "debug.overlay",
+    "yaml_key": "overlay",
+    "label": "overlay",
+    "name": "调试叠加层",
+    "kind": "bool",
+    "group": "debug",
+    "description": "示例：宿主程序自行决定如何处理这个命令"
+  }
+]

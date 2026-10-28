@@ -18,6 +18,7 @@
 #include "runtime/buff/buff_config.hpp"
 #include "runtime/buff/buff_runtime.hpp"
 #include "runtime/runtime_io.hpp"
+#include "vision_tools/recording/recorder.hpp"
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
@@ -211,11 +212,20 @@ void AutoAimRuntime::run() {
   running_ = true;
   AutoAimConfig auto_aim_config =
     loadAutoAimConfig("config/auto_aim.yaml");
+  const auto recorder_config =
+    vision_tools::loadRecorderConfig("config/auto_aim.yaml");
+  std::unique_ptr<vision_tools::Recorder> raw_recorder;
+  if (recorder_config.enabled) {
+    raw_recorder = std::make_unique<vision_tools::Recorder>(recorder_config);
+    L6Telemetry::logInfo("raw frame recording enabled", recorder_config.output_dir.string(),
+                         "fps", recorder_config.fps);
+  }
   auto io = makeRuntimeIo(config_path_);
   if (io->name() == "talos") {
     // Talos 自己提供模式和弹速。硬件调试旁路若覆盖它，small/big_buff 配置会
     // 永远进不了对应链路；信任 fallback 又会把仿真的 projectile.speed 丢掉。
     auto_aim_config.debug.force_work_mode.clear();
+    auto_aim_config.debug.force_enemy_color.reset();
     auto_aim_config.plan.impact.trust_fallback_bullet_speed = false;
   }
   {
@@ -430,6 +440,12 @@ void AutoAimRuntime::run() {
   /******************************** debug *********************************/
 
   // 调试旁路：强制 WorkMode。Web 热更会同步刷新 forced_mode。
+  if (auto_aim_config.debug.force_enemy_color) {
+    L6Telemetry::logWarn(
+      "debug.force_enemy_color is ACTIVE:",
+      L1Sensor::toString(*auto_aim_config.debug.force_enemy_color),
+      "- overriding MCU target color");
+  }
   if (forced_mode) {
     L6Telemetry::logWarn(
       "!!! debug.force_work_mode is ACTIVE:", L1Sensor::toString(*forced_mode),
@@ -514,6 +530,8 @@ void AutoAimRuntime::run() {
       }
       continue;
     }
+    // 检测/叠加层可能改写 frame；仅在启用录像时保留相机原图。
+    const cv::Mat raw_record_frame = raw_recorder ? frame.clone() : cv::Mat{};
     updatePerformanceCounters();
     bool wrote_web_series = false;
     const auto state = io->latestState();
@@ -525,6 +543,8 @@ void AutoAimRuntime::run() {
       // 覆盖只改分派用的模式，state 本身不动——遥测和日志仍然反映下位机
       // 真正上报的值，否则排查时会看不出电控到底给没给对模式。
       const L1Sensor::WorkMode mode = forced_mode.value_or(state->mode);
+      const auto enemy_color =
+        auto_aim_config.debug.force_enemy_color.value_or(state->enemy_color);
       switch (mode) {
         case L1Sensor::WorkMode::AutoAim:
         case L1Sensor::WorkMode::Outpost: {
@@ -532,8 +552,8 @@ void AutoAimRuntime::run() {
           aim_session_active = true;
           // L2: 检测并保留敌方装甲板。
           auto armors = armor_detector.detect(frame);
-          std::erase_if(armors, [&state](const auto& armor) {
-            return !isEnemyArmor(armor.color, state->enemy_color);
+          std::erase_if(armors, [enemy_color](const auto& armor) {
+            return !isEnemyArmor(armor.color, enemy_color);
           });
 
           // 曝光时刻的姿态要晚 serial pose_delay_ms 才到，图像刚到手时还没收到。
@@ -557,7 +577,7 @@ void AutoAimRuntime::run() {
           if (tracker) {
             if (const auto truth = io->groundTruth()) {
               updateTalosMetrics(
-                talos_metrics, tracker->observations(), *truth, state->enemy_color);
+                talos_metrics, tracker->observations(), *truth, enemy_color);
             }
           }
 
@@ -656,7 +676,7 @@ void AutoAimRuntime::run() {
           }
           buff_session_active = true;
 
-          auto detections = buff_runtime->detect(frame, state->enemy_color);
+          auto detections = buff_runtime->detect(frame, enemy_color);
           const auto wait_start = std::chrono::steady_clock::now();
           const bool pose_ready = io->waitPose(timestamp);
           (void)pose_ready;
@@ -747,11 +767,18 @@ void AutoAimRuntime::run() {
         last_fire_reason_for_event = reason;
       }
     }
+    if (raw_recorder && io_started && io->waitPose(timestamp)) {
+      if (const auto pose = io->gimbalPoseAt(timestamp)) {
+        (void)raw_recorder->record(raw_record_frame, *pose, timestamp);
+      }
+    }
     // Web 写帧与 imshow 分开：writeFrame 只复制最新帧，缩放和 JPEG 压缩由
     // 后台单槽线程完成，不会因为浏览器或无线网络变慢而反压视觉主循环。
     // 与绘制共用同一个 frame_index：++ 在后面，保证「画的帧 == 写的帧」。
     if (web_sink && frame_index % auto_aim_config.debug.web_frame_every == 0) {
-      web_sink->writeFrame(frame);
+      web_sink->writeFrame(
+        frame, frame_index,
+        std::chrono::duration<double>(timestamp.time_since_epoch()).count());
     }
     ++frame_index;
     if (overlay_enabled) {

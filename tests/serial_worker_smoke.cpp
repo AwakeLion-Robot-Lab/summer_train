@@ -18,6 +18,7 @@
 #include <pty.h>
 #include <span>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -412,6 +413,40 @@ int main()
         }
       }
       worker.stop();
+    }
+  }
+
+  if (result == 0) {
+    // 录像工具只收姿态；即使上层误调用 updateCommand 也不能向 MCU 发包。
+    PtyPair receive_only_pty;
+    if (!receive_only_pty.open()) {
+      std::cerr << "Failed to create receive-only pseudo terminal\n";
+      result = 20;
+    } else {
+      config.device = receive_only_pty.device();
+      config.tx_enable = false;
+      L1Sensor::SerialWorker receive_only(config);
+      if (!receive_only.start()) {
+        std::cerr << "Receive-only SerialWorker failed to start\n";
+        result = 21;
+      } else {
+        // start() launches the RX thread asynchronously; let it open and set
+        // the PTY to raw mode before injecting the first binary packet.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const auto packet = makeStatePacket(30, 0.0F, 0.0F, 0.5F);
+        (void)::write(receive_only_pty.masterFd(), packet.data(), packet.size());
+        const auto deadline = Clock::now() + std::chrono::milliseconds(100);
+        while (!receive_only.latestState() && Clock::now() < deadline) {
+          pollfd idle{receive_only_pty.masterFd(), 0, 0};
+          ::poll(&idle, 1, 1);
+        }
+        pollfd readable{receive_only_pty.masterFd(), POLLIN, 0};
+        if (!receive_only.latestState() || ::poll(&readable, 1, 20) > 0) {
+          std::cerr << "Receive-only worker did not receive or unexpectedly transmitted\n";
+          result = 22;
+        }
+      }
+      receive_only.stop();
     }
   }
 

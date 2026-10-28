@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <numbers>
+#include <stdexcept>
 
 namespace runtime::buff {
 namespace {
@@ -41,6 +42,30 @@ Config loadConfig(const std::string& path)
   Config config;
   const YAML::Node root = YAML::LoadFile(path);
   const auto detector = root["detector"];
+  std::string method = "traditional";
+  read(detector, "method", method);
+  if (method != "traditional" && method != "model") {
+    throw std::invalid_argument("buff detector.method must be traditional or model");
+  }
+  config.detector.use_model = method == "model";
+  const auto inference = detector ? detector["inference"] : YAML::Node{};
+  if (inference) {
+    std::string path = config.detector.model.model_path.string();
+    read(inference, "model_path", path);
+    config.detector.model.model_path = path;
+    read(inference, "device", config.detector.model.device);
+    std::string color = "rgb";
+    read(inference, "model_color_order", color);
+    if (color != "rgb" && color != "bgr") {
+      throw std::invalid_argument("buff model_color_order must be rgb or bgr");
+    }
+    config.detector.model.model_color_order = color == "rgb"
+      ? L2Perception::ModelColorOrder::Rgb : L2Perception::ModelColorOrder::Bgr;
+    read(inference, "confidence_threshold", config.detector.decoder.confidence_threshold);
+    read(inference, "nms_iou_threshold", config.detector.decoder.nms_iou_threshold);
+  }
+  // 提前验证阈值，让配置错误在启动时暴露。
+  (void)L2Perception::Buff::Decoder{config.detector.decoder};
   read(detector, "min_distance_m", config.detector.min_distance);
   read(detector, "max_distance_m", config.detector.max_distance);
   read(detector, "max_perspective_deg", config.detector.max_perspective_deg);

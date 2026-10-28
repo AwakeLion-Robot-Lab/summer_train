@@ -285,7 +285,7 @@ runtime:
 # 绿色整车=EKF 展开的全部物理板，红框=Plan 选中的命中时刻板，
 # 顶部一行=跟踪状态 / 计划状态 / 第一条开火拒绝原因。
 debug:
-  overlay: false
+  overlay: true
   # 每 N 帧画一次；画面只用来目视对齐，不必每帧都画。
   overlay_every: 1
 
@@ -294,7 +294,7 @@ debug:
   # 节点分成 gimbal / serial / track / obs / ekf / aim / delay / fire 八支，其中
   # gimbal 是实测云台姿态、aim 是规划出的云台姿态，两者同图即跟随误差。
   # 角度一律 degree，时间一律 ms。
-  plot: true
+  plot: false
   plot_host: "127.0.0.1"
   plot_port: 9870
 
@@ -303,7 +303,7 @@ debug:
   # 与 overlay 分开：无头 NUC 上 namedWindow 会抛，但 Web 仍要能看图。
   # 与 plot 共用 telemetryFrame 字段；PlotJuggler 可继续收 9870。
   # 实机调试时打开 web: true；比赛前改回 false。
-  web: true
+  web: false
   # 每 N 帧向 Web 后台线程提交一张标注图。队列只留最新帧，不阻塞算法；
   # 默认 5 优先省 CPU，需要观察高速运动时可临时调小到 1–2。
   web_frame_every: 5
@@ -320,4 +320,14 @@ debug:
   #
   # 它不解除任何开火闸门：shoot_enable 和 planning.send_to_control_ms 的标定
   # 状态仍然各自独立生效，所以强制自瞄不会导致意外开火。
-  force_work_mode: "auto_aim"
+  force_work_mode: "small_buff"
+  # 上位机指定目标颜色（不是己方颜色），装甲板和打符共用；修改后重启程序。
+  # red = 红色目标，blue = 蓝色目标，空串 = 跟随下位机。Talos 使用自己的 enemy。
+  force_enemy_color: ""
+
+# 原始相机录像：AVI + 同名 TXT，每行是实际曝光时间和云台四元数。
+# 打开后会增加图像拷贝与磁盘写入负担；不需要回放时保持关闭。
+recorder:
+  enabled: false
+  fps: 90.0
+  output_dir: "records"

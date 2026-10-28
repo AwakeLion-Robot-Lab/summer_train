@@ -4,7 +4,7 @@
 >
 > **旁路设计**：整体删除不影响瞄准链路。不进火控环。
 >
-> 代码：`web.py` · `templates/` · `static/` · `include/l6_telemetry/web_{sink,cmd}.*`
+> 代码：`modules/vision_tools/web_debug/` · `modules/vision_tools/src/web/`；`web.py` 和 `include/l6_telemetry/web_{sink,cmd}.hpp` 保留兼容入口。
 >
 > 设计吸收：WUST awakening（shm+MJPEG）、SJTU CVRM（在线调参）、Seeker2026（调参+空间视图）、JNU-SHARK（健康诊断/录制）。
 
@@ -345,19 +345,20 @@ debug:
 ```
 records/<session>/
   series.jsonl           # 每行一个嵌套 JSON 样本（telemetryFrame + t）
+  frames/index.jsonl     # 每张 JPEG 的源帧号和曝光时刻
   frames/frame_000000.jpg
   frames/frame_000001.jpg
   …
 ```
 
 - 帧达到 `web_record_max_frames` 后**停帧不停时序**；`<=0` 不限。
-- 与 `tests/track_diag` CSV、`tools/buff_video_replay` 并列，不互相替代。
+- 与 `tests/track_diag` CSV、`tools/replay/buff_video_replay` 并列，不互相替代。
 
 ### 6.2 回放
 
 1. 跑完一轮后打开「回放」面板（或点「刷新列表」）
 2. 点会话 → 加载帧 + 曲线
-3. 拖 scrub / 播放（50 ms/帧）
+3. 拖 scrub / 播放（按 `index.jsonl` 的真实帧间隔；旧录像按 50 ms/帧）
 
 HTTP：
 
@@ -394,6 +395,7 @@ HTTP：
 |---|---|---|
 | `NEWVISION_YAML` | `config/auto_aim.yaml` | 「写入 YAML」目标路径 |
 | `NEWVISION_RECORD_ROOT` | `records` | 回放扫描根 |
+| `VISION_TOOLS_IPC_PREFIX` | `/dev/shm/newvision` | 独立模块 Web 的 IPC 文件前缀，需与 C++ 一致 |
 
 ### 7.3 端口
 
@@ -432,14 +434,11 @@ HTTP：
 
 | 路径 | 职责 |
 |---|---|
-| `web.py` | HTTP 全部路由 |
-| `templates/index.html` | 页面骨架 |
-| `static/js/main.js` | 启动、全屏 |
-| `static/js/chart_logic.js` | 时序曲线 |
-| `static/js/health_tri.js` | 健康 + 三视图 |
-| `static/js/params.js` | 调参 |
-| `static/js/replay.js` | 回放 |
-| `static/js/json_view.js` | JSON 树 |
+| `web.py` | 兼容启动入口，调用模块中的 HTTP 服务 |
+| `modules/vision_tools/web_debug/app.py` | HTTP 路由 |
+| `modules/vision_tools/web_debug/templates/index.html` | 页面骨架 |
+| `modules/vision_tools/web_debug/static/js/` | 视频、曲线、健康、调参及回放 |
+| `modules/vision_tools/src/web/` | 共享内存帧、时序、日志和命令通道 |
 
 ### 8.4 测试
 
@@ -448,7 +447,7 @@ xmake run web_sink_smoke      # 帧/时序/日志/事件/录制
 xmake run web_cmd_smoke       # 命令路径查找
 xmake run web_tuning_smoke    # 白名单、单位转换与重复命令幂等性
 xmake run auto_aim_config_smoke  # 含白名单校验
-.venv/bin/python -m unittest tests.test_web_app -v  # Flask 路由/校验/回放抽样
+.venv/bin/python -m unittest discover -s tests -p test_web_app.py -v  # Flask 路由/校验/回放抽样
 ```
 
 ---
@@ -505,7 +504,7 @@ xmake run auto_aim_config_smoke  # 含白名单校验
 - 尚无浏览器端 E2E；JS 有语法检查，Flask 路由与数据契约有 unittest
 - MindVision / Talos 曝光热更未实现（返回 false）
 - `ballistic.drag_coefficient` 改后需重启
-- 回放帧与样本无严格时间戳对齐（两路各写各的）
+- 回放帧和曲线都有时间戳；前端尚未把曲线光标自动定位到当前帧
 - 单路视频流
 - 热更不自动回退（清空 cmd 后需重载 YAML 或重启）
 

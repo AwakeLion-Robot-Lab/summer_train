@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 namespace {
@@ -72,6 +73,34 @@ void testMissingFileDegrades()
   std::cout << "  [ok] missing config degrades to defaults\n";
 }
 
+void testTargetColorOverride()
+{
+  const auto path = std::filesystem::temp_directory_path() /
+    ("newvision_color_config_" + std::to_string(
+      std::chrono::steady_clock::now().time_since_epoch().count()) + ".yaml");
+  using Color = L1Sensor::EnemyColor;
+  const std::pair<const char*, std::optional<Color>> cases[] = {
+    {"debug: {force_enemy_color: red}", Color::Red},
+    {"debug: {force_enemy_color: blue}", Color::Blue},
+    {"debug: {force_enemy_color: ''}", std::nullopt},
+    {"debug: {}", std::nullopt},
+    {"debug: {force_enemy_color: invalid}", std::nullopt},
+    {"debug: {force_enemy_color: [red, blue]}", std::nullopt},
+  };
+  for (const auto& [yaml, expected] : cases) {
+    {
+      std::ofstream output(path);
+      output << yaml << '\n';
+      require(output.good(), "temporary color config must be writable");
+    }
+    const auto config = runtime::loadAutoAimConfig(path.string());
+    require(config.debug.force_enemy_color == expected,
+            "target color must parse or fall back to MCU");
+  }
+  std::filesystem::remove(path);
+  std::cout << "  [ok] target color override and MCU fallback\n";
+}
+
 // 在线调参白名单：热更生效、单位换算正确、shoot_enable 永远不许碰。
 void testWebTuningWhitelist()
 {
@@ -111,6 +140,7 @@ int main()
 {
   testRepositoryConfigLoads();
   testMissingFileDegrades();
+  testTargetColorOverride();
   testWebTuningWhitelist();
   std::cout << "auto aim config smoke test passed\n";
   return 0;

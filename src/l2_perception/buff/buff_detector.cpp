@@ -1,4 +1,5 @@
 #include "l2_perception/buff/buff_detector.hpp"
+#include "l6_telemetry/logger.hpp"
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/ximgproc.hpp>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <numbers>
+#include <stdexcept>
 #include <vector>
 
 namespace L2Perception::Buff {
@@ -394,7 +396,79 @@ void findContours(
   icons = std::move(filtered_icons);
 }
 
+// 网络只负责选 ROI/颜色/激活状态。该模型的 R 类关键点落在内圈，不能
+// 当作半径 0.15 m 的十字臂端点交给 PnP；在 ROI 内沿用传统端点提取。
+std::optional<Bullseye> refineModelDetection(
+  const cv::Mat& image, const cv::Mat& binary, const ModelDetection& detection,
+  const DetectorConfig& config)
+{
+  if (binary.empty()) return std::nullopt;
+  const int margin = std::max(8, static_cast<int>(
+    std::max(detection.box.width, detection.box.height) * 0.15F));
+  cv::Rect roi{static_cast<int>(std::floor(detection.box.x)) - margin,
+               static_cast<int>(std::floor(detection.box.y)) - margin,
+               static_cast<int>(std::ceil(detection.box.width)) + 2 * margin + 1,
+               static_cast<int>(std::ceil(detection.box.height)) + 2 * margin + 1};
+  roi &= cv::Rect{0, 0, image.cols, image.rows};
+  if (roi.width < 3 || roi.height < 3) return std::nullopt;
+  const cv::Point2f center = detection.center - cv::Point2f{roi.tl()};
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(binary(roi).clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+  const std::vector<cv::Point>* selected = nullptr;
+  double largest_area = 0;
+  for (const auto& contour : contours) {
+    const double area = cv::contourArea(contour);
+    if (area > largest_area && cv::pointPolygonTest(contour, center, false) >= 0) {
+      selected = &contour;
+      largest_area = area;
+    }
+  }
+  if (!selected || largest_area < 4) return std::nullopt;
+  cv::Mat mask = cv::Mat::zeros(roi.size(), CV_8U);
+  cv::drawContours(mask, std::vector<std::vector<cv::Point>>{*selected}, -1,
+                   cv::Scalar{255}, cv::FILLED);
+  cv::Mat masked;
+  image(roi).copyTo(masked, mask);
+  Bullseye bullseye;
+  double feature_score = 0;
+  if (!bullseyeFeature(masked, center, bullseye.corners, feature_score,
+                       config.active_threshold)) return std::nullopt;
+  // 待打叶片必须观测到十字，不能把圆环上的任意四点伪造成 PnP 端点。
+  if (!detection.active && feature_score < config.active_threshold) return std::nullopt;
+  for (auto& corner : bullseye.corners) corner += cv::Point2f{roi.tl()};
+  bullseye.center = detection.center;
+  bullseye.active = detection.active;
+  bullseye.score = detection.confidence;
+  return bullseye;
+}
+
 }  // namespace
+
+Detector::Detector() : Detector(DetectorConfig{}) {}
+
+Detector::Detector(DetectorConfig config)
+  : config_(std::move(config)), decoder_(config_.decoder)
+{
+  if (!config_.use_model) return;
+  backend_ = makeInferenceBackend(InferenceBackendKind::OpenVino);
+  try {
+    backend_->load(config_.model);
+  } catch (const std::exception& error) {
+    if (config_.model.device == "CPU") throw;
+    L6Telemetry::logWarn("buff model failed on", config_.model.device,
+                         error.what(), "; falling back to CPU");
+    config_.model.device = "CPU";
+    backend_ = makeInferenceBackend(InferenceBackendKind::OpenVino);
+    backend_->load(config_.model);
+  }
+  const auto outputs = probeOutputSpecs(*backend_);
+  if (outputs.size() != 1 || outputs[0].shape.size() != 3 ||
+      outputs[0].shape[0] != 1 || outputs[0].shape[1] != 16 || outputs[0].shape[2] == 0) {
+    throw std::runtime_error("buff model requires [1,16,N] output (YOLOv8 pose BR/BW/RR/RW)");
+  }
+  L6Telemetry::logInfo("buff model loaded openvino", config_.model.model_path.string(),
+                       config_.model.device, "layout yolov8_pose_16; traditional R/endpoint refinement");
+}
 
 void Detector::setCalibration(const L1Sensor::CameraCalibration& calibration)
 {
@@ -413,7 +487,25 @@ Detections Detector::detect(const cv::Mat& image) const
   std::vector<std::vector<cv::Point>> bullseyes;
   findContours(config_, binary, icons, bullseyes, calibration_.camera_matrix);
 
-  for (const auto& bullseye : bullseyes) {
+  if (config_.use_model && color_ != L1Sensor::EnemyColor::Unknown) {
+    try {
+      const auto input = ImagePreprocessor::run(
+        image, backend_->inputSpec(),
+        {.padding_color = cv::Scalar{114, 114, 114}, .alignment = LetterboxAlignment::Centered});
+      const auto output = backend_->infer(input.input);
+      result.model_detections = decoder_.decode(output, input.transform, color_);
+      for (const auto& detection : result.model_detections) {
+        if (auto refined = refineModelDetection(image, binary, detection, config_)) {
+          result.bullseyes.push_back(*refined);
+        }
+      }
+    } catch (const std::exception& error) {
+      L6Telemetry::logError("buff inference failed", error.what());
+      return {}; // 失败帧不伪装成传统检测成功，由上层进入保持状态。
+    }
+  }
+
+  if (!config_.use_model) for (const auto& bullseye : bullseyes) {
     const auto bounds = cv::boundingRect(bullseye);
     cv::Rect roi(bounds.x - 20, bounds.y - 20,
                  bounds.width + 40, bounds.height + 40);

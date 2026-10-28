@@ -125,6 +125,16 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(data["sampled"])
         self.assertEqual(len(data["series"]["time"]), 100)
 
+    def test_replay_frame_times_keep_capture_gaps(self):
+        frames = Path(web.RECORD_ROOT) / "run_02" / "frames"
+        frames.mkdir(parents=True)
+        with (frames / "index.jsonl").open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"index": 0, "source_frame": 0, "t": 10.0}) + "\n")
+            handle.write(json.dumps({"index": 1, "source_frame": 3, "t": 10.12}) + "\n")
+        data = self.client.get("/replays/run_02/frame-times").get_json()
+        self.assertEqual([row["t"] for row in data["frames"]], [10.0, 10.12])
+        self.assertFalse(data["legacy"])
+
 
 if __name__ == "__main__":
     unittest.main()

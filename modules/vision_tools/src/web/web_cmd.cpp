@@ -1,4 +1,4 @@
-#include "l6_telemetry/web_cmd.hpp"
+#include "vision_tools/web/web_cmd.hpp"
 
 #include <fstream>
 #include <sstream>
@@ -60,7 +60,7 @@ std::optional<nlohmann::json> lookupPath(
 bool WebCmd::poll()
 {
   std::string raw;
-  if (!readText(kPath, raw)) {
+  if (!readText(path_.c_str(), raw)) {
     return false;
   }
   if (raw == raw_signature_) {

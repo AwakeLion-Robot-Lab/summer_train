@@ -1,5 +1,6 @@
 #pragma once
 
+#include "l1_sensor/serial/robot_state.hpp"
 #include "l2_perception/armor/armor_decoder.hpp"
 #include "l2_perception/armor/armor_refiner.hpp"
 #include "l2_perception/inference/inference_backend.hpp"
@@ -51,6 +52,8 @@ struct DebugConfig {
   // 这是**调试用的旁路**：正常比赛必须留空，由下位机决定何时进自瞄。
   // 注意它不解除任何开火闸门，shoot_enable 和延迟链标定仍然各自独立生效。
   std::string force_work_mode{};
+  // 上位机指定目标颜色；未设置时使用下位机上报值。YAML 接受 red / blue / 空串。
+  std::optional<L1Sensor::EnemyColor> force_enemy_color;
 };
 
 // 只负责 runtime 胶水层的相邻命令检查，不重复 L3/L4/L5 的业务参数。

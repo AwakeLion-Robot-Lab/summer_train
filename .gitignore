@@ -43,6 +43,9 @@ Thumbs.db
 
 # 离线回放录像：单个 avi 数百 MB，records/ 整体 3 GB，不进仓库
 /records/
+/calibration_images/
+/calibration_results/
+/tmp/
 /tests/
 !/tests/
 !/tests/*.cpp

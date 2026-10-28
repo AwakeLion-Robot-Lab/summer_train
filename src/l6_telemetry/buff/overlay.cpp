@@ -10,6 +10,16 @@ void drawOverlay(cv::Mat& image,
                  const L4Planning::Buff::Plan& plan)
 {
   if (image.empty()) return;
+  constexpr const char* labels[] = {"BR", "BW", "RR", "RW"};
+  for (const auto& detection : detections.model_detections) {
+    cv::rectangle(image, detection.box, cv::Scalar{255, 200, 0}, 1);
+    cv::putText(image, cv::format("%s %.2f", labels[detection.class_id], detection.confidence),
+                detection.box.tl(), cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                cv::Scalar{255, 200, 0}, 1);
+    for (const auto& point : detection.keypoints) {
+      cv::circle(image, point, 2, cv::Scalar{255, 200, 0}, cv::FILLED);
+    }
+  }
   for (const auto& icon : detections.icons) {
     cv::circle(image, icon.center, 4, cv::Scalar{0, 255, 255}, 1);
   }

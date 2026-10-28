@@ -10,6 +10,8 @@ namespace L1Sensor {
 // 串口运行参数；默认值用于快速跑通，也可由 YAML 覆盖。
 struct SerialConfig {
   bool enable = true;
+  // 只录制相机与姿态时关闭发送线程，避免向下位机发送任何控制帧。
+  bool tx_enable = true;
   std::string device = "/dev/ttyACM0";
   int baud_rate = 1000000;
   int read_timeout_ms = 20;

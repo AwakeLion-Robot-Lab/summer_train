@@ -119,6 +119,16 @@ void HikRobot::capture_start() {
     return;
   }
 
+  // 每次打开（包括断线重连）都关闭触发，避免沿用 MVS 留下的触发配置。
+  ret = MV_CC_SetEnumValue(handle_, "TriggerMode", MV_TRIGGER_MODE_OFF);
+  if (ret != MV_OK) {
+    L6Telemetry::logWarn("HikRobot failed to disable TriggerMode, error code", ret);
+    MV_CC_CloseDevice(handle_);
+    MV_CC_DestroyHandle(handle_);
+    handle_ = nullptr;
+    return;
+  }
+
   set_enum_value("BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_CONTINUOUS);
   set_enum_value("ExposureAuto", MV_EXPOSURE_AUTO_MODE_OFF);
   set_enum_value("GainAuto", MV_GAIN_MODE_OFF);
@@ -143,7 +153,7 @@ void HikRobot::capture_start() {
       std::this_thread::sleep_for(1ms);
 
       unsigned int ret;
-      unsigned int nMsec = 10;
+      unsigned int nMsec = 100;
 
       ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
       if (ret != MV_OK) {

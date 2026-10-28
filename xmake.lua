@@ -4,6 +4,8 @@ set_xmakever("2.9.8")
 set_languages("c++20")
 set_toolchains("gcc-13")
 
+includes("modules/vision_tools/targets.lua")
+
 add_rules("mode.debug", "mode.release")
 
 if is_plat("windows") then
@@ -15,8 +17,21 @@ target("serial_rtt")
     set_kind("binary")
     set_default(false)
     set_rundir("$(projectdir)")
-    add_files("tools/serial_rtt.cpp", "tools/serial/src/serial.cc", "tools/serial/src/impl/unix.cc")
+    add_files("tools/diagnostics/serial_rtt.cpp", "tools/serial/src/serial.cc", "tools/serial/src/impl/unix.cc")
     add_includedirs("tools/serial/include")
+    add_syslinks("pthread")
+target_end()
+
+-- 云台阶跃响应采集，复用自瞄的串口协议和状态结构体。
+target("gimbal_step_csv")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/diagnostics/gimbal_step_csv.cpp", "src/l1_sensor/serial/serial_protocol.cpp",
+              "src/l1_sensor/serial/serial_port.cpp", "src/l6_telemetry/logger.cpp",
+              "tools/serial/src/serial.cc", "tools/serial/src/impl/unix.cc")
+    add_includedirs("include", "tools/serial/include", "tools/logger/include",
+                    "tools/logger/include/3rdparty", "/usr/include/eigen3")
     add_syslinks("pthread")
 target_end()
 
@@ -73,6 +88,7 @@ end
 
 target("newvision")
     set_kind("static")
+    add_deps("vision_tools_recording", "vision_tools_web_ipc", {public = true})
     add_files("src/**/*.cpp")
     add_files("tools/camera_sdk/hikrobot/hikrobot.cpp")
     add_files("tools/camera_sdk/mindvision/mindvision.cpp")
@@ -225,8 +241,32 @@ target("buff_video_replay")
     set_kind("binary")
     set_default(false)
     set_rundir("$(projectdir)")
-    add_files("tools/buff_video_replay.cpp")
-    add_deps("newvision")
+    add_files("tools/replay/buff_video_replay.cpp")
+    add_deps("newvision", "vision_tools_replay")
+target_end()
+
+target("record_capture")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/capture/record_capture.cpp")
+    add_deps("newvision", "vision_tools_recording")
+target_end()
+
+target("camera_capture")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/capture/camera_capture.cpp")
+    add_deps("newvision", "vision_tools_recording")
+target_end()
+
+target("camera_calibrator")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("modules/vision_tools/examples/calibrate.cpp")
+    add_deps("vision_tools_calibration")
 target_end()
 
 -- 与硬件主循环共用完整 L2-L5，仅把 RuntimeIo 切到 Talos 共享内存后端。
@@ -234,7 +274,7 @@ target("talos_auto_aim")
     set_kind("binary")
     set_default(false)
     set_rundir("$(projectdir)")
-    add_files("tools/talos_auto_aim.cpp")
+    add_files("tools/talos/talos_auto_aim.cpp")
     add_deps("newvision")
 target_end()
 
@@ -242,7 +282,7 @@ target("talos_gimbal_check")
     set_kind("binary")
     set_default(false)
     set_rundir("$(projectdir)")
-    add_files("tools/talos_gimbal_check.cpp")
+    add_files("tools/talos/talos_gimbal_check.cpp")
     add_deps("newvision")
 target_end()
 
@@ -275,13 +315,13 @@ local standalone_tests = {
         syslinks = {"pthread"},
     },
     web_sink_smoke = {
-        files    = {"src/l6_telemetry/web_sink.cpp"},
+        deps     = {"vision_tools_web_ipc"},
         includes = {"include", "tools/logger/include/3rdparty"},
         opencv   = {"opencv_core", "opencv_imgproc", "opencv_imgcodecs"},
         syslinks = {"pthread"},
     },
     web_cmd_smoke = {
-        files    = {"src/l6_telemetry/web_cmd.cpp"},
+        deps     = {"vision_tools_web_ipc"},
         includes = {"include", "tools/logger/include/3rdparty"},
         syslinks = {"pthread"},
     },
@@ -333,6 +373,7 @@ local standalone_tests = {
 -- armor_refiner_video_test 和 auto_aim_test 还要显示器。
 local gated_tests = {
     openvino_armor_smoke     = "use_openvino",
+    openvino_buff_smoke      = "use_openvino",
     auto_aim_test            = "use_openvino",
     track_diag               = "use_openvino",
     armor_refiner_video_test = "use_openvino",
@@ -369,6 +410,9 @@ for _, source in ipairs(os.files("tests/*.cpp")) do
 
             local spec = standalone_tests[name]
             if spec then
+                for _, dependency in ipairs(spec.deps or {}) do
+                    add_deps(dependency)
+                end
                 for _, file in ipairs(spec.files or {}) do
                     add_files(file)
                 end

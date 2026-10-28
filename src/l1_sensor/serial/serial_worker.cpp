@@ -38,7 +38,9 @@ bool SerialWorker::start() {
 
   try {
     rx_thread_ = std::thread(&SerialWorker::rxLoop, this);
-    tx_thread_ = std::thread(&SerialWorker::txLoop, this);
+    if (config_.tx_enable) {
+      tx_thread_ = std::thread(&SerialWorker::txLoop, this);
+    }
   } catch (const std::exception &e) {
     running_ = false;
     if (rx_thread_.joinable()) {
