@@ -61,6 +61,10 @@ Thumbs.db
 # 本地测试数据默认忽略；统一保留 smoke 测试源码。
 /tests/*
 !/tests/*_smoke.cpp
+!/tests/auto_aim_test_armor.cpp
+!/tests/auto_aim_test_small_tune.cpp
+!/tests/auto_aim_test_big_tune.cpp
+!/tests/rune_replay.hpp
 
 # OpenVINO GPU 编译时吐出的 kernel 诊断文件
 /kernel.errors.txt

@@ -2,7 +2,22 @@
 
 #include "rune/types.hpp"
 
+#include <array>
+#include <cstddef>
+
 namespace Rune {
+
+// Counts describe one successfully decoded frame, before contour/pose processing.
+struct DetectorDiagnostics {
+  std::size_t anchors{0}, score_pass{0}, keypoint_rejected{0};
+  std::size_t nms_rejected{0}, mode_rejected{0}, detections{0};
+  std::size_t partial_detections{0}, best_valid_keypoints{0};
+  std::size_t fused_candidates{0}; // Suppressed duplicates contributing coordinates.
+  std::size_t inference_passes{1}; // Counters otherwise describe the selected pass.
+  std::array<float, 3> max_class_scores{};
+  int best_class{-1};
+  float best_min_keypoint_score{0};
+};
 
 // Fill Frame::detections before calling Processor. OpenVinoKeypointDetector
 // implements the published five-point model; alternate adapters can implement
@@ -14,6 +29,9 @@ public:
   [[nodiscard]] virtual std::vector<Keypoints> detect(const cv::Mat& bgr, Mode mode) {
     (void)mode;
     return detect(bgr);
+  }
+  [[nodiscard]] virtual std::optional<DetectorDiagnostics> lastDiagnostics() const {
+    return std::nullopt;
   }
 };
 

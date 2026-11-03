@@ -22,9 +22,9 @@ std::optional<Observation> ObservationStage::run(const Region& region,
   cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
   const cv::Point2f origin(static_cast<float>(region.bounds.x),
                            static_cast<float>(region.bounds.y));
-  const cv::Point2f armor_center =
+  const cv::Point2f armor_center = region.keypoints.armorCenter().value_or(
     (region.keypoints.top + region.keypoints.left + region.keypoints.right +
-     region.keypoints.bottom) * 0.25F - origin;
+     region.keypoints.bottom) * 0.25F) - origin;
   const cv::Point2f r = region.keypoints.center_r - origin;
 
   int armor_index = -1, r_index = -1, arm_index = -1;

@@ -2,6 +2,7 @@
 
 #include "armor/l3_planning/planner_config.hpp"
 #include "rune/f1-observation/keypoint_detector.hpp"
+#include "rune/f1-observation/image_refiner.hpp"
 #include "rune/processor.hpp"
 #include "sensor/serial/robot_state.hpp"
 
@@ -9,6 +10,7 @@ namespace runtime {
 
 struct RuneRuntimeConfig {
   Rune::KeypointDetectorConfig detector;
+  Rune::ImageRefinerConfig image_refiner;
   Rune::Geometry geometry;
   Rune::PlanningConfig planning;
   Rune::FireControlConfig fire;
@@ -30,9 +32,16 @@ public:
   // 丢失传感器输入时中断跟踪，保留开火冷却。
   void suspend();
   [[nodiscard]] const Rune::Command& lastCommand() const { return command_; }
+  [[nodiscard]] const std::optional<Rune::Motion>& lastMotion() const {
+    return processor_.lastMotion();
+  }
+  [[nodiscard]] std::optional<Rune::DetectorDiagnostics> detectorDiagnostics() const {
+    return detector_->lastDiagnostics();
+  }
 
 private:
   std::unique_ptr<Rune::IKeypointDetector> detector_;
+  Rune::ImageRefiner image_refiner_;
   Rune::Processor processor_;
   L4Planning::PlannerTuning tuning_;
   double max_feedback_age_s_;

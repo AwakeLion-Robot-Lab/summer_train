@@ -8,6 +8,8 @@
 #include "l3_planning/tiny_mpc.hpp"
 
 #include <chrono>
+#include <cmath>
+#include <numbers>
 #include <optional>
 #include <utility>
 
@@ -41,6 +43,7 @@ const PlannerConfig& Planner::config() const noexcept
 void Planner::resetTracking() noexcept
 {
   tracking_state_ = {};
+  aim_state_ = {};
   last_target_.reset();
   last_observation_timestamp_.reset();
   target_lost_frames_ = 0;
@@ -85,6 +88,7 @@ AimPlan Planner::plan(
     if (tracking_state_.robot_id >= 0
         && tracking_state_.robot_id != target->robot_id) {
       tracking_state_ = {};
+      aim_state_ = {};
     }
     last_target_ = *target;
     last_observation_timestamp_ = target->timestamp;
@@ -123,7 +127,8 @@ AimPlan Planner::plan(
     target_state,
     robot_state,
     context,
-    fire_time);
+    fire_time,
+    aim_state_);
   if (!candidates.has_value()) {
     return plan;
   }
@@ -150,9 +155,9 @@ AimPlan Planner::plan(
 
   plan.armor_id = selected.armor.armor_id;
   plan.impact_time = selected.impact_time;
-  plan.aim_point_world = selected.armor.position_world;
+  plan.aim_point_world = selected.aim.position_world;
   plan.aim_point_barrel =
-    selected.armor.position_world + context.T_barrel_world.translation();
+    selected.aim.position_world + context.T_barrel_world.translation();
   plan.yaw = selected.ballistic.yaw;
   plan.pitch = selected.ballistic.pitch;
   plan.fly_time = selected.ballistic.fly_time;
@@ -160,6 +165,41 @@ AimPlan Planner::plan(
   plan.within_firing_window = selected.within_firing_window;
   plan.fire_permitted = plan.tracked_ready && plan.within_firing_window;
   plan.valid = true;
+  plan.armor_center_world = selected.armor.position_world;
+  plan.armor_center_barrel = selected.armor.position_world + context.T_barrel_world.translation();
+  plan.armor_rotation_world = selected.armor.rotation_world;
+  plan.armor_geometry_valid = true;
+  plan.in_plate_aim = selected.aim;
+  plan.aim_query_state = aim_state_;
+  plan.fire_time = fire_time;
+  plan.bullet_speed = robot_state.bullet_speed;
+  plan.gravity = config.gravity;
+  plan.drag_coefficient = config.enable_air_resistance ? config.linear_drag_coefficient : 0.0;
+  const auto& aim_config = config.in_plate_aim;
+  // edge_margin 只收缩瞄点运动范围，留下跟随误差余量；开火边界仍是有效受击面。
+  // 若这里再次扣除边距，瞄点到达安全边缘后，几毫米跟随误差也会持续禁火。
+  plan.hit_half_width = 0.5 * (selected.armor.armor_type == ArmorType::Large
+    ? aim_config.large_width : aim_config.small_width) * aim_config.hit_margin_ratio;
+  plan.hit_half_height = 0.5 * aim_config.height * aim_config.hit_margin_ratio;
+
+  // 候选迭代和 MPC 始终读取同一旧快照。新观测的已选结果只提交一次。
+  if (observation_fresh && (aim_state_.robot_id != plan.target_id
+      || fire_time > aim_state_.timestamp)) {
+    const double dt = std::chrono::duration<double>(robot_state.timestamp - aim_state_.gun_timestamp).count();
+    const double yaw_rate = aim_state_.robot_id == plan.target_id && dt > 1e-6
+      ? std::remainder(robot_state.rpy.yaw - aim_state_.gun_yaw, 2.0 * std::numbers::pi) / dt : 0.0;
+    aim_state_.stable_frames = aim_state_.robot_id == plan.target_id ? aim_state_.stable_frames + 1 : 1;
+    aim_state_.robot_id = plan.target_id;
+    aim_state_.armor_id = plan.armor_id;
+    aim_state_.timestamp = fire_time;
+    aim_state_.offset = selected.aim.offset;
+    aim_state_.velocity = selected.aim.velocity;
+    aim_state_.direction = selected.aim.direction;
+    aim_state_.position_world = selected.aim.position_world;
+    aim_state_.gun_timestamp = robot_state.timestamp;
+    aim_state_.gun_yaw = robot_state.rpy.yaw;
+    aim_state_.gun_yaw_rate = yaw_rate;
+  }
 
   return applyTinyMpc(
     plan,

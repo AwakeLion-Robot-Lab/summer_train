@@ -70,9 +70,9 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
         double nearest=1e30;
         for (std::size_t i=0;i<observations.size();++i) {
           const auto& o=observations[i];
-          if (o.keypoints.class_id!=0 || !validObservation(o,false)) continue;
-          const auto center=(cv::Point2d(o.keypoints.top)+cv::Point2d(o.keypoints.left)+
-                             cv::Point2d(o.keypoints.right)+cv::Point2d(o.keypoints.bottom))*0.25;
+          if (o.keypoints.class_id!=0 || !o.keypoints.point_valid[4] ||
+              !validObservation(o,false)) continue;
+          const cv::Point2d center=*o.keypoints.armorCenter();
           const double radius=cv::norm(center-cv::Point2d(o.keypoints.center_r));
           const double distance=cv::norm(center-pixel)/std::max(2.0,radius);
           if (distance<0.5 && distance<nearest) { nearest=distance; reference=i; }
@@ -103,6 +103,7 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
     }
     std::vector<std::size_t> icons;
     for (std::size_t i=0;i<observations.size();++i) {
+      if (!observations[i].keypoints.point_valid[4]) continue;
       const auto& pixel=observations[i].keypoints.center_r;
       if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y)) continue;
       if (std::none_of(icons.begin(),icons.end(),[&](auto j) {
@@ -111,10 +112,17 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
     }
     unsigned trials=0;
     for (const auto seed : seeds) {
-      for (const auto icon : icons) {
+      auto hypotheses=icons;
+      // Four reliable armor anchors can solve a pose even without a reliable R.
+      // Also try the seed without borrowing a different blade's R observation.
+      if (std::find(hypotheses.begin(),hypotheses.end(),seed)==hypotheses.end())
+        hypotheses.push_back(seed);
+      for (const auto icon : hypotheses) {
         if (++trials>64) break;
         auto hypothesis=observations;
         hypothesis[seed].keypoints.center_r=observations[icon].keypoints.center_r;
+        hypothesis[seed].keypoints.point_confidences[4]=observations[icon].keypoints.point_confidences[4];
+        hypothesis[seed].keypoints.point_valid[4]=observations[icon].keypoints.point_valid[4];
         hypothesis[seed].center_r=observations[icon].center_r;
         plane_window_=original_window;
         auto candidate=solve(hypothesis,frame,seed);

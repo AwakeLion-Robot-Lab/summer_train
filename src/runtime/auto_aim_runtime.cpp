@@ -15,17 +15,23 @@
 #include "runtime/auto_aim_config.hpp"
 #include "runtime/armor_detector_factory.hpp"
 #include "runtime/l4_target_adapter.hpp"
+#include "rune/debug_overlay.hpp"
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numbers>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -161,6 +167,10 @@ void AutoAimRuntime::run() {
   } else {
     try {
       rune = std::make_unique<RuneRuntime>(auto_aim_config.rune, planner_tuning);
+      const auto& detector = auto_aim_config.rune.detector;
+      L6Telemetry::logInfo("rune detector loaded", detector.model_path.string(),
+                          "device", detector.device, "confidence", detector.confidence_threshold,
+                          "keypoint_confidence", detector.keypoint_confidence_threshold);
       const auto& geometry = auto_aim_config.rune.geometry;
       if (geometry.radius_m <= 0 || geometry.armor_half_width_m <= 0 ||
           geometry.armor_half_height_m <= 0) {
@@ -209,6 +219,9 @@ void AutoAimRuntime::run() {
   L5Control::Controller controller(
     auto_aim_config.fire,
     auto_aim_config.runtime.command_jump_threshold);
+  L6Telemetry::logInfo(
+    "armor fire gates: stop_fire_on_temp_lost", auto_aim_config.fire.stop_fire_on_temp_lost,
+    "stop_fire_on_aim_error", auto_aim_config.fire.stop_fire_on_aim_error);
 
   FrameTiming frame_timing;
   // 规划失败时不能只是“不更新命令”：上一条 shoot=true 在
@@ -248,6 +261,8 @@ void AutoAimRuntime::run() {
     cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
   }
   std::uint64_t frame_index = 0;
+  bool save_rune_frame = false;
+  Clock::time_point last_rune_diagnostic_log{};
   // 叠加层要把世界系位姿投回图像，需要一个求解器。这里另建一个与 Tracker
   // 内部同参数的实例，只做重投影、不参与滤波——不为了画图去开 Tracker 的内部。
   std::optional<L3Estimation::PnpSolver> overlay_solver;
@@ -270,6 +285,16 @@ void AutoAimRuntime::run() {
                       static_cast<int>(auto_aim_config.mode), L1Sensor::toString(selected_mode));
   std::uint64_t plan_reject_count = 0;
   bool using_default_bullet_speed = false;
+  Clock::time_point last_pitch_diagnostic_log{};
+  Clock::time_point last_fire_diagnostic_log{};
+  std::uint64_t fire_diagnostic_frames = 0;
+  std::uint64_t fire_allowed_frames = 0;
+  std::uint64_t fire_unlocked_frames = 0;
+  std::uint64_t fire_outside_window_frames = 0;
+  std::array<std::uint64_t,
+    static_cast<std::size_t>(L5Control::RejectReason::NonFinite) + 1> fire_reject_frames{};
+  Clock::time_point fire_stats_started = Clock::now();
+  std::uint64_t fire_stats_serial_tx = serial.sentCommandCount();
   /******************************** debug *********************************/
 
   cv::Mat frame;
@@ -293,7 +318,9 @@ void AutoAimRuntime::run() {
     const auto pose_deadline = frame_timing.ready_at +
         std::chrono::milliseconds(serial_config.pose_wait_ms);
     const auto state = serial.latestState();
-    if (!serial_started || !state) {
+    // 能量机关的图像检测不依赖串口。无反馈时仍运行检测及叠加显示，
+    // 由下方反馈检查保持停瞄，避免串口断开后连检测框也消失。
+    if (auto_aim_config.mode == AimMode::Armor && (!serial_started || !state)) {
       stopAimSession();
     } else {
       const L1Sensor::WorkMode mode = selected_mode;
@@ -402,6 +429,34 @@ void AutoAimRuntime::run() {
               sendCommand(*command);
             }
             frame_timing.plan_control_ms = milliseconds(Clock::now(), plan_time);
+
+            // 分开记录几何角、弹道和最终命令，避免把抬枪过高直接归因于弹道。
+            // 角度统一为向上正；queued 包含串口偏置，feedback 来自最新枪口姿态。
+            if ((overlay_enabled || plotter.has_value()) && plan.valid && command
+                && Clock::now() - last_pitch_diagnostic_log >= std::chrono::seconds(1)) {
+              last_pitch_diagnostic_log = Clock::now();
+              constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+              const auto line_of_sight = [](const Eigen::Vector3d& point) {
+                return std::atan2(point.z(), std::hypot(point.x(), point.y()));
+              };
+              const double los_pitch = line_of_sight(plan.aim_point_barrel);
+              const double feedback_pitch = actual_pose
+                ? -L6Telemetry::eulers(actual_pose->toRotationMatrix(), 2, 1, 0)[1]
+                : std::numeric_limits<double>::quiet_NaN();
+              L6Telemetry::logInfo(
+                "pitch diagnostic (deg, up+): range_m", plan.aim_point_barrel.norm(),
+                "height_m", plan.aim_point_barrel.z(),
+                "center_los", line_of_sight(plan.armor_center_barrel) * kRadToDeg,
+                "aim_los", los_pitch * kRadToDeg,
+                "ballistic_add", (plan.pitch - los_pitch) * kRadToDeg,
+                "reference", plan.pitch * kRadToDeg,
+                "queued", -command->pitch * kRadToDeg - serial_config.command_pitch_offset_deg,
+                "feedback", feedback_pitch * kRadToDeg,
+                "speed_mps", plan.bullet_speed,
+                "mcu_speed_mps", state->bullet_speed,
+                "drag_per_s", plan.drag_coefficient,
+                "mpc", plan.using_MPC);
+            }
           } else {
             // Idle 继续预热识别与预测，但不运行选板、不输出开火命令。
             planner.resetTracking();
@@ -410,6 +465,72 @@ void AutoAimRuntime::run() {
 
           /*************************** debug ****************************/
           // 本帧命令已入队；这些工作仍会占用下一帧的处理时间。
+          if (aiming && (overlay_enabled || plotter.has_value())) {
+            const auto& fire = controller.lastDecision();
+            ++fire_diagnostic_frames;
+            fire_allowed_frames += fire.shoot ? 1 : 0;
+            fire_unlocked_frames += !plan.tracked_ready ? 1 : 0;
+            fire_outside_window_frames += !plan.within_firing_window ? 1 : 0;
+            for (const auto reason : fire.reasons) {
+              ++fire_reject_frames[static_cast<std::size_t>(reason)];
+            }
+          }
+          if (aiming && (overlay_enabled || plotter.has_value())
+              && Clock::now() - last_fire_diagnostic_log >= std::chrono::seconds(1)) {
+            last_fire_diagnostic_log = Clock::now();
+            const auto& fire = controller.lastDecision();
+            std::string reasons;
+            for (const auto reason : fire.reasons) {
+              if (!reasons.empty()) reasons += ',';
+              reasons += L5Control::toString(reason);
+            }
+            constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+            const auto sent = serial.latestSentCommand();
+            L6Telemetry::logInfo(
+              "fire diagnostic: shoot", fire.shoot,
+              "last_tx_shoot", sent ? static_cast<int>(sent->shoot) : -1,
+              "reasons", reasons.empty() ? "none" : reasons,
+              "plan_valid", plan.valid, "lock", plan.tracked_ready,
+              "window", plan.within_firing_window,
+              "aim_ok", fire.aim_error_within_tolerance,
+              "plate_hit_diag", fire.hit_inside_plate,
+              "yaw_err_deg", fire.yaw_error * kRadToDeg,
+              "pitch_err_deg", fire.pitch_error * kRadToDeg,
+              "yaw_tol_deg", fire.tolerance.yaw * kRadToDeg,
+              "pitch_tol_deg", fire.tolerance.pitch * kRadToDeg,
+              "aim_u_m", plan.in_plate_aim.offset.x(),
+              "aim_v_m", plan.in_plate_aim.offset.y(),
+              "hit_u_m", fire.predicted_hit_uv.x(),
+              "hit_v_m", fire.predicted_hit_uv.y(),
+              "hit_t_s", fire.predicted_fly_time);
+
+            // 每秒汇总全部帧，避免一秒一条瞬时 shoot 掩盖频繁断火。
+            // 一帧可能被多项门控拒绝，各原因的计数允许重叠。
+            std::string reject_counts;
+            for (std::size_t index = 0; index < fire_reject_frames.size(); ++index) {
+              if (fire_reject_frames[index] == 0) continue;
+              if (!reject_counts.empty()) reject_counts += ',';
+              reject_counts += L5Control::toString(static_cast<L5Control::RejectReason>(index))
+                + ':' + std::to_string(fire_reject_frames[index]);
+            }
+            const auto stats_time = Clock::now();
+            const double elapsed = std::chrono::duration<double>(stats_time - fire_stats_started).count();
+            const auto tx_count = serial.sentCommandCount();
+            const double percent_per_frame = 100.0 / fire_diagnostic_frames;
+            L6Telemetry::logInfo(
+              "fire gate stats: frames", fire_diagnostic_frames,
+              "fps", fire_diagnostic_frames / elapsed,
+              "allow_pct", fire_allowed_frames * percent_per_frame,
+              "unlocked_pct", fire_unlocked_frames * percent_per_frame,
+              "outside_window_pct", fire_outside_window_frames * percent_per_frame,
+              "reject_counts", reject_counts.empty() ? "none" : reject_counts,
+              "serial_tx_hz", (tx_count - fire_stats_serial_tx) / elapsed);
+            fire_diagnostic_frames = fire_allowed_frames = 0;
+            fire_unlocked_frames = fire_outside_window_frames = 0;
+            fire_reject_frames.fill(0);
+            fire_stats_started = stats_time;
+            fire_stats_serial_tx = tx_count;
+          }
           if (plotter) {
             static const std::vector<L3Estimation::Armor> kNoObservations;
             auto telemetry = telemetryFrame(
@@ -442,13 +563,31 @@ void AutoAimRuntime::run() {
         case L1Sensor::WorkMode::BigBuff: {
           if (!rune) {
             sendSafeHold();
+            if (overlay_enabled) {
+              cv::putText(frame, "Rune detector unavailable; see log", {20, 40},
+                          cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 0, 255}, 2);
+            }
             break;
+          }
+          if (save_rune_frame) {
+            save_rune_frame = false;
+            try {
+              const auto path = std::filesystem::path("logs/rune_input.png");
+              std::filesystem::create_directories(path.parent_path());
+              if (!cv::imwrite(path.string(), frame))
+                throw std::runtime_error("imwrite returned false");
+              L6Telemetry::logInfo("saved raw rune frame", path.string());
+            } catch (const std::exception& error) {
+              L6Telemetry::logError("failed to save raw rune frame", error.what());
+            }
           }
           Rune::Frame input;
           input.bgr = frame;
           input.captured_at = timestamp;
           input.mode = mode == L1Sensor::WorkMode::SmallBuff
               ? Rune::Mode::Small : Rune::Mode::Big;
+          input.color = state && state->enemy_color==L1Sensor::EnemyColor::Blue
+              ? Rune::Color::Blue : Rune::Color::Red;
           if (camera_calibration) {
             (void)Rune::applyCameraCalibration(input, *camera_calibration);
           }
@@ -458,6 +597,15 @@ void AutoAimRuntime::run() {
             rune->detect(input);
             frame_timing.detect_ms = milliseconds(Clock::now(), detect_started);
             frame_timing.detection_passes = 1;
+            if ((overlay_enabled || plotter) &&
+                (last_rune_diagnostic_log == Clock::time_point{} ||
+                 Clock::now() - last_rune_diagnostic_log >= std::chrono::seconds(1))) {
+              if (const auto diagnostics = rune->detectorDiagnostics()) {
+                L6Telemetry::logDebug("rune detection", Rune::formatDetectionDiagnostics(*diagnostics),
+                                      "image", frame.cols, frame.rows);
+              }
+              last_rune_diagnostic_log = Clock::now();
+            }
             const auto pose_wait_started = Clock::now();
             (void)serial.waitPoseUntil(timestamp, pose_deadline);
             frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
@@ -491,14 +639,15 @@ void AutoAimRuntime::run() {
             (void)plotter->send(telemetry);
           }
           if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
-            for (const auto& points : input.detections) {
-              for (const auto& point : {points.top, points.left, points.right, points.bottom, points.center_r}) {
-                cv::circle(frame, point, 3, cv::Scalar(0, 255, 0), -1);
-              }
-            }
+            Rune::drawDetectionOverlay(frame, input.detections, input.mode);
+            if (rune->lastMotion())
+              Rune::drawTrackingOverlay(frame, input, rune->lastMotion()->pose);
+            if (const auto diagnostics = rune->detectorDiagnostics())
+              Rune::drawDetectionDiagnostics(frame, *diagnostics);
             const auto& command = rune->lastCommand();
             const std::string label = (mode == L1Sensor::WorkMode::SmallBuff ? "Small rune" : "Big rune") +
                 std::string(" status=") + std::to_string(static_cast<int>(command.status)) +
+                ((!serial_started || !state) ? " NO SERIAL FEEDBACK" : "") +
                 (command.using_mpc ? " MPC" : "") + (command.fire ? " FIRE" : "");
             cv::putText(frame, label, {20, 40}, cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 255, 255}, 2);
           }
@@ -517,6 +666,8 @@ void AutoAimRuntime::run() {
       L6Telemetry::drawImageCenter(frame);
       cv::imshow("auto_aim", frame);
       const int key = cv::waitKey(1);
+      if ((key == 's' || key == 'S') && auto_aim_config.mode != AimMode::Armor)
+        save_rune_frame = true;
       if (key == 27 || key == 'q' || key == 'Q') {
         running_ = false;
       }
@@ -698,6 +849,11 @@ nlohmann::json telemetryFrame(
   data["fire"]["sent"] = command_sent ? 1 : 0;
   data["fire"]["yaw_err"] = fire.yaw_error * kRadToDeg;
   data["fire"]["pitch_err"] = fire.pitch_error * kRadToDeg;
+  data["fire"]["aim_error_within_tolerance"] = fire.aim_error_within_tolerance ? 1 : 0;
+  data["fire"]["hit_inside_plate"] = fire.hit_inside_plate ? 1 : 0;
+  data["fire"]["hit_u_m"] = fire.predicted_hit_uv.x();
+  data["fire"]["hit_v_m"] = fire.predicted_hit_uv.y();
+  data["fire"]["hit_fly_time_ms"] = fire.predicted_fly_time * 1e3;
   data["fire"]["tol_yaw"] = fire.tolerance.yaw * kRadToDeg;
   data["fire"]["tol_pitch"] = fire.tolerance.pitch * kRadToDeg;
   data["fire"]["reason"] =

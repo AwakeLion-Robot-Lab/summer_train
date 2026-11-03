@@ -42,8 +42,9 @@ struct ArmorScore {
 };
 
 struct ArmorCandidate {
+  InPlateAimPoint aim;
   ArmorPose armor;                 // 迭代收敛后的装甲板世界系位姿
-  BallisticSolution ballistic;    // 对最终装甲板位置的弹道解
+  BallisticSolution ballistic;    // 对最终板内瞄点的弹道解
   TimePoint impact_time{};        // 预测弹丸命中装甲板的绝对时刻
   double delta_angle{0.0};        // 装甲板法向与目标方位角之差，rad
   int iteration_count{0};         // 固定点迭代实际执行次数

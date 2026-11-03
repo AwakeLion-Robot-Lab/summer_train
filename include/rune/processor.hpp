@@ -37,6 +37,9 @@ private:
   PlanningStage planning_;
   ControlStage control_;
   std::optional<Mode> previous_mode_;
+  std::optional<Color> previous_color_;
+  TimePoint previous_frame_time_{}, last_observation_time_{};
+  double continuity_gap_s_;
   std::optional<Motion> last_motion_;
   std::optional<AimPlan> last_plan_;
 };

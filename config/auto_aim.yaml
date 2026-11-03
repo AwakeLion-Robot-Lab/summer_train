@@ -10,12 +10,29 @@ rune:
     device: "CPU"
     confidence_threshold: 0.65
     keypoint_confidence_threshold: 0.5
+    # 与 SZU 官方一致：至少三个关键点过阈值即可检出，弱点不参与 PnP。
+    min_valid_keypoints: 3
     nms_distance_px: 30.0
+    # 网络输入内的图像缩放比例；近距离录像用 0.75 缩小目标并补边，1.0 恢复满幅。
+    # 五关键点会按同一缩放和平移还原到原图，不改变标定或几何尺寸。
+    input_scale: 0.75
+    # 主尺度无检测时用更小尺度额外推理一次；设 0 关闭，门限不变。
+    fallback_input_scale: 0.6
+    # 同一叶片、同一模型类别的近邻候选做单帧融合，减少最高分候选切换引起的跳点。
+    # 关闭即可恢复原 NMS 坐标；弱点不参与融合，类别/关键点门限保持不变。
+    fuse_keypoints: true
+    fusion_min_quality_ratio: 0.8
+    fusion_max_point_distance_ratio: 0.2
+  image_refiner:
+    # 用局部图像配准补偿真实运动，再校正网络定位波动；不补造漏检点。
+    enabled: true
+    max_gap_s: 0.2
+    measurement_time_constant_s: 0.08
+    min_correlation: 0.98
   geometry:
-    # 必须填写实际测量值，单位米；0 表示未配置，仅检测、不输出有效瞄准命令。
-    radius_m: 0.0             # R 中心到靶心的距离
-    armor_half_width_m: 0.0   # 靶板半宽
-    armor_half_height_m: 0.0  # 靶板半高
+    radius_m: 0.70            # R 中心到靶心的距离
+    armor_half_width_m: 0.15  # 靶板切向半宽，左右关键点间距 0.30 m
+    armor_half_height_m: 0.15 # 靶板径向半高，内外关键点间距 0.30 m
   small_warmup_s: 3.0
   big_warmup_s: 6.0
   # mpc_enable: true         # 不填写则沿用 planner_config.yaml 的 mpc.enable
@@ -177,9 +194,14 @@ ieskf:
 fire:
   # 保留 Bruce0178 分支现有的开火开关与容差。
   shoot_enable: true
-  # 只把板面中央这个比例视为可命中。
+  # 短暂丢跟踪时沿用已锁定目标的有效预测，不因 TempLost 单独断火。
+  stop_fire_on_temp_lost: false
+  # yaw/pitch 跟随误差只作诊断，超出容差不再单独断火。
+  stop_fire_on_aim_error: false
+  # 用该比例缩放板面尺寸，换算关于当前瞄点的角度容差。
   hit_margin_ratio: 0.6
-  # 由板尺寸和距离算出的 yaw / pitch 容差的下限。
+  # 关于当前瞄准指令的 yaw / pitch 角度容差下限，偏心瞄准不扣减容差。
+  # stop_fire_on_aim_error 为 false 时，误差和容差只作诊断。
   min_yaw_tolerance_deg: 2
   min_pitch_tolerance_deg: 1.8
 
@@ -190,7 +212,7 @@ runtime:
 # 调试叠加层。实机要关：imshow 要几毫秒并计进 image_to_plan，NUC 没显示器会直接抛。
 # 蓝框 = L2 原始角点，绿 = 滤波器展开的整车，红框 = 选中的命中板。
 debug:
-  overlay: false
+  overlay: true
   # 每 N 帧画一次。
   overlay_every: 1
 

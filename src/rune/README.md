@@ -59,6 +59,15 @@ f4/f5 的接口、MPC、坐标约定与射击时序见 [f4-planning](f4-planning
 
 ## 五关键点模型部署
 
+新导入的 `video/rune/` 录像，小符使用 `xmake run auto_aim_test_small_tune`，
+大符使用 `xmake run auto_aim_test_big_tune`。两个入口复用实机 `RuneRuntime`，
+默认分别播放 `2026-10-28_00-05-41.avi` 和 `2026-10-28_00-03-18.avi`，
+也可在命令后传入其他录像路径。
+窗口、绘制间隔及 UDP 遥测统一读取 `config/auto_aim.yaml` 的 `debug` 节点。
+有配套姿态和标定时运行完整链路，
+缺少姿态时仅检测。装甲板回放入口为 `auto_aim_test_armor`。
+参数、视频选择与无窗口运行见 [离线回放说明](../../docs/replay_tests.md)。
+
 模型采用 [SZURPVision/RuneDetectionModel](https://github.com/SZURPVision/RuneDetectionModel) 的 `model/model-0624.onnx`，本地位于 `model/rune_model/model-0624.onnx`，来源、SHA-256 与许可见该目录的 `README.md`。推理复用工程现有 OpenVINO 后端，模型只在构造时加载一次；适配器独立于相机和串口线程。
 
 ```bash
@@ -72,6 +81,21 @@ xmake run rune_detect --input /path/to/rune.mp4 --mode big --frames 30 --output 
 
 检测入口不需要相机标定，可独立回放图像。默认使用 CPU，阈值与设备可在 `config/auto_aim.yaml` 的 `rune.detector` 节点中修改，模型相对路径以配置文件所在目录为基准。工具不下发云台或开火指令。
 
+实时 `debug.overlay: true` 窗口与 `rune_detect --output` 共用 `Rune::drawDetectionOverlay`：未激活靶板画绿色轮廓，已激活画橙色；五点沿用 RuneDetectionModel 的颜色（上绿、左黄、R 蓝、右紫、下红）及白色描边，黑底白字显示 `inactive / small_activated / big_activated` 和置信度百分比。只显示过阈值关键点；上、左、下、右依次连线，仅两端都可靠时画边，不把 R 点连入靶板框。显示的是当前帧网络检测结果，标定或姿态缺失时仍可显示检测。
+
+关键点筛选采用 SZU 官方规则，`min_valid_keypoints: 3` 表示至少三点过阈值；
+NMS 的中心和平均置信度也只使用这些点。解码仍保留全部五点坐标、各点置信度
+和可靠性标记，供轮廓搜索使用。三维 IPPE 初始化需要至少四个可靠锚点，
+弱点不参与 PnP 或滤波。配置与回放结果见 [后处理对齐记录](../../docs/rune_szu_alignment.md)。
+
+无框排查：窗口第二行显示 `det`（最终检测数）、`score_pass`（过类别阈值的候选数）、`kpt_drop`（关键点低分或坐标无效）、`nms_drop`（重复候选）、`mode_drop`（当前大小符模式不匹配）；`max_cls` 为未激活/小符激活/大符激活三类的全帧最高分，`min_kpt` 为类别分数最高候选的五点最低分。启用 overlay 或 plot 时，相同诊断每秒写入一次日志。加载失败会在窗口明确显示 `Rune detector unavailable`。检测统计独立于后续跟踪状态，`status=1` 不代表网络一定没有检出。
+
+`valid_kpt=N/5` 为类别分数最高候选过关键点门限的数量，`partial=N` 为最终
+检测中不足五个可靠点的数量；`rune_detect` 还输出本地顺序的 `kpt_conf` 与
+`valid` 五位标记，便于区分类别漏检与关键点漏检。
+
+在实时窗口按 `s` 保存下一帧未叠加标注的原图到 `logs/rune_input.png`（再次按下会覆盖）。可用 `xmake run rune_detect --input logs/rune_input.png --mode small --output build/rune_result.png` 对同一图像复查；大符使用 `--mode big`。
+
 ```cpp
 #include "rune/f1-observation/keypoint_detector.hpp"
 
@@ -82,5 +106,23 @@ frame.detections = detector.detect(frame.bgr, frame.mode);
 ```
 
 输入必须是 `CV_8UC3` BGR 原图，输出点为原图坐标。`detect(image)` 缺省使用小符模式；大小符切换应使用 `detect(image, frame.mode)`。模型原始顺序是 `top/left/R/right/bottom`，适配器已经换成工程顺序，并按模式过滤另一类已激活叶片。五个点均需达到置信度阈值。错误输入或推理失败会抛异常，调用方应清空本帧检测并处理错误。每个实例由一个线程持有，返回的关键点拥有自己的数据，可以跨帧保存。
+
+近距离录像的目标占比过大时，该模型的类别分数可能明显偏低。当前
+`rune.detector.input_scale: 0.75` 将画面缩小后居中补边，配合面积采样减少 LED
+点阵缩小时的失真；关键点仍还原到原图，保持现有标定与几何配置。
+`input_scale: 1.0` 恢复上游满幅输入。详情见
+[尺度诊断与验证](../../docs/rune_detection_scale.md)。
+
+工程配置已开启 `rune.detector.fuse_keypoints`：先保留原有 NMS 分组和类别选择，
+再对同组、同模型类别且关键点几何一致的候选做单帧加权融合，降低获胜候选切换
+带来的跳点。质量和几何门限附近的权重连续衰减，弱点不参与，获胜候选的类别、
+置信度和可靠性标记保持原值。该操作没有跨帧缓存，也不对运动点做时间低通。
+设为 `false` 可恢复原 NMS 坐标；未配置时默认关闭。参数、回放对照和限制见
+[关键点抖动优化](../../docs/rune_keypoint_fusion.md)。诊断中的 `fused=N` 表示本帧
+实际贡献坐标的被抑制候选数。
+
+实机及有姿态的回放还会叠加 `filtered R`（青色十字圆环）和
+`filtered target`（白色十字圆环），分别为当前曝光时刻滤波后的符心与靶心投影。
+五点颜色仍表示检测输出；没有标定、滤波位姿或当前帧跟踪失败时不画滤波投影。
 
 2026-10-13 本机 OpenVINO 2024.6 CPU 验证：构建、解码测试与真实模型空图推理通过；上游 `big_rune_demo.mp4` 前 30 帧全部检出目标，共 60 片，平均检测耗时约 13.4 ms（含预处理、推理与解码，不含启动编译）。这段回放用于确认模型部署与关键点输出，不代表实机精度或完整控制链路验证。

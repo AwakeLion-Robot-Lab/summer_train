@@ -121,15 +121,17 @@ NIS 均值 0.24~0.28 远低于 4 维观测的理想值 4，说明 `R` 整体偏�
 ```bash
 xmake run ieskf_smoke                          # 迭代滤波器的单元行为测试，无需硬件
 xmake f --use_openvino=y
-xmake run auto_aim_test                        # 回放，主干路（普通 EKF）
-xmake run auto_aim_test -- --show=true         # 附带回放窗口和 yaw-cost 图
+xmake run auto_aim_test_armor                  # 装甲板离线回放
+xmake run auto_aim_test_armor --view=full      # 附带 yaw-cost 图
 ```
 
 `ieskf_smoke` 不依赖 `TrackedTarget`，直接测 `IteratedKalmanFilter` 本身，所以即使
 主干路没接迭代，它仍然守着这份代码不腐坏。
 
-`--show` 默认 `false`，且 OpenCV 的 `CommandLineParser` 对 bool 只认 `true` 和 `1`，
-其它字符串一律静默当作 false——打错字不会报错，只是不弹窗。
+回放窗口及 UDP 遥测统一由 `config/auto_aim.yaml` 的 `debug` 节点控制；
+`--view=full` 显示完整调试层和 PnP 代价曲线。能量机关使用独立入口
+`auto_aim_test_small_tune` / `auto_aim_test_big_tune`，用法见
+[离线回放说明](replay_tests.md)。
 
 ## 未做的事
 

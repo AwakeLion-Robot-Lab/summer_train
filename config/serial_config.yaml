@@ -34,7 +34,7 @@ command_feedforward: false
 
 # 下发给下位机的目标角微调，单位 deg；在编码前分别加到 yaw / pitch。
 # yaw 正方向遵循世界系右手系；下发 pitch 正方向为向下（与规划层相反）
-command_yaw_offset_deg: 0.0
+command_yaw_offset_deg: -0.68
 command_pitch_offset_deg: 0.0
 
 # 坐标系约定

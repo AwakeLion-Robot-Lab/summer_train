@@ -72,6 +72,54 @@ struct Ballistic {
   bool valid{false};
 };
 
+// 有效受击面独立于 PnP 灯条尺寸；默认沿用现有火控中心 60% 区域。
+enum class InPlateAimMode : std::uint8_t { Center, FixedDiagonal, Independent };
+
+struct InPlateAimConfig {
+  bool enable{false};
+  InPlateAimMode mode{InPlateAimMode::Independent};
+  double small_width{0.135};
+  double large_width{0.230};
+  double height{0.125};
+  double hit_margin_ratio{0.6};
+  double edge_margin{0.005};
+  double uncertainty_sigma{2.0};
+  double lookahead{0.08};
+  double max_speed{0.20};
+  double max_acceleration{1.5};
+  double response_time{0.12};
+  double direction_enter_rate{0.15};
+  double direction_exit_rate{0.05};
+  int warmup_frames{3};
+  bool outpost_common_height{true}; // 三块板存在共有高度时优先保持同一高度
+};
+
+// 查询使用不可变快照；只有本帧选板成功后才提交一次。
+struct InPlateAimState {
+  int robot_id{-1};
+  int armor_id{-1};
+  int stable_frames{0};
+  int direction{0};
+  TimePoint timestamp{}; // 发射/控制时刻，不能用随弹道迭代变化的命中时刻推进
+  Eigen::Vector2d offset{Eigen::Vector2d::Zero()};
+  Eigen::Vector2d velocity{Eigen::Vector2d::Zero()};
+  Eigen::Vector3d position_world{Eigen::Vector3d::Zero()}; // 上次已选瞄点，用于保持换板高度
+  TimePoint gun_timestamp{}; // 实际反馈时刻，与发射延迟分开
+  double gun_yaw{0.0};
+  double gun_yaw_rate{0.0};
+};
+
+struct InPlateAimPoint {
+  Eigen::Vector3d position_world{Eigen::Vector3d::Zero()};
+  Eigen::Vector2d offset{Eigen::Vector2d::Zero()};
+  Eigen::Vector2d velocity{Eigen::Vector2d::Zero()};
+  Eigen::Vector2d limits{Eigen::Vector2d::Zero()};
+  int direction{0};
+  int next_armor_id{-1};
+  bool using_common_height{false};
+  bool valid{false};
+};
+
 // 非 MPC 模式的瞄准参考。
 struct AimReference {
   int target_id{-1};
@@ -90,6 +138,20 @@ struct AimReference {
   double pitch_acceleration{0.0};
 
   double fly_time{0.0};
+  // 实体板心及完整板面姿态，始终不随瞄点偏移。
+  Eigen::Vector3d armor_center_world{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d armor_center_barrel{Eigen::Vector3d::Zero()};
+  Eigen::Matrix3d armor_rotation_world{Eigen::Matrix3d::Identity()};
+  InPlateAimPoint in_plate_aim;
+  InPlateAimState aim_query_state;
+  TimePoint fire_time{};
+  double bullet_speed{0.0};
+  double gravity{9.80665};
+  double drag_coefficient{0.0};
+  // 有效受击面半尺寸。瞄点运动另扣 edge_margin，不能再次缩小这里的边界。
+  double hit_half_width{0.0};
+  double hit_half_height{0.0};
+  bool armor_geometry_valid{false};
 };
 
 // MPC 输出的单个可执行控制点。
@@ -131,6 +193,7 @@ struct AimPlan : AimReference {
 };
 
 struct PlannerConfig {
+  InPlateAimConfig in_plate_aim;
   int max_iterations{20}; // 单块装甲板最大固定点迭代次数
   std::chrono::microseconds fly_time_tolerance{200}; // 飞行时间收敛阈值
   double position_tolerance{0.005};  // meter

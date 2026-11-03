@@ -48,8 +48,12 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
     const int state=o.keypoints.class_id==0 ? 0 : (frame.mode==Mode::Small ? 1 : 2);
     const auto& model=models_[state];
     if (!arm_only) {
-      p.anchors=anchors_; p.pixels=networkPoints(o);
-      if (allow_pca && g.use_pca_anchors && model && !model->pca_box.empty()) {
+      const auto pixels=networkPoints(o);
+      for (std::size_t j=0;j<anchors_.size();++j) if (o.keypoints.point_valid[j]) {
+        p.anchors.push_back(anchors_[j]); p.pixels.push_back(pixels[j]);
+      }
+      if (allow_pca && g.use_pca_anchors && model && !model->pca_box.empty() &&
+          std::all_of(o.keypoints.point_valid.begin(),o.keypoints.point_valid.end(),[](bool v){return v;})) {
         if (const auto box=pcaEnvelope(o,camera,distortion)) {
           p.anchors=model->pca_box; p.anchors.emplace_back(0,0,0);
           p.pixels=*box; p.pixels.emplace_back(o.keypoints.center_r);
@@ -104,9 +108,9 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
     for (const auto& candidate : prepared) {
       if (candidate.index==reference) continue;
       const auto& o=observations[candidate.index];
-      if (cv::norm(cv::Point2d(o.keypoints.center_r)-center_pixel)>g.max_center_disagreement_px) continue;
-      cv::Point2d target=(cv::Point2d(o.keypoints.top)+cv::Point2d(o.keypoints.left)+
-                         cv::Point2d(o.keypoints.right)+cv::Point2d(o.keypoints.bottom))*0.25;
+      if (o.keypoints.point_valid[4] &&
+          cv::norm(cv::Point2d(o.keypoints.center_r)-center_pixel)>g.max_center_disagreement_px) continue;
+      cv::Point2d target=o.keypoints.armorCenter().value_or(cv::Point2f{});
       const bool arm_only=frame.mode==Mode::Big && o.keypoints.class_id==1;
       if (arm_only) {
         const auto moments=cv::moments(o.arm);

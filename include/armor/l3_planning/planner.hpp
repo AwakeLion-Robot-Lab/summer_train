@@ -45,7 +45,7 @@ public:
 
   // 兼容入口：使用内部 PlannerConfig 和默认物理参数构造 Context。
   AimPlan plan(const std::optional<L3Estimation::TargetState>& target, const L1Sensor::RobotState& robot_state);
-  // 主入口：使用本周期 Context 中的 PlannerConfig，对四块装甲板分别
+  // 主入口：使用本周期 Context 中的 PlannerConfig，对各块装甲板分别
   // 迭代并选择有效的最佳跟踪目标；射击窗口仅用于最终开火门控。
   AimPlan plan(
     const std::optional<L3Estimation::TargetState>& target,
@@ -60,6 +60,7 @@ private:
 
   PlannerConfig config_; // 当前 Planner 使用的模型和收敛参数
   ArmorTrackingState tracking_state_;
+  InPlateAimState aim_state_;
   std::optional<L3Estimation::TargetState> last_target_;
   std::optional<TimePoint> last_observation_timestamp_;
   int target_lost_frames_{0};

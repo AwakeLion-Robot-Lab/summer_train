@@ -24,6 +24,8 @@ generateArmorCandidates(
   const L3Estimation::TargetState& target_state,
   const L1Sensor::RobotState& robot_state,
   const PlannerContext& context,
-  TimePoint fire_time);
+  TimePoint fire_time,
+  const InPlateAimState& aim_state = {},
+  std::optional<int> only_armor_id = std::nullopt);
 
 }  // namespace L4Planning

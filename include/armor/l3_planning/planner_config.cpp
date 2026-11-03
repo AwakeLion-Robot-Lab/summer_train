@@ -176,6 +176,31 @@ PlannerTuning loadPlannerTuning(const std::string& config_path)
   readOptional(
     score_weights, "aim_cost", tuning.armor_score_weights.aim_cost_weight);
 
+  const YAML::Node in_plate = root["in_plate_aim"];
+  auto& aim = config.in_plate_aim;
+  readOptional(in_plate, "enable", aim.enable);
+  readOptional(in_plate, "small_width_m", aim.small_width);
+  readOptional(in_plate, "large_width_m", aim.large_width);
+  readOptional(in_plate, "height_m", aim.height);
+  readOptional(in_plate, "hit_margin_ratio", aim.hit_margin_ratio);
+  readOptional(in_plate, "edge_margin_m", aim.edge_margin);
+  readOptional(in_plate, "uncertainty_sigma", aim.uncertainty_sigma);
+  readOptional(in_plate, "lookahead_s", aim.lookahead);
+  readOptional(in_plate, "max_speed_mps", aim.max_speed);
+  readOptional(in_plate, "max_acceleration_mps2", aim.max_acceleration);
+  readOptional(in_plate, "response_time_s", aim.response_time);
+  readOptional(in_plate, "direction_enter_rate_rad_s", aim.direction_enter_rate);
+  readOptional(in_plate, "direction_exit_rate_rad_s", aim.direction_exit_rate);
+  readOptional(in_plate, "warmup_frames", aim.warmup_frames);
+  readOptional(in_plate ? in_plate["outpost"] : YAML::Node{}, "prefer_common_height", aim.outpost_common_height);
+  if (in_plate && in_plate["mode"]) {
+    const auto mode = in_plate["mode"].as<std::string>();
+    if (mode == "center") aim.mode = InPlateAimMode::Center;
+    else if (mode == "fixed_diagonal") aim.mode = InPlateAimMode::FixedDiagonal;
+    else if (mode == "independent") aim.mode = InPlateAimMode::Independent;
+    else throw std::invalid_argument("unknown in_plate_aim.mode: " + mode);
+  }
+
   const YAML::Node mpc = root["mpc"];
   readOptional(mpc, "enable", config.enable_mpc);
   readOptional(mpc, "max_iterations", config.mpc_max_iterations);

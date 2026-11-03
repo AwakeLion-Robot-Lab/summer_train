@@ -2,6 +2,7 @@
 
 #include "sensor/serial/robot_state.hpp"
 #include "l3_planning/planner.hpp"
+#include "l3_planning/in_plate_aim.hpp"
 
 #include <cmath>
 
@@ -66,7 +67,8 @@ bool validPlannerConfig(const PlannerConfig& config) noexcept
         || (std::isfinite(config.linear_drag_coefficient)
             && config.linear_drag_coefficient > 0.0));
 
-  return config.max_iterations > 0
+  return validInPlateAimConfig(config.in_plate_aim)
+         && config.max_iterations > 0
          && config.fly_time_tolerance.count() > 0
          && std::isfinite(config.position_tolerance)
          && config.position_tolerance > 0.0

@@ -30,6 +30,8 @@ struct ArmorPose {
   Eigen::Vector3d position_world{Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity_world{Eigen::Vector3d::Zero()};
   double yaw_world{0.0};
+  // 列分别为法向、板宽 u、板高 v；包含车体倾斜和装甲后仰。
+  Eigen::Matrix3d rotation_world{Eigen::Matrix3d::Identity()};
 
   TimePoint timestamp{}; // 该预测状态对应的绝对时刻
   bool valid{false};     // 所有预测量是否有限且模型输入合法
@@ -46,7 +48,7 @@ class Predictor {
 public:
   // 有 EKF 副本时调用它的 predict()；纯数值状态仍按相同运动模型外推。
   L3Estimation::TargetState predict(const L3Estimation::TargetState& target, double dt) const;
-  // 预测到绝对时刻，并生成四块装甲板的位置、速度和朝向。
+  // 预测到绝对时刻，并生成三板/四板的位置、速度和完整板面姿态。
   [[nodiscard]] PredictionResult predict(const PredictionRequest& request) const;
 };
 

@@ -22,6 +22,9 @@ struct TinyMpcAxisReference {
 };
 
 struct TinyMpcReference {
+  std::array<int, kTinyMpcHorizon> armor_id{}; // 各采样点预计跟踪的实体板号
+  std::array<InPlateAimPoint, kTinyMpcHorizon> in_plate_aim{};
+  std::array<TimePoint, kTinyMpcHorizon> impact_time{};
   TinyMpcAxisReference yaw;
   TinyMpcAxisReference pitch;
   // yaw 以中心瞄准角为原点求解，输出时再加回并归一化。
@@ -62,7 +65,8 @@ struct TinyMpcSolution {
   bool valid{false};
 };
 
-// 生成以 direct_plan.impact_time 为中心的 100 点理想瞄准轨迹。
+// 生成以 direct_plan.fire_time 为中心的 100 点发射参考；每点独立迭代命中。
+// 未来离开保持窗口时预测接替板，由 MPC 平滑跨越板间间隙。
 [[nodiscard]] TinyMpcReference buildTinyMpcReference(
   const AimPlan& direct_plan,
   const L3Estimation::TargetState& target,

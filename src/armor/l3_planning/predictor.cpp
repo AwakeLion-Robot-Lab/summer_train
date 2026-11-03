@@ -1,6 +1,7 @@
 #include "l3_planning/predictor.hpp"
 
 #include "l2_estimation/armor/eskf_target.hpp"
+#include "l2_estimation/armor/vehicle_model.hpp"
 #include "l2_estimation/target_state.hpp"
 #include "l3_planning/types.hpp"
 
@@ -214,6 +215,9 @@ PredictionResult Predictor::predict(const PredictionRequest& request) const
         (filter_armors_next[index].head<3>() - armor.position_world)
         / kVelocitySampleSeconds;
       armor.yaw_world = filter_armors[index].w();
+      const auto& filter = *result.predicted_vehicle.filter_state;
+      armor.rotation_world = L3Estimation::VehicleModel::armorPose<double>(
+        filter.rawState().data(), armor_id, filter.armor_num(), filter.name).linear();
       armor.timestamp = request.target_time;
       armor.valid = armor.position_world.allFinite()
                     && armor.velocity_world.allFinite()
@@ -239,6 +243,9 @@ PredictionResult Predictor::predict(const PredictionRequest& request) const
     armor.velocity_world.y() -=
       radius * result.predicted_vehicle.yaw_rate * std::cos(armor_yaw);
     armor.yaw_world = armor_yaw;
+    const double tilt = L3Estimation::armorPitchOf(
+      static_cast<L3Estimation::ArmorName>(armor.robot_id));
+    armor.rotation_world = L3Estimation::VehicleModel::rotationZY(armor_yaw, tilt);
     armor.timestamp = request.target_time;
     armor.valid =
       armor.position_world.allFinite() && armor.velocity_world.allFinite();

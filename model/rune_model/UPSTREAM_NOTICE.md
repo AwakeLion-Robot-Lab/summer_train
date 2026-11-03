@@ -4,6 +4,15 @@ The five-keypoint ONNX model and OpenVINO deployment approach in this project
 are derived from https://github.com/SZURPVision/RuneDetectionModel, with specific reference to
 upstream `infer/fivepoints_infer.cpp`.
 
+The detector follows its configurable minimum-valid-keypoint policy (default 3),
+valid-keypoint mean confidence ranking, and valid-keypoint mean-center NMS.
+Per-point confidence and validity are preserved for downstream pose processing.
+
+The debug overlay in `src/rune/debug_overlay.cpp` also follows that file's
+five-keypoint color palette and black-background class/confidence label style,
+with an additional four-point target outline. It is shared by the live runtime
+and the offline `rune_detect` tool.
+
 - Copyright: (c) 2024 RoboMaster RobotPilots
 - License: MIT
 - Upstream model: `model/model-0624.onnx` (master branch)

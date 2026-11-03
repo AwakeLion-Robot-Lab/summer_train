@@ -75,6 +75,7 @@ std::vector<Measurement> measurements(const std::vector<Observation>& observatio
   // represent five statistically independent R observations.
   for (std::size_t i=0;i<observations.size();++i) {
     const auto& k=observations[i].keypoints;
+    if (!k.point_valid[4]) continue;
     const Eigen::Vector2d pixel(k.center_r.x,k.center_r.y);
     if (!pixel.allFinite() || (k.class_id!=0 && k.class_id!=1)) continue;
     if (std::none_of(result.begin(),result.end(),[&](const auto& m) {
@@ -84,8 +85,9 @@ std::vector<Measurement> measurements(const std::vector<Observation>& observatio
   for (std::size_t i=0;i<observations.size();++i) {
     const auto& k=observations[i].keypoints;
     if ((k.class_id!=0 && k.class_id!=1) || (mode==Mode::Big && k.class_id==1)) continue;
-    const cv::Point2d center=(cv::Point2d(k.top)+cv::Point2d(k.left)+
-                             cv::Point2d(k.right)+cv::Point2d(k.bottom))*0.25;
+    const auto reliable_center=k.armorCenter();
+    if (!reliable_center) continue;
+    const cv::Point2d center=*reliable_center;
     const Eigen::Vector2d pixel(center.x,center.y);
     if (pixel.allFinite()) result.push_back({pixel,i,false,k.class_id==0});
   }

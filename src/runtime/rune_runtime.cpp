@@ -26,11 +26,13 @@ RuneRuntime::RuneRuntime(const RuneRuntimeConfig& config,
     : detector_(detector ? std::move(detector)
                          : std::make_unique<Rune::OpenVinoKeypointDetector>(
                                config.detector)),
+      image_refiner_(config.image_refiner),
       processor_(config.geometry, {}, planningConfig(config, tuning), {}, config.fire),
       tuning_(tuning), max_feedback_age_s_(config.fire.max_plan_age_s) {}
 
 void RuneRuntime::detect(Rune::Frame& frame) {
   frame.detections = detector_->detect(frame.bgr, frame.mode);
+  image_refiner_.update(frame);
 }
 
 std::optional<L1Sensor::SerialCommand> RuneRuntime::process(
@@ -61,6 +63,9 @@ std::optional<L1Sensor::SerialCommand> RuneRuntime::process(
       feedback_age_s > max_feedback_age_s_ ||
       state.enemy_color == L1Sensor::EnemyColor::Unknown) {
     frame.detections.clear();
+    // Loss of sensor validity must hard-reset tracking, even when visual
+    // detections would otherwise qualify for the short blink grace period.
+    frame.bgr.release();
   }
   command_ = processor_.process(frame, control);
   if (auto command = Rune::ControlStage::makeSerialCommand(command_)) return command;
@@ -68,6 +73,9 @@ std::optional<L1Sensor::SerialCommand> RuneRuntime::process(
 }
 
 void RuneRuntime::suspend() {
+  // Image-only refinement remains useful in the debug window without serial
+  // feedback. Its own timestamp/mode/color/size guards bound visual continuity;
+  // actuator suspension still immediately resets all 3D/control history.
   Rune::Frame frame;
   frame.mode = command_.mode;
   command_ = processor_.process(frame, {});

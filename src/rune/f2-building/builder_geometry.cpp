@@ -97,6 +97,7 @@ bool validObservation(const Observation& o, bool arm_only) {
   for (const auto& p : networkPoints(o))
     if (!std::isfinite(p.x) || !std::isfinite(p.y)) return false;
   if (arm_only) return true;
+  if (!o.keypoints.armorCenter()) return false;
   std::vector<cv::Point2f> hull;
   cv::convexHull(std::vector<cv::Point2f>{o.keypoints.top,o.keypoints.left,
                   o.keypoints.right,o.keypoints.bottom},hull);

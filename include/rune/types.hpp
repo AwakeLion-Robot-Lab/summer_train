@@ -4,6 +4,7 @@
 #include <opencv2/core.hpp>
 #include "armor/l3_planning/types.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -43,6 +44,18 @@ struct Keypoints {
   cv::Point2f top{}, left{}, right{}, bottom{}, center_r{};
   int class_id{-1};
   float confidence{0.0F};
+  // Local order: top, left, right, bottom, R. Weak predictions remain available
+  // as ROI seeds, but must not become pose anchors or filter measurements.
+  std::array<float, 5> point_confidences{1, 1, 1, 1, 1};
+  std::array<bool, 5> point_valid{true, true, true, true, true};
+
+  [[nodiscard]] std::optional<cv::Point2f> armorCenter() const {
+    if (point_valid[0] && point_valid[1] && point_valid[2] && point_valid[3])
+      return (top + left + right + bottom) * 0.25F;
+    if (point_valid[0] && point_valid[3]) return (top + bottom) * 0.5F;
+    if (point_valid[1] && point_valid[2]) return (left + right) * 0.5F;
+    return std::nullopt;
+  }
 };
 
 struct Frame {
@@ -152,7 +165,7 @@ struct Pose {
   double phase_rad{0.0};
   bool activated{false};
   TimePoint captured_at{};
-  double reprojection_error_px{0.0}; // five-anchor RMS
+  double reprojection_error_px{0.0}; // reliable-anchor RMS
   double chamfer_error_px{0.0}; // semantic contour RMS; 0 if unavailable
   bool contour_refined{false};
   // Full model -> barrel transform; also maps any measured boundary sample.

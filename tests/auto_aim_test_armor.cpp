@@ -1,5 +1,5 @@
 // 离线回放测试，结构对照 sp_vision_25 的 tests/auto_aim_test.cpp：
-// 读取 records/ 下的 avi + txt（每行 "t w x y z"），逐帧跑
+// 读取 video/ 下的 avi + txt（每行 "t w x y z"），逐帧跑
 // 识别 -> PnP -> 整车跟踪，并把当前观测的 PnP yaw 搜索代价曲线画出来。
 //
 // 代价曲线是这个测试存在的主要理由：PnpSolver::optimize_yaw 搜索使四角点
@@ -74,6 +74,7 @@ constexpr double kCostStepDegrees = 0.5;
 
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
+  "{config | config/auto_aim.yaml | 算法及 debug 配置 yaml}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
   "{model m | model/armor_model/yolov5.xml | OpenVINO 装甲板模型}"
   "{device d | CPU | OpenVINO 推理设备}"
@@ -86,11 +87,10 @@ const std::string kCommandLineKeys =
   "{wait w | 30 | 每帧 waitKey 毫秒，0 表示逐帧手动推进}"
   "{view | sp | 叠加层：sp（只画当前 EKF 整车和瞄准板）/ full（全部调试层）}"
   "{overlay-offset | 0 | full 视图下整车叠加层上移的像素数；sp 视图恒为 0}"
-  "{plot | auto | PnP 代价曲线窗口：auto（只在 view=full 时开）/ true / false}"
   "{bullet-speed | 27.0 | 回放没有裁判系统数据；默认与 SP auto_aim_test 一致（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
   "{conf | 0 | 覆盖检测分数门（confidence/minimum/nms_score 三者同时设为该值），<=0 保持 layout 预设}"
-  "{@input-path | records/3m_high | avi 和 txt 文件的路径（不含后缀）}";
+  "{@input-path | video/3m_high | 视频路径或 avi 和 txt 的路径前缀}";
 
 struct PoseSample {
   double seconds{0.0};
@@ -668,8 +668,10 @@ int main(int argc, char** argv)
     }
 
     const std::filesystem::path input_path{cli.get<std::string>(0)};
-    const std::string video_path = input_path.string() + ".avi";
-    const std::string text_path = input_path.string() + ".txt";
+    const std::string video_path = input_path.has_extension()
+      ? input_path.string() : input_path.string() + ".avi";
+    auto pose_path = input_path;
+    const std::string text_path = pose_path.replace_extension(".txt").string();
     const auto enemy_color = parseEnemyColor(cli.get<std::string>("enemy"));
     const std::string convention = cli.get<std::string>("convention");
     require(
@@ -691,6 +693,10 @@ int main(int argc, char** argv)
     const int start_index = cli.get<int>("start-index");
     const int end_index = cli.get<int>("end-index");
     const int wait_ms = cli.get<int>("wait");
+    require(wait_ms >= 0, "wait 不能为负");
+    // 回放和实机共用算法与 debug 配置。
+    const auto runtime_config = runtime::loadAutoAimConfig(cli.get<std::string>("config"));
+    const auto& debug = runtime_config.debug;
 
     // 叠加层口径。sp 视图刻意只保留 sp_vision auto_aim_test 画的那两样东西：
     // 当前 EKF 展开的全部装甲板（绿），和命中时刻瞄准的那块板（红）。这样
@@ -701,15 +707,8 @@ int main(int argc, char** argv)
     const bool full_view = view == "full";
     const int overlay_offset = full_view ? cli.get<int>("overlay-offset") : 0;
     require(overlay_offset >= 0, "overlay-offset 不能为负");
-    // 代价曲线是 sp 没有的第二个窗口，sp 视图下除非显式要求否则不开。
-    // 用三态字符串而不是 cli.has("plot")：CommandLineParser 对带默认值的键
-    // 恒返回 true，has() 区分不出"用户写了"和"用了默认值"。
-    const std::string plot_option = cli.get<std::string>("plot");
-    require(
-      plot_option == "auto" || plot_option == "true" || plot_option == "false",
-      "plot 必须是 auto、true 或 false");
-    const bool show_plot =
-      plot_option == "auto" ? full_view : plot_option == "true";
+    // PnP 曲线属于 full 叠加层；debug.plot 只控制 UDP 遥测。
+    const bool show_cost_plot = full_view;
     require(start_index >= 0, "start-index 不能为负");
     require(
       end_index == 0 || end_index >= start_index,
@@ -731,10 +730,6 @@ int main(int argc, char** argv)
       calibration_path +
         " 缺少 T_barrel_camera，PnP 无法给出世界系位姿；"
         "先补标外参，或用 -c=tests/data/sp_auto_aim/camera_calibration.yaml");
-
-    // L2/L3/L4 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
-    // YAML 里调噪声或精修阈值，这里根本看不出变化。
-    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
 
     runtime::AutoAimConfig detector_config = runtime_config;
     detector_config.model_path = cli.get<std::string>("model");
@@ -784,7 +779,10 @@ int main(int argc, char** argv)
     std::ifstream text(text_path);
     require(text.is_open(), "无法打开四元数文本：" + text_path);
 
-    L6Telemetry::UdpJsonSender plotter;
+    std::optional<L6Telemetry::UdpJsonSender> plotter;
+    if (debug.plot) {
+      plotter.emplace(debug.plot_host, static_cast<std::uint16_t>(debug.plot_port));
+    }
 
     // 跳过 start-index 之前的帧，视频和文本必须同步前进。
     video.set(cv::CAP_PROP_POS_FRAMES, start_index);
@@ -797,6 +795,7 @@ int main(int argc, char** argv)
     PoseSample pose;
     const auto t0 = std::chrono::steady_clock::now();
     std::size_t frames = 0;
+    std::size_t overlay_frames = 0;
     std::size_t observation_frames = 0;
     std::size_t valid_pnp_observations = 0;
     std::size_t tracking_frames = 0;
@@ -1060,298 +1059,312 @@ int main(int argc, char** argv)
         "ms tracker:",
         L6Telemetry::delta_time(track_end, track_start) * 1e3, "ms");
 
-      if (full_view) {
-        // L2 原始识别框：按识别颜色绘制，便于和红色滤波器输入位姿框对比。
-        for (const auto& armor : armors) {
-          const cv::Scalar color = armor.color == L2Perception::ArmorColor::Blue
-            ? cv::Scalar{0, 0, 255}
-            : armor.color == L2Perception::ArmorColor::Red
-            ? cv::Scalar{255, 0, 0}
-            : cv::Scalar{0, 255, 255};
-          for (std::size_t index = 0; index < armor.corners.size(); ++index) {
-            cv::line(
-              img, toPixel(armor.corners[index]),
-              toPixel(armor.corners[(index + 1) % armor.corners.size()]),
-              color, 2, cv::LINE_AA);
-          }
-        }
-
-        // 当前帧真正送入滤波器的位姿：绿色重投影框和绿色朝向箭头。
-        drawFilterInputArmors(
-          img, observations, solver,
-          calibration, q_world_barrel);
-      }
-
-      // 绿色是当前 EKF 展开的全部物理装甲板，和 sp_vision 画的是同一个量：
-      // 直接压在图像上，不偏移、不前瞻，所以"贴不贴板"可以目视判断。
-      // full 视图额外画橙色的 predict_time 外推框，那是延迟补偿的目标位置，
-      // 本来就该领先绿框（100 ms 实测约 40 px），不要当成估计误差。
-      if (target) {
-        const auto armor_type =
-          L3Estimation::armorTypeOf(target->name).value_or(
-            L3Estimation::ArmorType::Small);
-        const cv::Point overlay_shift{0, -overlay_offset};
+      const bool draw_overlay = debug.overlay && frame_index % debug.overlay_every == 0;
+      if (draw_overlay) {
         if (full_view) {
-          drawVehicle(
-            img, predicted_armor_poses, armor_type, target->name, solver,
-            {0, 165, 255}, 2, overlay_shift);
-        }
-        drawVehicle(
-          img, target_armor_poses, armor_type, target->name, solver,
-          {0, 255, 0}, 2, overlay_shift);
+          // L2 原始识别框：按识别颜色绘制，便于和红色滤波器输入位姿框对比。
+          for (const auto& armor : armors) {
+            const cv::Scalar color = armor.color == L2Perception::ArmorColor::Blue
+              ? cv::Scalar{0, 0, 255}
+              : armor.color == L2Perception::ArmorColor::Red
+              ? cv::Scalar{255, 0, 0}
+              : cv::Scalar{0, 255, 255};
+            for (std::size_t index = 0; index < armor.corners.size(); ++index) {
+              cv::line(
+                img, toPixel(armor.corners[index]),
+                toPixel(armor.corners[(index + 1) % armor.corners.size()]),
+                color, 2, cv::LINE_AA);
+            }
+          }
 
-        // 只有 Tracker 处于 Tracking 且 Plan 有效时，
-        // 才画 Plan 选中的命中时刻预测板。
-        if (tracked_armor_pose) {
-          drawVehicle(
-            img, {*tracked_armor_pose}, armor_type, target->name, solver,
-            {0, 0, 255}, 2, overlay_shift);
+          // 当前帧真正送入滤波器的位姿：绿色重投影框和绿色朝向箭头。
+          drawFilterInputArmors(
+            img, observations, solver,
+            calibration, q_world_barrel);
         }
 
-        // fire_feasible 时，紫框画在 L3 当前时刻的选中装甲板上，
-        // 与红框的命中时刻预测位姿分开。
-        if (fire_decision.fire_feasible && plan.armor_id >= 0) {
-          const auto selected = static_cast<std::size_t>(plan.armor_id);
-          if (selected < target_armor_poses.size()) {
+        // 绿色是当前 EKF 展开的全部物理装甲板，和 sp_vision 画的是同一个量：
+        // 直接压在图像上，不偏移、不前瞻，所以"贴不贴板"可以目视判断。
+        // full 视图额外画橙色的 predict_time 外推框，那是延迟补偿的目标位置，
+        // 本来就该领先绿框（100 ms 实测约 40 px），不要当成估计误差。
+        if (target) {
+          const auto armor_type =
+            L3Estimation::armorTypeOf(target->name).value_or(
+              L3Estimation::ArmorType::Small);
+          const cv::Point overlay_shift{0, -overlay_offset};
+          if (full_view) {
             drawVehicle(
-              img, {target_armor_poses[selected]}, armor_type, target->name,
-              solver, {255, 0, 255}, 2, overlay_shift);
+              img, predicted_armor_poses, armor_type, target->name, solver,
+              {0, 165, 255}, 2, overlay_shift);
+          }
+          drawVehicle(
+            img, target_armor_poses, armor_type, target->name, solver,
+            {0, 255, 0}, 2, overlay_shift);
+
+          // 只有 Tracker 处于 Tracking 且 Plan 有效时，
+          // 才画 Plan 选中的命中时刻预测板。
+          if (tracked_armor_pose) {
+            drawVehicle(
+              img, {*tracked_armor_pose}, armor_type, target->name, solver,
+              {0, 0, 255}, 2, overlay_shift);
+          }
+
+          // fire_feasible 时，紫框画在 L3 当前时刻的选中装甲板上，
+          // 与红框的命中时刻预测位姿分开。
+          if (fire_decision.fire_feasible && plan.armor_id >= 0) {
+            const auto selected = static_cast<std::size_t>(plan.armor_id);
+            if (selected < target_armor_poses.size()) {
+              drawVehicle(
+                img, {target_armor_poses[selected]}, armor_type, target->name,
+                solver, {255, 0, 255}, 2, overlay_shift);
+            }
           }
         }
-      }
 
-      // 瞄准点和火控判据用的那块实体板。两者在 WholeCarCenter 档会明显分开
-      // ——瞄的是旋转圆上的代理点，判的是板。sp 没有这一层。
-      if (full_view && plan.valid) {
-        const auto aim_pixel =
-          projectWorldPoint(plan.aim_point_world, calibration, q_world_barrel);
-        if (aim_pixel) {
-          const cv::Point center = toPixel(*aim_pixel);
-          const cv::Scalar color = fire_decision.fire_feasible
-            ? cv::Scalar{0, 255, 255}
-            : cv::Scalar{160, 160, 160};
-          cv::line(img, center + cv::Point{-14, 0}, center + cv::Point{14, 0}, color, 2,
-                   cv::LINE_AA);
-          cv::line(img, center + cv::Point{0, -14}, center + cv::Point{0, 14}, color, 2,
-                   cv::LINE_AA);
-          cv::circle(img, center, 18, color, 2, cv::LINE_AA);
-        }
-        if (tracked_armor_pose) {
-          const auto fire_pixel =
-            projectWorldPoint(
-              tracked_armor_pose->head<3>(), calibration, q_world_barrel);
-          if (fire_pixel) {
-            cv::circle(img, toPixel(*fire_pixel), 9, {255, 0, 255}, 2, cv::LINE_AA);
+        // 瞄准点和火控判据用的那块实体板。两者在 WholeCarCenter 档会明显分开
+        // ——瞄的是旋转圆上的代理点，判的是板。sp 没有这一层。
+        if (full_view && plan.valid) {
+          const auto aim_pixel =
+            projectWorldPoint(plan.aim_point_world, calibration, q_world_barrel);
+          if (aim_pixel) {
+            const cv::Point center = toPixel(*aim_pixel);
+            const cv::Scalar color = fire_decision.fire_feasible
+              ? cv::Scalar{0, 255, 255}
+              : cv::Scalar{160, 160, 160};
+            cv::line(img, center + cv::Point{-14, 0}, center + cv::Point{14, 0}, color, 2,
+                     cv::LINE_AA);
+            cv::line(img, center + cv::Point{0, -14}, center + cv::Point{0, 14}, color, 2,
+                     cv::LINE_AA);
+            cv::circle(img, center, 18, color, 2, cv::LINE_AA);
+          }
+          if (tracked_armor_pose) {
+            const auto fire_pixel =
+              projectWorldPoint(
+                tracked_armor_pose->head<3>(), calibration, q_world_barrel);
+            if (fire_pixel) {
+              cv::circle(img, toPixel(*fire_pixel), 9, {255, 0, 255}, 2, cv::LINE_AA);
+            }
           }
         }
-      }
 
-      drawOutlinedText(
-        img,
-        cv::format(
-          "frame=%d state=%s det=%zu obs=%zu", frame_index,
-          std::string(stateName(tracker.state())).c_str(), armors.size(),
-          observations.size()),
-        {10, 32}, {255, 255, 255});
-      drawOutlinedText(
-        img,
-        cv::format(
-          "gimbal yaw=%.2fdeg",
+        drawOutlinedText(
+          img,
+          cv::format(
+            "frame=%d state=%s det=%zu obs=%zu", frame_index,
+            std::string(stateName(tracker.state())).c_str(), armors.size(),
+            observations.size()),
+          {10, 32}, {255, 255, 255});
+        drawOutlinedText(
+          img,
+          cv::format(
+            "gimbal yaw=%.2fdeg",
+            L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
+              kRadToDeg),
+          {10, 62}, {255, 255, 255});
+        if (full_view && selected && isFilterInputArmor(observations[*selected])) {
+          const auto& armor = observations[*selected];
+          drawOutlinedText(
+            img,
+            cv::format("filter input armor yaw=%.1fdeg",
+                       armor.ypr_in_world[0] * kRadToDeg),
+            {10, 92}, {0, 255, 0});
+        }
+        // 内部状态前十一维：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
+        if (full_view && target) {
+          const Eigen::VectorXd tx = target->ekf_x();
+          drawOutlinedText(
+            img,
+            cv::format(
+              "EKF center=(%.2f,%.2f,%.2f)m v=(%.2f,%.2f,%.2f)m/s yaw=%.1fdeg "
+              "v_yaw=%.2frad/s r=%.3fm id=%d",
+              tx[0], tx[2], tx[4], tx[1], tx[3], tx[5],
+              tx[6] * kRadToDeg, tx[7], tx[8], target->last_id),
+            {10, 122}, {0, 255, 0}, 0.55);
+        }
+        if (full_view && predicted) {
+          const Eigen::VectorXd px = predicted->ekf_x();
+          drawOutlinedText(
+            img,
+            cv::format(
+              "pred +%.0fms center=(%.2f,%.2f,%.2f)m yaw=%.1fdeg (delta=%.1fdeg)",
+              predict_time * 1e3, px[0], px[2], px[4], px[6] * kRadToDeg,
+              L6Telemetry::limit_rad(px[6] - target->ekf_x()[6]) * kRadToDeg),
+            {10, 152}, {0, 165, 255}, 0.55);
+        }
+        drawOutlinedText(
+          img,
+          plan.valid
+            ? cv::format(
+                "CMD yaw=%.2f pitch=%.2f deg | err yaw=%.2f pitch=%.2f | "
+                "armor=%d fire_armor=%d",
+                 command_yaw * kRadToDeg, command_pitch * kRadToDeg,
+                 L6Telemetry::limit_rad(command_yaw - gimbal_ypr[0]) * kRadToDeg,
+                 L6Telemetry::limit_rad(command_pitch - gimbal_ypr[1]) * kRadToDeg,
+                 plan_armor_id, plan_armor_id)
+            : cv::format("CMD not sent (plan invalid)"),
+          {10, full_view ? 182 : 92},
+          plan.valid ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
+        if (full_view) {
+          drawOutlinedText(
+            img,
+            cv::format(
+              "FIRE feasible=%d shoot=%d | %s", fire_decision.fire_feasible ? 1 : 0,
+              command && command->shoot ? 1 : 0, rejectReasons(fire_decision).c_str()),
+            {10, 212},
+            fire_decision.fire_feasible ? cv::Scalar{0, 255, 0} : cv::Scalar{160, 160, 160},
+            0.5);
+        }
+      }
+      if (plotter) {
+        nlohmann::json data;
+        data["t"] = pose.seconds;
+        data["frame"] = frame_index;
+        data["mode"] = 1;
+        data["gimbal_yaw"] =
           L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
-            kRadToDeg),
-        {10, 62}, {255, 255, 255});
-      if (full_view && selected && isFilterInputArmor(observations[*selected])) {
-        const auto& armor = observations[*selected];
-        drawOutlinedText(
-          img,
-          cv::format("filter input armor yaw=%.1fdeg",
-                     armor.ypr_in_world[0] * kRadToDeg),
-          {10, 92}, {0, 255, 0});
-      }
-      // 内部状态前十一维：[xc, vx, yc, vy, z, vz, yaw, v_yaw, r1, r2-r1, z2-z1]。
-      if (full_view && target) {
-        const Eigen::VectorXd tx = target->ekf_x();
-        drawOutlinedText(
-          img,
-          cv::format(
-            "EKF center=(%.2f,%.2f,%.2f)m v=(%.2f,%.2f,%.2f)m/s yaw=%.1fdeg "
-            "v_yaw=%.2frad/s r=%.3fm id=%d",
-            tx[0], tx[2], tx[4], tx[1], tx[3], tx[5],
-            tx[6] * kRadToDeg, tx[7], tx[8], target->last_id),
-          {10, 122}, {0, 255, 0}, 0.55);
-      }
-      if (full_view && predicted) {
-        const Eigen::VectorXd px = predicted->ekf_x();
-        drawOutlinedText(
-          img,
-          cv::format(
-            "pred +%.0fms center=(%.2f,%.2f,%.2f)m yaw=%.1fdeg (delta=%.1fdeg)",
-            predict_time * 1e3, px[0], px[2], px[4], px[6] * kRadToDeg,
-            L6Telemetry::limit_rad(px[6] - target->ekf_x()[6]) * kRadToDeg),
-          {10, 152}, {0, 165, 255}, 0.55);
-      }
-      drawOutlinedText(
-        img,
-        plan.valid
-          ? cv::format(
-              "CMD yaw=%.2f pitch=%.2f deg | err yaw=%.2f pitch=%.2f | "
-              "armor=%d fire_armor=%d",
-               command_yaw * kRadToDeg, command_pitch * kRadToDeg,
-               L6Telemetry::limit_rad(command_yaw - gimbal_ypr[0]) * kRadToDeg,
-               L6Telemetry::limit_rad(command_pitch - gimbal_ypr[1]) * kRadToDeg,
-               plan_armor_id, plan_armor_id)
-          : cv::format("CMD not sent (plan invalid)"),
-        {10, full_view ? 182 : 92},
-        plan.valid ? cv::Scalar{0, 255, 255} : cv::Scalar{160, 160, 160}, 0.55);
-      if (full_view) {
-        drawOutlinedText(
-          img,
-          cv::format(
-            "FIRE feasible=%d shoot=%d | %s", fire_decision.fire_feasible ? 1 : 0,
-            command && command->shoot ? 1 : 0, rejectReasons(fire_decision).c_str()),
-          {10, 212},
-          fire_decision.fire_feasible ? cv::Scalar{0, 255, 0} : cv::Scalar{160, 160, 160},
-          0.5);
-      }
-      nlohmann::json data;
-      data["gimbal_yaw"] =
-        L6Telemetry::eulers(q_world_barrel.toRotationMatrix(), 2, 1, 0)[0] *
-        kRadToDeg;
-      data["armor_num"] = armors.size();
+          kRadToDeg;
+        data["armor_num"] = armors.size();
 
-      // 装甲板原始观测数据
-      if (selected) {
-        const auto& armor = observations[*selected];
-        data["armor_x"] = armor.xyz_in_world[0];
-        data["armor_y"] = armor.xyz_in_world[1];
-        data["armor_z"] = armor.xyz_in_world[2];
-        data["armor_yaw"] = armor.ypr_in_world[0] * kRadToDeg;
-        data["armor_yaw_raw"] = armor.yaw_raw * kRadToDeg;
-        data["armor_distance"] = armor.xyz_in_world.norm();
-        data["armor_pnp_committed"] =
-          armor.name != L3Estimation::ArmorName::Unknown;
-      }
-
-      // PnP yaw 搜索代价
-      if (curve) {
-        data["cost_min"] = curve->best_cost;
-        data["cost_min_yaw"] = curve->best_yaw * kRadToDeg;
-        data["cost_min_offset"] = curve->best_offset_degrees;
-        data["cost_local_minima"] = curve->local_minima;
-        // 双板联合曲线。single 与 joint 的极小 yaw 之差就是双板约束把这块板的
-        // yaw 拉动了多少度，是回放里最直接的收益量。
-        if (joint_curve) {
-          data["joint_cost_min"] = joint_curve->best_cost;
-          data["joint_cost_min_yaw"] = joint_curve->best_yaw * kRadToDeg;
-          data["joint_cost_min_offset"] = joint_curve->best_offset_degrees;
-          data["joint_cost_local_minima"] = joint_curve->local_minima;
-          data["joint_minus_single_yaw"] =
-            L6Telemetry::limit_rad(joint_curve->best_yaw - curve->best_yaw) *
-            kRadToDeg;
-          data["pair_offset"] = pair_offset_degrees;
-        }
+        // 装甲板原始观测数据
         if (selected) {
-          data["cost_at_solver_yaw"] =
-            yawCost(solver, observations[*selected],
-                    observations[*selected].ypr_in_world[0]);
-          data["cost_at_raw_yaw"] =
-            yawCost(solver, observations[*selected],
-                    observations[*selected].yaw_raw);
+          const auto& armor = observations[*selected];
+          data["armor_x"] = armor.xyz_in_world[0];
+          data["armor_y"] = armor.xyz_in_world[1];
+          data["armor_z"] = armor.xyz_in_world[2];
+          data["armor_yaw"] = armor.ypr_in_world[0] * kRadToDeg;
+          data["armor_yaw_raw"] = armor.yaw_raw * kRadToDeg;
+          data["armor_distance"] = armor.xyz_in_world.norm();
+          data["armor_pnp_committed"] =
+            armor.name != L3Estimation::ArmorName::Unknown;
         }
-      }
 
-      // 观测器内部数据
-      if (target) {
-        const Eigen::VectorXd tx = target->ekf_x();
-        data["x"] = tx[0];
-        data["vx"] = tx[1];
-        data["y"] = tx[2];
-        data["vy"] = tx[3];
-        data["z"] = tx[4];
-        data["vz"] = tx[5];
-        data["a"] = tx[6] * kRadToDeg;
-        data["w"] = tx[7];
-        data["r"] = tx[8];
-        data["last_id"] = target->last_id;
-        data["nis"] = target->lastNis();
-        if (ekf_armor_yaw) {
-          data["ekf_armor_yaw"] = *ekf_armor_yaw * kRadToDeg;
+        // PnP yaw 搜索代价
+        if (curve) {
+          data["cost_min"] = curve->best_cost;
+          data["cost_min_yaw"] = curve->best_yaw * kRadToDeg;
+          data["cost_min_offset"] = curve->best_offset_degrees;
+          data["cost_local_minima"] = curve->local_minima;
+          // 双板联合曲线。single 与 joint 的极小 yaw 之差就是双板约束把这块板的
+          // yaw 拉动了多少度，是回放里最直接的收益量。
+          if (joint_curve) {
+            data["joint_cost_min"] = joint_curve->best_cost;
+            data["joint_cost_min_yaw"] = joint_curve->best_yaw * kRadToDeg;
+            data["joint_cost_min_offset"] = joint_curve->best_offset_degrees;
+            data["joint_cost_local_minima"] = joint_curve->local_minima;
+            data["joint_minus_single_yaw"] =
+              L6Telemetry::limit_rad(joint_curve->best_yaw - curve->best_yaw) *
+              kRadToDeg;
+            data["pair_offset"] = pair_offset_degrees;
+          }
+          if (selected) {
+            data["cost_at_solver_yaw"] =
+              yawCost(solver, observations[*selected],
+                      observations[*selected].ypr_in_world[0]);
+            data["cost_at_raw_yaw"] =
+              yawCost(solver, observations[*selected],
+                      observations[*selected].yaw_raw);
+          }
         }
-      }
 
-      // L4 -> L5：这才是真正决定下位机动作的一组量。
-      // cmd_yaw 是 world 系绝对方位角，和 gimbal_yaw 同一个基准，可以直接相减。
-      data["plan_valid"] = plan.valid ? 1 : 0;
-      data["plan_tracked_phase"] = static_cast<int>(plan.tracked_phase);
-      data["plan_armor_id"] = plan_armor_id;
-      data["plan_aim_on_armor"] = planned_armor_pose &&
-          (plan.aim_point_world - planned_armor_pose->head<3>()).norm() < 1e-9
-        ? 1
-        : 0;
-      data["fire_armor_id"] = plan_armor_id;
-      data["fire_admissible"] = plan.fire_permitted ? 1 : 0;
-      if (plan.valid) {
-        data["cmd_yaw"] = command_yaw * kRadToDeg;
-        data["cmd_pitch"] = command_pitch * kRadToDeg;
-        // 云台要闭合的跟随误差。单看 cmd_yaw 是条平滑斜坡，抖动只在差值里看得见。
-        data["cmd_yaw_error"] =
-          L6Telemetry::limit_rad(command_yaw - gimbal_ypr[0]) * kRadToDeg;
-        data["cmd_pitch_error"] =
-          L6Telemetry::limit_rad(command_pitch - gimbal_ypr[1]) * kRadToDeg;
-        data["fire_delta_angle"] = planned_armor_pose
-          ? std::remainder(
-              std::atan2(planned_armor_pose->y(), planned_armor_pose->x()) -
-                planned_armor_pose->w(),
-              2.0 * std::numbers::pi) * kRadToDeg
-          : 0.0;
-        data["fly_time"] = plan.fly_time;
-        data["before_fire"] = target
-          ? std::chrono::duration<double>(plan.impact_time - target->t()).count() -
-              plan.fly_time
-          : 0.0;
-        data["image_to_plan"] = target
-          ? std::chrono::duration<double>(plan.generated_at - target->t()).count()
-          : 0.0;
-      }
-      data["cmd_sent"] = command ? 1 : 0;
-      data["cmd_shoot"] = command && command->shoot ? 1 : 0;
-      data["fire_feasible"] = fire_decision.fire_feasible ? 1 : 0;
-      data["aim_yaw_error"] = fire_decision.yaw_error * kRadToDeg;
-      data["aim_pitch_error"] = fire_decision.pitch_error * kRadToDeg;
-      if (fire_decision.tolerance.valid) {
-        data["tol_yaw"] = fire_decision.tolerance.yaw * kRadToDeg;
-        data["tol_pitch"] = fire_decision.tolerance.pitch * kRadToDeg;
-      }
-      data["plan_armor_changed"] = plan_armor_changed ? 1 : 0;
-      data["command_jump"] = fire_input.command_jump ? 1 : 0;
-      data["gimbal_pitch"] = gimbal_ypr[1] * kRadToDeg;
-
-      // 整车预测数据
-      if (predicted) {
-        const Eigen::VectorXd px = predicted->ekf_x();
-        data["predict_time"] = predict_time;
-        data["pred_x"] = px[0];
-        data["pred_y"] = px[2];
-        data["pred_z"] = px[4];
-        data["pred_a"] = px[6] * kRadToDeg;
-        if (predicted_armor_yaw) {
-          data["pred_armor_yaw"] = *predicted_armor_yaw * kRadToDeg;
+        // 观测器内部数据
+        if (target) {
+          const Eigen::VectorXd tx = target->ekf_x();
+          data["x"] = tx[0];
+          data["vx"] = tx[1];
+          data["y"] = tx[2];
+          data["vy"] = tx[3];
+          data["z"] = tx[4];
+          data["vz"] = tx[5];
+          data["a"] = tx[6] * kRadToDeg;
+          data["w"] = tx[7];
+          data["r"] = tx[8];
+          data["last_id"] = target->last_id;
+          data["nis"] = target->lastNis();
+          if (ekf_armor_yaw) {
+            data["ekf_armor_yaw"] = *ekf_armor_yaw * kRadToDeg;
+          }
         }
-      }
-      (void)plotter.send(data);
 
-      drawImageCenter(img);
-      if (show_plot) {
-        cv::imshow(
-          "pnp cost",
-          drawCostPlot(
-            curve ? &*curve : nullptr, joint_curve ? &*joint_curve : nullptr,
-            pair_offset_degrees,
-            selected ? &observations[*selected] : nullptr, solver, ekf_armor_yaw,
-            predicted_armor_yaw, frame_index));
+        // L4 -> L5：这才是真正决定下位机动作的一组量。
+        // cmd_yaw 是 world 系绝对方位角，和 gimbal_yaw 同一个基准，可以直接相减。
+        data["plan_valid"] = plan.valid ? 1 : 0;
+        data["plan_tracked_phase"] = static_cast<int>(plan.tracked_phase);
+        data["plan_armor_id"] = plan_armor_id;
+        data["plan_aim_on_armor"] = planned_armor_pose &&
+            (plan.aim_point_world - planned_armor_pose->head<3>()).norm() < 1e-9
+          ? 1
+          : 0;
+        data["fire_armor_id"] = plan_armor_id;
+        data["fire_admissible"] = plan.fire_permitted ? 1 : 0;
+        if (plan.valid) {
+          data["cmd_yaw"] = command_yaw * kRadToDeg;
+          data["cmd_pitch"] = command_pitch * kRadToDeg;
+          // 云台要闭合的跟随误差。单看 cmd_yaw 是条平滑斜坡，抖动只在差值里看得见。
+          data["cmd_yaw_error"] =
+            L6Telemetry::limit_rad(command_yaw - gimbal_ypr[0]) * kRadToDeg;
+          data["cmd_pitch_error"] =
+            L6Telemetry::limit_rad(command_pitch - gimbal_ypr[1]) * kRadToDeg;
+          data["fire_delta_angle"] = planned_armor_pose
+            ? std::remainder(
+                std::atan2(planned_armor_pose->y(), planned_armor_pose->x()) -
+                  planned_armor_pose->w(),
+                2.0 * std::numbers::pi) * kRadToDeg
+            : 0.0;
+          data["fly_time"] = plan.fly_time;
+          data["before_fire"] = target
+            ? std::chrono::duration<double>(plan.impact_time - target->t()).count() -
+                plan.fly_time
+            : 0.0;
+          data["image_to_plan"] = target
+            ? std::chrono::duration<double>(plan.generated_at - target->t()).count()
+            : 0.0;
+        }
+        data["cmd_sent"] = command ? 1 : 0;
+        data["cmd_shoot"] = command && command->shoot ? 1 : 0;
+        data["fire_feasible"] = fire_decision.fire_feasible ? 1 : 0;
+        data["aim_yaw_error"] = fire_decision.yaw_error * kRadToDeg;
+        data["aim_pitch_error"] = fire_decision.pitch_error * kRadToDeg;
+        if (fire_decision.tolerance.valid) {
+          data["tol_yaw"] = fire_decision.tolerance.yaw * kRadToDeg;
+          data["tol_pitch"] = fire_decision.tolerance.pitch * kRadToDeg;
+        }
+        data["plan_armor_changed"] = plan_armor_changed ? 1 : 0;
+        data["command_jump"] = fire_input.command_jump ? 1 : 0;
+        data["gimbal_pitch"] = gimbal_ypr[1] * kRadToDeg;
+
+        // 整车预测数据
+        if (predicted) {
+          const Eigen::VectorXd px = predicted->ekf_x();
+          data["predict_time"] = predict_time;
+          data["pred_x"] = px[0];
+          data["pred_y"] = px[2];
+          data["pred_z"] = px[4];
+          data["pred_a"] = px[6] * kRadToDeg;
+          if (predicted_armor_yaw) {
+            data["pred_armor_yaw"] = *predicted_armor_yaw * kRadToDeg;
+          }
+        }
+        (void)plotter->send(data);
       }
-      cv::resize(img, img, {}, 0.5, 0.5);  // 显示时缩小图片尺寸
-      cv::imshow("reprojection", img);
+
+      if (!debug.overlay) {
+        continue;
+      }
+      if (draw_overlay) {
+        drawImageCenter(img);
+        if (show_cost_plot) {
+          cv::imshow(
+            "pnp cost",
+            drawCostPlot(
+              curve ? &*curve : nullptr, joint_curve ? &*joint_curve : nullptr,
+              pair_offset_degrees,
+              selected ? &observations[*selected] : nullptr, solver, ekf_armor_yaw,
+              predicted_armor_yaw, frame_index));
+        }
+        cv::resize(img, img, {}, 0.5, 0.5);  // 显示时缩小图片尺寸
+        cv::imshow("reprojection", img);
+        ++overlay_frames;
+      }
       const int key = cv::waitKey(wait_ms);
       if (key == 'q' || key == 27) {
         break;
@@ -1361,9 +1374,10 @@ int main(int argc, char** argv)
       }
     }
 
-    cv::destroyAllWindows();
+    if (debug.overlay) cv::destroyAllWindows();
     std::cout << "\n回放结束\n"
               << "帧数: " << frames << '\n'
+              << "叠加层绘制帧数: " << overlay_frames << '\n'
               << "有 PnP 观测的帧: " << observation_frames << '\n'
               << "通过 ArmorQuality 全部门限的观测: " << valid_pnp_observations
               << '\n'
@@ -1416,7 +1430,7 @@ int main(int argc, char** argv)
     L6Telemetry::flushLogger();
     return frames > 0 ? 0 : 1;
   } catch (const std::exception& error) {
-    std::cerr << "auto_aim_test 失败: " << error.what() << '\n';
+    std::cerr << "auto_aim_test_armor 失败: " << error.what() << '\n';
     return 1;
   }
 }

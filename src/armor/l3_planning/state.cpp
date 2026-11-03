@@ -240,8 +240,9 @@ SelectionResult Planner::selectArmor(
             return begin_switch(
               next, SelectionReason::SwitchToCandidate);
           }
-          resetTracking();
-          return finish(nullptr, false, SelectionReason::NoCandidate);
+          // 动态窗口之间可能有短暂空隙。保持已知实体板和瞄点状态，
+          // 等接替板进入可选区；本段 tracked_ready=false，明确禁止开火。
+          return finish(current, false, SelectionReason::KeepCurrent);
         }
 
         const ArmorCandidate* best = bestScoredCandidate(

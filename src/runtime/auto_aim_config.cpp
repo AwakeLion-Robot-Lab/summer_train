@@ -309,6 +309,7 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   if (rune) {
     config.rune.detector = Rune::KeypointDetectorConfig::fromYaml(
         rune["detector"], std::filesystem::path(path).parent_path());
+    config.rune.image_refiner = Rune::ImageRefinerConfig::fromYaml(rune["image_refiner"]);
     const auto geometry = rune["geometry"];
     if (geometry) {
       if (geometry["radius_m"]) config.rune.geometry.radius_m = geometry["radius_m"].as<double>();
@@ -521,6 +522,8 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 
   const YAML::Node fire = root["fire"];
   readValue(fire, "shoot_enable", config.fire.shoot_enable);
+  readValue(fire, "stop_fire_on_temp_lost", config.fire.stop_fire_on_temp_lost);
+  readValue(fire, "stop_fire_on_aim_error", config.fire.stop_fire_on_aim_error);
   readValue(fire, "armor_width_small_m", config.fire.armor_width_small);
   readValue(fire, "armor_width_big_m", config.fire.armor_width_big);
   readValue(fire, "armor_height_m", config.fire.armor_height);

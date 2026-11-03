@@ -134,7 +134,7 @@ target("newvision")
         add_packages("opencv", "yaml-cpp", {public = true})
     elseif has_config("use_system_deps") then
         add_includedirs("/usr/include/opencv4", {public = true})
-        add_links("opencv_core", "opencv_imgproc", "opencv_imgcodecs", "opencv_videoio", "opencv_calib3d", "opencv_dnn", "opencv_highgui", "yaml-cpp", {public = true})
+        add_links("opencv_core", "opencv_imgproc", "opencv_imgcodecs", "opencv_videoio", "opencv_video", "opencv_calib3d", "opencv_dnn", "opencv_highgui", "yaml-cpp", {public = true})
     end
     -- OpenVINO 与 TensorRT 共用一个 on_load；xmake 对同一 target 的多个 on_load
     -- 使用覆盖语义，拆开写会让其中一个后端静默失效。
@@ -359,11 +359,13 @@ local standalone_tests = {
 }
 
 -- 需要开关或平台才存在的目标。openvino 这几个都要模型；
--- auto_aim_test 还要显示器。
+-- 三个回放入口统一使用 auto_aim.yaml 的 debug 配置。
 local gated_tests = {
     rune_detector_smoke      = "use_openvino",
     openvino_armor_smoke     = "use_openvino",
-    auto_aim_test            = "use_openvino",
+    auto_aim_test_armor      = "use_openvino",
+    auto_aim_test_small_tune  = "use_openvino",
+    auto_aim_test_big_tune    = "use_openvino",
     track_diag               = "use_openvino",
     serial_worker_smoke      = "linux",
     serial_single_shot_smoke = "linux",

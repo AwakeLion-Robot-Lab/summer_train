@@ -6,6 +6,7 @@
 #include "l3_planning/planner.hpp"
 #include "l3_planning/predictor.hpp"
 #include "l3_planning/window_policy.hpp"
+#include "l3_planning/in_plate_aim.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -56,7 +57,9 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
   const L3Estimation::TargetState& target_state,
   const L1Sensor::RobotState& robot_state,
   const PlannerContext& context,
-  TimePoint fire_time)
+  TimePoint fire_time,
+  const InPlateAimState& aim_state,
+  std::optional<int> only_armor_id)
 {
   const PlannerConfig& config = context.config;
   const double fly_time_tolerance =
@@ -95,6 +98,7 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
   candidates.reserve(static_cast<std::size_t>(target_state.armor_count));
 
   for (int armor_id = 0; armor_id < target_state.armor_count; ++armor_id) {
+    if (only_armor_id && *only_armor_id != armor_id) continue;
     ArmorCandidate candidate;
     double current_fly_time = 0.0;
     Eigen::Vector3d previous_position =
@@ -116,11 +120,15 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
         break;
       }
 
-      const Eigen::Vector3d position_barrel =
-        world_to_barrel(armor->position_world);
+      const InPlateAimPoint aim = queryInPlateAim(
+        prediction, *armor, aim_state, fire_time, robot_state.rpy.yaw,
+        config.in_plate_aim, -context.T_barrel_world.translation());
+      if (!aim.valid) break;
+      const Eigen::Vector3d position_barrel = world_to_barrel(aim.position_world);
       const BallisticSolution ballistic = solve_ballistic(position_barrel);
 
       candidate.armor = *armor;
+      candidate.aim = aim;
       candidate.ballistic = ballistic;
       candidate.impact_time = impact_time;
       candidate.iteration_count = iteration;
@@ -132,7 +140,7 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
       const bool has_previous = previous_position.allFinite();
       candidate.position_error =
         has_previous
-          ? (armor->position_world - previous_position).norm()
+          ? (aim.position_world - previous_position).norm()
           : std::numeric_limits<double>::infinity();
       const double yaw_error =
         has_previous
@@ -160,7 +168,7 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
         break;
       }
 
-      previous_position = armor->position_world;
+      previous_position = aim.position_world;
       previous_yaw = ballistic.yaw;
       previous_pitch = ballistic.pitch;
       current_fly_time = ballistic.fly_time;
@@ -176,22 +184,26 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
       if (final_prediction.valid
           && final_armor != nullptr
           && final_armor->valid) {
+        const InPlateAimPoint final_aim = queryInPlateAim(
+          final_prediction, *final_armor, aim_state, fire_time,
+          robot_state.rpy.yaw, config.in_plate_aim, -context.T_barrel_world.translation());
         const Eigen::Vector3d final_position_barrel =
-          world_to_barrel(final_armor->position_world);
+          world_to_barrel(final_aim.position_world);
         const BallisticSolution final_ballistic =
           solve_ballistic(final_position_barrel);
-        if (final_ballistic.valid) {
+        if (final_ballistic.valid && final_aim.valid) {
           const double final_yaw_error = normalizeAngle(
             final_ballistic.yaw - candidate.ballistic.yaw);
           const double final_pitch_error =
             final_ballistic.pitch - candidate.ballistic.pitch;
           candidate.position_error =
-            (final_armor->position_world - candidate.armor.position_world).norm();
+            (final_aim.position_world - candidate.aim.position_world).norm();
           candidate.fly_time_error =
             std::abs(final_ballistic.fly_time - candidate.ballistic.fly_time);
           candidate.angle_error =
             std::hypot(final_yaw_error, final_pitch_error);
           candidate.armor = *final_armor;
+          candidate.aim = final_aim;
           candidate.ballistic = final_ballistic;
           candidate.impact_time = final_impact_time;
 
