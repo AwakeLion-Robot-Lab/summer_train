@@ -1,6 +1,7 @@
 #pragma once
 
 #include "l1_perception/armor/armor_decoder.hpp"
+#include "l1_perception/armor/armor_refiner.hpp"
 #include "l1_perception/armor/light_detector.hpp"
 #include "l1_perception/inference/inference_backend.hpp"
 #include "l1_perception/inference/image_preprocessor.hpp"
@@ -12,11 +13,12 @@
 
 namespace L2Perception {
 
-// 整板网络解码后直接保留类别；侧边灯条由 L3 预测位置引导剖面搜索。
+// 整板网络解码后精修角点并保留类别；侧边灯条由 L3 预测位置引导剖面搜索。
 struct DetectTiming {
   double preprocess{0.0};
   double infer{0.0};
   double decode{0.0};
+  double refine{0.0};
   double side_light{0.0};
 };
 
@@ -24,6 +26,7 @@ struct ArmorDetectorConfig {
   ArmorDecoderConfig decoder{};
   LightFinderConfig finder{};
   ImagePreprocessConfig preprocess{};
+  ArmorRefinerConfig refiner{};
 };
 
 class ArmorDetector {
@@ -42,6 +45,7 @@ public:
   const DetectTiming& lastTiming() const noexcept { return last_timing_; }
   const std::vector<Light>& lastLights() const noexcept { return last_lights_; }
   const ArmorDecoderConfig& decoderConfig() const noexcept { return decoder_.config(); }
+  const RefineStats& lastRefineStats() const noexcept { return last_refine_stats_; }
 
 private:
   std::vector<Light> findSideLights(
@@ -50,6 +54,8 @@ private:
   ArmorDecoder decoder_{};
   LightFinderConfig finder_config_{};
   ImagePreprocessConfig preprocess_config_{};
+  ArmorRefiner refiner_{};
+  mutable RefineStats last_refine_stats_{};
   mutable DetectTiming last_timing_{};
   mutable std::vector<Light> last_lights_;
 };

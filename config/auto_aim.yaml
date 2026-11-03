@@ -53,7 +53,7 @@ inference:
   # 已验证：yolov5.xml、szu-v5n.xml -> yolov5_22，szu-v8n-fp16.onnx -> yolov8_21。
   # 这份 onnx 就是 Models-main 的 Infantry-v8n-fp16-20260726，那边的 IR 在 CPU 上
   # 输出逐位相同。换模型后要重跑 track_diag。
-  model_path: "model/armor_model/szu-v8n-fp16.onnx"
+  model_path: "model/armor_model/szu-v5n.xml"
   # CPU / GPU（Intel 核显，要装 intel-opencl-icd）。GPU 加载失败会告警并退回 CPU。
   # i9-13980HX + UHD 核显上整段 L2：CPU 12.9 ms、GPU 10.6 ms；GPU 按 FP16 算，角点差
   # 不到 0.2 px（网络输入尺度）。回放工具不读这一项，要对齐实机得加 -d=GPU。
@@ -87,6 +87,17 @@ inference:
     # minimum_confidence: 0.8
     # nms_iou_threshold: 0.3
     # nms_score_threshold: 0.7
+
+# 恢复 9db3949 的整板识别前端：网络四点后做传统角点精修。
+# 找不到可信的两根灯条时保留网络四点，不删除装甲板。
+refiner:
+  enable: true
+  binary_threshold: 150.0
+  min_lightbar_length_px: 8.0
+  max_angle_error_deg: 45.0
+  min_lightbar_ratio: 1.5
+  max_lightbar_ratio: 20.0
+  max_endpoint_distance_px: 15.0
 
 # 侧边灯条沿 L3 的预测位置做剖面搜索，补充整板网络漏检的侧面灯条。
 light_finder:

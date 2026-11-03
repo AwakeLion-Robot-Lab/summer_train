@@ -52,7 +52,8 @@ L2Perception::ArmorDetector makeDetector(const AutoAimConfig& config, bool guess
     std::move(armor_backend),
     L2Perception::ArmorDetectorConfig{
       .decoder = decoder,
-      .finder = config.light_finder});
+      .finder = config.light_finder,
+      .refiner = config.refiner});
   L6Telemetry::logInfo(
     "armor model loaded", backend_name, inference.model_path.string(), inference.device,
     "layout", yolov8 ? "yolov8_21" : "yolov5_22", by_shape ? "(by shape)" : "(yaml)",

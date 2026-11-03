@@ -18,6 +18,7 @@ ArmorDetector::ArmorDetector(
   , decoder_(std::move(config.decoder))
   , finder_config_(std::move(config.finder))
   , preprocess_config_(std::move(config.preprocess))
+  , refiner_(std::move(config.refiner))
 {
   if (armor_backend_ == nullptr || !armor_backend_->ready()) {
     throw std::invalid_argument("ArmorDetector: armor model backend is not loaded");
@@ -73,6 +74,7 @@ ArmorFrame ArmorDetector::detectFrame(
 {
   last_lights_.clear();
   last_timing_ = {};
+  last_refine_stats_ = {};
   if (!ready() || image.empty() || image.type() != CV_8UC3) {
     return {};
   }
@@ -114,6 +116,11 @@ ArmorFrame ArmorDetector::detectFrame(
       }
     }
 
+    // 先还原到原图坐标，再按 9db3949 的整板 ROI 做传统角点精修。
+    // 精修失败保留网络四点；不改变类别、中心或后端观测接口。
+    last_refine_stats_ = refiner_.refine(image, frame.armors);
+    last_timing_.refine = lap();
+
     if (!hints.empty()) {
       last_lights_ = findSideLights(image, hints, color);
       // 已检出装甲板自己的灯条已经作为板的角点进了观测，不能再以侧边灯条的
@@ -135,6 +142,7 @@ ArmorFrame ArmorDetector::detectFrame(
     L6Telemetry::logError("armor inference failed", error.what());
     last_lights_.clear();
     last_timing_ = {};
+    last_refine_stats_ = {};
     return {};
   }
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "l1_perception/armor/armor_decoder.hpp"
+#include "l1_perception/armor/armor_refiner.hpp"
 #include "l1_perception/armor/light_detector.hpp"
 #include "l1_perception/inference/inference_backend.hpp"
 #include "l2_estimation/armor/eskf_tracker.hpp"
@@ -78,6 +79,8 @@ struct AutoAimConfig {
   // 选预设，再套上 decoder_thresholds。
   bool auto_layout{false};
   DecoderThresholds decoder_thresholds;
+  // 整板网络四点的传统角点精修，参数沿用 9db3949。
+  L2Perception::ArmorRefinerConfig refiner;
   // 侧边灯条：传统二值化检测的门限与判色阈值。这一路不走网络。
   L2Perception::LightFinderConfig light_finder;
 
