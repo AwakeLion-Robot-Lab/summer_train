@@ -110,6 +110,13 @@ void normalize(AutoAimConfig& config)
     config.armor.height = armor_defaults.height;
   }
 
+  // 创新降权的门限和方差倍率必须有限且为正。
+  if (!positiveFinite(config.ieskf_target.corner_nis_gate))
+    config.ieskf_target.corner_nis_gate = 9.21;
+  if (!(std::isfinite(config.ieskf_target.corner_max_variance_scale) &&
+        config.ieskf_target.corner_max_variance_scale >= 1.0))
+    config.ieskf_target.corner_max_variance_scale = 25.0;
+
   // 精修参数越界会让它静默失效（阈值 255 时二值图全黑，一块灯条也找不到）
   // 或者全盘接受（端点距离无穷大时任何传统解都覆盖网络角点），都不会报错。
   const L2Perception::ArmorRefinerConfig refiner_defaults;
@@ -487,6 +494,9 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     light_finder, "profile_max_residual_px", config.light_finder.profile_max_residual_px);
 
   const YAML::Node ieskf = root["ieskf"];
+  readValue(ieskf, "robust_corners", config.ieskf_target.robust_corners);
+  readValue(ieskf, "corner_nis_gate", config.ieskf_target.corner_nis_gate);
+  readValue(ieskf, "corner_max_variance_scale", config.ieskf_target.corner_max_variance_scale);
   readValue(ieskf, "tracking_thres", config.ieskf_tracker.tracking_thres);
   readValue(ieskf, "lost_time_thres", config.ieskf_tracker.lost_time_thres);
   readValue(

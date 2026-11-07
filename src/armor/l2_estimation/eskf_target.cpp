@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <utility>
 
 namespace L3Estimation {
@@ -12,6 +13,23 @@ namespace L3Estimation {
 namespace VM = VehicleModel;
 
 namespace {
+// 权重只在本帧先验点计算一次，迭代时保持不变；D R D 保持正定。
+struct WeightedObservation final : VehicleFilter::ObsBase {
+  VehicleObs source;
+  Eigen::VectorXd scales;
+  WeightedObservation(VehicleObs observation, Eigen::VectorXd diagonal)
+    : source(std::move(observation)), scales(std::move(diagonal)) {}
+  int dim() const override { return source->dim(); }
+  void predict(const Eigen::VectorXd& x, Eigen::VectorXd& z) const override {
+    source->predict(x, z);
+  }
+  void residualAndR(const Eigen::VectorXd& z, Eigen::VectorXd& residual,
+                    Eigen::MatrixXd& r) const override {
+    source->residualAndR(z, residual, r);
+    r = scales.asDiagonal() * r * scales.asDiagonal();
+  }
+};
+
 
 double initialRadiusFor(ArmorName name, const EskfTargetConfig & config)
 {
@@ -144,6 +162,7 @@ void EskfTarget::reset(
   last_nis_ = 0.0;
   last_nis_dof_ = 0;
   last_light_residual_ = LightResidual{};
+  last_innovation_ = {};
 }
 
 void EskfTarget::predictEkf(TimePoint timestamp, std::optional<TimePoint> hold_from)
@@ -188,10 +207,36 @@ int EskfTarget::update(
   const std::size_t light_capacity = matched.size() * 2 + matched_lights.size();
   observations.reserve(light_capacity + 1);
   axes.reserve(light_capacity);
+  last_innovation_ = {};
+  last_innovation_.timestamp = timestamp;
+  last_innovation_.armors = static_cast<int>(matched.size());
+  last_innovation_.isolated_lights = static_cast<int>(matched_lights.size());
+  double depth_scale = 1.0;
 
   const auto addLight = [&](const cv::Point2f & top, const cv::Point2f & bottom, int id,
                             bool is_left, bool isolated) {
-    observations.push_back(lightObs(ctx, top, bottom, id, is_left, isolated));
+    auto obs = lightObs(ctx, top, bottom, id, is_left, isolated);
+    Eigen::VectorXd residual;
+    Eigen::MatrixXd covariance;
+    filter_->innovation(*obs, residual, covariance);
+    Eigen::VectorXd diagonal = Eigen::VectorXd::Ones(kLightMeasureSize);
+    for (int endpoint = 0; endpoint < 2; ++endpoint) {
+      const auto nis = chi2(residual.segment(endpoint * 2, 2),
+                            covariance.block(endpoint * 2, endpoint * 2, 2, 2));
+      double scale = 1.0;
+      if (config_.robust_corners && converged_ && nis && std::isfinite(*nis)) {
+        scale = std::clamp(*nis / config_.corner_nis_gate,
+                           1.0, config_.corner_max_variance_scale);
+      }
+      diagonal.segment(endpoint * 2, 2).setConstant(std::sqrt(scale));
+      if (!isolated) depth_scale = std::max(depth_scale, scale);
+      last_innovation_.corners.push_back({id, is_left, isolated, endpoint,
+        residual[endpoint * 2], residual[endpoint * 2 + 1],
+        nis.value_or(std::numeric_limits<double>::quiet_NaN()), scale});
+    }
+    if (diagonal.maxCoeff() > 1.0)
+      obs = std::make_shared<WeightedObservation>(std::move(obs), std::move(diagonal));
+    observations.push_back(std::move(obs));
     axes.push_back(LightAxis{lightDirection(top, bottom), cv::norm(top - bottom)});
   };
 
@@ -217,7 +262,8 @@ int EskfTarget::update(
   if (has_depth_diff) {
     observations.push_back(makeDepthObs(
       ctx, matched.front().first, *lights_depth_diff,
-      config_.armor_lights_depth_diff_sigma));
+      config_.armor_lights_depth_diff_sigma * std::sqrt(depth_scale)));
+    last_innovation_.depth_variance_scale = depth_scale;
   }
 
   x_ = filter_->updateMulti(observations);
@@ -371,6 +417,7 @@ EskfTarget EskfTarget::snapshot() const
   // 端点残差和 NIS 一样是本帧诊断量，必须跟着副本走：track() 对外返回的就是
   // snapshot，漏掉它 track_diag 的创新列会恒为空。
   copy.last_light_residual_ = last_light_residual_;
+  copy.last_innovation_ = last_innovation_;
   copy.voter_ = voter_;
   // 刻意不复制 filter_：下游拿到的是纯状态副本，外推随便做，不会污染滤波器。
   return copy;

@@ -24,10 +24,11 @@ struct ArmorRefinerConfig
 {
   bool enable{true};
 
-  // 以下参数与 sp_vision_25-main/configs/standard3.yaml 的传统识别参数一致。
+  // 二值化和尺寸门沿用传统灯条精修。
   double binary_threshold{150.0};
   float min_lightbar_length_px{8.0F};
-  float max_angle_error_deg{45.0F};
+  // 与对应一侧网络灯条方向的最大偏差，不是与图像竖直方向的夹角。
+  float max_angle_error_deg{20.0F};
   float min_lightbar_ratio{1.5F};
   float max_lightbar_ratio{20.0F};
 
@@ -62,7 +63,7 @@ struct RefineRecord
   float corner_shift{0.0F};
 };
 
-// 在网络检出的 ROI 内复用 SP-Vision 的传统灯条检测，对单个 Armor 做二次角点矫正。
+// 在网络 ROI 内沿左右预测方向匹配传统灯条，沿长轴取端点并保留角点身份。
 // 找不到可信的两根灯条时返回 false，并完整保留网络识别结果。
 class ArmorRefiner
 {

@@ -19,6 +19,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <numbers>
 #include <optional>
 #include <string_view>
@@ -149,10 +150,83 @@ std::vector<L3Estimation::MatchedLight> matchLightAt(
     matched);
 }
 
+
+// 已知真值的横向正弦运动：测 100ms 外推误差及位置响应滞后，不经过网络/PnP。
+void benchmarkNoiseResponse()
+{
+  const auto calibration = makeCalibration();
+  const auto camera = makeCameraPose();
+  const auto start = L3Estimation::TimePoint{} + std::chrono::seconds(1);
+  for (int option = 0; option < 4; ++option) {
+    L3Estimation::EskfTargetConfig config;
+    config.robust_corners = option != 0;
+    if (option == 1 || option == 3) config.noise.yaw_acceleration = 15.0;
+    if (option == 2 || option == 3) config.sigma_min_px = 8.0;
+    const auto truthAt = [](double t) {
+      State x = makeTruth();
+      x[VM::idx::CX] = 3.2;
+      x[VM::idx::VCX] = 0;
+      x[VM::idx::CY] = 0.30 + 0.15 * std::sin(2 * CV_PI * 0.7 * t);
+      x[VM::idx::VCY] = 0.15 * 2 * CV_PI * 0.7 * std::cos(2 * CV_PI * 0.7 * t);
+      x[VM::idx::ROT_Z] = 0.25 + 1.8 * t;
+      return x;
+    };
+    auto initial = synthesizeDetection(truthAt(0), 0, calibration, camera, config.armor);
+    L3Estimation::EskfTarget target;
+    target.reset(initial, config, start);
+    std::vector<double> measured, actual;
+    double prediction_sq = 0;
+    int prediction_count = 0;
+    for (int frame = 1; frame <= 800; ++frame) {
+      double t = frame * 0.01;
+      const auto truth = truthAt(t);
+      std::vector<L3Estimation::Armor> detections;
+      for (int id = 0; id < 4; ++id) {
+        if (!facesCamera(truth, id, camera)) continue;
+        auto detection = synthesizeDetection(truth, id, calibration, camera, config.armor);
+        for (int corner = 0; corner < 4; ++corner) {
+          detection.points[corner].x += 1.5 * std::sin(frame * 2.3 + corner * 1.7 + id);
+          detection.points[corner].y += 1.5 * std::cos(frame * 1.9 + corner * 2.1 + id);
+        }
+        detections.push_back(detection);
+      }
+      const auto now = start + std::chrono::milliseconds(frame * 10);
+      target.predictEkf(now);
+      const auto matched = matchArmorAt(target, detections, now, calibration, camera);
+      target.update(matched, now, target.obsContext(calibration, camera));
+      measured.push_back(target.rawState()[VM::idx::CY]);
+      actual.push_back(truth[VM::idx::CY]);
+      if (frame > 200) {
+        auto future = target.snapshot();
+        future.predict(0.1);
+        const auto truth_future = truthAt(t + 0.1);
+        double error = future.rawState()[VM::idx::CY] - truth_future[VM::idx::CY];
+        prediction_sq += error * error;
+        ++prediction_count;
+      }
+    }
+    int best_lag = 0;
+    double best_error = std::numeric_limits<double>::infinity();
+    for (int lag = 0; lag <= 20; ++lag) {
+      double error = 0;
+      for (int frame = 200; frame < 800; ++frame)
+        error += std::pow(measured[frame] - actual[frame - lag], 2);
+      if (error < best_error) { best_error = error; best_lag = lag; }
+    }
+    std::cout << "noise_response," << option << ",prediction_rmse_m,"
+              << std::sqrt(prediction_sq / prediction_count)
+              << ",lag_ms," << best_lag * 10 << '\n';
+  }
+}
+
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+  if (argc > 1 && std::string_view(argv[1]) == "--noise-response") {
+    benchmarkNoiseResponse();
+    return 0;
+  }
   const L1Sensor::CameraCalibration calibration = makeCalibration();
   const Eigen::Isometry3d camera = makeCameraPose();
   const State truth = makeTruth();
@@ -574,6 +648,66 @@ int main()
     expect(
       (target.rawState() - before).norm() < 1e-15, "原目标的状态被副本操作污染了");
     expect(copy.t() > before_time, "副本的时间戳应当已经推进");
+  }
+
+  // 单个坏端点应被独立降权，不能把同板正常端点一起抹掉。
+  {
+    State stationary = truth;
+    stationary[VM::idx::VCX] = stationary[VM::idx::VCY] = stationary[VM::idx::VYAW] = 0;
+    auto robust_config = config;
+    robust_config.robust_corners = true;
+    robust_config.initial_radius = std::exp(stationary[VM::idx::LOG_R1]);
+    auto plain_config = robust_config;
+    plain_config.robust_corners = false;
+    L3Estimation::EskfTarget robust, plain;
+    auto detection = synthesizeDetection(stationary, 0, calibration, camera, config.armor);
+    {
+      L3Estimation::EskfTarget warming;
+      warming.reset(detection, robust_config, start);
+      auto corrupt = detection;
+      corrupt.points[0] += cv::Point2f(80, 60);
+      warming.update({{0, corrupt}}, start, warming.obsContext(calibration, camera));
+      for (const auto& corner : warming.lastInnovation().corners)
+        expectNear(corner.variance_scale, 1, 1e-10, "收敛前不应因初值误差降权");
+    }
+    robust.reset(detection, robust_config, start);
+    plain.reset(detection, plain_config, start);
+    auto now = start;
+    for (int frame = 0; frame < 80; ++frame) {
+      now += std::chrono::milliseconds(5);
+      for (auto* target : {&robust, &plain}) {
+        target->predictEkf(now);
+        target->update({{0, detection}}, now, target->obsContext(calibration, camera));
+      }
+    }
+    expect(robust.converged(), "正常观测预热后应收敛");
+    expect((robust.rawState() - plain.rawState()).norm() < 1e-10,
+           "无异常时降权开关不得改变状态");
+    auto corrupt = detection;
+    corrupt.points[0] += cv::Point2f(80, 60);
+    now += std::chrono::milliseconds(5);
+    robust.predictEkf(now);
+    plain.predictEkf(now);
+    const State prior = robust.rawState();
+    robust.update({{0, corrupt}}, now, robust.obsContext(calibration, camera));
+    plain.update({{0, corrupt}}, now, plain.obsContext(calibration, camera));
+    const auto& diag = robust.lastInnovation();
+    expect(diag.armors == 1 && diag.corners.size() == 4, "逐帧端点和完整板计数错误");
+    expect(diag.corners[0].variance_scale > 1, "坏端点未降权");
+    for (int index = 1; index < 4; ++index)
+      expectNear(diag.corners[index].variance_scale, 1, 1e-10, "正常端点被连带降权");
+    expect((robust.rawState() - prior).norm() < (plain.rawState() - prior).norm(),
+           "降权未减少单次坏观测对状态的拉动");
+    Eigen::SelfAdjointEigenSolver<L3Estimation::EskfTarget::Covariance> eig(robust.covariance());
+    expect(eig.eigenvalues().minCoeff() > -1e-10, "降权后协方差非半正定");
+    expect(robust.snapshot().lastInnovation().corners.size() == 4, "快照丢失创新诊断");
+    now += std::chrono::milliseconds(5);
+    robust.predictEkf(now);
+    robust.update({{0, corrupt}}, {}, 0.01, now, robust.obsContext(calibration, camera));
+    expect(robust.lastInnovation().depth_variance_scale > 1,
+           "由坏端点派生的深度差没有同步降权");
+    robust.reset(detection, robust_config, now);
+    expect(robust.lastInnovation().corners.empty(), "重置后残留上一目标的创新量");
   }
 
   if (failure_count != 0) {

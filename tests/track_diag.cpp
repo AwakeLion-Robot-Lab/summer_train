@@ -53,6 +53,7 @@ constexpr double kBoundEpsilonRad = 0.02;
 
 const std::string kCommandLineKeys =
   "{help h usage ? | false | 输出命令行参数说明}"
+  "{config | config/auto_aim.yaml | 识别和估计配置}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
   "{model m | model/armor_model/yolov5.xml | OpenVINO 装甲板模型}"
   "{device d | CPU | OpenVINO 推理设备}"
@@ -388,7 +389,7 @@ int main(int argc, char* argv[])
 
     // L2/L3/L4 参数一律从 auto_aim.yaml 读，回放和实机用同一份数值——否则在
     // YAML 里调噪声或精修阈值，这里根本看不出变化。
-    const auto runtime_config = runtime::loadAutoAimConfig("config/auto_aim.yaml");
+    const auto runtime_config = runtime::loadAutoAimConfig(cli.get<std::string>("config"));
 
     runtime::AutoAimConfig detector_config = runtime_config;
     detector_config.model_path = cli.get<std::string>("model");
@@ -460,6 +461,10 @@ int main(int argc, char* argv[])
     std::ofstream pred_csv(out_dir / "pred.csv");
     pred_csv << "frame,t,horizon,center_err,armor_err,armor_yaw_err_deg,obs_err\n";
     pred_csv << std::fixed;
+    std::ofstream innovation_csv(out_dir / "innovation.csv");
+    innovation_csv << "frame,t,armor_id,is_left,isolated,endpoint,du_px,dv_px,raw_nis,variance_scale\n";
+    std::ofstream innovation_frames(out_dir / "innovation_frames.csv");
+    innovation_frames << "frame,t,updated,armors,isolated_lights,corners,downweighted,depth_variance_scale\n";
 
     cv::Mat img;
     PoseSample pose;
@@ -683,6 +688,22 @@ int main(int argc, char* argv[])
                 << ',' << res_dist_value << ','
                 << res_yaw_value << ',' << (reset ? 1 : 0) << '\n';
       previous_target = target;
+      const auto* diag = target && target->lastInnovation().timestamp == timestamp
+        ? &target->lastInnovation() : nullptr;
+      int downweighted = 0;
+      if (diag) {
+        for (const auto& corner : diag->corners) {
+          downweighted += corner.variance_scale > 1.0;
+          innovation_csv << frame_index << ',' << pose.seconds << ',' << corner.armor_id
+            << ',' << corner.is_left << ',' << corner.isolated << ',' << corner.endpoint
+            << ',' << corner.du << ',' << corner.dv << ',' << corner.nis
+            << ',' << corner.variance_scale << '\n';
+        }
+      }
+      innovation_frames << frame_index << ',' << pose.seconds << ',' << (diag ? 1 : 0)
+        << ',' << (diag ? diag->armors : 0) << ',' << (diag ? diag->isolated_lights : 0)
+        << ',' << (diag ? diag->corners.size() : 0) << ',' << downweighted
+        << ',' << (diag ? diag->depth_variance_scale : 1.0) << '\n';
 
       // 叠加层像素位置：整车中心 + 四块板的框心，外加当帧检出的板心作参照。
       {

@@ -369,6 +369,7 @@ local gated_tests = {
     track_diag               = "use_openvino",
     serial_worker_smoke      = "linux",
     serial_single_shot_smoke = "linux",
+    armor_runtime_no_serial_smoke = "linux",
 }
 
 -- serial_worker_smoke 用 pty 造串口，需要额外链 util。

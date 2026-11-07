@@ -263,6 +263,7 @@ void AutoAimRuntime::run() {
   std::uint64_t frame_index = 0;
   bool save_rune_frame = false;
   Clock::time_point last_rune_diagnostic_log{};
+  Clock::time_point last_armor_detection_only_log{};
   // 叠加层要把世界系位姿投回图像，需要一个求解器。这里另建一个与 Tracker
   // 内部同参数的实例，只做重投影、不参与滤波——不为了画图去开 Tracker 的内部。
   std::optional<L3Estimation::PnpSolver> overlay_solver;
@@ -318,10 +319,27 @@ void AutoAimRuntime::run() {
     const auto pose_deadline = frame_timing.ready_at +
         std::chrono::milliseconds(serial_config.pose_wait_ms);
     const auto state = serial.latestState();
-    // 能量机关的图像检测不依赖串口。无反馈时仍运行检测及叠加显示，
-    // 由下方反馈检查保持停瞄，避免串口断开后连检测框也消失。
+    // 图像检测不依赖串口。缺少反馈时只做整图检测，保持停瞄，
+    // 不构造虚假的姿态、敌方颜色或跟踪目标。
     if (auto_aim_config.mode == AimMode::Armor && (!serial_started || !state)) {
       stopAimSession();
+      const auto started = Clock::now();
+      const auto perception = armor_detector.detectFrame(frame);
+      frame_timing.detect_ms = milliseconds(Clock::now(), started);
+      ++frame_timing.detection_passes;
+      if (Clock::now() - last_armor_detection_only_log >= std::chrono::seconds(2)) {
+        L6Telemetry::logWarn("armor detection only: serial feedback unavailable; detections",
+                            perception.armors.size());
+        last_armor_detection_only_log = Clock::now();
+      }
+      if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
+        // 没有敌方颜色时显示所有网络检出，仅供查看，不进入跟踪与规划。
+        L6Telemetry::drawArmorDetections(frame, perception.armors);
+        L6Telemetry::drawOutlinedText(
+          frame, armor_detector.ready() ? "Detection only: no serial feedback"
+                                        : "Armor model unavailable; see log",
+          {20, 40}, {0, 165, 255});
+      }
     } else {
       const L1Sensor::WorkMode mode = selected_mode;
       switch (mode) {
@@ -797,6 +815,21 @@ nlohmann::json telemetryFrame(
     const auto& residual = target->lastLightResidual();
     data["ekf"]["nis"] = target->lastNis();
     data["ekf"]["nis_dof"] = target->lastNisDof();
+    const auto& innovation = target->lastInnovation();
+    const bool updated = innovation.timestamp == timestamp;
+    data["ekf"]["innovation_updated"] = updated;
+    data["ekf"]["matched_armors"] = updated ? innovation.armors : 0;
+    data["ekf"]["isolated_lights"] = updated ? innovation.isolated_lights : 0;
+    data["ekf"]["corner_innovations"] = nlohmann::json::array();
+    if (updated) {
+      for (const auto& corner : innovation.corners)
+        data["ekf"]["corner_innovations"].push_back({
+          {"armor_id", corner.armor_id}, {"is_left", corner.is_left},
+          {"isolated", corner.isolated}, {"endpoint", corner.endpoint},
+          {"du_px", corner.du}, {"dv_px", corner.dv},
+          {"raw_nis", corner.nis}, {"variance_scale", corner.variance_scale}});
+    }
+
     data["ekf"]["lights"] = residual.light_count;
     data["ekf"]["res_shift_perp"] = residual.shift_perp.mean;
     data["ekf"]["res_shift_along"] = residual.shift_along.mean;

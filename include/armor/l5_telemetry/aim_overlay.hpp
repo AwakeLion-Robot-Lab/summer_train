@@ -44,6 +44,9 @@ void drawAimOverlay(
   const L3Estimation::PnpSolver& solver,
   const L1Sensor::CameraCalibration& calibration);
 
+// 仅画 L2 图像角点，不依赖标定、串口姿态或跟踪状态。
+void drawArmorDetections(cv::Mat& image, const std::vector<L2Perception::Armor>& detections);
+
 // 只有 Plan 有效、板号和命中时刻合法时，才返回命中时刻预测板。
 std::optional<Eigen::Vector4d> plannedImpactArmorPose(
   const std::optional<L3Estimation::EskfTarget>& target,

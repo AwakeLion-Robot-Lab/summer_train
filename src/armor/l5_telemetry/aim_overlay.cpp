@@ -48,13 +48,10 @@ std::string rejectReasons(const L5Control::FireDecision& fire)
 
 }  // namespace
 
-void drawAimOverlay(
-  cv::Mat& image, const AimOverlayInput& input,
-  const L3Estimation::PnpSolver& solver,
-  const L1Sensor::CameraCalibration& calibration)
+void drawArmorDetections(cv::Mat& image, const std::vector<L2Perception::Armor>& detections)
 {
-  // 蓝色：L2 网络给出的原始角点，还没经过任何 PnP。
-  for (const auto& detection : input.detections) {
+  // 蓝色：L2 图像角点，还没经过任何 PnP。
+  for (const auto& detection : detections) {
     for (std::size_t index = 0; index < detection.corners.size(); ++index) {
       cv::line(
         image, toPixel(detection.corners[index]),
@@ -62,6 +59,14 @@ void drawAimOverlay(
         {255, 128, 0}, 1, cv::LINE_AA);
     }
   }
+}
+
+void drawAimOverlay(
+  cv::Mat& image, const AimOverlayInput& input,
+  const L3Estimation::PnpSolver& solver,
+  const L1Sensor::CameraCalibration& calibration)
+{
+  drawArmorDetections(image, input.detections);
 
   if (input.q_world_barrel) {
     // 绿色：当前帧真正送进滤波器的单板位姿及其朝向。

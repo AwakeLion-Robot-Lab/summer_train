@@ -1280,6 +1280,21 @@ int main(int argc, char** argv)
           data["r"] = tx[8];
           data["last_id"] = target->last_id;
           data["nis"] = target->lastNis();
+          const auto& innovation = target->lastInnovation();
+          const bool updated = innovation.timestamp == timestamp;
+          data["innovation_updated"] = updated;
+          data["matched_armors"] = updated ? innovation.armors : 0;
+          data["isolated_lights"] = updated ? innovation.isolated_lights : 0;
+          data["corner_innovations"] = nlohmann::json::array();
+          if (updated) {
+            for (const auto& corner : innovation.corners)
+              data["corner_innovations"].push_back({
+                {"armor_id", corner.armor_id}, {"is_left", corner.is_left},
+                {"isolated", corner.isolated}, {"endpoint", corner.endpoint},
+                {"du_px", corner.du}, {"dv_px", corner.dv},
+                {"raw_nis", corner.nis}, {"variance_scale", corner.variance_scale}});
+          }
+
           if (ekf_armor_yaw) {
             data["ekf_armor_yaw"] = *ekf_armor_yaw * kRadToDeg;
           }

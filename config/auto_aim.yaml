@@ -94,7 +94,8 @@ refiner:
   enable: true
   binary_threshold: 150.0
   min_lightbar_length_px: 8.0
-  max_angle_error_deg: 45.0
+  # 分别相对网络左/右灯条方向，车辆整体倾斜不受此角度限制。
+  max_angle_error_deg: 20.0
   min_lightbar_ratio: 1.5
   max_lightbar_ratio: 20.0
   max_endpoint_distance_px: 15.0
@@ -153,7 +154,8 @@ ieskf:
 
   # 车体系过程噪声，与 awakening test.yaml 对齐。
   body_acceleration: [30.0, 30.0, 1.0]
-  yaw_acceleration: 30.0
+  # 3m_high 前段/后段与合成响应对照：略减小角速度修正波动，保留像素噪声下限。
+  yaw_acceleration: 15.0
   outpost_body_acceleration: [1.0, 1.0, 1.0]
   outpost_yaw_acceleration: 0.01
   radius_noise: 1.0e-7
@@ -167,6 +169,11 @@ ieskf:
   sigma_along_by_length: 0.0
   sigma_perp_by_length: 0.0
   sigma_min_px: 6.32
+  # 每个端点的先验二维 NIS 超过 9.21 时逐渐降低权重，收敛前不启用。
+  # 只放大异常端点的 R（方差），不丢整块板；由异常角点派生的深度差同步降权。
+  robust_corners: true
+  corner_nis_gate: 9.21
+  corner_max_variance_scale: 25.0
   # 侧边灯条只有几何关联、没有类别证据，sigma 再乘上它。它只是整车的辅助约束：
   # 1.4 时 p90 砍得最多但 p50 在 2.9 rad/s 小陀螺上 +18%；3 时 p50 回到 off 水平、
   # p90 仍平均 -7.5%。扫描见 replay_ab_log。

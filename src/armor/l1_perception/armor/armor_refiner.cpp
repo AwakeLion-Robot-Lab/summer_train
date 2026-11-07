@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <list>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -20,37 +19,34 @@ float distance(const cv::Point2f& left, const cv::Point2f& right) noexcept
   return static_cast<float>(cv::norm(left - right));
 }
 
-// 字段与构造方式逐项对应 SP-Vision auto_aim::Lightbar。
 struct Lightbar
 {
   cv::Point2f center{};
-  cv::Point2f top{};
-  cv::Point2f bottom{};
+  cv::Point2f axis{};
   double length{0.0};
   double width{0.0};
   double ratio{0.0};
-  double angle_error{0.0};
 };
 
 Lightbar makeLightbar(const cv::RotatedRect& rotated_rect)
 {
   std::array<cv::Point2f, 4> corners{};
   rotated_rect.points(corners.data());
-  std::sort(corners.begin(), corners.end(),
-            [](const cv::Point2f& left, const cv::Point2f& right) { return left.y < right.y; });
+  const cv::Point2f edge0 = corners[1] - corners[0];
+  const cv::Point2f edge1 = corners[2] - corners[1];
+  const double length0 = cv::norm(edge0);
+  const double length1 = cv::norm(edge1);
 
   Lightbar lightbar;
   lightbar.center = rotated_rect.center;
-  lightbar.top = (corners[0] + corners[1]) * 0.5F;
-  lightbar.bottom = (corners[2] + corners[3]) * 0.5F;
-
-  const cv::Point2f top_to_bottom = lightbar.bottom - lightbar.top;
-  lightbar.width = cv::norm(corners[0] - corners[1]);
-  lightbar.length = cv::norm(top_to_bottom);
+  lightbar.length = std::max(length0, length1);
+  lightbar.width = std::min(length0, length1);
   lightbar.ratio = lightbar.width > 0.0 ? lightbar.length / lightbar.width : 0.0;
-
-  const double angle = std::atan2(top_to_bottom.y, top_to_bottom.x);
-  lightbar.angle_error = std::abs(angle - CV_PI * 0.5);
+  if (lightbar.length > 0.0) {
+    // 只取长轴；轴的正负由各侧网络端点决定，不按图像 y 或矩形 angle 字段定。
+    lightbar.axis = (length0 >= length1 ? edge0 : edge1) /
+                   static_cast<float>(lightbar.length);
+  }
   return lightbar;
 }
 
@@ -60,6 +56,34 @@ bool finiteCorners(const std::array<cv::Point2f, 4>& corners) noexcept
     return std::isfinite(point.x) && std::isfinite(point.y);
   });
 }
+
+// 严格凸四边形返回绕向；交叉、凹陷或退化返回 0。
+int quadWinding(const std::array<cv::Point2f, 4>& corners) noexcept
+{
+  int winding = 0;
+  for (std::size_t index = 0; index < corners.size(); ++index) {
+    const cv::Point2f a = corners[(index + 1) % 4] - corners[index];
+    const cv::Point2f b = corners[(index + 2) % 4] - corners[(index + 1) % 4];
+    const double cross = static_cast<double>(a.x) * b.y - static_cast<double>(a.y) * b.x;
+    if (!std::isfinite(cross) || std::abs(cross) < 1e-4) {
+      return 0;
+    }
+    const int sign = cross > 0 ? 1 : -1;
+    if (winding != 0 && winding != sign) {
+      return 0;
+    }
+    winding = sign;
+  }
+  return winding;
+}
+
+struct LightMatch
+{
+  std::size_t contour_id;
+  cv::Point2f top;
+  cv::Point2f bottom;
+  float endpoint_distance;
+};
 
 }  // namespace
 
@@ -77,9 +101,13 @@ bool ArmorRefiner::detect(Armor& armor, const cv::Mat& bgr_img) const
 
 bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord* record) const
 {
-  // SP-Vision 的点顺序为 TL、TR、BR、BL，newvision::Armor::corners 使用相同约定。
+  // TL、TR、BR、BL 表示网络角点身份；大倾角时不一定是图像的上下左右。
   const std::array<cv::Point2f, 4> input_corners = armor.corners;
   if (!finiteCorners(input_corners)) {
+    return false;
+  }
+  const int input_winding = quadWinding(input_corners);
+  if (input_winding == 0) {
     return false;
   }
 
@@ -87,10 +115,12 @@ bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord*
   const cv::Point2f tr = input_corners[1];
   const cv::Point2f br = input_corners[2];
   const cv::Point2f bl = input_corners[3];
+  const float left_length = distance(tl, bl);
+  const float right_length = distance(tr, br);
+  const cv::Point2f left_direction = (bl - tl) / left_length;
+  const cv::Point2f right_direction = (br - tr) / right_length;
 
   if (record != nullptr) {
-    const float left_length = distance(tl, bl);
-    const float right_length = distance(tr, br);
     record->lightbar_length = 0.5F * (left_length + right_length);
     const cv::Point2f left_center = (tl + bl) * 0.5F;
     const cv::Point2f right_center = (tr + br) * 0.5F;
@@ -136,15 +166,14 @@ bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord*
   std::vector<std::vector<cv::Point>> contours;
   cv::findContours(binary_img, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
 
-  const double max_angle_error = static_cast<double>(config_.max_angle_error_deg) / 57.3;
-  std::list<Lightbar> lightbars;
+  std::vector<Lightbar> lightbars;
+  lightbars.reserve(contours.size());
   for (const auto& contour : contours) {
     const Lightbar lightbar = makeLightbar(cv::minAreaRect(contour));
-    const bool angle_ok = lightbar.angle_error < max_angle_error;
     const bool ratio_ok =
         lightbar.ratio > config_.min_lightbar_ratio && lightbar.ratio < config_.max_lightbar_ratio;
     const bool length_ok = lightbar.length > config_.min_lightbar_length_px;
-    if (angle_ok && ratio_ok && length_ok) {
+    if (ratio_ok && length_ok) {
       lightbars.emplace_back(lightbar);
     }
   }
@@ -156,52 +185,68 @@ bool ArmorRefiner::detectOne(Armor& armor, const cv::Mat& bgr_img, RefineRecord*
     return false;
   }
 
-  lightbars.sort([](const Lightbar& left, const Lightbar& right) {
-    return left.center.x < right.center.x;
-  });
-
   const cv::Point2f roi_offset(static_cast<float>(bounding_box.x),
                                static_cast<float>(bounding_box.y));
-  const Lightbar* closest_left_lightbar = nullptr;
-  const Lightbar* closest_right_lightbar = nullptr;
-  float min_distance_tl_bl = std::numeric_limits<float>::max();
-  float min_distance_br_tr = std::numeric_limits<float>::max();
-  for (const Lightbar& lightbar : lightbars) {
-    const float distance_tl_bl = static_cast<float>(
-      cv::norm(tl - (lightbar.top + roi_offset)) +
-      cv::norm(bl - (lightbar.bottom + roi_offset)));
-    if (distance_tl_bl < min_distance_tl_bl) {
-      min_distance_tl_bl = distance_tl_bl;
-      closest_left_lightbar = &lightbar;
+  const double min_direction_dot =
+    std::cos(static_cast<double>(config_.max_angle_error_deg) * CV_PI / 180.0);
+  std::vector<LightMatch> left_matches;
+  std::vector<LightMatch> right_matches;
+  const auto match = [&](std::size_t id, cv::Point2f direction, cv::Point2f top,
+                          cv::Point2f bottom, std::vector<LightMatch>& matches) {
+    const auto& lightbar = lightbars[id];
+    const float dot = lightbar.axis.dot(direction);
+    if (std::abs(dot) < min_direction_dot) {
+      return;
     }
-
-    const float distance_br_tr = static_cast<float>(
-      cv::norm(br - (lightbar.bottom + roi_offset)) +
-      cv::norm(tr - (lightbar.top + roi_offset)));
-    if (distance_br_tr < min_distance_br_tr) {
-      min_distance_br_tr = distance_br_tr;
-      closest_right_lightbar = &lightbar;
-    }
+    const cv::Point2f axis = dot < 0 ? -lightbar.axis : lightbar.axis;
+    const cv::Point2f half = axis * static_cast<float>(lightbar.length * 0.5);
+    const cv::Point2f found_top = lightbar.center + roi_offset - half;
+    const cv::Point2f found_bottom = lightbar.center + roi_offset + half;
+    matches.push_back({id, found_top, found_bottom,
+                       distance(top, found_top) + distance(bottom, found_bottom)});
+  };
+  for (std::size_t id = 0; id < lightbars.size(); ++id) {
+    match(id, left_direction, tl, bl, left_matches);
+    match(id, right_direction, tr, br, right_matches);
   }
 
   if (record != nullptr) {
-    record->left_found = closest_left_lightbar != nullptr;
-    record->right_found = closest_right_lightbar != nullptr;
+    record->left_found = !left_matches.empty();
+    record->right_found = !right_matches.empty();
   }
 
-  const float endpoint_distance = min_distance_tl_bl + min_distance_br_tr;
-  if (closest_left_lightbar == nullptr || closest_right_lightbar == nullptr ||
-      endpoint_distance >= config_.max_endpoint_distance_px) {
+  // 联合选出总端点偏差最小的有效配对，不能让两侧各自选中同一根亮条。
+  std::array<cv::Point2f, 4> refined_corners{};
+  float best_distance = std::numeric_limits<float>::max();
+  float min_endpoint_distance = std::numeric_limits<float>::max();
+  bool found_pair = false;
+  for (const auto& left : left_matches) {
+    for (const auto& right : right_matches) {
+      if (left.contour_id == right.contour_id) {
+        continue;
+      }
+      const float endpoint_distance = left.endpoint_distance + right.endpoint_distance;
+      min_endpoint_distance = std::min(min_endpoint_distance, endpoint_distance);
+      if (endpoint_distance >= config_.max_endpoint_distance_px ||
+          endpoint_distance >= best_distance) {
+        continue;
+      }
+      const std::array<cv::Point2f, 4> corners{left.top, right.top, right.bottom, left.bottom};
+      if (quadWinding(corners) != input_winding) {
+        continue;
+      }
+      refined_corners = corners;
+      best_distance = endpoint_distance;
+      found_pair = true;
+    }
+  }
+  if (!found_pair) {
     if (record != nullptr) {
       record->shift_rejected = true;
-      record->corner_shift = endpoint_distance;
+      record->corner_shift = min_endpoint_distance;
     }
     return false;
   }
-
-  const std::array<cv::Point2f, 4> refined_corners{
-      closest_left_lightbar->top + roi_offset, closest_right_lightbar->top + roi_offset,
-      closest_right_lightbar->bottom + roi_offset, closest_left_lightbar->bottom + roi_offset};
 
   float max_shift = 0.0F;
   for (std::size_t index = 0; index < refined_corners.size(); ++index) {

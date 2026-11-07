@@ -48,6 +48,10 @@ struct EskfTargetConfig
   double sigma_along_by_length{0.0};
   double sigma_perp_by_length{0.0};
   double sigma_min_px{6.32};
+  // 先验二维端点 NIS 超门时增大该端点 R；收敛前只记录。
+  bool robust_corners{false};
+  double corner_nis_gate{9.21};
+  double corner_max_variance_scale{25.0};
 
 
   // 独立灯条的两个 sigma 再乘上它。这些灯条没配成完整板、只靠几何关联，
@@ -165,7 +169,7 @@ public:
   Eigen::VectorXd stateAt(TimePoint timestamp) const;
 
   // 把一根灯条的上下端点做成一个四维观测，sigma 按本目标的配置算。关联门限和
-  // 更新共用它，门限看到的 S 就是更新时真正用的。
+  // 更新共用名义 R；异常降权只在关联完成后施加，不放宽关联门限。
   VehicleObs lightObs(
     const ObsContext & ctx, const cv::Point2f & top, const cv::Point2f & bottom, int id,
     bool is_left, bool isolated) const;
@@ -209,6 +213,20 @@ public:
   // 端点创新按物理通道的分解，含义见 LightResidual。
   const LightResidual & lastLightResidual() const noexcept { return last_light_residual_; }
 
+  struct CornerInnovation {
+    int armor_id;
+    bool is_left, isolated;
+    int endpoint;
+    double du, dv, nis, variance_scale;
+  };
+  struct InnovationDiagnostics {
+    TimePoint timestamp{};
+    int armors{0}, isolated_lights{0};
+    double depth_variance_scale{1.0};
+    std::vector<CornerInnovation> corners;
+  };
+  const InnovationDiagnostics& lastInnovation() const noexcept { return last_innovation_; }
+
   // --- 身份与状态标志 -----------------------------------------------------
 
   ArmorName name{ArmorName::Unknown};
@@ -242,6 +260,7 @@ private:
   double last_nis_{0.0};
   int last_nis_dof_{0};
   LightResidual last_light_residual_{};
+  InnovationDiagnostics last_innovation_{};
   // 前哨转向投票器。非前哨目标上它一直停在 Collecting，不影响推进。
   VehicleModel::Voter voter_{};
 };

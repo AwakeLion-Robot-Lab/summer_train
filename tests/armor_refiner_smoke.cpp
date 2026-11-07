@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -123,6 +124,128 @@ void testDisabledKeepsInput()
   require(armor.corners == before, "a disabled refiner must keep the input unchanged");
 }
 
+cv::Point2f direction(float degrees)
+{
+  const float angle = degrees * static_cast<float>(CV_PI / 180.0);
+  return {std::sin(angle), std::cos(angle)};
+}
+
+void drawOrientedLightbar(
+  cv::Mat& image, cv::Point2f center, float length, float width, float degrees)
+{
+  const auto along = direction(degrees) * (length * 0.5F);
+  const auto across = cv::Point2f(direction(degrees).y, -direction(degrees).x) * (width * 0.5F);
+  std::vector<cv::Point> polygon;
+  for (const auto point : {center - along - across, center - along + across,
+                           center + along + across, center + along - across}) {
+    polygon.emplace_back(cvRound(point.x), cvRound(point.y));
+  }
+  cv::fillConvexPoly(image, polygon, kBrightBar);
+}
+
+struct TiltedScene {
+  cv::Mat image{kImageHeight, kImageWidth, CV_8UC3, cv::Scalar::all(0)};
+  L2Perception::Armor armor;
+  std::array<cv::Point2f, 4> endpoints;
+};
+
+TiltedScene makeTiltedScene(float roll, float left_offset = 0, float right_offset = 0)
+{
+  TiltedScene scene;
+  const cv::Point2f across(direction(roll).y, -direction(roll).x);
+  const cv::Point2f left = cv::Point2f(320, 240) - across * 45.0F;
+  const cv::Point2f right = cv::Point2f(320, 240) + across * 45.0F;
+  const auto left_half = direction(roll + left_offset) * 32.0F;
+  const auto right_half = direction(roll + right_offset) * 32.0F;
+  scene.endpoints = {left - left_half, right - right_half,
+                     right + right_half, left + left_half};
+  scene.armor = makeArmor(275, 365, 240, 64);
+  for (std::size_t index = 0; index < scene.endpoints.size(); ++index) {
+    scene.armor.corners[index] = scene.endpoints[index] + cv::Point2f(1.25F, -0.75F);
+  }
+  drawOrientedLightbar(scene.image, left, 64, 6, roll + left_offset);
+  drawOrientedLightbar(scene.image, right, 64, 6, roll + right_offset);
+  return scene;
+}
+
+void testTiltedEndpointsKeepNetworkIdentity()
+{
+  const L2Perception::ArmorRefiner refiner;
+  for (const float roll : {-180.0F, -100.0F, -90.0F, -88.0F, -60.0F, -35.0F,
+                           0.0F, 35.0F, 60.0F, 88.0F, 90.0F, 100.0F, 180.0F}) {
+    auto scene = makeTiltedScene(roll);
+    const auto before = scene.armor;
+    require(refiner.detect(scene.armor, scene.image),
+            "matching tilted lights must refine at roll " + std::to_string(roll));
+    for (std::size_t index = 0; index < scene.endpoints.size(); ++index) {
+      require(cv::norm(scene.armor.corners[index] - scene.endpoints[index]) < 2.0,
+              "long-axis endpoints changed network corner identity at roll " +
+              std::to_string(roll));
+    }
+    require(scene.armor.center == before.center && scene.armor.class_id == before.class_id &&
+            scene.armor.color == before.color && scene.armor.confidence == before.confidence,
+            "tilted refinement must change only corners");
+  }
+}
+
+void testEachSideUsesItsOwnDirection()
+{
+  auto scene = makeTiltedScene(55, -12, 12);
+  L2Perception::ArmorRefinerConfig config;
+  config.max_angle_error_deg = 4.0F;
+  const L2Perception::ArmorRefiner refiner(config);
+  require(refiner.detect(scene.armor, scene.image),
+          "perspective-skewed sides must use independent network directions");
+  for (std::size_t index = 0; index < scene.endpoints.size(); ++index) {
+    require(cv::norm(scene.armor.corners[index] - scene.endpoints[index]) < 2.0,
+            "perspective refinement must preserve each side's endpoints");
+  }
+}
+
+void testDirectionMismatchKeepsNetworkResult()
+{
+  cv::Mat image(kImageHeight, kImageWidth, CV_8UC3, cv::Scalar::all(0));
+  drawOrientedLightbar(image, {300, 240}, 60, 6, 35);
+  drawOrientedLightbar(image, {380, 240}, 60, 6, 0);
+  auto armor = makeArmor(300, 380, 240, 60, 0);
+  const auto before = armor.corners;
+  L2Perception::ArmorRefinerConfig config;
+  config.max_angle_error_deg = 10.0F;
+  // 单独验证方向门：端点距离门放宽后也不能采纳方向不符的亮条。
+  config.max_endpoint_distance_px = 100.0F;
+  const L2Perception::ArmorRefiner refiner(config);
+  require(!refiner.detect(armor, image) && armor.corners == before,
+          "a direction mismatch on either side must keep all network corners");
+}
+
+void testOneContourCannotServeBothSides()
+{
+  cv::Mat image(kImageHeight, kImageWidth, CV_8UC3, cv::Scalar::all(0));
+  drawOrientedLightbar(image, {340, 240}, 60, 4, 0);
+  drawOrientedLightbar(image, {340, 292}, 24, 4, 90);
+  auto armor = makeArmor(300, 380, 240, 60, 0);
+  const auto before = armor.corners;
+  L2Perception::ArmorRefinerConfig config;
+  config.max_endpoint_distance_px = 300.0F;
+  const L2Perception::ArmorRefiner refiner(config);
+  require(!refiner.detect(armor, image) && armor.corners == before,
+          "a shared best contour must not collapse both sides onto the same light");
+}
+
+void testInvalidNetworkGeometryKeepsInput()
+{
+  const L2Perception::ArmorRefiner refiner;
+  for (int kind = 0; kind < 3; ++kind) {
+    auto scene = makeTiltedScene(60);
+    if (kind == 0) scene.armor.corners[3] = scene.armor.corners[0];
+    if (kind == 1) std::swap(scene.armor.corners[2], scene.armor.corners[3]);
+    if (kind == 2) scene.armor.corners[0].x = std::numeric_limits<float>::infinity();
+    const auto before = scene.armor.corners;
+    require(!refiner.detect(scene.armor, scene.image) && scene.armor.corners == before,
+            "invalid network geometry must not be refined");
+  }
+}
+
 class Backend final : public L2Perception::IInferenceBackend {
 public:
   bool fail{false};
@@ -190,6 +313,11 @@ int main()
     testFailureKeepsNetworkResult();
     testBatchCompatibilityInterface();
     testDisabledKeepsInput();
+    testTiltedEndpointsKeepNetworkIdentity();
+    testEachSideUsesItsOwnDirection();
+    testDirectionMismatchKeepsNetworkResult();
+    testOneContourCannotServeBothSides();
+    testInvalidNetworkGeometryKeepsInput();
     testDetectorRefinesInOriginalCoordinates();
   } catch (const std::exception& error) {
     std::printf("armor refiner smoke failed: %s\n", error.what());
