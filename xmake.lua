@@ -85,6 +85,14 @@ option("cuda_root")
 option_end()
 
 if has_config("use_openvino") then
+    target("armor_depth_export")
+        set_kind("binary")
+        set_default(false)
+        set_rundir("$(projectdir)")
+        add_files("tools/armor_dataset/export_depth.cpp")
+        add_deps("newvision")
+    target_end()
+
     target("rune_detect")
         set_kind("binary")
         set_default(false)

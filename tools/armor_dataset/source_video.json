@@ -1,0 +1,24 @@
+{
+  "description": "Manually reviewed glyphs from the supplied screen recording. Frame indices are zero-based. No physical screen boundary or scale is established.",
+  "video_sha256": "eb863922fc673a218ed13b14b7442b3ca81e28f15a6242b02c263ac2e6ee50b5",
+  "fps": 30.0,
+  "width": 576,
+  "height": 1280,
+  "roi_xyxy": [190, 400, 390, 660],
+  "samples": [
+    {"digit": 1, "color": "red", "frames": [110, 120, 130]},
+    {"digit": 2, "color": "red", "frames": [144, 148, 152]},
+    {"digit": 3, "color": "red", "frames": [158, 161, 164]},
+    {"digit": 4, "color": "red", "frames": [168, 169, 170]},
+    {"digit": 5, "color": "red", "frames": [174, 175, 176]},
+    {"digit": 6, "color": "red", "frames": [178]},
+    {"digit": 7, "color": "red", "frames": [184, 190, 196]},
+    {"digit": 1, "color": "blue", "frames": [212, 218, 224]},
+    {"digit": 2, "color": "blue", "frames": [231, 236, 240]},
+    {"digit": 3, "color": "blue", "frames": [246, 250, 253]},
+    {"digit": 4, "color": "blue", "frames": [256, 258, 260]},
+    {"digit": 5, "color": "blue", "frames": [262, 263]},
+    {"digit": 6, "color": "blue", "frames": [265, 266]},
+    {"digit": 7, "color": "blue", "frames": [274, 280, 286]}
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "geometry_status": "hypothesis_not_measured",
+  "panel_type": "small",
+  "panel_width_m": 0.135,
+  "panel_height_m": 0.056,
+  "geometry_source": {
+    "path": "config/auto_aim.yaml",
+    "sha256": "88a6004e92b61d6b156030caf16f70918ab17ad36753de37decc38a773d74b48",
+    "fields": {"armor.small_width_m": 0.135, "armor.height_m": 0.056},
+    "meaning": "Existing project PnP feature-point span; not a verified measurement of the new screen outline.",
+    "selection": "User requested existing dimensions and explicitly excluded large panels."
+  },
+  "digit_height_ratio": [0.62, 0.82],
+  "digit_width_scale": [0.90, 1.08],
+  "digit_center_jitter_ratio": 0.035,
+  "led_rows": {"train": [32, 40], "val": [32, 40], "test": [48]},
+  "led_radius_pitch_ratio": [0.29, 0.43],
+  "yaw_deg": [-55.0, 55.0],
+  "pitch_deg": [-25.0, 25.0],
+  "roll_deg": [-20.0, 20.0],
+  "focal_length_over_image_width": [1.05, 1.60],
+  "requested_panel_height_px": [40.0, 165.0],
+  "assumptions": [
+    "Only the existing small-armor PnP dimensions, 135 x 56 mm, are used. No large panels are generated.",
+    "Applying the old feature-point span to the new screen is a modeling assumption, not a verified outer-screen measurement.",
+    "Glyph scale/placement, LED grid and surface appearance remain unverified hypotheses.",
+    "Four corners are projections of a plane with the existing small-armor geometry.",
+    "Glyph silhouettes are reconstructed from the supplied video; all LED radiance pixels are newly rendered.",
+    "Synthetic test holds out a 48-row grid, but shares glyph silhouettes and is not a real-world evaluation."
+  ]
+}

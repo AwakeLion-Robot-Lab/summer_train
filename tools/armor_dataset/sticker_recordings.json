@@ -1,0 +1,13 @@
+{
+  "calibration": "config/camera_config.yaml",
+  "config": "config/auto_aim.yaml",
+  "model": "model/armor_model/yolov5.xml",
+  "recordings": [
+    {"video": "video/3m_high.avi", "sequence": "3m_high", "split": "train"},
+    {"video": "video/3m_low.avi", "sequence": "3m_low", "split": "train"},
+    {"video": "video/3m_mid.avi", "sequence": "3m_mid", "split": "train"},
+    {"video": "video/3m_run_mid.avi", "sequence": "3m_run_mid", "split": "val"},
+    {"video": "video/3m_run_fast.avi", "sequence": "3m_run_fast", "split": "test"}
+  ],
+  "notes": "Old printed stickers only. These recordings share a scene and are concentrated around 3 m. Calibration must belong to the actual recordings; matching image size alone does not prove this. No LED-screen or simulated samples are included."
+}
