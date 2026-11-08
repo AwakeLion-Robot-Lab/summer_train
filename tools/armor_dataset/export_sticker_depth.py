@@ -124,7 +124,9 @@ def export(args):
     generator = root/"generator"
     generator.mkdir()
     for name in ("export_sticker_depth.py", "depth_data.py", "train_sticker_depth.py",
-                 "sticker_depth_model.py", "predict_sticker_depth.py", "export_depth.cpp", "depth_teacher.hpp", "STICKER_DEPTH.md"):
+                 "sticker_depth_model.py", "predict_sticker_depth.py", "temporal_depth.py",
+                 "depth_filter_config.json", "evaluate_temporal_depth.py", "test_temporal_depth.py",
+                 "export_depth.cpp", "depth_teacher.hpp", "STICKER_DEPTH.md"):
         shutil.copyfile(Path(__file__).with_name(name), generator/name)
     shutil.copyfile(args.recordings, generator/"sticker_recordings.json")
     shutil.copyfile(Path(__file__).with_name("STICKER_DEPTH.md"), root/"README.md")

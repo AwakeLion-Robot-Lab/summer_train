@@ -1,0 +1,10 @@
+{
+  "process_noise_m2_s3": 0.5,
+  "measurement_std_m": 0.04,
+  "measurement_relative_std": 0.015,
+  "initial_velocity_std_m_s": 1.0,
+  "gate_sigma": 4.0,
+  "max_gap_s": 0.25,
+  "max_prediction_s": 0.10,
+  "outlier_reset_count": 3
+}

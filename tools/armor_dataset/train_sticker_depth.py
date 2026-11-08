@@ -153,7 +153,8 @@ def train(args):
         if not torch.allclose(eager,loaded):raise ValueError("Saved inference model disagrees with training model")
     (output/"history.json").write_text(json.dumps(history,indent=2)+"\n")
     (output/"metrics.json").write_text(json.dumps(report,indent=2)+"\n")
-    for name in ("train_sticker_depth.py","sticker_depth_model.py","depth_data.py","predict_sticker_depth.py","STICKER_DEPTH.md"):
+    for name in ("train_sticker_depth.py","sticker_depth_model.py","depth_data.py","predict_sticker_depth.py",
+                 "temporal_depth.py","depth_filter_config.json","STICKER_DEPTH.md"):
         shutil.copyfile(Path(__file__).with_name(name),output/name)
     print(json.dumps(report,indent=2),flush=True)
 

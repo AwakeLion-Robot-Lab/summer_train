@@ -102,3 +102,85 @@ out/armor_depth_env/bin/python tools/armor_dataset/predict_sticker_depth.py \
 推理入口只读原图、数字框和相机内参，不调用灯条、PnP 或跟踪器。
 本轮验证裁剪由教师引导得到，尚未验证学生数字检测器的端到端定位表现。
 没有把模型接入现有实机或替换当前测距；模型是否可用由独立实测距离数据决定。
+
+## 连续帧时序滤波
+
+`StickerDepthPredictor` 会缓存模型，并可为每个数字实例维护独立的距离/径向速度 Kalman 状态。
+滤波作用于验证集选择的原始距离结果，目前是尺寸基线；网络估计仍单独保留。
+单图 `infer(...)` 和原来的 `--image` 用法保持无状态，不对单张图伪造平滑效果。
+
+```python
+from predict_sticker_depth import StickerDepthPredictor
+from temporal_depth import DepthFilterConfig
+
+predictor = StickerDepthPredictor(model_directory, DepthFilterConfig())
+result = predictor.predict(
+    frame, digit_box, camera_matrix,
+    timestamp_s=capture_time, target_id=digit_track_id,
+    sequence_id="camera_1",
+)
+depth = result["depth_z_m"]  # 没有新鲜有效估计时为 None
+# 本帧未检出该目标：
+missing = predictor.missing(digit_track_id, next_capture_time, "camera_1")
+```
+
+`target_id` 必须是数字检测/跟踪器给出的**实例编号**，不能直接用数字类别“2”。
+多个同号装甲板使用不同实例编号。更换录像或相机时使用新的 `sequence_id` 或调用 `reset()`。
+同一实例的相机内参或图像尺寸发生变化会重置状态。
+
+默认配置位于 `depth_filter_config.json`：
+
+- 用捕获时间差计算状态转移，支持不均匀帧间隔，不硬编码 FPS。
+- 4σ 创新门抑制孤立跳点；连续三个一致的新距离会重新初始化，避免真实变化后一直停在旧值。
+- 连续无有效观测最多预测 100 ms，之后输出 `None`；超过 250 ms 后的新观测重新初始化。
+- 时间戳重复或回退会重置该实例。短时预测不是新的检测结果。
+- 过程噪声、测量噪声和时间阈值都可配置；输出的 `depth_std_m` 是模型内的不确定度，未经实测校准。
+
+JSONL 流式命令行输入示例（图片相对路径以 JSONL 所在目录为基准）：
+
+```json
+{"image":"frame_000.png","bbox":[580,410,620,480],"timestamp_s":0.00,"target_id":"plate_A"}
+{"image":"frame_001.png","bbox":[581,410,621,480],"timestamp_s":0.02,"target_id":"plate_A"}
+{"timestamp_s":0.04,"target_id":"plate_A","missing":true}
+```
+
+```bash
+out/armor_depth_env/bin/python tools/armor_dataset/predict_sticker_depth.py \
+  out/armor_sticker_depth_model_v2 --stream /path/to/frames.jsonl \
+  --camera config/camera_config.yaml --output out/depth_stream.jsonl
+```
+
+流式模式默认开启滤波，`--no-filter` 可关闭，`--filter-config` 可指定参数。
+输出包括原始/滤波后距离、观测是否被接收、速度、估计新鲜度、重置原因与计算耗时。
+可选输入 `available_time_s` 与 `timestamp_s` 必须属于同一时钟，输出二者之差作为观测传递年龄。
+该年龄、CPU 计算时间与滤波引起的动态滞后含义不同。
+
+## 滤波评估与延迟
+
+```bash
+python3 tools/armor_dataset/test_temporal_depth.py
+python3 tools/armor_dataset/evaluate_temporal_depth.py \
+  --dataset out/armor_sticker_depth_v2 --model out/armor_sticker_depth_model_v2 \
+  --timestamps paired --output out/armor_depth_temporal_v2
+```
+
+现有 AVI 标称 90 FPS，但对应 `.txt` 的捕获时间戳间隔约为 20 ms。
+评估优先读取同名配套时间戳并核对递增性、帧号与长度，`--timestamps paired` 要求其存在；
+`auto` 在没有配套文本时退回标称时间并标注来源，`nominal` 明确只用标称时间。
+直接按 90 FPS 解释现有采样会误算速度和延迟。
+
+回放不调用灯条或 PnP：原始估计来自学生模型保存的输出，或数字框/相机参数计算的尺寸基线。
+PnP 标签只参与事后误差统计，不参与状态更新、异常门或目标关联。
+因为数据没有稳定实例 ID，离线评估用数字框位置和大小做近似关联；这一关联不是实例真值，
+也不等于已验证完整学生检测器。每段录像独立重置，绝不按数字类别混合多块板。
+
+`report.json` 分开记录：
+
+- 原始与滤波后相对 PnP 伪标签的误差，以及有效输出数量，不能据此宣称真实距离精度提升。
+- 同一近似轨迹中相邻有效观测的变化 RMS，包含真实运动，不能直接等同于测量噪声。
+- 滤波 CPU 时间，不能当作传感器到输出的总延迟。
+- 30 FPS 已知真值合成序列的静止噪声、0.5 Hz 运动拟合滞后和真实距离阶跃的半响应延迟。
+  合成动态滞后只代表相应运动与配置，不是实机固定延迟承诺。
+
+同时保存逐观测 `predictions.jsonl`、合成轨迹；安装 matplotlib 时输出 `synthetic_response.png`。
+滤波参数不依据测试集调优。这一层用于抑制抖动，不消除已有标定或尺寸系统偏差。
