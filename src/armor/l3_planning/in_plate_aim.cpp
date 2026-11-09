@@ -101,7 +101,7 @@ bool validInPlateAimConfig(const InPlateAimConfig& c) noexcept
     && nonnegative(c.direction_exit_rate) && positive(c.direction_enter_rate)
     && c.direction_enter_rate > c.direction_exit_rate && c.warmup_frames > 0
     && (c.mode == InPlateAimMode::Center || c.mode == InPlateAimMode::FixedDiagonal
-        || c.mode == InPlateAimMode::Independent);
+        || c.mode == InPlateAimMode::Independent || c.mode == InPlateAimMode::Mpc);
 }
 
 InPlateAimPoint queryInPlateAim(
@@ -133,8 +133,11 @@ InPlateAimPoint queryInPlateAim(
   result.direction = direction;
   if (!config.enable || config.mode == InPlateAimMode::Center
       || state.robot_id != armor.robot_id || state.stable_frames < config.warmup_frames) {
+    if (config.mode == InPlateAimMode::Mpc) result.limits.setZero();
     return result;
   }
+  // MPC 自己选择板内位置。单点候选和失败回退使用板心，不运行启发式运动。
+  if (config.mode == InPlateAimMode::Mpc) return result;
 
   Eigen::Vector2d desired = Eigen::Vector2d::Zero();
   if (direction != 0) {

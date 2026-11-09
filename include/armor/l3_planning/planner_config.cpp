@@ -198,12 +198,14 @@ PlannerTuning loadPlannerTuning(const std::string& config_path)
     if (mode == "center") aim.mode = InPlateAimMode::Center;
     else if (mode == "fixed_diagonal") aim.mode = InPlateAimMode::FixedDiagonal;
     else if (mode == "independent") aim.mode = InPlateAimMode::Independent;
+    else if (mode == "mpc") aim.mode = InPlateAimMode::Mpc;
     else throw std::invalid_argument("unknown in_plate_aim.mode: " + mode);
   }
 
   const YAML::Node mpc = root["mpc"];
   readOptional(mpc, "enable", config.enable_mpc);
   readOptional(mpc, "max_iterations", config.mpc_max_iterations);
+  readOptional(mpc, "region_max_iterations", config.mpc_region_max_iterations);
   readOptional(mpc, "admm_rho", config.mpc_admm_rho);
   readOptional(mpc, "primal_tolerance", config.mpc_primal_tolerance);
   readOptional(mpc, "dual_tolerance", config.mpc_dual_tolerance);

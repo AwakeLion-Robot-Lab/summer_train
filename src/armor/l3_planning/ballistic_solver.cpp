@@ -17,6 +17,7 @@ struct Trajectory {
   double pitch{0.0};    // 最终选中的弹道俯仰角，rad
   double fly_time{0.0}; // 弹丸飞行时间，s
   bool valid{false};    // 目标是否可达且数值结果有效
+  bool used_fallback{false};
 };
 
 // 求解无空气阻力条件下的弹道。优先返回低弹道；低弹道数值校验失败时，
@@ -111,7 +112,7 @@ struct Trajectory {
 // 对给定 pitch，可由第一式解析得到 t，再对第二式的高度残差求根。
 // 高度残差在允许角度区间内先上升后下降；先用黄金分割找到最高点，
 // 再在左半区二分求低弹道。低弹道校验失败时，在右半区求高弹道。
-[[nodiscard]] Trajectory solveLinearDragTrajectory(
+[[nodiscard]] Trajectory solveLinearDragTrajectoryReference(
   double distance,
   double height,
   double bullet_speed,
@@ -278,6 +279,83 @@ struct Trajectory {
   return make_trajectory(0.5 * (root_left + root_right));
 }
 
+// 与原高度残差使用同一物理模型，解析求峰值后在低弹道区间内作受保护 Newton。
+// 常规解不执行全区间搜索；相切、病态或未收敛时完整回退旧求解器。
+[[nodiscard]] Trajectory solveLinearDragTrajectory(
+  double distance, double height, double speed, double gravity, double k,
+  const std::optional<double>& initial_pitch)
+{
+  const auto fallback = [&]() {
+    auto result = solveLinearDragTrajectoryReference(distance, height, speed, gravity, k);
+    result.used_fallback = true;
+    return result;
+  };
+  if (!std::isfinite(distance) || !std::isfinite(height) || !std::isfinite(speed)
+      || !std::isfinite(gravity) || !std::isfinite(k) || distance <= 0.0
+      || speed <= 0.0 || gravity <= 0.0 || k <= 0.0) return {};
+  const double ratio = k * distance / speed;
+  if (!std::isfinite(ratio) || ratio <= 0.0 || ratio >= 1.0) return {};
+  const double maximum_pitch = std::acos(ratio);
+  if (maximum_pitch <= kAngleBoundaryMargin) return {};
+  const double lower_pitch = -maximum_pitch + kAngleBoundaryMargin;
+  // F'(theta)=0 等价于 cos(theta)-a*sin(theta)=ratio，a=g*r/v^2。
+  // 用半角有理式避免峰值接近 0 时两个反三角函数相减损失精度。
+  const double a = gravity * distance / (speed * speed);
+  const double peak = 2.0 * std::atan((1.0 - ratio)
+    / (a + std::hypot(a, std::sqrt((1.0 - ratio) * (1.0 + ratio)))));
+  if (!std::isfinite(peak) || peak <= lower_pitch || peak >= maximum_pitch) return fallback();
+  struct Evaluation { double residual, derivative, time; };
+  const auto evaluate = [&](double pitch) -> Evaluation {
+    const double cosine = std::cos(pitch);
+    const double horizontal_ratio = ratio / cosine;
+    if (!std::isfinite(horizontal_ratio) || horizontal_ratio <= 0.0 || horizontal_ratio >= 1.0)
+      return {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0};
+    const double time = -std::log1p(-horizontal_ratio) / k;
+    const double attenuation = -std::expm1(-k * time) / k;
+    const double x = k * time;
+    const double drop_numerator = std::abs(x) < 1e-3
+      ? x * x * (0.5 + x * (-1.0 / 6.0 + x * (1.0 / 24.0 - x / 120.0)))
+      : x + std::expm1(-x);
+    const double sine = std::sin(pitch);
+    const double residual = speed * sine * attenuation - gravity * drop_numerator / (k * k) - height;
+    const double derivative = distance / (cosine * cosine)
+      - gravity * attenuation * attenuation * (sine / cosine) / (1.0 - horizontal_ratio);
+    return {residual, derivative, time};
+  };
+  const double tolerance = 1e-9 * std::max({1.0, distance, std::abs(height)});
+  const auto peak_value = evaluate(peak);
+  // 切点附近优先保留旧实现的可达性及重根判定，而非接受微小残差的任意近似根。
+  if (!std::isfinite(peak_value.residual) || peak_value.residual <= 100.0 * tolerance) return fallback();
+
+  double left = lower_pitch, right = peak;
+  const auto vacuum = solveVacuumTrajectory(distance, height, speed, gravity);
+  double pitch = vacuum.valid ? vacuum.pitch : 0.5 * (left + right);
+  if (initial_pitch && std::isfinite(*initial_pitch) && *initial_pitch > left && *initial_pitch < right)
+    pitch = *initial_pitch;
+  pitch = std::clamp(pitch, left, right);
+  for (int iteration = 0; iteration < 24; ++iteration) {
+    const auto value = evaluate(pitch);
+    if (!std::isfinite(value.residual) || !std::isfinite(value.derivative)
+        || value.derivative <= 0.0 || !std::isfinite(value.time) || value.time <= 0.0) return fallback();
+    const double step = value.residual / value.derivative;
+    if (std::abs(value.residual) <= tolerance && std::abs(step) <= 1e-12) {
+      Trajectory result;
+      result.pitch = pitch;
+      result.fly_time = value.time;
+      result.valid = true;
+      return result;
+    }
+    if (value.residual < 0.0) left = pitch;
+    else right = pitch;
+    double next = pitch - step;
+    if (!std::isfinite(next) || next <= left || next >= right || std::abs(step) > 0.75 * (right - left))
+      next = 0.5 * (left + right);
+    if (next == pitch) return fallback();
+    pitch = next;
+  }
+  return fallback();
+}
+
 }  // namespace
 
 BallisticSolution BallisticSolver::solve(const BallisticRequest& request) const
@@ -297,9 +375,11 @@ BallisticSolution BallisticSolver::solve(const BallisticRequest& request) const
         z,
         request.bullet_speed,
         request.gravity,
-        request.linear_drag_coefficient)
+        request.linear_drag_coefficient,
+        request.initial_pitch)
     : solveVacuumTrajectory(
       horizontal_distance, z, request.bullet_speed, request.gravity);
+  solution.used_fallback = trajectory.used_fallback;
   if (!trajectory.valid) {
     return solution;
   }
@@ -310,6 +390,42 @@ BallisticSolution BallisticSolver::solve(const BallisticRequest& request) const
   solution.valid = std::isfinite(solution.yaw);
   solution.used_air_resistance = request.enable_air_resistance;
   return solution;
+}
+
+BallisticJacobian BallisticSolver::positionJacobian(
+  const BallisticRequest& request, const BallisticSolution& solution) const
+{
+  BallisticJacobian result;
+  const auto& point = request.target_position_barrel;
+  const double range = std::hypot(point.x(), point.y());
+  const double speed = request.bullet_speed;
+  if (!point.allFinite() || !solution.valid || !std::isfinite(solution.pitch)
+      || !std::isfinite(solution.fly_time) || solution.fly_time <= 0.0
+      || !std::isfinite(range) || range <= 1e-9 || !std::isfinite(speed) || speed <= 0.0
+      || !std::isfinite(request.gravity) || request.gravity <= 0.0
+      || request.enable_air_resistance != solution.used_air_resistance) return result;
+  double attenuation = solution.fly_time, decay = 1.0;
+  if (request.enable_air_resistance) {
+    const double k = request.linear_drag_coefficient;
+    if (!std::isfinite(k) || k <= 0.0) return result;
+    attenuation = -std::expm1(-k * solution.fly_time) / k;
+    decay = std::exp(-k * solution.fly_time);
+  }
+  const double sine = std::sin(solution.pitch), cosine = std::cos(solution.pitch);
+  // [r,z] 对 [theta,t] 的雅可比逆矩阵首行，D'(t)=g*A(t) 对两种模型均成立。
+  const double r_theta = -speed * sine * attenuation;
+  const double r_time = speed * cosine * decay;
+  const double z_theta = speed * cosine * attenuation;
+  const double z_time = speed * sine * decay - request.gravity * attenuation;
+  const double determinant = r_theta * z_time - r_time * z_theta;
+  const double scale = std::abs(r_theta * z_time) + std::abs(r_time * z_theta);
+  if (!std::isfinite(determinant) || !std::isfinite(scale)
+      || std::abs(determinant) <= 1e-8 * std::max(1e-12, scale)) return result;
+  const double pitch_range = z_time / determinant, pitch_height = -r_time / determinant;
+  result.angles_position << -point.y() / (range * range), point.x() / (range * range), 0.0,
+    pitch_range * point.x() / range, pitch_range * point.y() / range, pitch_height;
+  result.valid = result.angles_position.allFinite();
+  return result;
 }
 
 }  // namespace L4Planning

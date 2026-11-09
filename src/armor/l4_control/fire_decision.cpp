@@ -177,8 +177,11 @@ FireDecision FireDecider::decide(const FireInput& input) const
   const bool continue_temp_lost = !config_.stop_fire_on_temp_lost && input.target
     && input.track_state == L3Estimation::TrackState::TempLost && plan.valid
     && plan.tracked_phase == L4Planning::ArmorTrackingPhase::Tracking
-    && plan.within_firing_window;
-  if (!plan.fire_permitted && !continue_temp_lost) {
+    && plan.within_firing_window && plan.mpc_aim_feasible;
+  if (!plan.mpc_aim_feasible) {
+    reject(RejectReason::MpcAimOutsidePlate);
+  }
+  if (!plan.fire_permitted && !continue_temp_lost && plan.mpc_aim_feasible) {
     reject(RejectReason::OutsideHitWindow);
   }
 

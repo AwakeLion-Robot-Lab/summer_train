@@ -127,15 +127,16 @@ selection:
 # 实车确认尺寸后再调大偏移；预测方差大时会自动退回板心。
 in_plate_aim:
   enable: true
-  # 对照模式：center / fixed_diagonal / independent。
-  # 开火误差以当前瞄准指令为基准，使用 independent 板内动态瞄点。
-  mode: independent
+  # 对照模式：center / fixed_diagonal / independent / mpc。
+  # mpc 联合选择板内瞄点和云台运动；MPC 不可用时回退板心直瞄。
+  mode: mpc
   small_width_m: 0.135
   large_width_m: 0.230
   height_m: 0.125
-  hit_margin_ratio: 0.6
+  hit_margin_ratio: 0.3
   edge_margin_m: 0.005
   uncertainty_sigma: 2.0
+  # 以下四项仅用于 independent / fixed_diagonal；mpc 模式不使用。
   lookahead_s: 0.08
   max_speed_mps: 0.20
   max_acceleration_mps2: 1.5
@@ -144,6 +145,7 @@ in_plate_aim:
   direction_enter_rate_rad_s: 0.15
   direction_exit_rate_rad_s: 0.05
   warmup_frames: 3
+  # 以下 outpost 高度偏好仅用于 independent；mpc 按预测板面联合优化。
   outpost:
     # 三板按 120° 循环接替；三块板共有有效高度时尽量维持同一高度。
     # false 时只预调当前板和下一块板的共同高度，便于对照。
@@ -151,7 +153,7 @@ in_plate_aim:
 
 mpc:
   # 以下数值以 tools/tiny_MPC/README.md 为基准。
-  # 模型固定为二阶状态 [角度, 角速度]，控制量为角加速度；yaw/pitch 独立求解。
+  # 二阶状态 [角度, 角速度]，控制量为角加速度；mpc 瞄点模式联合投影板面。
   # 固定采样周期为 0.01 s，轨迹共 100 点，输出中心索引为 50。
   # 这三个量属于当前实现的矩阵/数组尺寸，不作为现场调参项开放。
 
@@ -159,6 +161,8 @@ mpc:
   enable: true
   # ADMM 最大迭代次数，必须大于 0；增大可能改善收敛但增加耗时。
   max_iterations: 10
+  # 板内位置与云台角度联合优化的迭代上限，仅用于 in_plate_aim.mode: mpc。
+  region_max_iterations: 300
 
   # ADMM 罚参数 rho；README 指定为 1.0，必须大于 0。
   admm_rho: 1.0 

@@ -218,6 +218,7 @@ TinyMpcSolution solveTinyMpc(
   if (!reference.valid) {
     return solution;
   }
+  if (reference.optimize_in_plate) return solveTinyMpcPlateRegion(reference, config);
 
   const TinyMpcAxisConfig yaw_config{
     config.yaw_angle_weight,

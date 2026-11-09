@@ -73,7 +73,7 @@ struct Ballistic {
 };
 
 // 有效受击面独立于 PnP 灯条尺寸；默认沿用现有火控中心 60% 区域。
-enum class InPlateAimMode : std::uint8_t { Center, FixedDiagonal, Independent };
+enum class InPlateAimMode : std::uint8_t { Center, FixedDiagonal, Independent, Mpc };
 
 struct InPlateAimConfig {
   bool enable{false};
@@ -184,6 +184,8 @@ struct AimPlan : AimReference {
   std::vector<AimSample> samples;
 
   bool using_MPC{false};       // false：直接参考；true：已生成 MPC samples
+  // 区域 MPC 允许跨越板间空隙；当前指令没有有效板内弹道交点时不得放行。
+  bool mpc_aim_feasible{true};
   ArmorTrackingPhase tracked_phase{ArmorTrackingPhase::Unlocked};
   // 将开火门控的两个来源分开保存，便于区分“未锁稳”和“已出窗”。
   bool tracked_ready{false};   // 选板状态稳定且本帧观测新鲜
@@ -250,6 +252,7 @@ struct PlannerConfig {
   // 关闭时 Planner 保持原有的单点直瞄输出。
   bool enable_mpc{true};
   int mpc_max_iterations{10};
+  int mpc_region_max_iterations{300}; // 联合板内位置/角度优化的 ADMM 上限
   double mpc_admm_rho{1.0}; // README 指定的 ADMM 罚参数
   double mpc_primal_tolerance{1e-3};
   double mpc_dual_tolerance{1e-3};

@@ -54,6 +54,7 @@ bool validPlannerConfig(const PlannerConfig& config) noexcept
         && std::isfinite(config.max_pitch_acceleration)
         && config.min_pitch_acceleration <= config.max_pitch_acceleration
         && config.mpc_max_iterations > 0
+        && config.mpc_region_max_iterations > 0
         && std::isfinite(config.mpc_admm_rho)
         && config.mpc_admm_rho > 0.0
         && std::isfinite(config.mpc_primal_tolerance)

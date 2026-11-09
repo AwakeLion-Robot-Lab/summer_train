@@ -182,6 +182,9 @@ AimPlan Planner::plan(
     ? aim_config.large_width : aim_config.small_width) * aim_config.hit_margin_ratio;
   plan.hit_half_height = 0.5 * aim_config.height * aim_config.hit_margin_ratio;
 
+  // 优化器读取旧快照；选定的 MPC 板内位置也必须在本帧成功后提交。
+  plan = applyTinyMpc(plan, target_state, robot_state, context.T_barrel_world, config);
+
   // 候选迭代和 MPC 始终读取同一旧快照。新观测的已选结果只提交一次。
   if (observation_fresh && (aim_state_.robot_id != plan.target_id
       || fire_time > aim_state_.timestamp)) {
@@ -192,21 +195,16 @@ AimPlan Planner::plan(
     aim_state_.robot_id = plan.target_id;
     aim_state_.armor_id = plan.armor_id;
     aim_state_.timestamp = fire_time;
-    aim_state_.offset = selected.aim.offset;
-    aim_state_.velocity = selected.aim.velocity;
-    aim_state_.direction = selected.aim.direction;
-    aim_state_.position_world = selected.aim.position_world;
+    aim_state_.offset = plan.in_plate_aim.offset;
+    aim_state_.velocity = plan.in_plate_aim.velocity;
+    aim_state_.direction = plan.in_plate_aim.direction;
+    aim_state_.position_world = plan.in_plate_aim.position_world;
     aim_state_.gun_timestamp = robot_state.timestamp;
     aim_state_.gun_yaw = robot_state.rpy.yaw;
     aim_state_.gun_yaw_rate = yaw_rate;
   }
 
-  return applyTinyMpc(
-    plan,
-    target_state,
-    robot_state,
-    context.T_barrel_world,
-    config);
+  return plan;
 }
 
 }  // namespace L4Planning

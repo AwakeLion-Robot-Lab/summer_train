@@ -20,6 +20,8 @@ enum class RejectReason {
   // 与 OutsideHitWindow 分开记，前者是目标的问题，后者是云台的问题。
   AimError,
   CommandJump,
+  // 区域 MPC 当前指令与运动装甲板无安全区交点，例如两板之间的过渡。
+  MpcAimOutsidePlate,
   NonFinite
 };
 

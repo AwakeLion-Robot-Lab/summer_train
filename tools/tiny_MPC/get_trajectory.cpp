@@ -45,6 +45,45 @@ constexpr double kPi = 3.14159265358979323846;
   return predictor.predict({rewound, sample_time});
 }
 
+bool setPlateRegion(TinyMpcReference& reference, std::size_t index,
+  const ArmorCandidate& candidate, const L1Sensor::RobotState& robot,
+  const Eigen::Isometry3d& transform, const PlannerConfig& config)
+{
+  reference.in_plate_aim[index] = candidate.aim;
+  reference.impact_time[index] = candidate.impact_time;
+  reference.yaw.angle[index] = normalizeAngle(candidate.ballistic.yaw - reference.yaw_origin);
+  reference.pitch.angle[index] = candidate.ballistic.pitch;
+  auto& region = reference.regions[index];
+  // 为局部线性化及软跟踪残差保留 10% 内缩；最终用完整安全区验证真实交点。
+  region.limits = 0.9 * candidate.aim.limits;
+  BallisticRequest request;
+  request.bullet_speed = robot.bullet_speed;
+  request.gravity = config.gravity;
+  request.enable_air_resistance = config.enable_air_resistance;
+  request.linear_drag_coefficient = config.linear_drag_coefficient;
+  request.target_position_barrel = candidate.aim.position_world + transform.translation();
+  const auto derivative = BallisticSolver{}.positionJacobian(request, candidate.ballistic);
+  if (derivative.valid) {
+    region.jacobian = derivative.angles_position * candidate.armor.rotation_world.rightCols<2>();
+  } else {
+    // 接近弹道相切点时保留旧数值路径；若扰动后不可达则放弃本次 MPC 局部模型。
+    for (int axis = 0; axis < 2; ++axis) {
+      constexpr double step = 0.001;
+      const Eigen::Vector3d displacement = step * candidate.armor.rotation_world.col(axis + 1);
+      request.target_position_barrel = candidate.aim.position_world + transform.translation() + displacement;
+      const auto plus = BallisticSolver{}.solve(request);
+      request.target_position_barrel -= 2.0 * displacement;
+      const auto minus = BallisticSolver{}.solve(request);
+      if (!plus.valid || !minus.valid) return false;
+      region.jacobian.col(axis) = Eigen::Vector2d{
+        normalizeAngle(plus.yaw - minus.yaw), plus.pitch - minus.pitch} / (2.0 * step);
+    }
+  }
+  region.center = Eigen::Vector2d{reference.yaw.angle[index], reference.pitch.angle[index]}
+    - region.jacobian * candidate.aim.offset;
+  return region.center.allFinite() && region.jacobian.allFinite();
+}
+
 }  // namespace
 
 TinyMpcReference buildTinyMpcReference(
@@ -67,9 +106,13 @@ TinyMpcReference buildTinyMpcReference(
   PlannerContext context;
   context.config = config;
   context.T_barrel_world = T_barrel_world;
+  reference.yaw_origin = direct_plan.yaw;
+  reference.optimize_in_plate = config.in_plate_aim.enable
+    && config.in_plate_aim.mode == InPlateAimMode::Mpc;
   std::array<double, kTinyMpcHorizon> raw_yaw{};
   int reference_armor_id = direct_plan.armor_id;
   InPlateAimState rollout_state = direct_plan.aim_query_state;
+  std::optional<ArmorCandidate> previous_candidate;
 
   for (std::size_t index = 0; index < kTinyMpcHorizon; ++index) {
     const double offset =
@@ -94,7 +137,9 @@ TinyMpcReference buildTinyMpcReference(
     }
     auto candidates = generateArmorCandidates(
       sample_target, sample_robot, context, sample_fire_time,
-      query_state, reference_armor_id);
+      query_state, reference_armor_id, std::nullopt,
+      reference.optimize_in_plate && previous_candidate && index != kTinyMpcControlIndex
+        ? &*previous_candidate : nullptr);
     if (!candidates || candidates->empty()) return reference;
     ArmorCandidate selected = candidates->front();
     const bool rotating = selected.aim.direction != 0;
@@ -103,7 +148,8 @@ TinyMpcReference buildTinyMpcReference(
     if (index > kTinyMpcControlIndex && (!selected.valid || leaving_hold)) {
       // 未来采样按保持窗口预测接替板，仅改变本次参考的局部板号，绝不更新 Planner。
       candidates = generateArmorCandidates(sample_target, sample_robot, context,
-        sample_fire_time, query_state);
+        sample_fire_time, query_state, std::nullopt, std::nullopt,
+        reference.optimize_in_plate ? &selected : nullptr);
       if (!candidates) return reference;
       const ArmorCandidate* next = nullptr;
       if (rotating) {
@@ -128,11 +174,14 @@ TinyMpcReference buildTinyMpcReference(
       }
     }
     if (!selected.valid) return reference;
+    previous_candidate = selected;
     const auto& ballistic = selected.ballistic;
 
     reference.armor_id[index] = selected.armor.armor_id;
     reference.in_plate_aim[index] = selected.aim;
     reference.impact_time[index] = selected.impact_time;
+    if (reference.optimize_in_plate
+        && !setPlateRegion(reference, index, selected, robot_state, T_barrel_world, config)) return {};
     if (index >= kTinyMpcControlIndex) {
       // 仅提交到本次参考的局部副本，每个未来采样推进一次，候选/弹道迭代只读。
       rollout_state.robot_id = target.robot_id;
@@ -172,6 +221,39 @@ TinyMpcReference buildTinyMpcReference(
 
   reference.valid = true;
   return reference;
+}
+
+bool refineTinyMpcPlateReference(
+  TinyMpcReference& reference, const TinyMpcSolution& solution,
+  const AimPlan& direct_plan, const L3Estimation::TargetState& target,
+  const L1Sensor::RobotState& robot_state,
+  const Eigen::Isometry3d& T_barrel_world, const PlannerConfig& config)
+{
+  if (!reference.valid || !reference.optimize_in_plate || !solution.valid) return false;
+  PlannerContext context;
+  context.config = config;
+  context.T_barrel_world = T_barrel_world;
+  for (std::size_t k = 0; k < kTinyMpcHorizon; ++k) {
+    const TimePoint fire_time = addSeconds(direct_plan.fire_time,
+      (static_cast<double>(k) - kTinyMpcControlIndex) * kTinyMpcStepSeconds);
+    auto sample_target = target;
+    if (fire_time < target.timestamp) {
+      const auto rewound = predictAt(Predictor{}, target, fire_time);
+      if (!rewound.valid) return false;
+      sample_target = rewound.predicted_vehicle;
+    }
+    ArmorCandidate seed;
+    seed.armor.robot_id = target.robot_id;
+    seed.armor.armor_id = reference.armor_id[k];
+    seed.ballistic.valid = true;
+    seed.ballistic.pitch = reference.pitch.angle[k];
+    seed.ballistic.fly_time = std::chrono::duration<double>(reference.impact_time[k] - fire_time).count();
+    const auto candidates = generateArmorCandidates(sample_target, robot_state, context,
+      fire_time, direct_plan.aim_query_state, reference.armor_id[k], solution.in_plate_offsets[k], &seed);
+    if (!candidates || candidates->empty() || !candidates->front().valid
+        || !setPlateRegion(reference, k, candidates->front(), robot_state, T_barrel_world, config)) return false;
+  }
+  return true;
 }
 
 }  // namespace L4Planning

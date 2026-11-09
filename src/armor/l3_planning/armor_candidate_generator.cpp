@@ -59,9 +59,23 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
   const PlannerContext& context,
   TimePoint fire_time,
   const InPlateAimState& aim_state,
-  std::optional<int> only_armor_id)
+  std::optional<int> only_armor_id,
+  std::optional<Eigen::Vector2d> fixed_aim_offset,
+  const ArmorCandidate* initial_candidate)
 {
   const PlannerConfig& config = context.config;
+  if (fixed_aim_offset && !fixed_aim_offset->allFinite()) return std::nullopt;
+  const auto query_aim = [&](const PredictionResult& prediction, const ArmorPose& armor) {
+    auto aim = queryInPlateAim(prediction, armor, aim_state, fire_time,
+      robot_state.rpy.yaw, config.in_plate_aim, -context.T_barrel_world.translation());
+    if (aim.valid && fixed_aim_offset && config.in_plate_aim.enable
+        && config.in_plate_aim.mode != InPlateAimMode::Center) {
+      aim.offset = fixed_aim_offset->cwiseMax(-aim.limits).cwiseMin(aim.limits);
+      aim.velocity.setZero();
+      aim.position_world = armor.position_world + armor.rotation_world.rightCols<2>() * aim.offset;
+    }
+    return aim;
+  };
   const double fly_time_tolerance =
     std::chrono::duration<double>(config.fly_time_tolerance).count();
   const double angle_tolerance = config.angle_tolerance;
@@ -84,13 +98,14 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
     launch_prediction.predicted_vehicle;
   const auto solve_ballistic =
     [&ballistic_solver, &robot_state, &config](
-      const Eigen::Vector3d& position_barrel) {
+      const Eigen::Vector3d& position_barrel, std::optional<double> initial_pitch) {
       BallisticRequest request;
       request.target_position_barrel = position_barrel;
       request.bullet_speed = robot_state.bullet_speed;
       request.gravity = config.gravity;
       request.enable_air_resistance = config.enable_air_resistance;
       request.linear_drag_coefficient = config.linear_drag_coefficient;
+      request.initial_pitch = initial_pitch;
       return ballistic_solver.solve(request);
     };
 
@@ -100,129 +115,139 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
   for (int armor_id = 0; armor_id < target_state.armor_count; ++armor_id) {
     if (only_armor_id && *only_armor_id != armor_id) continue;
     ArmorCandidate candidate;
-    double current_fly_time = 0.0;
-    Eigen::Vector3d previous_position =
-      Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
-    double previous_yaw = std::numeric_limits<double>::quiet_NaN();
-    double previous_pitch = std::numeric_limits<double>::quiet_NaN();
+    const bool seed_valid = initial_candidate && initial_candidate->armor.robot_id == target_state.robot_id
+      && initial_candidate->armor.armor_id == armor_id && initial_candidate->ballistic.valid
+      && std::isfinite(initial_candidate->ballistic.fly_time) && initial_candidate->ballistic.fly_time > 0.0
+      && std::isfinite(initial_candidate->ballistic.pitch);
+    // 初值仅来自本次参考的同目标、同实体板；种子未收敛时完整重试冷启动路径。
+    for (int attempt = 0; attempt < (seed_valid ? 2 : 1); ++attempt) {
+      candidate = {};
+      const bool use_seed = seed_valid && attempt == 0;
+      double current_fly_time = use_seed ? initial_candidate->ballistic.fly_time : 0.0;
+      std::optional<double> pitch_hint = use_seed
+        ? std::optional<double>{initial_candidate->ballistic.pitch} : std::nullopt;
+      Eigen::Vector3d previous_position =
+        Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
+      double previous_yaw = std::numeric_limits<double>::quiet_NaN();
+      double previous_pitch = std::numeric_limits<double>::quiet_NaN();
 
-    for (int iteration = 1; iteration <= max_iterations; ++iteration) {
-      const TimePoint impact_time =
-        addSeconds(fire_time, current_fly_time);
-      const PredictionResult prediction =
-        predictor.predict({launch_state, impact_time});
-      if (!prediction.valid) {
-        break;
+      for (int iteration = 1; iteration <= max_iterations; ++iteration) {
+        const TimePoint impact_time =
+          addSeconds(fire_time, current_fly_time);
+        const PredictionResult prediction =
+          predictor.predict({launch_state, impact_time});
+        if (!prediction.valid) {
+          break;
+        }
+
+        const ArmorPose* armor = findArmor(prediction, armor_id);
+        if (armor == nullptr || !armor->valid) {
+          break;
+        }
+
+        const InPlateAimPoint aim = query_aim(prediction, *armor);
+        if (!aim.valid) break;
+        const Eigen::Vector3d position_barrel = world_to_barrel(aim.position_world);
+        const BallisticSolution ballistic = solve_ballistic(position_barrel, pitch_hint);
+
+        candidate.armor = *armor;
+        candidate.aim = aim;
+        candidate.ballistic = ballistic;
+        candidate.impact_time = impact_time;
+        candidate.iteration_count = iteration;
+        if (!ballistic.valid) {
+          break;
+        }
+        pitch_hint = ballistic.pitch;
+        candidate.fly_time_error =
+          std::abs(ballistic.fly_time - current_fly_time);
+        const bool has_previous = previous_position.allFinite();
+        candidate.position_error =
+          has_previous
+            ? (aim.position_world - previous_position).norm()
+            : std::numeric_limits<double>::infinity();
+        const double yaw_error =
+          has_previous
+            ? normalizeAngle(ballistic.yaw - previous_yaw)
+            : std::numeric_limits<double>::infinity();
+        const double pitch_error =
+          has_previous
+            ? ballistic.pitch - previous_pitch
+            : std::numeric_limits<double>::infinity();
+        candidate.angle_error =
+          has_previous
+            ? std::hypot(yaw_error, pitch_error)
+            : std::numeric_limits<double>::infinity();
+
+        const bool time_converged =
+          candidate.fly_time_error <= fly_time_tolerance;
+        const bool position_converged =
+          has_previous && candidate.position_error <= config.position_tolerance;
+        const bool angle_converged =
+          angle_tolerance > 0.0
+          && has_previous
+          && candidate.angle_error <= angle_tolerance;
+        if (time_converged && (position_converged || angle_converged)) {
+          candidate.converged = true;
+          break;
+        }
+
+        previous_position = aim.position_world;
+        previous_yaw = ballistic.yaw;
+        previous_pitch = ballistic.pitch;
+        current_fly_time = ballistic.fly_time;
       }
 
-      const ArmorPose* armor = findArmor(prediction, armor_id);
-      if (armor == nullptr || !armor->valid) {
-        break;
-      }
+      if (candidate.converged) {
+        // 用收敛后的飞行时间再更新一次最终位姿和弹道，保持二者一致。
+        const TimePoint final_impact_time =
+          addSeconds(fire_time, candidate.ballistic.fly_time);
+        const PredictionResult final_prediction =
+          predictor.predict({launch_state, final_impact_time});
+        const ArmorPose* final_armor = findArmor(final_prediction, armor_id);
+        if (final_prediction.valid
+            && final_armor != nullptr
+            && final_armor->valid) {
+          const InPlateAimPoint final_aim = query_aim(final_prediction, *final_armor);
+          const Eigen::Vector3d final_position_barrel =
+            world_to_barrel(final_aim.position_world);
+          const BallisticSolution final_ballistic =
+            solve_ballistic(final_position_barrel, candidate.ballistic.pitch);
+          if (final_ballistic.valid && final_aim.valid) {
+            const double final_yaw_error = normalizeAngle(
+              final_ballistic.yaw - candidate.ballistic.yaw);
+            const double final_pitch_error =
+              final_ballistic.pitch - candidate.ballistic.pitch;
+            candidate.position_error =
+              (final_aim.position_world - candidate.aim.position_world).norm();
+            candidate.fly_time_error =
+              std::abs(final_ballistic.fly_time - candidate.ballistic.fly_time);
+            candidate.angle_error =
+              std::hypot(final_yaw_error, final_pitch_error);
+            candidate.armor = *final_armor;
+            candidate.aim = final_aim;
+            candidate.ballistic = final_ballistic;
+            candidate.impact_time = final_impact_time;
 
-      const InPlateAimPoint aim = queryInPlateAim(
-        prediction, *armor, aim_state, fire_time, robot_state.rpy.yaw,
-        config.in_plate_aim, -context.T_barrel_world.translation());
-      if (!aim.valid) break;
-      const Eigen::Vector3d position_barrel = world_to_barrel(aim.position_world);
-      const BallisticSolution ballistic = solve_ballistic(position_barrel);
-
-      candidate.armor = *armor;
-      candidate.aim = aim;
-      candidate.ballistic = ballistic;
-      candidate.impact_time = impact_time;
-      candidate.iteration_count = iteration;
-      if (!ballistic.valid) {
-        break;
-      }
-      candidate.fly_time_error =
-        std::abs(ballistic.fly_time - current_fly_time);
-      const bool has_previous = previous_position.allFinite();
-      candidate.position_error =
-        has_previous
-          ? (aim.position_world - previous_position).norm()
-          : std::numeric_limits<double>::infinity();
-      const double yaw_error =
-        has_previous
-          ? normalizeAngle(ballistic.yaw - previous_yaw)
-          : std::numeric_limits<double>::infinity();
-      const double pitch_error =
-        has_previous
-          ? ballistic.pitch - previous_pitch
-          : std::numeric_limits<double>::infinity();
-      candidate.angle_error =
-        has_previous
-          ? std::hypot(yaw_error, pitch_error)
-          : std::numeric_limits<double>::infinity();
-
-      const bool time_converged =
-        candidate.fly_time_error <= fly_time_tolerance;
-      const bool position_converged =
-        has_previous && candidate.position_error <= config.position_tolerance;
-      const bool angle_converged =
-        angle_tolerance > 0.0
-        && has_previous
-        && candidate.angle_error <= angle_tolerance;
-      if (time_converged && (position_converged || angle_converged)) {
-        candidate.converged = true;
-        break;
-      }
-
-      previous_position = aim.position_world;
-      previous_yaw = ballistic.yaw;
-      previous_pitch = ballistic.pitch;
-      current_fly_time = ballistic.fly_time;
-    }
-
-    if (candidate.converged) {
-      // 用收敛后的飞行时间再更新一次最终位姿和弹道，保持二者一致。
-      const TimePoint final_impact_time =
-        addSeconds(fire_time, candidate.ballistic.fly_time);
-      const PredictionResult final_prediction =
-        predictor.predict({launch_state, final_impact_time});
-      const ArmorPose* final_armor = findArmor(final_prediction, armor_id);
-      if (final_prediction.valid
-          && final_armor != nullptr
-          && final_armor->valid) {
-        const InPlateAimPoint final_aim = queryInPlateAim(
-          final_prediction, *final_armor, aim_state, fire_time,
-          robot_state.rpy.yaw, config.in_plate_aim, -context.T_barrel_world.translation());
-        const Eigen::Vector3d final_position_barrel =
-          world_to_barrel(final_aim.position_world);
-        const BallisticSolution final_ballistic =
-          solve_ballistic(final_position_barrel);
-        if (final_ballistic.valid && final_aim.valid) {
-          const double final_yaw_error = normalizeAngle(
-            final_ballistic.yaw - candidate.ballistic.yaw);
-          const double final_pitch_error =
-            final_ballistic.pitch - candidate.ballistic.pitch;
-          candidate.position_error =
-            (final_aim.position_world - candidate.aim.position_world).norm();
-          candidate.fly_time_error =
-            std::abs(final_ballistic.fly_time - candidate.ballistic.fly_time);
-          candidate.angle_error =
-            std::hypot(final_yaw_error, final_pitch_error);
-          candidate.armor = *final_armor;
-          candidate.aim = final_aim;
-          candidate.ballistic = final_ballistic;
-          candidate.impact_time = final_impact_time;
-
-          const bool final_time_converged =
-            candidate.fly_time_error <= fly_time_tolerance;
-          const bool final_position_converged =
-            candidate.position_error <= config.position_tolerance;
-          const bool final_angle_converged =
-            angle_tolerance > 0.0
-            && candidate.angle_error <= angle_tolerance;
-          candidate.converged =
-            final_time_converged
-            && (final_position_converged || final_angle_converged);
+            const bool final_time_converged =
+              candidate.fly_time_error <= fly_time_tolerance;
+            const bool final_position_converged =
+              candidate.position_error <= config.position_tolerance;
+            const bool final_angle_converged =
+              angle_tolerance > 0.0
+              && candidate.angle_error <= angle_tolerance;
+            candidate.converged =
+              final_time_converged
+              && (final_position_converged || final_angle_converged);
+          } else {
+            candidate.converged = false;
+          }
         } else {
           candidate.converged = false;
         }
-      } else {
-        candidate.converged = false;
       }
+
+      if (candidate.converged) break;
     }
 
     if (candidate.armor.valid) {

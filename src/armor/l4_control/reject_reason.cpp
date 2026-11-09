@@ -27,6 +27,8 @@ std::string toString(RejectReason reason)
       return "aim_error";
     case RejectReason::CommandJump:
       return "command_jump";
+    case RejectReason::MpcAimOutsidePlate:
+      return "mpc_aim_outside_plate";
     case RejectReason::NonFinite:
       return "non_finite";
     default:

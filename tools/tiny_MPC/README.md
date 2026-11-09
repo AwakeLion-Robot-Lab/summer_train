@@ -1,3 +1,8 @@
+`in_plate_aim.mode: mpc` 在此固定点参考求解器之外增加了板面区域联合优化，
+入口为 `plate_region.cpp`。它保留二阶动力学与居中窗口，用真实板面 u/v
+位置作为有界变量，并联合投影 yaw/pitch；详细行为、回退及交点检查见
+[`docs/in_plate_aim.md`](../../docs/in_plate_aim.md)。下文的独立两轴点跟踪说明
+适用于原来的 `center` / `fixed_diagonal` / `independent` 参考模式。
 
 
 ## 1. 规划层：生成一段连续的期望朝向
