@@ -114,6 +114,7 @@ struct LightHint {
 struct ArmorFrame {
   std::vector<Armor> armors;
   std::vector<Light> lights;
+  bool inference_valid{false}; // Do not search side lights after failed inference.
 };
 
 // 保留检测层原有接口名称，避免后端和测试因数据结构改名而失效。

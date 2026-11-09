@@ -1097,9 +1097,8 @@ int main(int argc, char** argv)
               img, predicted_armor_poses, armor_type, target->name, solver,
               {0, 165, 255}, 2, overlay_shift);
           }
-          drawVehicle(
-            img, target_armor_poses, armor_type, target->name, solver,
-            {0, 255, 0}, 2, overlay_shift);
+          L6Telemetry::drawTrackedVehicle(
+            img, *target, calibration, q_world_barrel, overlay_shift);
 
           // 只有 Tracker 处于 Tracking 且 Plan 有效时，
           // 才画 Plan 选中的命中时刻预测板。

@@ -41,10 +41,12 @@ struct DebugConfig {
 
 };
 
-// runtime 胶水层只保留相邻控制命令的跳变保护；选板和开火规则仍由现有 L4/L5
-// 实现负责。
+// runtime 调度与相邻控制命令的跳变保护；选板和开火规则由 L4/L5 负责。
 struct RuntimeSafetyConfig {
   double command_jump_threshold{10.0 * std::numbers::pi / 180.0};
+  bool armor_pipeline{true};
+  bool pose_detection_overlap{true};
+  double pipeline_max_result_age_ms{100.0};
 };
 
 // inference.decoder 里显式写出的阈值。layout 为 auto 时预设要等模型加载、按

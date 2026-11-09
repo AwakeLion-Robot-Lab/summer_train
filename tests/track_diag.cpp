@@ -176,16 +176,17 @@ std::optional<cv::Point2d> projectWorldPoint(
 // 那个绿框的中心，和把三维板心单独投一次不完全相等（透视 + 畸变都非线性），
 // 但它才是目视对比的那个量，所以两边统一用这个定义。
 std::optional<cv::Point2d> armorBoxCenter(
-  const L3Estimation::PnpSolver& solver, const Eigen::Vector4d& xyza,
-  L3Estimation::ArmorType type, L3Estimation::ArmorName name)
+  const L3Estimation::EskfTarget& target, int id,
+  const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Quaterniond& q_world_barrel)
 {
-  const std::vector<cv::Point2f> corners =
-    solver.reproject_armor(xyza.head<3>(), xyza[3], type, name);
-  if (corners.size() != 4) {
-    return std::nullopt;
-  }
+  const auto context = target.obsContext(
+    calibration, L3Estimation::cameraInWorld(calibration, q_world_barrel));
+  const auto left = context.project(id, true, target.rawState());
+  const auto right = context.project(id, false, target.rawState());
   cv::Point2d sum{0.0, 0.0};
-  for (const auto& corner : corners) {
+  for (const auto& corner : {left.first, right.first, right.second, left.second}) {
+    if (!std::isfinite(corner.x) || !std::isfinite(corner.y)) return std::nullopt;
     sum.x += corner.x;
     sum.y += corner.y;
   }
@@ -465,6 +466,10 @@ int main(int argc, char* argv[])
     innovation_csv << "frame,t,armor_id,is_left,isolated,endpoint,du_px,dv_px,raw_nis,variance_scale\n";
     std::ofstream innovation_frames(out_dir / "innovation_frames.csv");
     innovation_frames << "frame,t,updated,armors,isolated_lights,corners,downweighted,depth_variance_scale\n";
+    // 同一个物理板的观测、更新前/后绿框高度。prior 来自本帧真实滤波创新，
+    // 避免把正常旋转、相机运动或上一帧快照外推误差算成更新跳变。
+    std::ofstream height_csv(out_dir / "height_switch.csv");
+    height_csv << "frame,t,armor_id,obs_v,prior_v,posterior_v,correction_v,z,height,rot_x,rot_y\n";
 
     cv::Mat img;
     PoseSample pose;
@@ -705,6 +710,35 @@ int main(int argc, char* argv[])
         << ',' << (diag ? diag->corners.size() : 0) << ',' << downweighted
         << ',' << (diag ? diag->depth_variance_scale : 1.0) << '\n';
 
+      if (diag) {
+        const auto& used = tracker.usedLights();
+        for (const auto& left : used) {
+          if (left.isolated || !left.is_left) continue;
+          const auto right = std::find_if(used.begin(), used.end(), [&](const auto& light) {
+            return !light.isolated && !light.is_left && light.armor_id == left.armor_id;
+          });
+          if (right == used.end()) continue;
+          double dv_sum = 0.0;
+          int endpoints = 0;
+          for (const auto& corner : diag->corners) {
+            if (!corner.isolated && corner.armor_id == left.armor_id) {
+              dv_sum += corner.dv;
+              ++endpoints;
+            }
+          }
+          const auto post = armorBoxCenter(*target, left.armor_id, calibration, q_world_barrel);
+          if (endpoints != 4 || !post) continue;
+          const double observed = (left.top.y + left.bottom.y + right->top.y + right->bottom.y) / 4.0;
+          const double prior = observed - dv_sum / 4.0;
+          const auto& x = target->rawState();
+          namespace V = L3Estimation::VehicleModel;
+          height_csv << frame_index << ',' << pose.seconds << ',' << left.armor_id << ','
+            << observed << ',' << prior << ',' << post->y << ',' << post->y - prior << ','
+            << x[V::idx::CZ] << ',' << x[V::idx::HEIGHT] << ','
+            << x[V::idx::ROT_X] << ',' << x[V::idx::ROT_Y] << '\n';
+        }
+      }
+
       // 叠加层像素位置：整车中心 + 四块板的框心，外加当帧检出的板心作参照。
       {
         overlay_csv << frame_index << ',' << pose.seconds << ','
@@ -721,16 +755,11 @@ int main(int argc, char* argv[])
           overlay_csv << ",,0,";
         }
 
-        const auto armor_poses = tracker.armorPoses();
-        const auto armor_type = target
-          ? L3Estimation::armorTypeOf(target->name).value_or(
-              L3Estimation::ArmorType::Small)
-          : L3Estimation::ArmorType::Small;
         std::array<std::optional<cv::Point2d>, 4> plate_px{};
         for (std::size_t id = 0; id < 4; ++id) {
-          if (target && id < armor_poses.size()) {
+          if (target && id < static_cast<std::size_t>(target->armor_num())) {
             plate_px[id] = armorBoxCenter(
-              solver, armor_poses[id], armor_type, target->name);
+              *target, static_cast<int>(id), calibration, q_world_barrel);
           }
           if (plate_px[id]) {
             overlay_csv << plate_px[id]->x << ',' << plate_px[id]->y << ",1,";

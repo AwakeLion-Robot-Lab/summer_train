@@ -1,4 +1,5 @@
 #include "sensor/serial/serial_worker.hpp"
+#include "sensor/serial/pose_preview.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -314,6 +315,18 @@ bool SerialWorker::waitPose(
     std::chrono::steady_clock::time_point timestamp) const {
   return waitPoseUntil(timestamp, std::chrono::steady_clock::now() +
       std::chrono::milliseconds(config_.pose_wait_ms));
+}
+
+std::optional<Eigen::Quaterniond> SerialWorker::roiPosePreview(
+    std::chrono::steady_clock::time_point image_time) const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (gimbal_history_.size() < 2) return std::nullopt;
+  const auto sample = [this](const RobotState& state) {
+    return TimedGimbalPose{toBarrelPose(L6Telemetry::rpyToQuaternion(
+      state.rpy.roll, state.rpy.pitch, state.rpy.yaw)), state.timestamp};
+  };
+  return previewRoiPose(sample(gimbal_history_[gimbal_history_.size() - 2]),
+                        sample(gimbal_history_.back()), image_time);
 }
 
 bool SerialWorker::waitPoseUntil(

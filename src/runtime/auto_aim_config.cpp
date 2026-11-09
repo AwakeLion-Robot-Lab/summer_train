@@ -578,6 +578,13 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   const YAML::Node runtime = root["runtime"];
   readDegrees(
     runtime, "command_jump_deg", config.runtime.command_jump_threshold);
+  readValue(runtime, "armor_pipeline", config.runtime.armor_pipeline);
+  readValue(runtime, "pose_detection_overlap", config.runtime.pose_detection_overlap);
+  readValue(runtime, "pipeline_max_result_age_ms", config.runtime.pipeline_max_result_age_ms);
+  if (!std::isfinite(config.runtime.pipeline_max_result_age_ms) ||
+      config.runtime.pipeline_max_result_age_ms <= 0.0) {
+    throw std::runtime_error("runtime.pipeline_max_result_age_ms must be positive and finite");
+  }
 
   const YAML::Node debug = root["debug"];
   readValue(debug, "overlay", config.debug.overlay);

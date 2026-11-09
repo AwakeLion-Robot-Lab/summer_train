@@ -3,7 +3,9 @@
 #include "l4_control/reject_reason.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 #include <opencv2/calib3d.hpp>
@@ -77,11 +79,10 @@ void drawAimOverlay(
   if (input.target) {
     const auto type = L3Estimation::armorTypeOf(input.target->name)
                         .value_or(L3Estimation::ArmorType::Small);
-    const auto current_armors = input.target->armor_xyza_list();
-    // 绿色：EKF 展开的全部物理装甲板，直接压在图像上，贴不贴板可以目视判断。
-    drawVehicle(
-      image, current_armors, type, input.target->name, solver,
-      {0, 255, 0}, 2);
+    // 绿色与滤波器观测使用同一条投影链，不能经 xyza 丢掉俯仰/横滚。
+    if (input.q_world_barrel) {
+      drawTrackedVehicle(image, *input.target, calibration, *input.q_world_barrel);
+    }
     const auto tracked_armor = trackingRedArmorPose(
       input.target, input.track_state, input.plan);
     if (tracked_armor) {
@@ -248,6 +249,52 @@ void drawVehicle(
         toPixel(image_points[(index + 1) % image_points.size()]) + image_offset,
         color,
         thickness, cv::LINE_AA);
+    }
+  }
+}
+
+void drawTrackedVehicle(
+  cv::Mat& image, const L3Estimation::EskfTarget& target,
+  const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Quaterniond& q_world_barrel, cv::Point image_offset)
+{
+  if (image.empty() || !target.initialized() || !target.rawState().allFinite() ||
+      !calibration.barrelExtrinsicsReady() || calibration.camera_matrix.empty() ||
+      calibration.distortion_coefficients.empty() || !q_world_barrel.coeffs().allFinite() ||
+      q_world_barrel.squaredNorm() <= 1e-12) {
+    return;
+  }
+  const auto camera_in_world = L3Estimation::cameraInWorld(calibration, q_world_barrel);
+  const auto ctx = target.obsContext(calibration, camera_in_world);
+  const Eigen::VectorXd state = target.rawState();
+  for (int id = 0; id < target.armor_num(); ++id) {
+    // 观测投影本身允许负深度；绘图前跳过相机后方或穿过光心平面的板。
+    const Eigen::Isometry3d pose_in_camera = camera_in_world.inverse() *
+      L3Estimation::VehicleModel::armorPose<double>(
+        state.data(), id, target.armor_num(), target.name);
+    bool in_front = true;
+    for (const bool is_left : {true, false}) {
+      for (const auto& p : L3Estimation::lightPoints3D(target.name, is_left, ctx.armor)) {
+        const Eigen::Vector3d point = pose_in_camera * Eigen::Vector3d(p.x, p.y, p.z);
+        in_front = in_front && point.allFinite() && point.z() > 1e-6;
+      }
+    }
+    if (!in_front) continue;
+
+    const auto left = ctx.project(id, true, state);
+    const auto right = ctx.project(id, false, state);
+    const std::array<cv::Point2f, 4> corners{
+      left.first, right.first, right.second, left.second};
+    // 防止退化投影在浮点转整数以及叠加回放偏移时溢出。
+    constexpr double max_pixel = std::numeric_limits<int>::max() / 4.0;
+    if (!std::all_of(corners.begin(), corners.end(), [](const auto& p) {
+          return std::isfinite(p.x) && std::isfinite(p.y) &&
+            std::abs(p.x) < max_pixel && std::abs(p.y) < max_pixel;
+        })) continue;
+    for (std::size_t i = 0; i < corners.size(); ++i) {
+      cv::line(image, toPixel(corners[i]) + image_offset,
+        toPixel(corners[(i + 1) % corners.size()]) + image_offset,
+        {0, 255, 0}, 2, cv::LINE_AA);
     }
   }
 }

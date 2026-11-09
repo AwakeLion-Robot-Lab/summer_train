@@ -16,6 +16,24 @@
 /compile_commands.json
 /cmake-build-*/
 
+# Python caches and local virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local agent settings and credentials
+/.agents/
+/.codex/
+/.aws/
+.env
+.env.*
+!.env.example
+!.env.sample
+
 # Runtime-generated logs and traces
 /logs/*
 !/logs/.gitkeep
@@ -65,6 +83,7 @@ Thumbs.db
 !/tests/auto_aim_test_small_tune.cpp
 !/tests/auto_aim_test_big_tune.cpp
 !/tests/rune_replay.hpp
+!/tests/armor_pipeline_replay.cpp
 
 # OpenVINO GPU 编译时吐出的 kernel 诊断文件
 /kernel.errors.txt

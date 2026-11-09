@@ -1,4 +1,7 @@
 #include "runtime/auto_aim_runtime.hpp"
+#include "runtime/pose_detection_schedule.hpp"
+#include "runtime/pose_roi.hpp"
+#include "runtime/single_frame_pipeline.hpp"
 #include "sensor/camera/camera.hpp"
 #include "sensor/serial/serial_config.hpp"
 #include "sensor/serial/serial_worker.hpp"
@@ -47,6 +50,27 @@ struct FrameTiming {
   Clock::time_point captured_at{}, ready_at{}, queued_at{};
   double pose_wait_ms{0}, detect_ms{0}, estimate_ms{0}, plan_control_ms{0};
   unsigned detection_passes{0};
+  bool pose_overlap{false}, pose_roi_repair{false}, pose_timeout{false};
+  double result_wait_ms{0};
+  std::uint64_t stale_results{0};
+  std::optional<double> filter_input_age_ms, filter_output_age_ms;
+  L2Perception::DetectTiming detection_stages{};
+};
+
+// Every field belongs to this frame. No references to live tracker/detector state
+// or OpenVINO output tensors cross the handoff.
+struct ArmorVisionPacket {
+  cv::Mat image;
+  FrameTiming timing;
+  Clock::time_point completed_at{};
+  std::optional<L1Sensor::RobotState> state;
+  std::optional<Eigen::Quaterniond> image_pose;
+  L2Perception::ArmorFrame perception;
+  std::optional<L3Estimation::EskfTarget> target;
+  L3Estimation::TrackState track_state{L3Estimation::TrackState::Lost};
+  int match_count{0};
+  std::uint64_t tracker_drops{0};
+  bool has_tracker{false};
 };
 
 nlohmann::json pipelineTiming(const FrameTiming& timing,
@@ -56,6 +80,18 @@ nlohmann::json pipelineTiming(const FrameTiming& timing,
       {"pose_wait_ms", timing.pose_wait_ms}, {"detect_ms", timing.detect_ms},
       {"detection_passes", timing.detection_passes},
       {"estimate_ms", timing.estimate_ms}, {"plan_control_ms", timing.plan_control_ms}};
+  data["pose_overlap"] = timing.pose_overlap;
+  data["pose_roi_repair"] = timing.pose_roi_repair;
+  data["pose_timeout"] = timing.pose_timeout;
+  data["result_wait_ms"] = timing.result_wait_ms;
+  data["stale_results"] = timing.stale_results;
+  if (timing.filter_input_age_ms) data["filter_input_age_ms"] = *timing.filter_input_age_ms;
+  if (timing.filter_output_age_ms) data["filter_output_age_ms"] = *timing.filter_output_age_ms;
+  data["preprocess_ms"] = timing.detection_stages.preprocess;
+  data["infer_ms"] = timing.detection_stages.infer;
+  data["decode_ms"] = timing.detection_stages.decode;
+  data["refine_ms"] = timing.detection_stages.refine;
+  data["side_light_ms"] = timing.detection_stages.side_light;
   if (timing.queued_at != Clock::time_point{}) {
     data["image_to_queue_ms"] = milliseconds(timing.queued_at, timing.captured_at);
     data["read_to_queue_ms"] = milliseconds(timing.queued_at, timing.ready_at);
@@ -97,6 +133,144 @@ L2Perception::ArmorColor enemyArmorColor(
     return L2Perception::ArmorColor::Unknown;
   }
   return L2Perception::ArmorColor::Unknown;
+}
+
+// Shared by synchronous and pipelined execution. PoseSource is the serial worker
+// in production; deterministic replay supplies the same timestamped pose interface.
+template<class PoseSource, class Detector>
+void processArmorVision(ArmorVisionPacket& packet,
+                        Detector& armor_detector,
+                        std::optional<L3Estimation::EskfTracker>& tracker,
+                        const PoseSource& serial, bool serial_started, int pose_wait_ms,
+                        runtime::PoseOverlapState* overlap = nullptr) {
+  auto& frame = packet.image;
+  auto& frame_timing = packet.timing;
+  const auto timestamp = frame_timing.captured_at;
+  const auto pose_deadline = frame_timing.ready_at +
+      std::chrono::milliseconds(pose_wait_ms);
+  const auto& state = packet.state;
+  packet.has_tracker = tracker.has_value();
+  if (!serial_started || !state) {
+    if (tracker) tracker->reset();
+    const auto started = Clock::now();
+    packet.perception = armor_detector.detectFrame(frame);
+    frame_timing.detect_ms = milliseconds(Clock::now(), started);
+    frame_timing.detection_stages = armor_detector.lastTiming();
+    frame_timing.detection_passes = 1;
+    packet.completed_at = Clock::now();
+    return;
+  }
+  // Lost 时没有跟踪 ROI/侧灯条，整图检测与姿态无关，可以先执行。
+  // 活跃跟踪只有通过新鲜度/转速门限时才提前检测；最后仍用曝光姿态更新。
+  const bool detect_before_pose = !tracker || !tracker->ready() ||
+      tracker->state() == L3Estimation::TrackState::Lost;
+  auto& image_pose = packet.image_pose;
+  std::optional<cv::Rect> net_roi;
+  const bool may_overlap = overlap && overlap->beginFrame();
+  if (may_overlap && tracker && tracker->ready() &&
+      tracker->state() == L3Estimation::TrackState::Tracking) {
+    if (const auto provisional = serial.roiPosePreview(timestamp)) {
+      net_roi = runtime::paddedPoseRoi(tracker->netFocusRoi(
+        provisional, timestamp, frame.size(), armor_detector.net_aspect_ratio()), frame.size());
+      frame_timing.pose_overlap = true;
+    }
+  }
+  const auto resolve_pose = [&] {
+    const auto started = Clock::now();
+    if (!serial.waitPoseUntil(timestamp, pose_deadline)) {
+      frame_timing.pose_timeout = true;
+      L6Telemetry::logDebug("gimbal pose wait timeout");
+    }
+    frame_timing.pose_wait_ms = milliseconds(Clock::now(), started);
+    image_pose = serial.gimbalPoseAt(timestamp);
+  };
+  const auto prepare_pose = [&] {
+    resolve_pose();
+    if (detect_before_pose || frame_timing.pose_overlap) return;
+    net_roi = tracker->netFocusRoi(
+      image_pose, timestamp, frame.size(), armor_detector.net_aspect_ratio());
+  };
+  const auto detect = [&](const std::optional<cv::Rect>& roi) {
+    const auto started = Clock::now();
+    auto result = armor_detector.detectFrame(frame, roi);
+    frame_timing.detect_ms += milliseconds(Clock::now(), started);
+    ++frame_timing.detection_passes;
+    const auto stages = armor_detector.lastTiming();
+    frame_timing.detection_stages.preprocess += stages.preprocess;
+    frame_timing.detection_stages.infer += stages.infer;
+    frame_timing.detection_stages.decode += stages.decode;
+    frame_timing.detection_stages.refine += stages.refine;
+    frame_timing.detection_stages.side_light += stages.side_light;
+    return result;
+  };
+  auto& perception = packet.perception;
+  perception = runtime::detectWithPose(
+      !detect_before_pose && !frame_timing.pose_overlap, prepare_pose, [&] { return detect(net_roi); });
+  const auto has_enemy = [&](const auto& armors) {
+    return std::any_of(armors.begin(), armors.end(), [&](const auto& armor) {
+      return isEnemyArmor(armor.color, state->enemy_color);
+    });
+  };
+  if (frame_timing.pose_overlap) {
+    const auto aligned_roi = tracker->netFocusRoi(
+      image_pose, timestamp, frame.size(), armor_detector.net_aspect_ratio());
+    // Validate the entire original ROI, not just detected corners (a missed plate
+    // has no corners to check). No recursion: at most one corrected inference.
+    const bool repair = !runtime::coversPoseRoi(*net_roi, aligned_roi) ||
+      !has_enemy(perception.armors);
+    frame_timing.pose_roi_repair = repair;
+    if (repair) {
+      net_roi = aligned_roi;
+      perception = detect(net_roi);
+    }
+    overlap->finishAttempt(repair);
+  }
+  if (tracker && tracker->ready() && detect_before_pose) {
+    auto candidates = perception.armors;
+    std::erase_if(candidates, [&](const auto& armor) {
+      return !isEnemyArmor(armor.color, state->enemy_color);
+    });
+    if (const auto init_roi = tracker->initRoi(
+          candidates, image_pose, timestamp, frame.size(),
+          armor_detector.net_aspect_ratio())) {
+      const cv::Rect image_rect(0, 0, frame.cols, frame.rows);
+      const cv::Rect first_roi = net_roi ? (*net_roi & image_rect) : image_rect;
+      if ((*init_roi & image_rect) != first_roi) {
+        auto refined = detect(*init_roi);
+        if (has_enemy(refined.armors)) perception = std::move(refined);
+      }
+    }
+  }
+  // Defer pose-dependent side searches until the final inference is chosen.
+  // Deduplicate against ALL classes/colors before filtering the enemy plates.
+  if (tracker && tracker->ready()) {
+    const auto started = Clock::now();
+    armor_detector.completeSideLights(frame, perception,
+      tracker->lightHints(image_pose, timestamp), enemyArmorColor(state->enemy_color));
+    frame_timing.detect_ms += milliseconds(Clock::now(), started);
+    frame_timing.detection_stages.side_light += armor_detector.lastTiming().side_light;
+  }
+  std::erase_if(perception.armors, [&](const auto& armor) {
+    return !isEnemyArmor(armor.color, state->enemy_color);
+  });
+
+  // L3: 完整板与独立灯条联合关联，更新整车 IESKF。
+  auto& target = packet.target;
+  const auto estimate_started = Clock::now();
+  if (tracker && tracker->ready()) {
+    frame_timing.filter_input_age_ms = milliseconds(estimate_started, timestamp);
+    target = tracker->track(
+      perception.armors, perception.lights, image_pose, timestamp);
+    frame_timing.filter_output_age_ms = milliseconds(Clock::now(), timestamp);
+  }
+  frame_timing.estimate_ms = milliseconds(Clock::now(), estimate_started);
+  packet.track_state = tracker
+    ? tracker->state()
+    : L3Estimation::TrackState::Lost;
+
+  packet.match_count = tracker ? tracker->lastMatchCount() : 0;
+  packet.tracker_drops = tracker ? tracker->dropCount() : 0;
+  packet.completed_at = Clock::now();
 }
 
 L2Perception::ArmorDetector makeArmorDetector(
@@ -245,9 +419,7 @@ void AutoAimRuntime::run() {
   };
 
   const auto stopAimSession = [&]() {
-    if (tracker) {
-      tracker->reset();
-    }
+    // Tracker is owned by the vision producer; reset it there or after join.
     planner.resetTracking();
     if (rune) rune->suspend();
     sendSafeHold();
@@ -298,401 +470,418 @@ void AutoAimRuntime::run() {
   std::uint64_t fire_stats_serial_tx = serial.sentCommandCount();
   /******************************** debug *********************************/
 
+  // This producer is also used by synchronous mode, keeping the algorithms identical.
+  // In pipeline mode only the worker may access detector/tracker after startup.
+  const bool armor_model_ready = armor_detector.ready();
+  runtime::PoseOverlapState pose_overlap_state;
+  const auto nextArmorFrame = [&]() -> std::optional<ArmorVisionPacket> {
+    if (!running_) return std::nullopt;
+    ArmorVisionPacket packet;
+    auto& frame = packet.image;
+    auto& frame_timing = packet.timing;
+    auto& timestamp = frame_timing.captured_at;
+    if (!camera->read(frame, timestamp)) {
+      if (!running_) return std::nullopt;
+      return packet; // Explicit capture timeout; consumer immediately stops firing.
+    }
+    frame_timing.ready_at = Clock::now();
+    packet.state = serial.latestState();
+    processArmorVision(packet, armor_detector, tracker, serial, serial_started,
+                       serial_config.pose_wait_ms,
+                       auto_aim_config.runtime.pose_detection_overlap ? &pose_overlap_state : nullptr);
+    return packet;
+  };
+
+  using ArmorPipeline = SingleFramePipeline<ArmorVisionPacket>;
+  std::unique_ptr<ArmorPipeline> armor_pipeline;
+  if (auto_aim_config.mode == AimMode::Armor && auto_aim_config.runtime.armor_pipeline) {
+    armor_pipeline = std::make_unique<ArmorPipeline>(nextArmorFrame);
+  }
+  std::uint64_t stale_results = 0;
+
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
-  // 相机驱动已用独立采集线程和 LatestBuffer 覆盖旧帧；这里同步处理最新图像。
-  // 图像年龄已包含曝光时间戳到规划开始的耗时，不能再叠加整帧处理耗时。
-  while (running_) {
-    frame_timing = {};
-    //获取相机帧和时间辍
-    if (!camera->read(frame, timestamp)) {
-      if (!running_) {
-        sendSafeHold();
-        break;
-      }
-      // 读帧超时期间没有新观测，不继续续期上一帧的开火位。
-      sendSafeHold();
-      continue;
-    }
-    frame_timing.captured_at = timestamp;
-    frame_timing.ready_at = Clock::now();
-    const auto pose_deadline = frame_timing.ready_at +
-        std::chrono::milliseconds(serial_config.pose_wait_ms);
-    const auto state = serial.latestState();
-    // 图像检测不依赖串口。缺少反馈时只做整图检测，保持停瞄，
-    // 不构造虚假的姿态、敌方颜色或跟踪目标。
-    if (auto_aim_config.mode == AimMode::Armor && (!serial_started || !state)) {
-      stopAimSession();
-      const auto started = Clock::now();
-      const auto perception = armor_detector.detectFrame(frame);
-      frame_timing.detect_ms = milliseconds(Clock::now(), started);
-      ++frame_timing.detection_passes;
-      if (Clock::now() - last_armor_detection_only_log >= std::chrono::seconds(2)) {
-        L6Telemetry::logWarn("armor detection only: serial feedback unavailable; detections",
-                            perception.armors.size());
-        last_armor_detection_only_log = Clock::now();
-      }
-      if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
-        // 没有敌方颜色时显示所有网络检出，仅供查看，不进入跟踪与规划。
-        L6Telemetry::drawArmorDetections(frame, perception.armors);
-        L6Telemetry::drawOutlinedText(
-          frame, armor_detector.ready() ? "Detection only: no serial feedback"
-                                        : "Armor model unavailable; see log",
-          {20, 40}, {0, 165, 255});
-      }
-    } else {
-      const L1Sensor::WorkMode mode = selected_mode;
-      switch (mode) {
-        case L1Sensor::WorkMode::AutoAim:
-        case L1Sensor::WorkMode::Outpost:
-        case L1Sensor::WorkMode::Idle: {
-          const bool aiming = mode != L1Sensor::WorkMode::Idle;
-          // 等图像之后的姿态包到齐，再用前后两包插值，避免转动中把最新姿态
-          // 当作曝光时刻姿态。
-          const auto pose_wait_started = Clock::now();
-          if (!serial.waitPoseUntil(timestamp, pose_deadline)) {
-            L6Telemetry::logDebug("gimbal pose wait timeout");
-          }
-          frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
-          const auto image_pose = serial.gimbalPoseAt(timestamp);
-
-          // L2: 生成网络 ROI 与侧灯条的预测端点；Lost 时网络 ROI 退化为整图。
-          std::optional<cv::Rect> net_roi;
-          std::vector<L2Perception::LightHint> light_hints;
-          if (tracker && tracker->ready()) {
-            light_hints = tracker->lightHints(image_pose, timestamp);
-            net_roi = tracker->netFocusRoi(
-              image_pose, timestamp, frame.size(),
-              armor_detector.net_aspect_ratio());
-          }
-          const auto detect = [&](const std::optional<cv::Rect>& roi) {
-            const auto started = Clock::now();
-            auto result = armor_detector.detectFrame(
-              frame, roi,
-              enemyArmorColor(state->enemy_color),
-              light_hints);
-            frame_timing.detect_ms += milliseconds(Clock::now(), started);
-            ++frame_timing.detection_passes;
-            std::erase_if(result.armors, [&state](const auto& armor) {
-              return !isEnemyArmor(armor.color, state->enemy_color);
-            });
-            return result;
-          };
-          auto perception = detect(net_roi);
-          if (tracker && tracker->ready()) {
-            if (const auto init_roi = tracker->initRoi(
-                  perception.armors, image_pose, timestamp, frame.size(),
-                  armor_detector.net_aspect_ratio())) {
-              // 初始化窗口若与首遍相同，再推理不会增加信息。
-              const cv::Rect image_rect(0, 0, frame.cols, frame.rows);
-              const cv::Rect first_roi = net_roi ? (*net_roi & image_rect) : image_rect;
-              if ((*init_roi & image_rect) != first_roi) {
-                auto refined = detect(*init_roi);
-                if (!refined.armors.empty()) {
-                  perception = std::move(refined);
-                }
-              }
-            }
-          }
-
-          // L3: 完整板与独立灯条联合关联，更新整车 IESKF。
-          std::optional<L3Estimation::EskfTarget> target;
-          const auto estimate_started = Clock::now();
-          if (tracker && tracker->ready()) {
-            target = tracker->track(
-              perception.armors, perception.lights, image_pose, timestamp);
-          }
-          frame_timing.estimate_ms = milliseconds(Clock::now(), estimate_started);
-          const auto track_state = tracker
-            ? tracker->state()
-            : L3Estimation::TrackState::Lost;
-
-          L4Planning::AimPlan plan;
-          std::optional<L5Control::SerialCommand> command;
-          if (aiming) {
-            // L4/L5 保留 Bruce0178 分支现有实现：动态窗口选板、弹道迭代与
-            // 开火闸门均不被目标分支覆盖。
-            const auto plan_time = std::chrono::steady_clock::now();
-            const auto actual_pose = serial.latestGimbalPose();
-            planner_context.planning_time = plan_time;
-            auto planning_state = *state;
-            planning_state.timestamp = plan_time;
-            const bool mcu_bullet_speed_valid =
-              std::isfinite(state->bullet_speed) && state->bullet_speed > 0.0;
-            if (!mcu_bullet_speed_valid) {
-              planning_state.bullet_speed = planner_tuning.default_bullet_speed;
-              if (!using_default_bullet_speed) {
-                L6Telemetry::logWarn(
-                  "invalid MCU bullet speed", state->bullet_speed,
-                  "; using configured fallback for tracking and firing",
-                  planner_tuning.default_bullet_speed, "m/s");
-              }
-            } else if (using_default_bullet_speed) {
-              L6Telemetry::logInfo(
-                "MCU bullet speed recovered", state->bullet_speed, "m/s");
-            }
-            using_default_bullet_speed = !mcu_bullet_speed_valid;
-            const bool effective_bullet_speed_valid =
-              std::isfinite(planning_state.bullet_speed) &&
-              planning_state.bullet_speed > 0.0;
-            plan = planner.plan(
-              toL4TargetState(target), planning_state, planner_context);
-            if (!plan.valid) {
-              ++plan_reject_count;
-            }
-            command = controller.update(
-              target, track_state, plan, actual_pose,
-              effective_bullet_speed_valid);
-            if (command) {
-              sendCommand(*command);
-            }
-            frame_timing.plan_control_ms = milliseconds(Clock::now(), plan_time);
-
-            // 分开记录几何角、弹道和最终命令，避免把抬枪过高直接归因于弹道。
-            // 角度统一为向上正；queued 包含串口偏置，feedback 来自最新枪口姿态。
-            if ((overlay_enabled || plotter.has_value()) && plan.valid && command
-                && Clock::now() - last_pitch_diagnostic_log >= std::chrono::seconds(1)) {
-              last_pitch_diagnostic_log = Clock::now();
-              constexpr double kRadToDeg = 180.0 / std::numbers::pi;
-              const auto line_of_sight = [](const Eigen::Vector3d& point) {
-                return std::atan2(point.z(), std::hypot(point.x(), point.y()));
-              };
-              const double los_pitch = line_of_sight(plan.aim_point_barrel);
-              const double feedback_pitch = actual_pose
-                ? -L6Telemetry::eulers(actual_pose->toRotationMatrix(), 2, 1, 0)[1]
-                : std::numeric_limits<double>::quiet_NaN();
-              L6Telemetry::logInfo(
-                "pitch diagnostic (deg, up+): range_m", plan.aim_point_barrel.norm(),
-                "height_m", plan.aim_point_barrel.z(),
-                "center_los", line_of_sight(plan.armor_center_barrel) * kRadToDeg,
-                "aim_los", los_pitch * kRadToDeg,
-                "ballistic_add", (plan.pitch - los_pitch) * kRadToDeg,
-                "reference", plan.pitch * kRadToDeg,
-                "queued", -command->pitch * kRadToDeg - serial_config.command_pitch_offset_deg,
-                "feedback", feedback_pitch * kRadToDeg,
-                "speed_mps", plan.bullet_speed,
-                "mcu_speed_mps", state->bullet_speed,
-                "drag_per_s", plan.drag_coefficient,
-                "mpc", plan.using_MPC);
-            }
-          } else {
-            // Idle 继续预热识别与预测，但不运行选板、不输出开火命令。
-            planner.resetTracking();
+  // Capture stays latest-only. The handoff permits at most one processed frame
+  // ahead of planning/display; no FIFO of historical camera images is introduced.
+  try {
+    while (running_) {
+      frame_timing = {};
+      std::optional<ArmorVisionPacket> armor_packet;
+      if (auto_aim_config.mode == AimMode::Armor) {
+        if (armor_pipeline) {
+          ArmorVisionPacket packet;
+          const auto status = armor_pipeline->readFor(packet, std::chrono::milliseconds(50));
+          if (status != ArmorPipeline::ReadStatus::Value) {
             sendSafeHold();
+            if (status == ArmorPipeline::ReadStatus::Closed || !running_) break;
+            continue;
           }
-
-          /*************************** debug ****************************/
-          // 本帧命令已入队；这些工作仍会占用下一帧的处理时间。
-          if (aiming && (overlay_enabled || plotter.has_value())) {
-            const auto& fire = controller.lastDecision();
-            ++fire_diagnostic_frames;
-            fire_allowed_frames += fire.shoot ? 1 : 0;
-            fire_unlocked_frames += !plan.tracked_ready ? 1 : 0;
-            fire_outside_window_frames += !plan.within_firing_window ? 1 : 0;
-            for (const auto reason : fire.reasons) {
-              ++fire_reject_frames[static_cast<std::size_t>(reason)];
-            }
-          }
-          if (aiming && (overlay_enabled || plotter.has_value())
-              && Clock::now() - last_fire_diagnostic_log >= std::chrono::seconds(1)) {
-            last_fire_diagnostic_log = Clock::now();
-            const auto& fire = controller.lastDecision();
-            std::string reasons;
-            for (const auto reason : fire.reasons) {
-              if (!reasons.empty()) reasons += ',';
-              reasons += L5Control::toString(reason);
-            }
-            constexpr double kRadToDeg = 180.0 / std::numbers::pi;
-            const auto sent = serial.latestSentCommand();
-            L6Telemetry::logInfo(
-              "fire diagnostic: shoot", fire.shoot,
-              "last_tx_shoot", sent ? static_cast<int>(sent->shoot) : -1,
-              "reasons", reasons.empty() ? "none" : reasons,
-              "plan_valid", plan.valid, "lock", plan.tracked_ready,
-              "window", plan.within_firing_window,
-              "aim_ok", fire.aim_error_within_tolerance,
-              "plate_hit_diag", fire.hit_inside_plate,
-              "yaw_err_deg", fire.yaw_error * kRadToDeg,
-              "pitch_err_deg", fire.pitch_error * kRadToDeg,
-              "yaw_tol_deg", fire.tolerance.yaw * kRadToDeg,
-              "pitch_tol_deg", fire.tolerance.pitch * kRadToDeg,
-              "aim_u_m", plan.in_plate_aim.offset.x(),
-              "aim_v_m", plan.in_plate_aim.offset.y(),
-              "hit_u_m", fire.predicted_hit_uv.x(),
-              "hit_v_m", fire.predicted_hit_uv.y(),
-              "hit_t_s", fire.predicted_fly_time);
-
-            // 每秒汇总全部帧，避免一秒一条瞬时 shoot 掩盖频繁断火。
-            // 一帧可能被多项门控拒绝，各原因的计数允许重叠。
-            std::string reject_counts;
-            for (std::size_t index = 0; index < fire_reject_frames.size(); ++index) {
-              if (fire_reject_frames[index] == 0) continue;
-              if (!reject_counts.empty()) reject_counts += ',';
-              reject_counts += L5Control::toString(static_cast<L5Control::RejectReason>(index))
-                + ':' + std::to_string(fire_reject_frames[index]);
-            }
-            const auto stats_time = Clock::now();
-            const double elapsed = std::chrono::duration<double>(stats_time - fire_stats_started).count();
-            const auto tx_count = serial.sentCommandCount();
-            const double percent_per_frame = 100.0 / fire_diagnostic_frames;
-            L6Telemetry::logInfo(
-              "fire gate stats: frames", fire_diagnostic_frames,
-              "fps", fire_diagnostic_frames / elapsed,
-              "allow_pct", fire_allowed_frames * percent_per_frame,
-              "unlocked_pct", fire_unlocked_frames * percent_per_frame,
-              "outside_window_pct", fire_outside_window_frames * percent_per_frame,
-              "reject_counts", reject_counts.empty() ? "none" : reject_counts,
-              "serial_tx_hz", (tx_count - fire_stats_serial_tx) / elapsed);
-            fire_diagnostic_frames = fire_allowed_frames = 0;
-            fire_unlocked_frames = fire_outside_window_frames = 0;
-            fire_reject_frames.fill(0);
-            fire_stats_started = stats_time;
-            fire_stats_serial_tx = tx_count;
-          }
-          if (plotter) {
-            static const std::vector<L3Estimation::Armor> kNoObservations;
-            auto telemetry = telemetryFrame(
-              image_pose, *state, kNoObservations, target, track_state, plan,
-              controller.lastDecision(), command.has_value(), serial, timestamp,
-              tracker ? tracker->lastMatchCount() : 0,
-              tracker ? tracker->dropCount() : 0, plan_reject_count);
-            telemetry["pipeline"] = pipelineTiming(frame_timing, serial);
-            (void)plotter->send(telemetry);
-          }
-          if (overlay_solver && tracker &&
-              frame_index % auto_aim_config.debug.overlay_every == 0) {
-            overlay_solver->set_R_world_barrel(image_pose);
-            L6Telemetry::drawAimOverlay(
-              frame,
-              {.detections = perception.armors,
-               .observations = {},
-               .target = target,
-               .track_state = track_state,
-               .plan = plan,
-               .fire = controller.lastDecision(),
-               .q_world_barrel = image_pose},
-              *overlay_solver, *camera_calibration);
-          }
-          /*************************** debug ****************************/
+          armor_packet = std::move(packet);
+        } else {
+          armor_packet = nextArmorFrame();
+        }
+        if (!running_ || !armor_packet) {
+          sendSafeHold();
           break;
         }
+        if (armor_packet->image.empty()) {
+          sendSafeHold();
+          continue;
+        }
+        frame = std::move(armor_packet->image);
+        frame_timing = armor_packet->timing;
+        timestamp = frame_timing.captured_at;
+        frame_timing.result_wait_ms = milliseconds(Clock::now(), armor_packet->completed_at);
+        if (armor_pipeline && milliseconds(Clock::now(), timestamp) >
+              auto_aim_config.runtime.pipeline_max_result_age_ms) {
+          ++stale_results;
+          frame_timing.stale_results = stale_results;
+          sendSafeHold();
+          if (plotter) {
+            (void)plotter->send(nlohmann::json{
+              {"pipeline", pipelineTiming(frame_timing, serial)}, {"result_rejected", true}});
+          }
+          continue;
+        }
+        frame_timing.stale_results = stale_results;
+      } else {
+        if (!camera->read(frame, timestamp)) {
+          sendSafeHold();
+          if (!running_) break;
+          continue;
+        }
+        frame_timing.captured_at = timestamp;
+        frame_timing.ready_at = Clock::now();
+      }
+      const auto pose_deadline = frame_timing.ready_at +
+          std::chrono::milliseconds(serial_config.pose_wait_ms);
+      const auto state = armor_packet ? armor_packet->state : serial.latestState();
+      // 图像检测不依赖串口。缺少反馈时只做整图检测，保持停瞄，
+      // 不构造虚假的姿态、敌方颜色或跟踪目标。
+      if (auto_aim_config.mode == AimMode::Armor && (!serial_started || !state)) {
+        stopAimSession();
+        const auto& perception = armor_packet->perception;
+        if (Clock::now() - last_armor_detection_only_log >= std::chrono::seconds(2)) {
+          L6Telemetry::logWarn("armor detection only: serial feedback unavailable; detections",
+                              perception.armors.size());
+          last_armor_detection_only_log = Clock::now();
+        }
+        if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
+          // 没有敌方颜色时显示所有网络检出，仅供查看，不进入跟踪与规划。
+          L6Telemetry::drawArmorDetections(frame, perception.armors);
+          L6Telemetry::drawOutlinedText(
+            frame, armor_model_ready ? "Detection only: no serial feedback"
+                                          : "Armor model unavailable; see log",
+            {20, 40}, {0, 165, 255});
+        }
+      } else {
+        const L1Sensor::WorkMode mode = selected_mode;
+        switch (mode) {
+          case L1Sensor::WorkMode::AutoAim:
+          case L1Sensor::WorkMode::Outpost:
+          case L1Sensor::WorkMode::Idle: {
+            const bool aiming = mode != L1Sensor::WorkMode::Idle;
+            const auto& image_pose = armor_packet->image_pose;
+            const auto& perception = armor_packet->perception;
+            const auto& target = armor_packet->target;
+            const auto track_state = armor_packet->track_state;
 
-        case L1Sensor::WorkMode::SmallBuff:
-        case L1Sensor::WorkMode::BigBuff: {
-          if (!rune) {
-            sendSafeHold();
-            if (overlay_enabled) {
-              cv::putText(frame, "Rune detector unavailable; see log", {20, 40},
-                          cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 0, 255}, 2);
-            }
-            break;
-          }
-          if (save_rune_frame) {
-            save_rune_frame = false;
-            try {
-              const auto path = std::filesystem::path("logs/rune_input.png");
-              std::filesystem::create_directories(path.parent_path());
-              if (!cv::imwrite(path.string(), frame))
-                throw std::runtime_error("imwrite returned false");
-              L6Telemetry::logInfo("saved raw rune frame", path.string());
-            } catch (const std::exception& error) {
-              L6Telemetry::logError("failed to save raw rune frame", error.what());
-            }
-          }
-          Rune::Frame input;
-          input.bgr = frame;
-          input.captured_at = timestamp;
-          input.mode = mode == L1Sensor::WorkMode::SmallBuff
-              ? Rune::Mode::Small : Rune::Mode::Big;
-          input.color = state && state->enemy_color==L1Sensor::EnemyColor::Blue
-              ? Rune::Color::Blue : Rune::Color::Red;
-          if (camera_calibration) {
-            (void)Rune::applyCameraCalibration(input, *camera_calibration);
-          }
-          try {
-            // 检测只依赖图像：先推理，让串口接收线程同时补齐曝光后的姿态包。
-            const auto detect_started = Clock::now();
-            rune->detect(input);
-            frame_timing.detect_ms = milliseconds(Clock::now(), detect_started);
-            frame_timing.detection_passes = 1;
-            if ((overlay_enabled || plotter) &&
-                (last_rune_diagnostic_log == Clock::time_point{} ||
-                 Clock::now() - last_rune_diagnostic_log >= std::chrono::seconds(1))) {
-              if (const auto diagnostics = rune->detectorDiagnostics()) {
-                L6Telemetry::logDebug("rune detection", Rune::formatDetectionDiagnostics(*diagnostics),
-                                      "image", frame.cols, frame.rows);
+            L4Planning::AimPlan plan;
+            std::optional<L5Control::SerialCommand> command;
+            if (aiming) {
+              // L4/L5 保留 Bruce0178 分支现有实现：动态窗口选板、弹道迭代与
+              // 开火闸门均不被目标分支覆盖。
+              const auto plan_time = std::chrono::steady_clock::now();
+              const auto actual_pose = serial.latestGimbalPose();
+              planner_context.planning_time = plan_time;
+              auto planning_state = *state;
+              planning_state.timestamp = plan_time;
+              const bool mcu_bullet_speed_valid =
+                std::isfinite(state->bullet_speed) && state->bullet_speed > 0.0;
+              if (!mcu_bullet_speed_valid) {
+                planning_state.bullet_speed = planner_tuning.default_bullet_speed;
+                if (!using_default_bullet_speed) {
+                  L6Telemetry::logWarn(
+                    "invalid MCU bullet speed", state->bullet_speed,
+                    "; using configured fallback for tracking and firing",
+                    planner_tuning.default_bullet_speed, "m/s");
+                }
+              } else if (using_default_bullet_speed) {
+                L6Telemetry::logInfo(
+                  "MCU bullet speed recovered", state->bullet_speed, "m/s");
               }
-              last_rune_diagnostic_log = Clock::now();
-            }
-            const auto pose_wait_started = Clock::now();
-            (void)serial.waitPoseUntil(timestamp, pose_deadline);
-            frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
-            input.q_world_barrel = serial.gimbalPoseAt(timestamp);
-            // 推理耗时计入图像年龄；规划及反馈使用推理完成后的时刻。
-            const auto feedback = serial.latestState();
-            const auto actual_pose = serial.latestGimbalPose();
-            const auto command_at = std::chrono::steady_clock::now();
-            if (feedback) {
-              if (auto command = rune->process(input, *feedback, actual_pose, command_at)) {
-                sendCommand(*command, true);
-              } else {
-                sendSafeHold();
+              using_default_bullet_speed = !mcu_bullet_speed_valid;
+              const bool effective_bullet_speed_valid =
+                std::isfinite(planning_state.bullet_speed) &&
+                planning_state.bullet_speed > 0.0;
+              plan = planner.plan(
+                toL4TargetState(target), planning_state, planner_context);
+              if (!plan.valid) {
+                ++plan_reject_count;
+              }
+              command = controller.update(
+                target, track_state, plan, actual_pose,
+                effective_bullet_speed_valid);
+              if (command) {
+                sendCommand(*command);
+              }
+              frame_timing.plan_control_ms = milliseconds(Clock::now(), plan_time);
+
+              // 分开记录几何角、弹道和最终命令，避免把抬枪过高直接归因于弹道。
+              // 角度统一为向上正；queued 包含串口偏置，feedback 来自最新枪口姿态。
+              if ((overlay_enabled || plotter.has_value()) && plan.valid && command
+                  && Clock::now() - last_pitch_diagnostic_log >= std::chrono::seconds(1)) {
+                last_pitch_diagnostic_log = Clock::now();
+                constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+                const auto line_of_sight = [](const Eigen::Vector3d& point) {
+                  return std::atan2(point.z(), std::hypot(point.x(), point.y()));
+                };
+                const double los_pitch = line_of_sight(plan.aim_point_barrel);
+                const double feedback_pitch = actual_pose
+                  ? -L6Telemetry::eulers(actual_pose->toRotationMatrix(), 2, 1, 0)[1]
+                  : std::numeric_limits<double>::quiet_NaN();
+                L6Telemetry::logInfo(
+                  "pitch diagnostic (deg, up+): range_m", plan.aim_point_barrel.norm(),
+                  "height_m", plan.aim_point_barrel.z(),
+                  "center_los", line_of_sight(plan.armor_center_barrel) * kRadToDeg,
+                  "aim_los", los_pitch * kRadToDeg,
+                  "ballistic_add", (plan.pitch - los_pitch) * kRadToDeg,
+                  "reference", plan.pitch * kRadToDeg,
+                  "queued", -command->pitch * kRadToDeg - serial_config.command_pitch_offset_deg,
+                  "feedback", feedback_pitch * kRadToDeg,
+                  "speed_mps", plan.bullet_speed,
+                  "mcu_speed_mps", state->bullet_speed,
+                  "drag_per_s", plan.drag_coefficient,
+                  "mpc", plan.using_MPC);
               }
             } else {
+              // Idle 继续预热识别与预测，但不运行选板、不输出开火命令。
+              planner.resetTracking();
+              sendSafeHold();
+            }
+
+            /*************************** debug ****************************/
+            // 本帧命令已入队；这些工作仍会占用下一帧的处理时间。
+            if (aiming && (overlay_enabled || plotter.has_value())) {
+              const auto& fire = controller.lastDecision();
+              ++fire_diagnostic_frames;
+              fire_allowed_frames += fire.shoot ? 1 : 0;
+              fire_unlocked_frames += !plan.tracked_ready ? 1 : 0;
+              fire_outside_window_frames += !plan.within_firing_window ? 1 : 0;
+              for (const auto reason : fire.reasons) {
+                ++fire_reject_frames[static_cast<std::size_t>(reason)];
+              }
+            }
+            if (aiming && (overlay_enabled || plotter.has_value())
+                && Clock::now() - last_fire_diagnostic_log >= std::chrono::seconds(1)) {
+              last_fire_diagnostic_log = Clock::now();
+              const auto& fire = controller.lastDecision();
+              std::string reasons;
+              for (const auto reason : fire.reasons) {
+                if (!reasons.empty()) reasons += ',';
+                reasons += L5Control::toString(reason);
+              }
+              constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+              const auto sent = serial.latestSentCommand();
+              L6Telemetry::logInfo(
+                "fire diagnostic: shoot", fire.shoot,
+                "last_tx_shoot", sent ? static_cast<int>(sent->shoot) : -1,
+                "reasons", reasons.empty() ? "none" : reasons,
+                "plan_valid", plan.valid, "lock", plan.tracked_ready,
+                "window", plan.within_firing_window,
+                "aim_ok", fire.aim_error_within_tolerance,
+                "plate_hit_diag", fire.hit_inside_plate,
+                "yaw_err_deg", fire.yaw_error * kRadToDeg,
+                "pitch_err_deg", fire.pitch_error * kRadToDeg,
+                "yaw_tol_deg", fire.tolerance.yaw * kRadToDeg,
+                "pitch_tol_deg", fire.tolerance.pitch * kRadToDeg,
+                "aim_u_m", plan.in_plate_aim.offset.x(),
+                "aim_v_m", plan.in_plate_aim.offset.y(),
+                "hit_u_m", fire.predicted_hit_uv.x(),
+                "hit_v_m", fire.predicted_hit_uv.y(),
+                "hit_t_s", fire.predicted_fly_time);
+
+              // 每秒汇总全部帧，避免一秒一条瞬时 shoot 掩盖频繁断火。
+              // 一帧可能被多项门控拒绝，各原因的计数允许重叠。
+              std::string reject_counts;
+              for (std::size_t index = 0; index < fire_reject_frames.size(); ++index) {
+                if (fire_reject_frames[index] == 0) continue;
+                if (!reject_counts.empty()) reject_counts += ',';
+                reject_counts += L5Control::toString(static_cast<L5Control::RejectReason>(index))
+                  + ':' + std::to_string(fire_reject_frames[index]);
+              }
+              const auto stats_time = Clock::now();
+              const double elapsed = std::chrono::duration<double>(stats_time - fire_stats_started).count();
+              const auto tx_count = serial.sentCommandCount();
+              const double percent_per_frame = 100.0 / fire_diagnostic_frames;
+              L6Telemetry::logInfo(
+                "fire gate stats: frames", fire_diagnostic_frames,
+                "fps", fire_diagnostic_frames / elapsed,
+                "allow_pct", fire_allowed_frames * percent_per_frame,
+                "unlocked_pct", fire_unlocked_frames * percent_per_frame,
+                "outside_window_pct", fire_outside_window_frames * percent_per_frame,
+                "reject_counts", reject_counts.empty() ? "none" : reject_counts,
+                "serial_tx_hz", (tx_count - fire_stats_serial_tx) / elapsed);
+              fire_diagnostic_frames = fire_allowed_frames = 0;
+              fire_unlocked_frames = fire_outside_window_frames = 0;
+              fire_reject_frames.fill(0);
+              fire_stats_started = stats_time;
+              fire_stats_serial_tx = tx_count;
+            }
+            if (plotter) {
+              static const std::vector<L3Estimation::Armor> kNoObservations;
+              auto telemetry = telemetryFrame(
+                image_pose, *state, kNoObservations, target, track_state, plan,
+                controller.lastDecision(), command.has_value(), serial, timestamp,
+                armor_packet->match_count, armor_packet->tracker_drops, plan_reject_count);
+              telemetry["pipeline"] = pipelineTiming(frame_timing, serial);
+              (void)plotter->send(telemetry);
+            }
+            if (overlay_solver && armor_packet->has_tracker &&
+                frame_index % auto_aim_config.debug.overlay_every == 0) {
+              overlay_solver->set_R_world_barrel(image_pose);
+              L6Telemetry::drawAimOverlay(
+                frame,
+                {.detections = perception.armors,
+                 .observations = {},
+                 .target = target,
+                 .track_state = track_state,
+                 .plan = plan,
+                 .fire = controller.lastDecision(),
+                 .q_world_barrel = image_pose},
+                *overlay_solver, *camera_calibration);
+            }
+            /*************************** debug ****************************/
+            break;
+          }
+
+          case L1Sensor::WorkMode::SmallBuff:
+          case L1Sensor::WorkMode::BigBuff: {
+            if (!rune) {
+              sendSafeHold();
+              if (overlay_enabled) {
+                cv::putText(frame, "Rune detector unavailable; see log", {20, 40},
+                            cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 0, 255}, 2);
+              }
+              break;
+            }
+            if (save_rune_frame) {
+              save_rune_frame = false;
+              try {
+                const auto path = std::filesystem::path("logs/rune_input.png");
+                std::filesystem::create_directories(path.parent_path());
+                if (!cv::imwrite(path.string(), frame))
+                  throw std::runtime_error("imwrite returned false");
+                L6Telemetry::logInfo("saved raw rune frame", path.string());
+              } catch (const std::exception& error) {
+                L6Telemetry::logError("failed to save raw rune frame", error.what());
+              }
+            }
+            Rune::Frame input;
+            input.bgr = frame;
+            input.captured_at = timestamp;
+            input.mode = mode == L1Sensor::WorkMode::SmallBuff
+                ? Rune::Mode::Small : Rune::Mode::Big;
+            input.color = state && state->enemy_color==L1Sensor::EnemyColor::Blue
+                ? Rune::Color::Blue : Rune::Color::Red;
+            if (camera_calibration) {
+              (void)Rune::applyCameraCalibration(input, *camera_calibration);
+            }
+            try {
+              // 检测只依赖图像：先推理，让串口接收线程同时补齐曝光后的姿态包。
+              const auto detect_started = Clock::now();
+              rune->detect(input);
+              frame_timing.detect_ms = milliseconds(Clock::now(), detect_started);
+              frame_timing.detection_passes = 1;
+              if ((overlay_enabled || plotter) &&
+                  (last_rune_diagnostic_log == Clock::time_point{} ||
+                   Clock::now() - last_rune_diagnostic_log >= std::chrono::seconds(1))) {
+                if (const auto diagnostics = rune->detectorDiagnostics()) {
+                  L6Telemetry::logDebug("rune detection", Rune::formatDetectionDiagnostics(*diagnostics),
+                                        "image", frame.cols, frame.rows);
+                }
+                last_rune_diagnostic_log = Clock::now();
+              }
+              const auto pose_wait_started = Clock::now();
+              (void)serial.waitPoseUntil(timestamp, pose_deadline);
+              frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
+              input.q_world_barrel = serial.gimbalPoseAt(timestamp);
+              // 推理耗时计入图像年龄；规划及反馈使用推理完成后的时刻。
+              const auto feedback = serial.latestState();
+              const auto actual_pose = serial.latestGimbalPose();
+              const auto command_at = std::chrono::steady_clock::now();
+              if (feedback) {
+                if (auto command = rune->process(input, *feedback, actual_pose, command_at)) {
+                  sendCommand(*command, true);
+                } else {
+                  sendSafeHold();
+                }
+              } else {
+                rune->suspend();
+                sendSafeHold();
+              }
+              // Rune::process 包含轮廓、PnP、估计、规划及控制。
+              frame_timing.plan_control_ms = milliseconds(Clock::now(), command_at);
+            } catch (const std::exception& error) {
+              L6Telemetry::logError("rune frame processing failed", error.what());
               rune->suspend();
               sendSafeHold();
             }
-            // Rune::process 包含轮廓、PnP、估计、规划及控制。
-            frame_timing.plan_control_ms = milliseconds(Clock::now(), command_at);
-          } catch (const std::exception& error) {
-            L6Telemetry::logError("rune frame processing failed", error.what());
-            rune->suspend();
-            sendSafeHold();
+            if (plotter) {
+              nlohmann::json telemetry{
+                  {"t", std::chrono::duration<double>(timestamp.time_since_epoch()).count()},
+                  {"mode", static_cast<int>(auto_aim_config.mode)},
+                  {"pipeline", pipelineTiming(frame_timing, serial)}};
+              (void)plotter->send(telemetry);
+            }
+            if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
+              Rune::drawDetectionOverlay(frame, input.detections, input.mode);
+              if (rune->lastMotion())
+                Rune::drawTrackingOverlay(frame, input, rune->lastMotion()->pose);
+              if (const auto diagnostics = rune->detectorDiagnostics())
+                Rune::drawDetectionDiagnostics(frame, *diagnostics);
+              const auto& command = rune->lastCommand();
+              const std::string label = (mode == L1Sensor::WorkMode::SmallBuff ? "Small rune" : "Big rune") +
+                  std::string(" status=") + std::to_string(static_cast<int>(command.status)) +
+                  ((!serial_started || !state) ? " NO SERIAL FEEDBACK" : "") +
+                  (command.using_mpc ? " MPC" : "") + (command.fire ? " FIRE" : "");
+              cv::putText(frame, label, {20, 40}, cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 255, 255}, 2);
+            }
+            break;
           }
-          if (plotter) {
-            nlohmann::json telemetry{
-                {"t", std::chrono::duration<double>(timestamp.time_since_epoch()).count()},
-                {"mode", static_cast<int>(auto_aim_config.mode)},
-                {"pipeline", pipelineTiming(frame_timing, serial)}};
-            (void)plotter->send(telemetry);
-          }
-          if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
-            Rune::drawDetectionOverlay(frame, input.detections, input.mode);
-            if (rune->lastMotion())
-              Rune::drawTrackingOverlay(frame, input, rune->lastMotion()->pose);
-            if (const auto diagnostics = rune->detectorDiagnostics())
-              Rune::drawDetectionDiagnostics(frame, *diagnostics);
-            const auto& command = rune->lastCommand();
-            const std::string label = (mode == L1Sensor::WorkMode::SmallBuff ? "Small rune" : "Big rune") +
-                std::string(" status=") + std::to_string(static_cast<int>(command.status)) +
-                ((!serial_started || !state) ? " NO SERIAL FEEDBACK" : "") +
-                (command.using_mpc ? " MPC" : "") + (command.fire ? " FIRE" : "");
-            cv::putText(frame, label, {20, 40}, cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 255, 255}, 2);
-          }
-          break;
+
+          default:
+            stopAimSession();
+            break;
         }
-
-        default:
-          stopAimSession();
-          break;
       }
+
+      ++frame_index;
+      /******************************* debug ********************************/
+      if (overlay_enabled) {
+        L6Telemetry::drawImageCenter(frame);
+        cv::imshow("auto_aim", frame);
+        const int key = cv::waitKey(1);
+        if ((key == 's' || key == 'S') && auto_aim_config.mode != AimMode::Armor)
+          save_rune_frame = true;
+        if (key == 27 || key == 'q' || key == 'Q') {
+          running_ = false;
+        }
+      }
+      /******************************* debug ********************************/
     }
 
-    ++frame_index;
-    /******************************* debug ********************************/
-    if (overlay_enabled) {
-      L6Telemetry::drawImageCenter(frame);
-      cv::imshow("auto_aim", frame);
-      const int key = cv::waitKey(1);
-      if ((key == 's' || key == 'S') && auto_aim_config.mode != AimMode::Armor)
-        save_rune_frame = true;
-      if (key == 27 || key == 'q' || key == 'Q') {
-        running_ = false;
-      }
-    }
-    /******************************* debug ********************************/
+  } catch (const std::exception& error) {
+    L6Telemetry::logError("aim runtime failed", error.what());
+  } catch (...) {
+    L6Telemetry::logError("aim runtime failed with unknown exception");
   }
 
+  running_ = false;
+  sendSafeHold();
+  // Join before resetting tracker or stopping its camera/serial dependencies.
+  armor_pipeline.reset();
+  if (tracker) tracker->reset();
   stopAimSession();
   serial.stop();
   camera->stop();

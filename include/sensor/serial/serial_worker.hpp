@@ -97,6 +97,10 @@ public:
   // 用这个而不是 gimbalPoseAt(now())——后者会无谓地走一遍越界分支并计数，
   // 把统计污染成"每帧都越界"，真正该关注的图像时刻越界反而看不出来。
   std::optional<Eigen::Quaterniond> latestGimbalPose() const;
+  // Nonblocking, conservative provisional pose for ROI only. Does not increment
+  // interpolation-boundary counters. Returns empty unless two fresh samples agree.
+  std::optional<Eigen::Quaterniond> roiPosePreview(
+    std::chrono::steady_clock::time_point image_time) const;
 
   // gimbalPoseAt() 因时间戳越界而退化为边界姿态的累计次数。分早于/晚于历史
   // 两种：前者说明图像比姿态历史还老（丢帧或历史太短），后者说明图像时间戳

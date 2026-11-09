@@ -87,11 +87,24 @@ void pipelineChecks() {
   require(detector.lastLights().size() == 2 && found.lights.size() == 1 &&
           cv::norm(found.lights[0].center - cv::Point2f(100, 100)) < 1,
           "prediction-only detection lost the side light or counted a plate light twice");
+  auto split = detector.detectFrame(image, roi);
+  detector.completeSideLights(image, split, hints, ArmorColor::Blue);
+  require(split.inference_valid && split.armors[0].corners == found.armors[0].corners &&
+          split.lights.size() == found.lights.size() &&
+          split.lights[0].top == found.lights[0].top &&
+          split.lights[0].bottom == found.lights[0].bottom,
+          "deferred side-light search differs from combined detection");
+  detector.completeSideLights(image, split, {}, ArmorColor::Blue);
+  require(split.lights.empty() && detector.lastLights().empty(), "stale side-light results");
   observed->fail = true;
   const auto failed = detector.detectFrame(image, roi, ArmorColor::Blue, hints);
   require(failed.armors.empty() && failed.lights.empty() && detector.lastLights().empty() &&
           detector.lastTiming().infer == 0 && detector.lastTiming().side_light == 0,
           "inference failure retained observations/timing from the preceding frame");
+  auto failed_split = failed;
+  detector.completeSideLights(image, failed_split, hints, ArmorColor::Blue);
+  require(!failed_split.inference_valid && failed_split.lights.empty(),
+          "deferred search must not manufacture observations after inference failure");
 }
 
 }  // namespace

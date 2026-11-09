@@ -82,6 +82,13 @@ void drawVehicle(
   const L3Estimation::PnpSolver& solver, const cv::Scalar& color, int thickness,
   cv::Point image_offset = {});
 
+// 绿色当前估计框：直接复用滤波器端点观测投影，保留完整 SO(3) 姿态。
+// q_world_barrel 必须属于当前图像曝光时刻；不外推、不修改目标状态。
+void drawTrackedVehicle(
+  cv::Mat& image, const L3Estimation::EskfTarget& target,
+  const L1Sensor::CameraCalibration& calibration,
+  const Eigen::Quaterniond& q_world_barrel, cv::Point image_offset = {});
+
 // 这块观测会不会真的进滤波器。必须与 Tracker::observationUsable 保持一致，
 // 否则画出来的和实际喂进 EKF 的不是一回事。
 bool isFilterInputArmor(const L3Estimation::Armor& armor);

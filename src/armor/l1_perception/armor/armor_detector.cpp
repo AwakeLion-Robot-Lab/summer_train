@@ -121,21 +121,8 @@ ArmorFrame ArmorDetector::detectFrame(
     last_refine_stats_ = refiner_.refine(image, frame.armors);
     last_timing_.refine = lap();
 
-    if (!hints.empty()) {
-      last_lights_ = findSideLights(image, hints, color);
-      // 已检出装甲板自己的灯条已经作为板的角点进了观测，不能再以侧边灯条的
-      // 身份进一次；不管是不是正在跟踪的那辆车，都不是“侧边”灯条。
-      for (const Light& light : last_lights_) {
-        const bool owned = std::any_of(
-          frame.armors.begin(), frame.armors.end(), [&](const Armor& armor) {
-            return insideArmor(light, armor, finder_config_.armor_margin);
-          });
-        if (!owned) {
-          frame.lights.push_back(light);
-        }
-      }
-    }
-    last_timing_.side_light = lap();
+    frame.inference_valid = true;
+    completeSideLights(image, frame, hints, color);
     return frame;
   } catch (const std::exception& error) {
     // 一帧坏图或一次推理失败不该中断主循环，记日志后当这帧没检出。
@@ -145,6 +132,31 @@ ArmorFrame ArmorDetector::detectFrame(
     last_refine_stats_ = {};
     return {};
   }
+}
+
+void ArmorDetector::completeSideLights(
+    const cv::Mat& image, ArmorFrame& frame,
+    const std::vector<LightHint>& hints, ArmorColor color) const
+{
+  last_lights_.clear();
+  frame.lights.clear();
+  last_timing_.side_light = 0;
+  if (!frame.inference_valid || hints.empty() || image.empty()) return;
+  const auto started = std::chrono::steady_clock::now();
+  try {
+    last_lights_ = findSideLights(image, hints, color);
+    for (const Light& light : last_lights_) {
+      const bool owned = std::any_of(frame.armors.begin(), frame.armors.end(),
+        [&](const Armor& armor) { return insideArmor(light, armor, finder_config_.armor_margin); });
+      if (!owned) frame.lights.push_back(light);
+    }
+  } catch (const std::exception& error) {
+    L6Telemetry::logError("side light search failed", error.what());
+    last_lights_.clear();
+    frame.lights.clear();
+  }
+  last_timing_.side_light = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - started).count();
 }
 
 bool insideArmor(const Light& light, const Armor& armor, float margin_by_length)

@@ -431,7 +431,8 @@ struct NoiseConfig
   double radius{1e-7};
   double height{1e-7};
   double outpost_height{1e-7};
-  // 非 yaw 姿态漂移，吸收车体 roll/pitch 小幅误差、地面坡度和外参残差。
+  // 非 yaw 姿态随机游走方差率（rad²/s），Q = dt * roll_pitch。
+  // 保留真实倾斜的响应速度；低噪声切板试验因响应过慢已撤回。
   double roll_pitch{0.1};
 };
 

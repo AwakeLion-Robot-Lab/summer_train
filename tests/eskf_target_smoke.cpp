@@ -17,6 +17,7 @@
 
 #include <Eigen/Dense>
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -219,10 +220,85 @@ void benchmarkNoiseResponse()
   }
 }
 
+// 倾斜噪声对照：旋转目标叠加 3°、0.3 Hz 的真实俯仰，或在 4s 时阶跃 3°。
+// 比较整车旋转轴误差及所有板的纵向投影误差，防止只减小可见板的跳变。
+void benchmarkTiltResponse()
+{
+  const auto calibration = makeCalibration();
+  const auto camera = makeCameraPose();
+  const auto start = L3Estimation::TimePoint{} + std::chrono::seconds(1);
+  for (double noise : {0.1, 0.01, 0.001, 1e-4}) for (bool step : {false, true}) {
+    L3Estimation::EskfTargetConfig config;
+    config.noise.roll_pitch = noise;
+    config.noise.yaw_acceleration = 15.0;
+    const auto truthAt = [&](double t) {
+      State x = makeTruth();
+      x[VM::idx::VCX] = x[VM::idx::VCY] = 0;
+      const double pitch = (3.0 * CV_PI / 180.0) *
+        (step ? (t >= 4.0 ? 1.0 : 0.0) : std::sin(2 * CV_PI * 0.3 * t));
+      const Eigen::Matrix3d rotation =
+        (Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) *
+         Eigen::AngleAxisd(0.25 + 1.8 * t, Eigen::Vector3d::UnitZ())).toRotationMatrix();
+      const auto rv = L6Telemetry::so3Log<double>(rotation);
+      x[VM::idx::ROT_X] = rv.x();
+      x[VM::idx::ROT_Y] = rv.y();
+      x[VM::idx::ROT_Z] = rv.z();
+      return x;
+    };
+    L3Estimation::EskfTarget target;
+    target.reset(synthesizeDetection(truthAt(0), 0, calibration, camera, config.armor), config, start);
+    double axis_sq = 0, pixel_sq = 0, step_after_300ms_max = 0;
+    int count = 0, pixels = 0;
+    for (int frame = 1; frame <= 1000; ++frame) {
+      const double t = frame * 0.01;
+      const auto truth = truthAt(t);
+      std::vector<L3Estimation::Armor> detections;
+      for (int id = 0; id < 4; ++id) {
+        if (!facesCamera(truth, id, camera)) continue;
+        auto armor = synthesizeDetection(truth, id, calibration, camera, config.armor);
+        for (int corner = 0; corner < 4; ++corner) {
+          armor.points[corner].x += 1.5 * std::sin(frame * 2.3 + corner * 1.7 + id);
+          armor.points[corner].y += 1.5 * std::cos(frame * 1.9 + corner * 2.1 + id);
+        }
+        detections.push_back(armor);
+      }
+      const auto now = start + std::chrono::milliseconds(frame * 10);
+      target.predictEkf(now);
+      const auto context = target.obsContext(calibration, camera);
+      target.update(matchArmorAt(target, detections, now, calibration, camera), now, context);
+      if (frame <= 200) continue;
+      const auto axis = VM::vehicleRotation<double>(target.rawState().data(), kName).col(2).eval();
+      const auto actual = VM::vehicleRotation<double>(truth.data(), kName).col(2).eval();
+      const double error = std::acos(std::clamp(axis.dot(actual), -1.0, 1.0)) * 180.0 / CV_PI;
+      axis_sq += error * error;
+      ++count;
+      for (int id = 0; id < 4; ++id) {
+        const auto centerY = [&](const auto& x) {
+          const auto left = context.project(id, true, x);
+          const auto right = context.project(id, false, x);
+          return (left.first.y + left.second.y + right.first.y + right.second.y) / 4.0;
+        };
+        const double dy = centerY(truth) - centerY(target.rawState());
+        pixel_sq += dy * dy;
+        ++pixels;
+      }
+      if (step && t >= 4.3) step_after_300ms_max = std::max(step_after_300ms_max, error);
+    }
+    std::cout << "tilt_response,noise," << noise << ",step," << step
+      << ",axis_rmse_deg," << std::sqrt(axis_sq / count)
+      << ",all_plate_y_rmse_px," << std::sqrt(pixel_sq / pixels)
+      << ",step_after300ms_max_deg," << step_after_300ms_max << '\n';
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
+  if (argc > 1 && std::string_view(argv[1]) == "--tilt-response") {
+    benchmarkTiltResponse();
+    return 0;
+  }
   if (argc > 1 && std::string_view(argv[1]) == "--noise-response") {
     benchmarkNoiseResponse();
     return 0;

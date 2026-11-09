@@ -269,6 +269,10 @@ target_end()
 -- ---------------------------------------------------------------------------
 
 local standalone_tests = {
+    single_frame_pipeline_smoke = {
+        includes = {"include"},
+        syslinks = {"pthread"},
+    },
     rune_planning_control_smoke = {
         files = {"src/rune/f4-planning/*.cpp", "src/rune/f5-control/*.cpp",
                  "src/armor/l3_planning/ballistic_solver.cpp",
@@ -363,6 +367,8 @@ local standalone_tests = {
 local gated_tests = {
     rune_detector_smoke      = "use_openvino",
     openvino_armor_smoke     = "use_openvino",
+    armor_latency_smoke      = "use_openvino",
+    armor_pipeline_replay    = "use_openvino",
     auto_aim_test_armor      = "use_openvino",
     auto_aim_test_small_tune  = "use_openvino",
     auto_aim_test_big_tune    = "use_openvino",
@@ -370,6 +376,7 @@ local gated_tests = {
     serial_worker_smoke      = "linux",
     serial_single_shot_smoke = "linux",
     armor_runtime_no_serial_smoke = "linux",
+    pose_overlap_smoke       = "linux",
 }
 
 -- serial_worker_smoke 用 pty 造串口，需要额外链 util。

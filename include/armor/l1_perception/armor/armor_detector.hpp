@@ -42,6 +42,10 @@ public:
       const cv::Mat& image, const std::optional<cv::Rect>& net_roi = std::nullopt,
       ArmorColor color = ArmorColor::Unknown, const std::vector<LightHint>& hints = {}) const;
   [[nodiscard]] double net_aspect_ratio() const noexcept;
+  // Run once after resolving exposure pose, using all detected plates for deduplication.
+  // Replaces frame.lights; caller must not share this detector across threads.
+  void completeSideLights(const cv::Mat& image, ArmorFrame& frame,
+      const std::vector<LightHint>& hints, ArmorColor color) const;
   const DetectTiming& lastTiming() const noexcept { return last_timing_; }
   const std::vector<Light>& lastLights() const noexcept { return last_lights_; }
   const ArmorDecoderConfig& decoderConfig() const noexcept { return decoder_.config(); }

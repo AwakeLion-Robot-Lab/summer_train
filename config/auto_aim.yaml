@@ -152,7 +152,7 @@ ieskf:
   # 每帧更新的高斯牛顿迭代次数。回放中第 2 次已收敛，继续迭代只增加 CPU 占用。
   iteration_num: 2
 
-  # 车体系过程噪声，与 awakening test.yaml 对齐。
+  # 车体系过程噪声；回放对照见 docs/armor_innovation_tuning.md。
   body_acceleration: [30.0, 30.0, 1.0]
   # 3m_high 前段/后段与合成响应对照：略减小角速度修正波动，保留像素噪声下限。
   yaw_acceleration: 15.0
@@ -161,6 +161,7 @@ ieskf:
   radius_noise: 1.0e-7
   height_noise: 1.0e-7
   outpost_height_noise: 1.0e-7
+  # Q_roll/pitch = dt * noise（rad²）。低噪声试验响应过慢，恢复原值。
   roll_pitch_noise: 0.1
 
   # 端点像素 sigma = max(sigma_min_px, 系数 × 灯条长度)，沿 / 垂直灯条分开给；
@@ -223,9 +224,15 @@ fire:
   min_yaw_tolerance_deg: 2
   min_pitch_tolerance_deg: 1.8
 
-# runtime 只管相邻命令跳变；选板和开火条件仍由当前 L4/L5 实现负责。
+# 装甲板流水线与相邻命令跳变；选板和开火条件仍由当前 L4/L5 实现负责。
 runtime:
   command_jump_deg: 10.0
+  # 视觉线程独占检测和跟踪，最多比规划/显示提前一帧；false 用于串行 A/B。
+  armor_pipeline: true
+  # 稳定跟踪时用新鲜姿态先检测，随后对齐曝光姿态；false 恢复先等待的路径。
+  pose_detection_overlap: true
+  # 流水线结果在规划前若超过该图像年龄，丢弃并停火，不继续用旧观测发命令。
+  pipeline_max_result_age_ms: 100.0
 
 # 调试叠加层。实机要关：imshow 要几毫秒并计进 image_to_plan，NUC 没显示器会直接抛。
 # 蓝框 = L2 原始角点，绿 = 滤波器展开的整车，红框 = 选中的命中板。

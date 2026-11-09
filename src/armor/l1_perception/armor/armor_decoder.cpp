@@ -275,6 +275,12 @@ std::vector<Armor> ArmorDecoder::decode(const InferenceResult& result,
       score = valueAt(candidate, contract.class_offset + best_class);
     }
     if (contract.confidence_is_logit) {
+      // sigmoid(x) <= 0.5 for x <= 0. Most v5 candidates are background.
+      // Keep the original sigmoid and comparisons for every possible survivor;
+      // using > 0.5 also preserves rounding at a threshold of exactly 0.5.
+      if (score <= 0.0 && config_.confidence_threshold > 0.5F) {
+        continue;
+      }
       score = sigmoid(score);
     }
     if (!std::isfinite(score) || score < config_.confidence_threshold) {
