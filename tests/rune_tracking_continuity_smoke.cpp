@@ -110,9 +110,77 @@ void check() {
   require(processor.lastMotion() && processor.lastMotion()->pose.history_reset,
           "enemy color change did not reset tracking history");
 }
+
+void checkStationaryVisualPrediction() {
+  Rune::Geometry geometry;
+  geometry.radius_m=.7;
+  geometry.armor_half_width_m=geometry.armor_half_height_m=.15;
+  geometry.normal_vertical_weight_px=0;
+  geometry.plane_window_max_frames=0;
+  Rune::EstimatorConfig estimator;
+  estimator.fit.min_fit_s=.3;
+  for (const auto mode : {Rune::Mode::Small, Rune::Mode::Big}) {
+    Rune::Processor processor(geometry, estimator);
+    for (int i=0;i<=35;++i) {
+      auto frame=frameAt(0);
+      frame.mode=mode;
+      frame.captured_at+=std::chrono::milliseconds(20*i);
+      (void)processor.observe(frame);
+      require(processor.lastMotion().has_value(),"visual-only stationary observation failed");
+      require(!processor.lastPlan(),"visual-only observation generated an aiming plan");
+      require(!processor.lastMotion()->pose.q_world_barrel,
+              "visual-only observation fabricated world orientation");
+      if (i==0) require(!processor.lastMotion()->ready,"one sample made motion ready");
+    }
+    const auto& motion=*processor.lastMotion();
+    require(motion.ready && std::abs(motion.angular_speed_rad_s)<.01,
+            "a stable stationary model never became ready");
+    const auto delta=motion.phase_delta_rad(.2);
+    require(delta && std::abs(*delta)<.002,"stationary prediction invented angular movement");
+  }
+}
+
+void checkFilteredPhaseCorrection() {
+  Rune::EstimatorConfig config;
+  config.fit.min_fit_s=.3;
+  Rune::EstimatorStage estimator(config);
+  Rune::Pose pose;
+  pose.center_barrel={4,0,0};
+  pose.normal_barrel=Eigen::Vector3d::UnitX();
+  pose.filter_state=Rune::FilterState{};
+  Rune::Motion motion;
+  for (int i=0;i<=31;++i) {
+    pose.captured_at=Rune::TimePoint{}+std::chrono::seconds(1)+std::chrono::milliseconds(20*i);
+    pose.phase_rad=.4*.02*i+(i==31 ? .13 : 0);
+    pose.filter_state->x[5]=pose.phase_rad;
+    pose.filter_state->x[6]=.4;
+    motion=estimator.update(pose,Rune::Mode::Small);
+  }
+  require(motion.ready && motion.fit_cost_rad2<.06*.06,
+          "a bounded Kalman phase correction erased valid motion fitting history");
+}
+
+void checkSmallFitWindow() {
+  for (const auto mode : {Rune::Mode::Small,Rune::Mode::Big}) {
+    Rune::EstimatorStage estimator;
+    Rune::Pose pose;
+    pose.center_barrel={4,0,0};
+    pose.normal_barrel=Eigen::Vector3d::UnitX();
+    Rune::Motion motion;
+    for (int i=0;i<=25;++i) {
+      pose.captured_at=Rune::TimePoint{}+std::chrono::seconds(1)+std::chrono::milliseconds(20*i);
+      pose.phase_rad=.4*.02*i;
+      motion=estimator.update(pose,mode);
+      if (i<15) require(!motion.ready,"small motion became ready before its minimum fit span");
+    }
+    require(motion.ready==(mode==Rune::Mode::Small),
+            "small constant-speed fitting incorrectly required the big-rune fit window");
+  }
+}
 } // namespace
 
 int main() {
-  try { check(); std::cout<<"rune_tracking_continuity_smoke passed\n"; return 0; }
+  try { check(); checkStationaryVisualPrediction(); checkFilteredPhaseCorrection(); checkSmallFitWindow();
+    std::cout<<"rune_tracking_continuity_smoke passed\n"; return 0; }
   catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

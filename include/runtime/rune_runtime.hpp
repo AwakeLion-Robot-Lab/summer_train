@@ -35,6 +35,9 @@ public:
   [[nodiscard]] const std::optional<Rune::Motion>& lastMotion() const {
     return processor_.lastMotion();
   }
+  [[nodiscard]] const std::optional<Rune::AimPlan>& lastPlan() const {
+    return processor_.lastPlan();
+  }
   [[nodiscard]] std::optional<Rune::DetectorDiagnostics> detectorDiagnostics() const {
     return detector_->lastDiagnostics();
   }

@@ -159,6 +159,54 @@ void covarianceChecks()
   }
 }
 
+void fixedWindowChecks()
+{
+  bool exercised_fast_window_edge = false;
+  for (const bool is_outpost : {false, true}) {
+    PlannerContext context;
+    const double enter = (is_outpost ? context.config.outpost_enter_angle
+      : context.config.normal_enter_angle) * std::numbers::pi / 180.0;
+    const double leave = (is_outpost ? context.config.outpost_leave_angle
+      : context.config.normal_leave_angle) * std::numbers::pi / 180.0;
+    for (const double rate : {0.0, 0.02, -0.02, 2.51, -2.51, 6.0, -6.0}) {
+      for (const double yaw : {-1.0, 0.0, 1.0}) {
+        auto target = outpost(rate);
+        target.yaw = yaw;
+        if (!is_outpost) {
+          target.robot_id = 1;
+          target.armor_count = 4;
+        }
+        L1Sensor::RobotState robot;
+        robot.timestamp = target.timestamp;
+        robot.bullet_speed = 25.0;
+        const auto candidates = generateArmorCandidates(
+          target, robot, context, target.timestamp);
+        expect(candidates && candidates->size() == target.armor_count,
+          "fixed-window checks generate all vehicle plates");
+        if (!candidates) continue;
+        for (const auto& candidate : *candidates) {
+          const bool rotating = std::abs(rate) > context.config.rotation_rate_dead_zone;
+          const double phase = rotating
+            ? (rate > 0.0 ? candidate.delta_angle : -candidate.delta_angle)
+            : std::abs(candidate.delta_angle);
+          const bool inside = rotating
+            ? phase >= -enter && phase <= leave : phase <= enter;
+          expect(candidate.within_selection_window == inside,
+            "selection uses fixed angles for both vehicle types and rotation directions");
+          expect(candidate.within_firing_window == inside,
+            "firing uses the same fixed window at every rotation speed");
+          if (std::abs(rate) >= 6.0 && inside
+              && (phase < -enter * 0.65 || phase > leave * 0.65)) {
+            exercised_fast_window_edge = true;
+          }
+        }
+      }
+    }
+  }
+  expect(exercised_fast_window_edge,
+    "fast plates remain selectable in the region previously removed by speed scaling");
+}
+
 void interceptionAndReferenceChecks()
 {
   for (const double rate : {2.51, -2.51, 6.0, -6.0}) {
@@ -167,7 +215,6 @@ void interceptionAndReferenceChecks()
     context.config.in_plate_aim.enable = true;
     context.config.enable_air_resistance = true;
     context.config.linear_drag_coefficient = 0.5;
-    context.config.enable_dynamic_windows = true;
     L1Sensor::RobotState robot;
     robot.timestamp = target.timestamp;
     robot.bullet_speed = 25.0;
@@ -273,6 +320,7 @@ int main()
 {
   geometryAndHeightChecks();
   covarianceChecks();
+  fixedWindowChecks();
   interceptionAndReferenceChecks();
   actualHitChecks();
   const auto tuning = loadPlannerTuning("config/planner_config.yaml");

@@ -123,8 +123,34 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
     const double dt=std::chrono::duration<double>(frame.captured_at-previous_time_).count();
     bool initialized=!state_ || seed.history_reset || dt<=0 || dt>config_.max_gap_s ||
       state_->world_frame!=world || world_frame_id_!=frame.world_frame_id;
-    if (!initialized) initialized=(center-state_->x.head<3>()).norm()>config_.max_center_jump_m ||
-      normal(state_->x).dot(n)<std::cos(config_.max_normal_jump_rad);
+    if (!initialized && ((center-state_->x.head<3>()).norm()>config_.max_center_jump_m ||
+        normal(state_->x).dot(n)<std::cos(config_.max_normal_jump_rad))) {
+      // IPPE can switch between ambiguous planar poses despite continuous image
+      // features. Keep the existing state when BOTH the hub and an inactive
+      // target still support its projection under the normal innovation gate.
+      // Real image discontinuities and missing support still reinitialize it.
+      Vector predicted=state_->x;
+      predicted[5]+=predicted[6]*dt;
+      const auto pixels=project(predicted,up,geometry_.radius_m,camera_tracking,frame);
+      const auto hs=jacobians(predicted,up,geometry_.radius_m,camera_tracking,frame);
+      bool hub_support=false,target_support=false;
+      for (const auto& measurement : measurements(observations,frame.mode)) {
+        for (int j=0;j<6;++j) {
+          if (!pixels.visible[j] || measurement.icon!=(j==0) ||
+              (!measurement.icon && !measurement.inactive)) continue;
+          const Eigen::Vector2d innovation=measurement.pixel-pixels.pixels[j];
+          const Eigen::Matrix2d s=hs[j]*state_->covariance*hs[j].transpose()+
+              config_.observation_variance_px2*Eigen::Matrix2d::Identity();
+          const Eigen::LDLT<Eigen::Matrix2d> ldlt(s);
+          if (ldlt.info()!=Eigen::Success || !ldlt.isPositive()) continue;
+          const double distance=innovation.dot(ldlt.solve(innovation));
+          if (!std::isfinite(distance) || distance>=config_.gate_squared) continue;
+          if (measurement.icon) hub_support=true;
+          else target_support=true;
+        }
+      }
+      initialized=!(hub_support && target_support);
+    }
     if (initialized) {
       state_=FilterState{};
       state_->world_frame=world;

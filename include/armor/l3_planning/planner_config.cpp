@@ -134,35 +134,6 @@ PlannerTuning loadPlannerTuning(const std::string& config_path)
     selection, "outpost_enter_angle_deg", config.outpost_enter_angle);
   readOptional(
     selection, "outpost_leave_angle_deg", config.outpost_leave_angle);
-  const YAML::Node dynamic_windows = selection["dynamic_windows"];
-  readOptional(
-    dynamic_windows, "enable", config.enable_dynamic_windows);
-  readOptional(
-    dynamic_windows,
-    "shrink_start_speed_rad_s",
-    config.window_shrink_start_speed);
-  readOptional(
-    dynamic_windows,
-    "shrink_end_speed_rad_s",
-    config.window_shrink_end_speed);
-  const YAML::Node dynamic_selection = dynamic_windows["selection"];
-  readOptional(
-    dynamic_selection,
-    "min_window_scale",
-    config.selection_min_window_scale);
-  readOptional(
-    dynamic_selection,
-    "hold_margin_deg",
-    config.selection_hold_margin);
-  const YAML::Node dynamic_firing = dynamic_windows["firing"];
-  readOptional(
-    dynamic_firing,
-    "max_window_scale",
-    config.firing_max_window_scale);
-  readOptional(
-    dynamic_firing,
-    "min_window_scale",
-    config.firing_min_window_scale);
   readOptional(
     selection, "facing_angle_good_deg", tuning.facing_angle_good);
   readOptional(

@@ -35,6 +35,13 @@ void Processor::reset() {
 Command Processor::process(const Frame& frame, const ControlInput& control) {
   Command result;
   result.mode = frame.mode;
+  result.status = observe(frame);
+  if (!last_motion_) return result;
+  last_plan_ = planning_.plan(*last_motion_, frame.mode, control);
+  return control_.update(*last_plan_, control);
+}
+
+Status Processor::observe(const Frame& frame) {
   last_motion_.reset();
   last_plan_.reset();
   const auto lost = [&] {
@@ -51,7 +58,7 @@ Command Processor::process(const Frame& frame, const ControlInput& control) {
   previous_mode_ = frame.mode;
   previous_color_=frame.color;
   previous_frame_time_=frame.captured_at;
-  if (invalid_image || invalid_time) return result;
+  if (invalid_image || invalid_time) return Status::NoDetection;
   // Missing image evidence is not a measurement. Stop the current command and
   // firing alignment immediately, but let a brief blink retain estimator history.
   // Compare against the last SUCCESSFUL observation, so repeated empty frames
@@ -64,7 +71,7 @@ Command Processor::process(const Frame& frame, const ControlInput& control) {
   const auto regions = detection_.runAll(frame);
   if (regions.empty() || std::none_of(regions.begin(), regions.end(),
       [](const auto& region) { return region.keypoints.class_id == 0; })) {
-    missed(); return result;
+    missed(); return Status::NoDetection;
   }
   std::vector<Observation> observations;
   for (const auto& region : regions)
@@ -72,16 +79,15 @@ Command Processor::process(const Frame& frame, const ControlInput& control) {
       observations.push_back(std::move(*observation));
   if (observations.empty() || std::none_of(observations.begin(), observations.end(),
       [](const auto& observation) { return observation.keypoints.class_id == 0; })) {
-    missed(); result.status = Status::NoContour; return result;
+    missed(); return Status::NoContour;
   }
   const auto pose = building_.run(observations, frame);
-  if (!pose) { lost(); result.status = Status::PoseFailed; return result; }
+  if (!pose) { lost(); return Status::PoseFailed; }
   const auto filtered=filter_.update(*pose,observations,frame);
-  if (!filtered) { lost(); result.status=Status::PoseFailed; return result; }
+  if (!filtered) { lost(); return Status::PoseFailed; }
   last_observation_time_=frame.captured_at;
   last_motion_=estimator_.update(*filtered, frame.mode);
-  last_plan_=planning_.plan(*last_motion_, frame.mode, control);
-  return control_.update(*last_plan_,control);
+  return last_motion_->ready ? Status::Ready : Status::MotionNotReady;
 }
 
 }  // namespace Rune

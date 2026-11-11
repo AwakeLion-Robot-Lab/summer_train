@@ -81,7 +81,9 @@ xmake run rune_detect --input /path/to/rune.mp4 --mode big --frames 30 --output 
 
 检测入口不需要相机标定，可独立回放图像。默认使用 CPU，阈值与设备可在 `config/auto_aim.yaml` 的 `rune.detector` 节点中修改，模型相对路径以配置文件所在目录为基准。工具不下发云台或开火指令。
 
-实时 `debug.overlay: true` 窗口与 `rune_detect --output` 共用 `Rune::drawDetectionOverlay`：未激活靶板画绿色轮廓，已激活画橙色；五点沿用 RuneDetectionModel 的颜色（上绿、左黄、R 蓝、右紫、下红）及白色描边，黑底白字显示 `inactive / small_activated / big_activated` 和置信度百分比。只显示过阈值关键点；上、左、下、右依次连线，仅两端都可靠时画边，不把 R 点连入靶板框。显示的是当前帧网络检测结果，标定或姿态缺失时仍可显示检测。
+实时 `debug.overlay: true` 窗口与 `rune_detect --output` 共用 `Rune::drawDetectionOverlay`：未激活靶板画蓝色圆圈，已激活画橙色圆圈；五点沿用 RuneDetectionModel 的颜色（上绿、左黄、R 蓝、右紫、下红）及白色描边，黑底白字显示 `inactive / small_activated / big_activated` 和置信度百分比。只显示过阈值关键点；圆心由可靠的靶板对点确定，半径取可靠靶板点到圆心的最大距离，R 点不参与定圆。无法可靠确定靶心时只显示关键点。显示的是当前帧网络检测结果，标定或姿态缺失时仍可显示检测。
+
+实时窗口和大小符录像回放通过 `Rune::drawPredictionOverlay`，使用运动模型的相位增量，将全部五个靶面外推到同一未来时刻，再以投影靶心为圆心、投影靶板尺寸为半径绘制绿色圆圈，包括本帧未识别到的靶面。有有效靶板拦截规划时使用 `prediction_horizon_s`（包含图像年龄、发射延迟及飞行时间）；否则默认预览未来 200 ms，并明确标注 `preview`，回放可用 `--preview-ms=...` 调整。运动拟合未就绪时显示等待提示，不用当前滤波框冒充未来位置；缺少标定、有效滤波姿态或几何尺寸时不画预测框，过期姿态和相机后方的靶面也会跳过。`drawTrackingOverlay` 只保留当前滤波 R/靶心标记。静止模型通过拟合质量检查后也可就绪，此时未来框与当前模型重合。
 
 关键点筛选采用 SZU 官方规则，`min_valid_keypoints: 3` 表示至少三点过阈值；
 NMS 的中心和平均置信度也只使用这些点。解码仍保留全部五点坐标、各点置信度
@@ -107,10 +109,9 @@ frame.detections = detector.detect(frame.bgr, frame.mode);
 
 输入必须是 `CV_8UC3` BGR 原图，输出点为原图坐标。`detect(image)` 缺省使用小符模式；大小符切换应使用 `detect(image, frame.mode)`。模型原始顺序是 `top/left/R/right/bottom`，适配器已经换成工程顺序，并按模式过滤另一类已激活叶片。五个点均需达到置信度阈值。错误输入或推理失败会抛异常，调用方应清空本帧检测并处理错误。每个实例由一个线程持有，返回的关键点拥有自己的数据，可以跨帧保存。
 
-近距离录像的目标占比过大时，该模型的类别分数可能明显偏低。当前
-`rune.detector.input_scale: 0.75` 将画面缩小后居中补边，配合面积采样减少 LED
-点阵缩小时的失真；关键点仍还原到原图，保持现有标定与几何配置。
-`input_scale: 1.0` 恢复上游满幅输入。详情见
+当前 `rune.detector.input_scale: 1.0` 使用上游满幅输入。近距离录像的目标占比
+过大时，可用 `0.75` 将画面缩小后居中补边，配合面积采样减少 LED 点阵缩小
+时的失真；关键点仍还原到原图，保持现有标定与几何配置。详情见
 [尺度诊断与验证](../../docs/rune_detection_scale.md)。
 
 工程配置已开启 `rune.detector.fuse_keypoints`：先保留原有 NMS 分组和类别选择，

@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <iomanip>
+#include <numbers>
 #include <sstream>
 #include <string>
 
@@ -58,15 +59,18 @@ void drawDetectionOverlay(cv::Mat& image, const std::vector<Keypoints>& detectio
                  p.x < image.cols && p.y < image.rows;
         })) continue;
 
-    // Walk around the target, without crossing its diagonals or including R.
+    // Size the circle from reliable target anchors; R is not part of the rim.
     const cv::Scalar outline_color = detection.class_id == 0
-        ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 165, 255);
+        ? cv::Scalar(255, 0, 0) : cv::Scalar(0, 165, 255);
     const std::array<int, 5> local_order{0, 1, 4, 2, 3};
-    const std::array<int, 4> perimeter{0, 1, 4, 3};
-    for (std::size_t j=0;j<perimeter.size();++j) {
-      const auto a=perimeter[j], b=perimeter[(j+1)%perimeter.size()];
-      if (detection.point_valid[local_order[a]] && detection.point_valid[local_order[b]])
-        cv::line(image, points[a], points[b], outline_color, 2, cv::LINE_AA);
+    if (const auto center = detection.armorCenter()) {
+      double radius = 0;
+      for (const auto k : {0, 1, 3, 4}) {
+        if (detection.point_valid[local_order[k]])
+          radius = std::max(radius, cv::norm(points[k] - *center));
+      }
+      if (radius >= 1)
+        cv::circle(image, *center, cvRound(radius), outline_color, 2, cv::LINE_AA);
     }
     for (std::size_t k = 0; k < points.size(); ++k) {
       if (!detection.point_valid[local_order[k]]) continue;
@@ -96,6 +100,102 @@ void drawDetectionOverlay(cv::Mat& image, const std::vector<Keypoints>& detectio
     cv::putText(image, label, {x, y}, cv::FONT_HERSHEY_SIMPLEX, 0.5,
                 {255, 255, 255}, 1, cv::LINE_AA);
   }
+}
+
+namespace {
+bool canProject(const cv::Mat& image, const Frame& frame, const Pose& pose) {
+  return !image.empty() && image.size() == frame.bgr.size() && pose.filter_state &&
+      pose.captured_at == frame.captured_at && frame.T_barrel_camera &&
+      frame.camera_matrix.rows == 3 && frame.camera_matrix.cols == 3 &&
+      frame.T_barrel_camera->matrix().allFinite();
+}
+void predictionLabel(cv::Mat& image, const std::string& text, bool ready) {
+  cv::putText(image, text, {20, 130}, cv::FONT_HERSHEY_SIMPLEX, 0.55,
+              {0, 0, 0}, 3, cv::LINE_AA);
+  cv::putText(image, text, {20, 130}, cv::FONT_HERSHEY_SIMPLEX, 0.55,
+              ready ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 165, 255), 1, cv::LINE_AA);
+}
+} // namespace
+
+bool drawPredictionOverlay(cv::Mat& image, const Frame& frame, const Motion& motion,
+                           const Geometry& geometry, const AimPlan* plan,
+                           double preview_horizon_s) {
+  const auto& pose = motion.pose;
+  if (!canProject(image, frame, pose)) return false;
+  if (!motion.ready) {
+    predictionLabel(image, "Prediction: waiting for motion fit", false);
+    return false;
+  }
+  const bool intercept = plan && plan->valid && !plan->center_hold &&
+      plan->captured_at == frame.captured_at;
+  const double horizon = intercept ? plan->prediction_horizon_s : preview_horizon_s;
+  if (!std::isfinite(horizon) || horizon <= 0) return false;
+  const auto phase = motion.phase_delta_rad ? motion.phase_delta_rad(horizon)
+      : (frame.mode == Mode::Small && std::isfinite(motion.angular_speed_rad_s)
+          ? std::optional<double>(motion.angular_speed_rad_s * horizon) : std::nullopt);
+  if (!phase || !std::isfinite(*phase)) {
+    predictionLabel(image, "Prediction: motion model unavailable", false);
+    return false;
+  }
+  bool drawn = false;
+  try {
+    const auto camera_barrel = frame.T_barrel_camera->inverse();
+    if (std::isfinite(geometry.radius_m) && geometry.radius_m > 0 &&
+        std::isfinite(geometry.armor_half_width_m) && geometry.armor_half_width_m > 0 &&
+        std::isfinite(geometry.armor_half_height_m) && geometry.armor_half_height_m > 0 &&
+        pose.T_barrel_model.matrix().allFinite()) {
+      // Advance every blade by the fitted phase change at the SAME future
+      // instant. The model's +y axis points at the current reference target.
+      const double r = geometry.radius_m;
+      const double w = geometry.armor_half_width_m;
+      const double h = geometry.armor_half_height_m;
+      const std::array<Eigen::Vector3d, 4> outline{
+          Eigen::Vector3d(0, r + h, 0), Eigen::Vector3d(-w, r, 0),
+          Eigen::Vector3d(0, r - h, 0), Eigen::Vector3d(w, r, 0)};
+      const Eigen::Isometry3d camera_model = camera_barrel * pose.T_barrel_model;
+      for (int sector = 0; sector < 5; ++sector) {
+        const Eigen::AngleAxisd rotation(*phase + sector * 2 * std::numbers::pi / 5,
+                                        Eigen::Vector3d::UnitZ());
+        std::vector<cv::Point3d> corners;
+        for (const auto& corner : outline) {
+          const Eigen::Vector3d point = camera_model * (rotation * corner);
+          if (!point.allFinite() || point.z() <= 0.1) break;
+          corners.emplace_back(point.x(), point.y(), point.z());
+        }
+        if (corners.size() != outline.size()) continue;
+        const Eigen::Vector3d center = camera_model * (rotation * Eigen::Vector3d(0, r, 0));
+        if (!center.allFinite() || center.z() <= 0.1) continue;
+        corners.emplace_back(center.x(), center.y(), center.z());
+        std::vector<cv::Point2d> pixels;
+        cv::projectPoints(corners, cv::Vec3d{}, cv::Vec3d{},
+                          frame.camera_matrix, frame.distortion, pixels);
+        if (!std::all_of(pixels.begin(), pixels.end(), [](const auto& pixel) {
+              return std::isfinite(pixel.x) && std::isfinite(pixel.y) &&
+                     std::abs(pixel.x) <= 1e6 && std::abs(pixel.y) <= 1e6;
+            })) continue;
+        const auto& pixel_center = pixels.back();
+        double radius = 0;
+        for (std::size_t k = 0; k < outline.size(); ++k)
+          radius = std::max(radius, cv::norm(pixels[k] - pixel_center));
+        if (radius >= 1 && radius <= 1e6) {
+          cv::circle(image, {cvRound(pixel_center.x), cvRound(pixel_center.y)},
+                     cvRound(radius), {0, 255, 0}, 2, cv::LINE_AA);
+          drawn = true;
+        }
+      }
+    }
+  } catch (const cv::Exception&) {
+    // Invalid debug calibration must not interrupt command processing.
+    return false;
+  }
+  if (drawn) {
+    std::ostringstream label;
+    label << "Prediction +" << std::fixed << std::setprecision(0) << horizon * 1000
+          << " ms (" << (intercept ? "intercept" : "preview") << ")"
+          << " speed=" << std::setprecision(2) << motion.angular_speed_rad_s << " rad/s";
+    predictionLabel(image, label.str(), true);
+  }
+  return drawn;
 }
 
 void drawTrackingOverlay(cv::Mat& image, const Frame& frame, const Pose& pose) {

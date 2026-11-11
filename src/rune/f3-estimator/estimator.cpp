@@ -47,8 +47,11 @@ Motion EstimatorStage::update(const Pose& pose,Mode mode) {
     if (pose.target_switched) delta=std::remainder(delta,2*std::numbers::pi/5);
   }
   // The feature filter gates pose changes in its tracking frame. Direct Pose
-  // callers retain the old geometric discontinuity checks.
-  if (!std::isfinite(delta) || std::abs(delta/dt)>config_.max_speed_rad_s ||
+  // callers retain the old geometric discontinuity checks. A Kalman phase
+  // correction divided by a short frame interval is not an angular velocity:
+  // gate its estimated speed instead, and let fit residuals reject phase noise.
+  const double speed=pose.filter_state ? pose.filter_state->x[6] : delta/dt;
+  if (!std::isfinite(delta) || std::abs(speed)>config_.max_speed_rad_s ||
       (!pose.filter_state && ((pose.center_barrel-previous_->center_barrel).norm()>0.3 ||
        pose.normal_barrel.dot(previous_->normal_barrel)<0.9))) {
     reset(); mode_=mode; start(); return motion;
@@ -64,9 +67,10 @@ Motion EstimatorStage::fittedMotion(const Pose& pose,const PhaseFit& fit,
   motion.model=model; motion.fit_cost_rad2=fit.cost;
   motion.sine_frequency_rad_s=model==MotionModel::Sine ? fit.omega : 0;
   motion.angular_speed_rad_s=fit.speed(0);
+  // A well-fitted stationary target is predictable too. Keep the sample,
+  // residual and maximum-speed gates without imposing a minimum speed.
   motion.ready=samples_>=config_.min_samples &&
     fit.cost<=config_.fit.max_fit_rms_rad*config_.fit.max_fit_rms_rad &&
-    std::abs(motion.angular_speed_rad_s)>0.05 &&
     std::abs(motion.angular_speed_rad_s)<=config_.max_speed_rad_s;
   // The intercept cancels: prediction starts at the current filtered pose.
   motion.phase_delta_rad=[snapshot=fit](double horizon) -> std::optional<double> {

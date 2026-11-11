@@ -7,6 +7,8 @@ namespace Rune {
 struct MotionFitConfig {
   double window_s{6.0};
   double min_fit_s{1.5};
+  // Constant-speed small-rune fits need less history than a sine fit.
+  double small_min_fit_s{0.3};
   double weight_half_life_s{3.0};
   unsigned max_samples{1200};
   double frequency_min_rad_s{1.80};
@@ -35,6 +37,7 @@ public:
   void reset() { samples_.clear(); }
   void push(TimePoint time,double phase);
   [[nodiscard]] std::optional<PhaseFit> fitLinear() const;
+  [[nodiscard]] std::optional<PhaseFit> fitLinear(double min_span_s) const;
   [[nodiscard]] std::optional<PhaseFit> fitSine() const;
   [[nodiscard]] std::size_t size() const { return samples_.size(); }
 private:

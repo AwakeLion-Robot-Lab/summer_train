@@ -13,9 +13,9 @@ rune:
     # 与 SZU 官方一致：至少三个关键点过阈值即可检出，弱点不参与 PnP。
     min_valid_keypoints: 3
     nms_distance_px: 30.0
-    # 网络输入内的图像缩放比例；近距离录像用 0.75 缩小目标并补边，1.0 恢复满幅。
+    # 网络输入内的图像缩放比例；1.0 使用原始满幅输入，小于 1 时缩小目标并补边。
     # 五关键点会按同一缩放和平移还原到原图，不改变标定或几何尺寸。
-    input_scale: 0.75
+    input_scale: 1.0
     # 主尺度无检测时用更小尺度额外推理一次；设 0 关闭，门限不变。
     fallback_input_scale: 0.6
     # 同一叶片、同一模型类别的近邻候选做单帧融合，减少最高分候选切换引起的跳点。
@@ -207,7 +207,7 @@ ieskf:
   initial_radius_outpost: 0.2765
   initial_radius_base: 0.3205
 
-# L4 选板、弹道和动态窗口继续使用 config/planner_config.yaml。
+# L4 选板、弹道和固定角度窗口继续使用 config/planner_config.yaml。
 
 # L5 开火闸门。
 fire:
@@ -237,7 +237,7 @@ runtime:
 # 调试叠加层。实机要关：imshow 要几毫秒并计进 image_to_plan，NUC 没显示器会直接抛。
 # 蓝框 = L2 原始角点，绿 = 滤波器展开的整车，红框 = 选中的命中板。
 debug:
-  overlay: true
+  overlay: false
   # 每 N 帧画一次。
   overlay_every: 1
 

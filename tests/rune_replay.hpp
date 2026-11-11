@@ -3,6 +3,8 @@
 // 大小符回放共用实现，模式由各自的可执行入口固定。
 #include "runtime/auto_aim_config.hpp"
 #include "rune/debug_overlay.hpp"
+#include "armor/l5_telemetry/aim_overlay.hpp"
+#include "armor/l5_telemetry/fps_counter.hpp"
 #include "armor/l5_telemetry/udp_json_sender.hpp"
 #include "sensor/camera/camera_calibration.hpp"
 #include "sensor/serial/serial_config.hpp"
@@ -34,7 +36,8 @@ const std::string kKeys =
   "{model m | auto | auto 使用 rune.detector.model_path，否则覆盖模型路径}"
   "{device d | auto | auto 使用 rune.detector.device，否则覆盖推理设备}"
   "{conf | 0 | 覆盖检测置信度，0 保持配置}"
-  "{pose | auto | auto 读取同名 txt / none 仅检测 / 指定姿态 txt}"
+  "{pose | auto | auto 读取同名 txt，无配套姿态时做相机相对视觉预测 / none 仅检测 / 指定姿态 txt}"
+  "{preview-ms | 200 | 无有效靶板拦截规划时的视觉预测提前量（毫秒）}"
   "{convention | imu | 录像四元数约定：imu / sp，与装甲板回放一致}"
   "{serial-config | config/serial_config.yaml | imu 约定的 R_imu_barrel}"
   "{bullet-speed | 27.0 | 回放弹速（m/s）}"
@@ -115,6 +118,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     const auto device = cli.get<std::string>("device");
     const float confidence = cli.get<float>("conf");
     const auto pose_option = cli.get<std::string>("pose");
+    const double preview_s = cli.get<double>("preview-ms") / 1000;
     const auto convention = cli.get<std::string>("convention");
     const auto serial_path = cli.get<std::string>("serial-config");
     const double bullet_speed = cli.get<double>("bullet-speed");
@@ -128,6 +132,8 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     require(convention == "imu" || convention == "sp", "convention 必须是 imu 或 sp");
     require(start_index >= 0 && (end_index == 0 || end_index >= start_index), "起止帧下标无效");
     require(wait_ms >= 0, "wait 不能为负");
+    require(std::isfinite(preview_s) && preview_s > 0 && preview_s <= 2,
+            "preview-ms 必须在 (0, 2000] 内");
     require(std::isfinite(bullet_speed) && bullet_speed > 0, "bullet-speed 必须为正的有限值");
     require(std::isfinite(confidence) && confidence >= 0 && confidence <= 1, "conf 必须在 [0, 1] 内");
 
@@ -140,6 +146,9 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     config.planning.shoot_enable = false;
     config.fire.shoot_enable = false;
     runtime::RuneRuntime rune(config, L4Planning::loadPlannerTuning(planner_path));
+    // Separate observation-only instance: missing IMU data must not be replaced
+    // with fabricated feedback or used to generate aiming/fire commands.
+    Rune::Processor visual_rune(config.geometry);
     std::optional<L6Telemetry::UdpJsonSender> plotter;
     if (debug.plot)
       plotter.emplace(debug.plot_host, static_cast<std::uint16_t>(debug.plot_port));
@@ -174,13 +183,15 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     std::cout << "能量机关回放: " << video_path << " mode="
               << (mode == Rune::Mode::Small ? "small" : "big") << " enemy=" << enemy << '\n'
               << (has_pose ? "姿态文本: " + pose_path.string()
-                           : "无姿态文本，仅显示关键点检测（不合成云台姿态）") << '\n'
+                           : pose_option == "none" ? "仅检测回放（--pose=none）"
+                           : "无姿态文本，运行相机相对视觉预测；相机运动未补偿") << '\n'
               << "shoot_enable=false；不连接相机和串口\n";
     std::size_t frames = 0, positive_frames = 0, total_detections = 0, found_frames = 0, feasible_frames = 0;
     std::size_t overlay_frames = 0;
-    std::size_t motion_ready_frames=0, history_resets=0, target_switches=0;
+    std::size_t motion_ready_frames=0, history_resets=0, target_switches=0, prediction_frames=0;
     std::map<Rune::Status, std::size_t> statuses;
     const auto epoch = std::chrono::steady_clock::now();
+    L6Telemetry::FpsCounter frame_rate(std::chrono::milliseconds(500));
     double previous_seconds = -1;
     double detect_ms = 0;
     bool paused = false;
@@ -209,6 +220,8 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
       positive_frames += !frame.detections.empty();
       total_detections += frame.detections.size();
       const bool full_pipeline = has_pose && calibrated;
+      const bool visual_only = !has_pose && calibrated && pose_option != "none";
+      Rune::Status visual_status = Rune::Status::NoDetection;
       if (full_pipeline) {
         L1Sensor::RobotState state;
         state.mode = mode == Rune::Mode::Small ? L1Sensor::WorkMode::SmallBuff : L1Sensor::WorkMode::BigBuff;
@@ -221,20 +234,35 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
         found_frames += command.found;
         feasible_frames += command.fire_feasible;
         ++statuses[command.status];
-        if (const auto& motion=rune.lastMotion()) {
-          motion_ready_frames+=motion->ready;
-          history_resets+=motion->pose.history_reset;
-          target_switches+=motion->pose.target_switched;
-        }
       }
-      const std::string reason = !has_pose ? "DETECTION ONLY: missing pose"
-          : !calibrated ? "DETECTION ONLY: calibration missing or image size mismatch"
+      if (visual_only) {
+        visual_status = visual_rune.observe(frame);
+        ++statuses[visual_status];
+      }
+      const std::optional<Rune::Motion> no_motion;
+      const auto& motion = full_pipeline ? rune.lastMotion()
+          : visual_only ? visual_rune.lastMotion() : no_motion;
+      if (motion) {
+        motion_ready_frames += motion->ready;
+        history_resets += motion->pose.history_reset;
+        target_switches += motion->pose.target_switched;
+      }
+      const std::string reason = !calibrated
+          ? "DETECTION ONLY: calibration missing or image size mismatch"
+          : visual_only ? std::string("VISUAL ONLY (camera motion uncompensated): ") + statusName(visual_status)
+          : !has_pose ? "DETECTION ONLY: --pose=none"
           : std::string("status=") + statusName(rune.lastCommand().status);
       if (frames == 1 || frames % 100 == 0) {
         std::cout << "frame=" << index << " t=" << seconds << " det=" << frame.detections.size()
                   << ' ' << reason << '\n';
         if (const auto diagnostics = rune.detectorDiagnostics())
           std::cout << "  " << Rune::formatDetectionDiagnostics(*diagnostics) << '\n';
+        if (motion)
+          std::cout << "  motion ready=" << motion->ready
+                    << " speed_rad_s=" << motion->angular_speed_rad_s
+                    << " fit_rms_rad=" << std::sqrt(motion->fit_cost_rad2)
+                    << " model=" << static_cast<int>(motion->model)
+                    << " phase_rad=" << motion->pose.phase_rad << '\n';
       }
       if (plotter) {
         const auto& command = rune.lastCommand();
@@ -244,6 +272,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
             {"rune", {{"detections", frame.detections.size()},
                       {"has_pose", has_pose}, {"calibrated", calibrated},
                       {"full_pipeline", full_pipeline}, {"status", reason},
+                      {"visual_only", visual_only}, {"motion_ready", motion && motion->ready},
                       {"found", full_pipeline && command.found},
                       {"fire_feasible", full_pipeline && command.fire_feasible},
                       {"shoot", false}, {"using_mpc", command.using_mpc},
@@ -252,12 +281,17 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
           telemetry["rune"]["detector_diagnostics"] = Rune::formatDetectionDiagnostics(*diagnostics);
         (void)plotter->send(telemetry);
       }
+      const double playback_fps = frame_rate.update();
       const bool draw_overlay = debug.overlay && index % debug.overlay_every == 0;
       if (draw_overlay || !output.empty()) {
         annotated = image.clone();
         Rune::drawDetectionOverlay(annotated, frame.detections, mode);
-        if (full_pipeline && rune.lastMotion())
-          Rune::drawTrackingOverlay(annotated, frame, rune.lastMotion()->pose);
+        if (motion) {
+          Rune::drawTrackingOverlay(annotated, frame, motion->pose);
+          prediction_frames += Rune::drawPredictionOverlay(annotated, frame, *motion,
+              config.geometry, full_pipeline && rune.lastPlan() ? &*rune.lastPlan() : nullptr,
+              preview_s);
+        }
         if (const auto diagnostics = rune.detectorDiagnostics())
           Rune::drawDetectionDiagnostics(annotated, *diagnostics);
         const std::string label = std::string(mode == Rune::Mode::Small ? "Small rune " : "Big rune ") + reason;
@@ -270,6 +304,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
                       (command.using_mpc ? " MPC" : ""),
                       {20, 100}, cv::FONT_HERSHEY_SIMPLEX, 0.65, {0, 255, 255}, 2);
         }
+        L6Telemetry::drawFpsOverlay(annotated, playback_fps);
       }
       if (!debug.overlay) continue;
       if (draw_overlay) {
@@ -301,6 +336,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
               << " fire_feasible_frames=" << feasible_frames << " overlay_frames=" << overlay_frames
               << " motion_ready_frames=" << motion_ready_frames << " history_resets=" << history_resets
               << " target_switches=" << target_switches
+              << " prediction_frames=" << prediction_frames
               << " mean_detect_ms=" << detect_ms / frames << '\n';
     for (const auto& [status, count] : statuses)
       std::cout << "  " << statusName(status) << ": " << count << '\n';

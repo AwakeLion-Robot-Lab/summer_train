@@ -179,6 +179,14 @@ void drawImageCenter(cv::Mat& image)
     cv::LINE_AA);
 }
 
+void drawFpsOverlay(cv::Mat& image, double fps)
+{
+  if (image.empty()) return;
+  const auto text = std::isfinite(fps) && fps > 0
+      ? cv::format("FPS: %.1f", fps) : std::string("FPS: --");
+  drawOutlinedText(image, text, {20, std::max(20, image.rows - 20)}, {255, 255, 255}, 1.0);
+}
+
 void drawOutlinedText(
   cv::Mat& image,
   const std::string& text,

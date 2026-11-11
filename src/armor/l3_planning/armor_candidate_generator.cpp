@@ -5,7 +5,6 @@
 #include "l3_planning/ballistic_solver.hpp"
 #include "l3_planning/planner.hpp"
 #include "l3_planning/predictor.hpp"
-#include "l3_planning/window_policy.hpp"
 #include "l3_planning/in_plate_aim.hpp"
 
 #include <algorithm>
@@ -279,11 +278,8 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
           : 0.0;
       candidate.relative_yaw_rate =
         target_state.yaw_rate - center_bearing_rate;
-      const DynamicWindows windows = computeDynamicWindows(
-        enter_angle_degree,
-        leave_angle_degree,
-        candidate.relative_yaw_rate,
-        config);
+      const double enter_angle = enter_angle_degree * kPi / 180.0;
+      const double leave_angle = leave_angle_degree * kPi / 180.0;
 
       double window_quality = 0.0;
       if (std::abs(candidate.relative_yaw_rate)
@@ -293,28 +289,23 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
         candidate.phase_angle = normalizeAngle(
           rotation_direction * candidate.delta_angle);
         candidate.within_selection_window =
-          candidate.phase_angle >= -windows.selection.enter
-          && candidate.phase_angle <= windows.selection.leave;
-        candidate.within_selection_hold_window =
-          candidate.phase_angle >= -windows.hold.enter
-          && candidate.phase_angle <= windows.hold.leave;
-        candidate.within_firing_window =
-          candidate.phase_angle >= -windows.firing.enter
-          && candidate.phase_angle <= windows.firing.leave;
+          candidate.phase_angle >= -enter_angle
+          && candidate.phase_angle <= leave_angle;
+        candidate.within_firing_window = candidate.within_selection_window;
         candidate.entering_selection_window =
           candidate.phase_angle
-            >= -(windows.selection.enter + kEnteringSelectionLeadAngle)
-          && candidate.phase_angle < -windows.selection.enter;
+            >= -(enter_angle + kEnteringSelectionLeadAngle)
+          && candidate.phase_angle < -enter_angle;
         candidate.remaining_window_time =
           candidate.within_selection_window
             ? std::max(
                 0.0,
-                (windows.selection.leave - candidate.phase_angle)
+                (leave_angle - candidate.phase_angle)
                   / std::abs(candidate.relative_yaw_rate))
             : 0.0;
         const double normalized_window_progress =
-          (candidate.phase_angle + windows.selection.enter)
-          / (windows.selection.enter + windows.selection.leave);
+          (candidate.phase_angle + enter_angle)
+          / (enter_angle + leave_angle);
         window_quality =
           candidate.within_selection_window
             ? 1.0 - smoothstep(normalized_window_progress)
@@ -322,11 +313,8 @@ std::optional<std::vector<ArmorCandidate>> generateArmorCandidates(
       } else {
         candidate.phase_angle = std::abs(candidate.delta_angle);
         candidate.within_selection_window =
-          candidate.phase_angle <= windows.selection.enter;
-        candidate.within_selection_hold_window =
-          candidate.phase_angle <= windows.hold.enter;
-        candidate.within_firing_window =
-          candidate.phase_angle <= windows.firing.enter;
+          candidate.phase_angle <= enter_angle;
+        candidate.within_firing_window = candidate.within_selection_window;
         candidate.entering_selection_window = false;
         candidate.remaining_window_time =
           candidate.within_selection_window

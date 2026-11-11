@@ -143,10 +143,10 @@ TinyMpcReference buildTinyMpcReference(
     if (!candidates || candidates->empty()) return reference;
     ArmorCandidate selected = candidates->front();
     const bool rotating = selected.aim.direction != 0;
-    const bool leaving_hold = !selected.within_selection_hold_window
+    const bool leaving_window = !selected.within_selection_window
       && (!rotating || selected.phase_angle > 0.0);
-    if (index > kTinyMpcControlIndex && (!selected.valid || leaving_hold)) {
-      // 未来采样按保持窗口预测接替板，仅改变本次参考的局部板号，绝不更新 Planner。
+    if (index > kTinyMpcControlIndex && (!selected.valid || leaving_window)) {
+      // 未来采样按固定窗口预测接替板，仅改变本次参考的局部板号，绝不更新 Planner。
       candidates = generateArmorCandidates(sample_target, sample_robot, context,
         sample_fire_time, query_state, std::nullopt, std::nullopt,
         reference.optimize_in_plate ? &selected : nullptr);

@@ -44,6 +44,32 @@ void checkPartialGeometry() {
   Rune::BuildingStage full_builder(geometry);
   const auto full=full_builder.run(observation,frame);
   require(full.has_value(),"synthetic full-keypoint pose must solve");
+  {
+    Rune::FeatureFilter filter(geometry,{});
+    const auto initial=filter.update(*full,{observation},frame);
+    require(initial.has_value(),"initial feature state failed");
+    auto seed=*full;
+    seed.history_reset=false;
+    seed.normal_barrel=Eigen::AngleAxisd(.8,Eigen::Vector3d::UnitZ())*seed.normal_barrel;
+    seed.center_barrel+=Eigen::Vector3d(.6,0,0);
+    seed.target_barrel+=Eigen::Vector3d(.6,0,0);
+    auto next=frame;
+    next.captured_at+=std::chrono::milliseconds(20);
+    seed.captured_at=next.captured_at;
+    const auto retained=filter.update(seed,{observation},next);
+    require(retained && !retained->history_reset &&
+            (retained->center_barrel-initial->center_barrel).norm()<.01,
+            "a jumping PnP seed reset a state still supported by current image features");
+    auto shifted=observation;
+    for (auto* pixel : {&shifted.keypoints.top,&shifted.keypoints.left,&shifted.keypoints.right,
+                       &shifted.keypoints.bottom,&shifted.keypoints.center_r})
+      *pixel+=cv::Point2f(500,300);
+    next.captured_at+=std::chrono::milliseconds(20);
+    seed.captured_at=next.captured_at;
+    const auto rejected=filter.update(seed,{shifted},next);
+    require(!rejected || rejected->history_reset,
+            "a real image discontinuity incorrectly retained the old tracking state");
+  }
   for (int weak=0;weak<5;++weak) {
     auto partial=observation;
     auto& k=partial.keypoints;

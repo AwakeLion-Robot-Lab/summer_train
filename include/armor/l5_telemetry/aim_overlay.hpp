@@ -65,6 +65,9 @@ cv::Point toPixel(const cv::Point2f& point);
 // 在图像几何中心画小红点，用于相机实时画面和离线回放的对齐参考。
 void drawImageCenter(cv::Mat& image);
 
+// Actual processing/playback rate, anchored to the image's lower-left corner.
+void drawFpsOverlay(cv::Mat& image, double fps);
+
 void drawOutlinedText(
   cv::Mat& image, const std::string& text, cv::Point origin,
   const cv::Scalar& color, double scale = 0.6);

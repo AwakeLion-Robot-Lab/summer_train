@@ -78,11 +78,9 @@ constexpr double kPi = 3.14159265358979323846;
 [[nodiscard]] bool selectableWindow(
   const ArmorCandidate& candidate) noexcept
 {
-  // 候选一旦进入 Switching/Stabilizing 就使用保持窗口，避免它在锁定
-  // 确认期间刚越过选板边界便被丢弃；尚未选中的候选仍由
-  // bestScoredCandidate 严格按选板窗口筛选。
+  // 锁定确认期间允许继续跟踪预进入区内的候选。
   return candidate.valid
-         && (candidate.within_selection_hold_window
+         && (candidate.within_selection_window
              || candidate.entering_selection_window);
 }
 
@@ -218,10 +216,9 @@ SelectionResult Planner::selectArmor(
 
         tracking_state_.current_lost_frames = 0;
 
-        // 当前板离开比选板窗口更宽的保持窗口后，才绕过评分优势连续
-        // score_switch_stable_frames 帧。这个滞回区避免角速度或相位在
-        // 动态选板边界附近抖动时来回换板。
-        if (!current->within_selection_hold_window) {
+        // 当前板离开固定选板窗口后，直接寻找接替板；窗口内的主动
+        // 换板仍须满足评分优势和连续帧确认。
+        if (!current->within_selection_window) {
           tracking_state_.score_candidate_id.reset();
           tracking_state_.score_stable_frames = 0;
           const ArmorCandidate* next = bestScoredCandidate(
@@ -240,7 +237,7 @@ SelectionResult Planner::selectArmor(
             return begin_switch(
               next, SelectionReason::SwitchToCandidate);
           }
-          // 动态窗口之间可能有短暂空隙。保持已知实体板和瞄点状态，
+          // 选板窗口之间可能有短暂空隙。保持已知实体板和瞄点状态，
           // 等接替板进入可选区；本段 tracked_ready=false，明确禁止开火。
           return finish(current, false, SelectionReason::KeepCurrent);
         }

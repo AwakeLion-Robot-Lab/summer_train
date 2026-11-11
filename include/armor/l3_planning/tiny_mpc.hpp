@@ -93,7 +93,7 @@ struct TinyMpcSolution {
   const Eigen::Isometry3d& T_barrel_world, const PlannerConfig& config);
 
 // 生成以 direct_plan.fire_time 为中心的 100 点发射参考；每点独立迭代命中。
-// 未来离开保持窗口时预测接替板，由 MPC 平滑跨越板间间隙。
+// 未来离开固定选板窗口时预测接替板，由 MPC 平滑跨越板间间隙。
 [[nodiscard]] TinyMpcReference buildTinyMpcReference(
   const AimPlan& direct_plan,
   const L3Estimation::TargetState& target,

@@ -17,6 +17,9 @@ public:
                      std::optional<FireControlConfig> fire = {});
   [[nodiscard]] Command process(const Frame& frame,
                                  const ControlInput& control);
+  // Image/calibration-only observation and motion estimation for visual replay.
+  // Does not generate an aiming plan or command; see lastMotion() for output.
+  [[nodiscard]] Status observe(const Frame& frame);
   [[nodiscard]] const std::optional<Motion>& lastMotion() const noexcept {
     return last_motion_;
   }

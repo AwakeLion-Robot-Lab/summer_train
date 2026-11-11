@@ -61,7 +61,6 @@ struct ArmorCandidate {
   bool entering_selection_window{false};
   bool converged{false};          // 时间误差和位置/角度误差是否收敛
   bool within_selection_window{false}; // 是否位于新候选可选窗口
-  bool within_selection_hold_window{false}; // 当前锁定板是否仍可保持
   bool within_firing_window{false}; // 命中时刻是否仍在可射击窗口
   bool valid{false};              // 除射击窗口外的跟踪、预测和弹道条件有效
   ArmorScore score;               // 用于多装甲板选择的最终评分

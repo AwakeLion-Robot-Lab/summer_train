@@ -1,9 +1,10 @@
 #include "rune/f3-estimator/estimator.hpp"
+#include <algorithm>
 
 namespace Rune {
 
 Motion EstimatorStage::updateSmallMotion(const Pose& pose) {
-  const auto linear=fitter_.fitLinear();
+  const auto linear=fitter_.fitLinear(std::min(config_.fit.small_min_fit_s,config_.fit.min_fit_s));
   Motion motion;
   if (linear) motion=fittedMotion(pose,*linear,MotionModel::Linear);
   else motion.pose=pose;

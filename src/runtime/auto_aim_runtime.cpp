@@ -12,6 +12,7 @@
 #include "l3_planning/planner_config.hpp"
 #include "l4_control/controller.hpp"
 #include "l5_telemetry/aim_overlay.hpp"
+#include "l5_telemetry/fps_counter.hpp"
 #include "l5_telemetry/logger.hpp"
 #include "l5_telemetry/math.hpp"
 #include "l5_telemetry/udp_json_sender.hpp"
@@ -52,9 +53,52 @@ struct FrameTiming {
   unsigned detection_passes{0};
   bool pose_overlap{false}, pose_roi_repair{false}, pose_timeout{false};
   double result_wait_ms{0};
+  double camera_read_ms{0}, main_wait_ms{0}, draw_ms{0}, display_ms{0}, loop_ms{0};
   std::uint64_t stale_results{0};
   std::optional<double> filter_input_age_ms, filter_output_age_ms;
   L2Perception::DetectTiming detection_stages{};
+};
+
+// Observe the existing runtime without running another camera/inference client.
+// Producer and consumer stages overlap: their means must not be added together.
+class PerformanceWindow {
+public:
+  std::optional<nlohmann::json> add(const FrameTiming& timing, bool feedback) {
+    const auto& detection = timing.detection_stages;
+    const std::array<double, 15> values{
+      timing.camera_read_ms, timing.main_wait_ms, timing.result_wait_ms,
+      timing.pose_wait_ms, timing.detect_ms, timing.estimate_ms, timing.plan_control_ms,
+      detection.preprocess, detection.infer, detection.decode, detection.refine,
+      detection.side_light, timing.draw_ms, timing.display_ms, timing.loop_ms};
+    for (std::size_t i = 0; i < values.size(); ++i) samples_[i].push_back(values[i]);
+    feedback_frames_ += feedback;
+    const auto now = Clock::now();
+    const double elapsed = std::chrono::duration<double>(now - started_).count();
+    if (elapsed < 2) return std::nullopt;
+    const auto count = samples_.front().size();
+    nlohmann::json report{{"frames", count}, {"seconds", elapsed},
+      {"fps", count / elapsed}, {"feedback_frames", feedback_frames_}};
+    constexpr std::array<const char*, 15> names{
+      "camera_read_ms", "main_wait_ms", "result_age_ms", "pose_wait_ms",
+      "detect_ms", "estimate_ms", "plan_control_ms", "preprocess_ms", "infer_ms",
+      "decode_ms", "refine_ms", "side_light_ms", "draw_ms", "display_ms", "loop_ms"};
+    for (std::size_t i = 0; i < samples_.size(); ++i) {
+      auto& values = samples_[i];
+      double sum = 0;
+      for (const auto value : values) sum += value;
+      std::sort(values.begin(), values.end());
+      report[names[i]] = {{"mean", sum / count}, {"p50", values[count / 2]},
+        {"p95", values[std::min(count - 1, count * 95 / 100)]}};
+      values.clear();
+    }
+    feedback_frames_ = 0;
+    started_ = Clock::now();
+    return report;
+  }
+private:
+  Clock::time_point started_{Clock::now()};
+  std::array<std::vector<double>, 15> samples_;
+  std::size_t feedback_frames_{0};
 };
 
 // Every field belongs to this frame. No references to live tracker/detector state
@@ -433,6 +477,7 @@ void AutoAimRuntime::run() {
     cv::namedWindow("auto_aim", cv::WINDOW_NORMAL);
   }
   std::uint64_t frame_index = 0;
+  L6Telemetry::FpsCounter frame_rate(std::chrono::milliseconds(500));
   bool save_rune_frame = false;
   Clock::time_point last_rune_diagnostic_log{};
   Clock::time_point last_armor_detection_only_log{};
@@ -480,11 +525,13 @@ void AutoAimRuntime::run() {
     auto& frame = packet.image;
     auto& frame_timing = packet.timing;
     auto& timestamp = frame_timing.captured_at;
+    const auto read_started = Clock::now();
     if (!camera->read(frame, timestamp)) {
       if (!running_) return std::nullopt;
       return packet; // Explicit capture timeout; consumer immediately stops firing.
     }
     frame_timing.ready_at = Clock::now();
+    frame_timing.camera_read_ms = milliseconds(frame_timing.ready_at, read_started);
     packet.state = serial.latestState();
     processArmorVision(packet, armor_detector, tracker, serial, serial_started,
                        serial_config.pose_wait_ms,
@@ -498,6 +545,7 @@ void AutoAimRuntime::run() {
     armor_pipeline = std::make_unique<ArmorPipeline>(nextArmorFrame);
   }
   std::uint64_t stale_results = 0;
+  PerformanceWindow performance;
 
   cv::Mat frame;
   std::chrono::steady_clock::time_point timestamp;
@@ -505,6 +553,7 @@ void AutoAimRuntime::run() {
   // ahead of planning/display; no FIFO of historical camera images is introduced.
   try {
     while (running_) {
+      const auto loop_started = Clock::now();
       frame_timing = {};
       std::optional<ArmorVisionPacket> armor_packet;
       if (auto_aim_config.mode == AimMode::Armor) {
@@ -545,6 +594,7 @@ void AutoAimRuntime::run() {
         }
         frame_timing.stale_results = stale_results;
       } else {
+        const auto read_started = Clock::now();
         if (!camera->read(frame, timestamp)) {
           sendSafeHold();
           if (!running_) break;
@@ -552,7 +602,9 @@ void AutoAimRuntime::run() {
         }
         frame_timing.captured_at = timestamp;
         frame_timing.ready_at = Clock::now();
+        frame_timing.camera_read_ms = milliseconds(frame_timing.ready_at, read_started);
       }
+      frame_timing.main_wait_ms = milliseconds(Clock::now(), loop_started);
       const auto pose_deadline = frame_timing.ready_at +
           std::chrono::milliseconds(serial_config.pose_wait_ms);
       const auto state = armor_packet ? armor_packet->state : serial.latestState();
@@ -567,12 +619,14 @@ void AutoAimRuntime::run() {
           last_armor_detection_only_log = Clock::now();
         }
         if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
+          const auto draw_started = Clock::now();
           // 没有敌方颜色时显示所有网络检出，仅供查看，不进入跟踪与规划。
           L6Telemetry::drawArmorDetections(frame, perception.armors);
           L6Telemetry::drawOutlinedText(
             frame, armor_model_ready ? "Detection only: no serial feedback"
                                           : "Armor model unavailable; see log",
             {20, 40}, {0, 165, 255});
+          frame_timing.draw_ms += milliseconds(Clock::now(), draw_started);
         }
       } else {
         const L1Sensor::WorkMode mode = selected_mode;
@@ -589,7 +643,7 @@ void AutoAimRuntime::run() {
             L4Planning::AimPlan plan;
             std::optional<L5Control::SerialCommand> command;
             if (aiming) {
-              // L4/L5 保留 Bruce0178 分支现有实现：动态窗口选板、弹道迭代与
+              // L4/L5 保留 Bruce0178 分支现有实现：固定窗口选板、弹道迭代与
               // 开火闸门均不被目标分支覆盖。
               const auto plan_time = std::chrono::steady_clock::now();
               const auto actual_pose = serial.latestGimbalPose();
@@ -739,6 +793,7 @@ void AutoAimRuntime::run() {
             }
             if (overlay_solver && armor_packet->has_tracker &&
                 frame_index % auto_aim_config.debug.overlay_every == 0) {
+              const auto draw_started = Clock::now();
               overlay_solver->set_R_world_barrel(image_pose);
               L6Telemetry::drawAimOverlay(
                 frame,
@@ -750,6 +805,7 @@ void AutoAimRuntime::run() {
                  .fire = controller.lastDecision(),
                  .q_world_barrel = image_pose},
                 *overlay_solver, *camera_calibration);
+              frame_timing.draw_ms += milliseconds(Clock::now(), draw_started);
             }
             /*************************** debug ****************************/
             break;
@@ -835,9 +891,14 @@ void AutoAimRuntime::run() {
               (void)plotter->send(telemetry);
             }
             if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
+              const auto draw_started = Clock::now();
               Rune::drawDetectionOverlay(frame, input.detections, input.mode);
-              if (rune->lastMotion())
+              if (rune->lastMotion()) {
                 Rune::drawTrackingOverlay(frame, input, rune->lastMotion()->pose);
+                Rune::drawPredictionOverlay(frame, input, *rune->lastMotion(),
+                    auto_aim_config.rune.geometry,
+                    rune->lastPlan() ? &*rune->lastPlan() : nullptr);
+              }
               if (const auto diagnostics = rune->detectorDiagnostics())
                 Rune::drawDetectionDiagnostics(frame, *diagnostics);
               const auto& command = rune->lastCommand();
@@ -846,6 +907,7 @@ void AutoAimRuntime::run() {
                   ((!serial_started || !state) ? " NO SERIAL FEEDBACK" : "") +
                   (command.using_mpc ? " MPC" : "") + (command.fire ? " FIRE" : "");
               cv::putText(frame, label, {20, 40}, cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 255, 255}, 2);
+              frame_timing.draw_ms += milliseconds(Clock::now(), draw_started);
             }
             break;
           }
@@ -859,13 +921,25 @@ void AutoAimRuntime::run() {
       ++frame_index;
       /******************************* debug ********************************/
       if (overlay_enabled) {
+        const auto draw_started = Clock::now();
         L6Telemetry::drawImageCenter(frame);
+        L6Telemetry::drawFpsOverlay(frame, frame_rate.update());
+        frame_timing.draw_ms += milliseconds(Clock::now(), draw_started);
+        const auto display_started = Clock::now();
         cv::imshow("auto_aim", frame);
         const int key = cv::waitKey(1);
+        frame_timing.display_ms = milliseconds(Clock::now(), display_started);
         if ((key == 's' || key == 'S') && auto_aim_config.mode != AimMode::Armor)
           save_rune_frame = true;
         if (key == 27 || key == 'q' || key == 'Q') {
           running_ = false;
+        }
+      }
+      frame_timing.loop_ms = milliseconds(Clock::now(), loop_started);
+      if (overlay_enabled || plotter) {
+        if (const auto report = performance.add(frame_timing, serial_started && state.has_value())) {
+          L6Telemetry::logInfo("runtime performance", report->dump());
+          if (plotter) (void)plotter->send(nlohmann::json{{"runtime_perf", *report}});
         }
       }
       /******************************* debug ********************************/

@@ -88,10 +88,9 @@ l4_planning目标：延迟补偿、预测、弹道、轨迹规划
 代码职责划分：
 
 - `planner.cpp`：跨帧目标生命周期、延迟计算、候选生成/选板编排和 AimPlan 组装；
-- `armor_candidate_generator.cpp`：各装甲板的固定点预测、弹道求解、动态窗口判定和评分；
+- `armor_candidate_generator.cpp`：各装甲板的固定点预测、弹道求解、固定窗口判定和评分；
 - `planner_validation.cpp`：运行时与 YAML 加载共用的配置/输入校验；
 - `state.cpp`：选板、切板、稳定确认和滞回状态机；
-- `window_policy.cpp`：动态选板、保持和开火窗口的分段线性策略；
 - `tiny_MPC/`：轨迹参考生成与 MPC 求解。
 
 一、预测dt后装甲板的位姿：  使用迭代拦截法预测装甲板的未来位置
@@ -251,8 +250,7 @@ struct ArmorCandidate {
   double remaining_window_time{0.0}; // 到离开选板窗口的预计时间，s
   bool entering_selection_window{false}; // 是否正在转入选板窗口
   bool converged{false};          // 是否满足时间和位置/角度收敛条件
-  bool within_selection_window{false}; // 是否位于动态选板窗口
-  bool within_selection_hold_window{false}; // 当前板是否位于滞回保持窗口
+  bool within_selection_window{false}; // 是否位于固定选板窗口
   bool within_firing_window{false}; // 命中时刻是否仍可射击
   bool valid{false};              // 身份、跟踪、预测和迭代收敛条件有效
   ArmorScore score;               // 多装甲板选择评分
@@ -284,7 +282,7 @@ struct ArmorCandidate {
 quality 只表示候选装甲板的相对质量，不再乘硬条件 flag，也不直接决定能否
 开火。身份、预测、弹道有效性和迭代收敛等条件由 candidate.valid 负责；
 within_selection_window 用于选板，within_firing_window 只在最终开火门控
-中使用。开火窗口始终比选板窗口窄，因此候选可以保持稳定跟踪但不会过早开火。
+中使用。选板和开火使用相同的固定角度窗口，最终开火还须满足锁定稳定和反馈误差等条件。
 
   1. 正对程度 Q_facing
  把“正对”定义为枪口当前方向与装甲板朝向的夹角，
@@ -313,17 +311,9 @@ within_selection_window 用于选板，within_firing_window 只在最终开火�
 relative_yaw_rate。对旋转方向归一化后，phase_angle 始终沿装甲板
 转动方向递增：  phase_angle = sign(relative_yaw_rate) * delta_angle
 
-原始 enter/leave 角是动态选板窗口的低速上限。设
-
-progress = clamp((abs(relative_yaw_rate) - shrink_start_speed)
-                 / (shrink_end_speed - shrink_start_speed), 0, 1)
-
-selection_scale = lerp(1, selection_min_window_scale, progress)
-firing_scale = lerp(firing_max_window_scale, firing_min_window_scale, progress)
-
-则动态选板窗口为 `[-enter * selection_scale, leave * selection_scale]`，
-动态开火窗口为 `[-enter * firing_scale, leave * firing_scale]`。当前锁定板
-使用在选板窗口两端增加 `selection_hold_margin` 的保持窗口，形成切板滞回。
+选板、当前板保持和开火均使用固定窗口 `[-enter_angle, leave_angle]`，
+角度分别由普通车辆和前哨站的 enter/leave 配置给出，不随转速缩放。
+当前板在窗口内时，主动换板须满足评分优势和连续帧确认。
 
 剩余窗口时间：   remaining_window_time = (leave_angle - phase_angle) / abs(relative_yaw_rate)
 
@@ -450,26 +440,26 @@ TJU选择标准（以下角度皆为  delta_angle = armor_yaw - center_yaw，即
   - 装甲板进入角：70°
   - 装甲板离开角：30°
 
-2  保持与上一周期装甲板 ID 的连续性。当前候选仍在动态保持窗口时继续
-跟踪；其他候选只有在动态选板窗口内，且评分高出 score_switch_threshold
-后才触发主动换板。动态开火窗口只控制 fire_permitted。当前候选短暂失效时，在
+2  保持与上一周期装甲板 ID 的连续性。当前候选仍在固定选板窗口时继续
+跟踪；其他候选在选板窗口或预进入区内，且评分优势连续满足
+score_switch_stable_frames 帧后才触发主动换板。开火窗口只控制 fire_permitted。当前候选短暂失效时，在
 max_lost_frames 宽限期内保持当前装甲板 ID 并禁止开火；连续失效超过
-阈值后，才按 prefer_entering 强优先规则选择其他候选并切换。
+阈值后，优先选择窗口内候选，其次选择预进入区候选并切换。
 
-3   entering_selection_window 是动态选板进入角之前的 10° 预进入区：
+3   entering_selection_window 是固定选板进入角之前的 10° 预进入区：
 `[-(selection_enter_angle + 10°), -selection_enter_angle]`
 
-  - 当前装甲板仍在保持窗口：
+  - 当前装甲板仍在选板窗口：
       - 按综合价值进行比较；
       - 要求超过 score_switch_threshold；
       - 连续满足 score_switch_stable_frames 后换板。
 
-  - 当前装甲板离开保持窗口：
-      - 优先选择动态选板窗口内价值最高的其他有效装甲板；
+  - 当前装甲板离开选板窗口：
+      - 优先选择固定选板窗口内价值最高的其他有效装甲板；
       - 其次选择预进入区内价值最高的其他有效装甲板；
       - 直接开始切换，不进行三帧价值优势确认；
-      - 都不存在时执行 resetTracking()，清除目标缓存并进入 Unlocked；
-      - 返回的 AimPlan 同时设置 tracked=false、target_id=-1。
+      - 都不存在时保持当前实体板和瞄点状态，等待接替板进入可选区；
+      - 此时 tracked_ready=false，禁止开火。
 
 未锁定：
 

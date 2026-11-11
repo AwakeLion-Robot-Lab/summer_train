@@ -10,29 +10,6 @@ namespace L4Planning {
 
 bool validPlannerConfig(const PlannerConfig& config) noexcept
 {
-  const bool dynamic_windows_valid =
-    !config.enable_dynamic_windows
-    || (std::isfinite(config.window_shrink_start_speed)
-        && config.window_shrink_start_speed >= 0.0
-        && std::isfinite(config.window_shrink_end_speed)
-        && config.window_shrink_end_speed
-             > config.window_shrink_start_speed
-        && std::isfinite(config.selection_min_window_scale)
-        && config.selection_min_window_scale > 0.0
-        && config.selection_min_window_scale <= 1.0
-        && std::isfinite(config.firing_max_window_scale)
-        && config.firing_max_window_scale > 0.0
-        && config.firing_max_window_scale < 1.0
-        && std::isfinite(config.firing_min_window_scale)
-        && config.firing_min_window_scale > 0.0
-        && config.firing_min_window_scale
-             <= config.firing_max_window_scale
-        && config.firing_min_window_scale
-             < config.selection_min_window_scale
-        && std::isfinite(config.selection_hold_margin)
-        && config.selection_hold_margin >= 0.0
-        && config.normal_enter_angle + config.selection_hold_margin < 180.0
-        && config.outpost_enter_angle + config.selection_hold_margin < 180.0);
   const bool mpc_valid =
     !config.enable_mpc
     || (std::isfinite(config.yaw_angle_weight)
@@ -99,7 +76,6 @@ bool validPlannerConfig(const PlannerConfig& config) noexcept
          && std::isfinite(config.outpost_leave_angle)
          && config.outpost_leave_angle >= 0.0
          && config.outpost_leave_angle <= config.outpost_enter_angle
-         && dynamic_windows_valid
          && config.max_lost_frames >= 0
          && ballistic_valid
          && mpc_valid;

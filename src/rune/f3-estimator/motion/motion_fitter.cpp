@@ -17,11 +17,12 @@ double PhaseFit::delta(double t,double horizon) const {
 }
 double PhaseFit::amplitude() const { return omega*std::hypot(A,B); }
 MotionFitter::MotionFitter(MotionFitConfig config) : config_(config) {
-  for (double v : {config.window_s,config.min_fit_s,config.weight_half_life_s,
+  for (double v : {config.window_s,config.min_fit_s,config.small_min_fit_s,config.weight_half_life_s,
       config.frequency_min_rad_s,config.frequency_max_rad_s,
       config.max_sine_amplitude_rad_s,config.max_fit_rms_rad,config.sine_switch_cost_ratio})
     if (!std::isfinite(v) || v<=0) throw std::invalid_argument("Invalid rune fit configuration");
-  if (config.min_fit_s>config.window_s || config.max_samples<8 || config.max_samples>100000 ||
+  if (config.min_fit_s>config.window_s || config.small_min_fit_s>config.window_s ||
+      config.max_samples<8 || config.max_samples>100000 ||
       config.frequency_steps<1 || config.frequency_steps>1000 ||
       config.frequency_min_rad_s>=config.frequency_max_rad_s ||
       !std::isfinite(config.min_sine_amplitude_rad_s) || config.min_sine_amplitude_rad_s<0 ||
@@ -38,8 +39,12 @@ void MotionFitter::push(TimePoint time,double phase) {
     samples_.pop_front();
 }
 std::optional<PhaseFit> MotionFitter::fitLinear() const {
+  return fitLinear(config_.min_fit_s);
+}
+std::optional<PhaseFit> MotionFitter::fitLinear(double min_span_s) const {
+  if (!std::isfinite(min_span_s) || min_span_s<=0) return {};
   if (samples_.size()<2 || std::chrono::duration<double>(samples_.back().time-
-      samples_.front().time).count()<config_.min_fit_s) return {};
+      samples_.front().time).count()<min_span_s) return {};
   PhaseFit fit; fit.reference=samples_.back().time;
   double sw=0,st=0,sy=0,stt=0,sty=0;
   for (const auto& s : samples_) {
