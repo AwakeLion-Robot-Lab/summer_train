@@ -84,15 +84,13 @@ option("cuda_root")
     set_description("CUDA SDK prefix (used only when use_tensorrt=y)")
 option_end()
 
-if has_config("use_openvino") then
-    target("rune_detect")
-        set_kind("binary")
-        set_default(false)
-        set_rundir("$(projectdir)")
-        add_files("tools/rune/rune_detect.cpp")
-        add_deps("newvision")
-    target_end()
-end
+target("rune_detect")
+    set_kind("binary")
+    set_default(false)
+    set_rundir("$(projectdir)")
+    add_files("tools/rune/rune_detect.cpp")
+    add_deps("newvision")
+target_end()
 
 if has_config("use_xrepo_deps") then
     add_requires("opencv", {optional = true})
@@ -269,6 +267,25 @@ target_end()
 -- ---------------------------------------------------------------------------
 
 local standalone_tests = {
+    rune_scut_detector_smoke = {
+        files = {"src/rune/f1-observation/scut_contour_detector.cpp",
+                 "src/rune/f1-observation/scut_feature_points.cpp",
+                 "src/rune/f1-observation/detection.cpp", "src/rune/f1-observation/reobservation.cpp"},
+        includes = {"include", "include/armor", "/usr/include/eigen3"},
+        opencv = {"opencv_core", "opencv_imgproc"},
+        syslinks = {"yaml-cpp"},
+    },
+    rune_scut_features_smoke = {
+        files = {"src/rune/f1-observation/scut_feature_points.cpp", "src/rune/debug_overlay.cpp"},
+        includes = {"include", "include/armor", "/usr/include/eigen3"},
+        opencv = {"opencv_core", "opencv_imgproc", "opencv_calib3d"},
+    },
+    image_preprocessor_smoke = {
+        files = {"src/armor/l1_perception/inference/image_preprocessor.cpp",
+                 "src/armor/l1_perception/inference/inference_backend.cpp"},
+        includes = {"include", "include/armor"},
+        opencv = {"opencv_core", "opencv_imgproc"},
+    },
     single_frame_pipeline_smoke = {
         includes = {"include"},
         syslinks = {"pthread"},
@@ -370,8 +387,6 @@ local gated_tests = {
     armor_latency_smoke      = "use_openvino",
     armor_pipeline_replay    = "use_openvino",
     auto_aim_test_armor      = "use_openvino",
-    auto_aim_test_small_tune  = "use_openvino",
-    auto_aim_test_big_tune    = "use_openvino",
     track_diag               = "use_openvino",
     serial_worker_smoke      = "linux",
     serial_single_shot_smoke = "linux",

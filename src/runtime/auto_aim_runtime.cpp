@@ -386,7 +386,9 @@ void AutoAimRuntime::run() {
     try {
       rune = std::make_unique<RuneRuntime>(auto_aim_config.rune, planner_tuning);
       const auto& detector = auto_aim_config.rune.detector;
-      L6Telemetry::logInfo("rune detector loaded", detector.model_path.string(),
+      if (auto_aim_config.rune.detector_backend == "scut")
+        L6Telemetry::logInfo("rune SCUT contour detector loaded");
+      else L6Telemetry::logInfo("rune detector loaded", detector.model_path.string(),
                           "device", detector.device, "confidence", detector.confidence_threshold,
                           "keypoint_confidence", detector.keypoint_confidence_threshold);
       const auto& geometry = auto_aim_config.rune.geometry;
@@ -853,8 +855,12 @@ void AutoAimRuntime::run() {
                   (last_rune_diagnostic_log == Clock::time_point{} ||
                    Clock::now() - last_rune_diagnostic_log >= std::chrono::seconds(1))) {
                 if (const auto diagnostics = rune->detectorDiagnostics()) {
+                  const auto refinement = rune->imageRefinerDiagnostics();
                   L6Telemetry::logDebug("rune detection", Rune::formatDetectionDiagnostics(*diagnostics),
-                                        "image", frame.cols, frame.rows);
+                                        "image", frame.cols, frame.rows,
+                                        "image_refined_r", refinement.refined_r,
+                                        "image_refined_targets", refinement.refined_targets,
+                                        "ring_motion_reject", refinement.rejected_target_rings);
                 }
                 last_rune_diagnostic_log = Clock::now();
               }
@@ -895,9 +901,6 @@ void AutoAimRuntime::run() {
               Rune::drawDetectionOverlay(frame, input.detections, input.mode);
               if (rune->lastMotion()) {
                 Rune::drawTrackingOverlay(frame, input, rune->lastMotion()->pose);
-                Rune::drawPredictionOverlay(frame, input, *rune->lastMotion(),
-                    auto_aim_config.rune.geometry,
-                    rune->lastPlan() ? &*rune->lastPlan() : nullptr);
               }
               if (const auto diagnostics = rune->detectorDiagnostics())
                 Rune::drawDetectionDiagnostics(frame, *diagnostics);

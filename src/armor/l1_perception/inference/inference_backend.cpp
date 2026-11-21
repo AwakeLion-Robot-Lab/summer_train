@@ -12,6 +12,12 @@ void InferenceInput::setOwnedData(std::vector<std::uint8_t> data)
   owned_data_ = std::move(data);
 }
 
+std::span<std::uint8_t> InferenceInput::resizeOwnedData(std::size_t size)
+{
+  owned_data_.resize(size);
+  return owned_data_;
+}
+
 std::span<const std::uint8_t> InferenceInput::values() const noexcept
 {
   return owned_data_;

@@ -30,12 +30,19 @@ struct KeypointDetectorConfig {
   float fusion_min_quality_ratio{0.8F};
   // Maximum per-point disagreement relative to the reliable target diameter.
   float fusion_max_point_distance_ratio{0.2F};
+  // Verify the outer illuminated circle before publishing target pose anchors.
+  // The ratio is derived from rune.geometry; disabled for legacy callers.
+  bool lock_target_ring{false};
+  double target_ring_radius_ratio{0};
+  bool target_ring_subpixel{true}; // Refine verified rims using raw LED profiles.
 
   // Load rune.detector from auto_aim.yaml. Explicit relative model paths are
   // resolved from the YAML file's directory.
   [[nodiscard]] static KeypointDetectorConfig load(const std::filesystem::path& yaml);
   [[nodiscard]] static KeypointDetectorConfig fromYaml(
       const YAML::Node& node, const std::filesystem::path& base_dir);
+  [[nodiscard]] static KeypointDetectorConfig fromYaml(
+      const YAML::Node& node, const std::filesystem::path& base_dir,const YAML::Node& geometry);
 };
 
 // Synchronous, single-thread use. Published head: 3 classes + 5 (x,y,score)

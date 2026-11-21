@@ -3,6 +3,7 @@
 // infer/fivepoints_infer.cpp (MIT).
 // Licenses and provenance: model/rune_model/README.md.
 #include "rune/f1-observation/keypoint_detector.hpp"
+#include "rune/f1-observation/target_ring_refiner.hpp"
 
 #include "armor/l1_perception/inference/backends/openvino_backend.hpp"
 
@@ -30,6 +31,8 @@ void validateConfig(const KeypointDetectorConfig& config) {
       !probability(config.fallback_input_scale) ||
       !probability(config.fusion_min_quality_ratio) || config.fusion_min_quality_ratio >= 1 ||
       !probability(config.fusion_max_point_distance_ratio) || config.fusion_max_point_distance_ratio <= 0 ||
+      (config.lock_target_ring && (!std::isfinite(config.target_ring_radius_ratio) ||
+       config.target_ring_radius_ratio<=0 || config.target_ring_radius_ratio>=.5)) ||
       !std::isfinite(config.nms_distance_px) || config.nms_distance_px <= 0) {
     throw std::invalid_argument("invalid rune detector model/device/threshold configuration");
   }
@@ -81,6 +84,18 @@ Keypoints fuseGroup(const CandidateGroup& group, const KeypointDetectorConfig& c
     if (candidate->model_class != group.seed->model_class) continue;
     const auto& k = candidate->keypoints;
     const auto points = pointsOf(k);
+    // A nested circle is a different physical boundary even when its points
+    // fit the ordinary fusion distance gate. Never average those diameters.
+    bool same_ring=true;
+    if (config.lock_target_ring) for (const auto pair : {std::pair{0,3},std::pair{1,2}}) {
+      const auto [a,b]=pair;
+      if (!result.point_valid[a] || !result.point_valid[b] || !k.point_valid[a] || !k.point_valid[b])
+        continue;
+      const double seed_length=cv::norm(seed_points[a]-seed_points[b]);
+      const double length=cv::norm(points[a]-points[b]);
+      if (seed_length<1 || length<.9*seed_length || length>1.1*seed_length) same_ring=false;
+    }
+    if (!same_ring) continue;
     int common = 0;
     double disagreement = 0;
     for (std::size_t i = 0; i < points.size(); ++i) {
@@ -118,11 +133,17 @@ Keypoints fuseGroup(const CandidateGroup& group, const KeypointDetectorConfig& c
 KeypointDetectorConfig KeypointDetectorConfig::load(const std::filesystem::path& yaml) {
   const auto root = YAML::LoadFile(yaml.string());
   const auto rune = root["rune"];
-  return fromYaml(rune ? rune["detector"] : YAML::Node{}, yaml.parent_path());
+  return fromYaml(rune ? rune["detector"] : YAML::Node{}, yaml.parent_path(),
+                  rune ? rune["geometry"] : YAML::Node{});
 }
 
 KeypointDetectorConfig KeypointDetectorConfig::fromYaml(
     const YAML::Node& node, const std::filesystem::path& base_dir) {
+  return fromYaml(node,base_dir,YAML::Node{});
+}
+
+KeypointDetectorConfig KeypointDetectorConfig::fromYaml(
+    const YAML::Node& node, const std::filesystem::path& base_dir,const YAML::Node& geometry) {
   KeypointDetectorConfig config;
   if (!node || node.IsNull()) return config;
   if (!node.IsMap()) throw std::invalid_argument("rune.detector must be a map");
@@ -142,6 +163,19 @@ KeypointDetectorConfig KeypointDetectorConfig::fromYaml(
   config.fuse_keypoints = node["fuse_keypoints"].as<bool>(config.fuse_keypoints);
   config.fusion_min_quality_ratio = node["fusion_min_quality_ratio"].as<float>(config.fusion_min_quality_ratio);
   config.fusion_max_point_distance_ratio = node["fusion_max_point_distance_ratio"].as<float>(config.fusion_max_point_distance_ratio);
+  config.lock_target_ring = node["lock_target_ring"].as<bool>(config.lock_target_ring);
+  config.target_ring_subpixel = node["target_ring_subpixel"].as<bool>(config.target_ring_subpixel);
+  if (config.lock_target_ring) {
+    if (!geometry || !geometry.IsMap())
+      throw std::invalid_argument("lock_target_ring requires measured rune.geometry");
+    const double radius=geometry["radius_m"].as<double>(0);
+    const double width=geometry["armor_half_width_m"].as<double>(0);
+    const double height=geometry["armor_half_height_m"].as<double>(0);
+    if (!std::isfinite(radius) || !std::isfinite(width) || !std::isfinite(height) ||
+        radius<=0 || width<=0 || height<=0 || std::abs(width-height)>.05*std::max(width,height))
+      throw std::invalid_argument("lock_target_ring requires positive dimensions of a circular target");
+    config.target_ring_radius_ratio=height/radius;
+  }
   validateConfig(config);
   return config;
 }
@@ -331,9 +365,20 @@ std::vector<Keypoints> OpenVinoKeypointDetector::detectAtScale(
     const auto& candidate = *group.seed;
     if (candidate.model_class == 0 ||
         candidate.model_class == (mode == Mode::Small ? 1 : 2)) {
-      detections.push_back(fuseGroup(group, config_, diagnostics));
-      diagnostics.partial_detections += std::count(candidate.keypoints.point_valid.begin(),
-                                                   candidate.keypoints.point_valid.end(), true) < 5;
+      auto keypoints=fuseGroup(group, config_, diagnostics);
+      if (config_.lock_target_ring) {
+        TargetRingDiagnostics ring_diagnostics;
+        const auto result=refineTargetRing(bgr,keypoints,mode,config_.target_ring_radius_ratio,
+                                         config_.target_ring_subpixel,&ring_diagnostics);
+        diagnostics.target_ring_refined+=result==TargetRingResult::Refined;
+        diagnostics.target_ring_rejected+=result==TargetRingResult::Rejected;
+        diagnostics.target_ring_subpixel_refined+=keypoints.target_ring_subpixel;
+        diagnostics.target_ring_reconnected+=result==TargetRingResult::Refined && ring_diagnostics.reconnected;
+        diagnostics.target_ring_no_contour+=ring_diagnostics.rejection==TargetRingRejectReason::NoSupportedContour;
+      }
+      diagnostics.partial_detections += std::count(keypoints.point_valid.begin(),
+                                                   keypoints.point_valid.end(), true) < 5;
+      detections.push_back(std::move(keypoints));
     }
     else ++diagnostics.mode_rejected;
   }

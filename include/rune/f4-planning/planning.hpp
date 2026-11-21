@@ -9,7 +9,7 @@ struct PlanningConfig {
   // Compatibility settings used by Processor's default f5 configuration.
   bool shoot_enable{false};
   double gravity_m_s2{9.80665};
-  double max_observation_age_s{0.15};
+  double max_observation_age_s{0.3};
   double max_yaw_error_rad{0.01};
   double max_pitch_error_rad{0.01};
   bool enable_air_resistance{false};

@@ -33,11 +33,11 @@ const std::string kKeys =
   "{planner-config | config/planner_config.yaml | 弹道、延迟和 MPC 配置}"
   "{calibration c | config/camera_config.yaml | 相机标定 yaml}"
   "{enemy | blue | 目标颜色：red / blue}"
+  "{backend | auto | auto / scut / openvino}"
   "{model m | auto | auto 使用 rune.detector.model_path，否则覆盖模型路径}"
   "{device d | auto | auto 使用 rune.detector.device，否则覆盖推理设备}"
   "{conf | 0 | 覆盖检测置信度，0 保持配置}"
   "{pose | auto | auto 读取同名 txt，无配套姿态时做相机相对视觉预测 / none 仅检测 / 指定姿态 txt}"
-  "{preview-ms | 200 | 无有效靶板拦截规划时的视觉预测提前量（毫秒）}"
   "{convention | imu | 录像四元数约定：imu / sp，与装甲板回放一致}"
   "{serial-config | config/serial_config.yaml | imu 约定的 R_imu_barrel}"
   "{bullet-speed | 27.0 | 回放弹速（m/s）}"
@@ -114,11 +114,11 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     const auto planner_path = cli.get<std::string>("planner-config");
     const auto calibration_path = cli.get<std::string>("calibration");
     const auto enemy = cli.get<std::string>("enemy");
+    const auto backend = cli.get<std::string>("backend");
     const auto model = cli.get<std::string>("model");
     const auto device = cli.get<std::string>("device");
     const float confidence = cli.get<float>("conf");
     const auto pose_option = cli.get<std::string>("pose");
-    const double preview_s = cli.get<double>("preview-ms") / 1000;
     const auto convention = cli.get<std::string>("convention");
     const auto serial_path = cli.get<std::string>("serial-config");
     const double bullet_speed = cli.get<double>("bullet-speed");
@@ -128,21 +128,31 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     const auto output = cli.get<std::string>("output");
     const std::filesystem::path input{cli.get<std::string>(0)};
     if (!cli.check()) { cli.printErrors(); return 1; }
+    require(backend == "auto" || backend == "scut" || backend == "openvino",
+            "backend 必须是 auto、scut 或 openvino");
     require(enemy == "red" || enemy == "blue", "enemy 必须是 red 或 blue");
     require(convention == "imu" || convention == "sp", "convention 必须是 imu 或 sp");
     require(start_index >= 0 && (end_index == 0 || end_index >= start_index), "起止帧下标无效");
     require(wait_ms >= 0, "wait 不能为负");
-    require(std::isfinite(preview_s) && preview_s > 0 && preview_s <= 2,
-            "preview-ms 必须在 (0, 2000] 内");
     require(std::isfinite(bullet_speed) && bullet_speed > 0, "bullet-speed 必须为正的有限值");
     require(std::isfinite(confidence) && confidence >= 0 && confidence <= 1, "conf 必须在 [0, 1] 内");
 
     const auto runtime_config = runtime::loadAutoAimConfig(config_path);
     const auto& debug = runtime_config.debug;
     auto config = runtime_config.rune;
+    if (backend != "auto") {
+      config.detector_backend = backend;
+      if (backend == "openvino") config.detector = Rune::KeypointDetectorConfig::load(config_path);
+      else {
+        const auto rune = YAML::LoadFile(config_path)["rune"];
+        config.scut_detector = Rune::ScutContourConfig::fromYaml(rune["detector"]["scut"], rune["geometry"]);
+      }
+    }
     if (model != "auto") config.detector.model_path = model;
     if (device != "auto") config.detector.device = device;
     if (confidence > 0) config.detector.confidence_threshold = confidence;
+    // 大符回放以运动模型就绪作为拦截规划的预热条件。
+    if (mode == Rune::Mode::Big) config.planning.big_warmup_s = 0.0;
     config.planning.shoot_enable = false;
     config.fire.shoot_enable = false;
     runtime::RuneRuntime rune(config, L4Planning::loadPlannerTuning(planner_path));
@@ -187,8 +197,9 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
                            : "无姿态文本，运行相机相对视觉预测；相机运动未补偿") << '\n'
               << "shoot_enable=false；不连接相机和串口\n";
     std::size_t frames = 0, positive_frames = 0, total_detections = 0, found_frames = 0, feasible_frames = 0;
+    std::size_t intercept_frames = 0;
     std::size_t overlay_frames = 0;
-    std::size_t motion_ready_frames=0, history_resets=0, target_switches=0, prediction_frames=0;
+    std::size_t motion_ready_frames=0, history_resets=0, target_switches=0;
     std::map<Rune::Status, std::size_t> statuses;
     const auto epoch = std::chrono::steady_clock::now();
     L6Telemetry::FpsCounter frame_rate(std::chrono::milliseconds(500));
@@ -221,6 +232,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
       total_detections += frame.detections.size();
       const bool full_pipeline = has_pose && calibrated;
       const bool visual_only = !has_pose && calibrated && pose_option != "none";
+      int intercept_sector = -1;
       Rune::Status visual_status = Rune::Status::NoDetection;
       if (full_pipeline) {
         L1Sensor::RobotState state;
@@ -232,6 +244,8 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
         (void)rune.process(frame, state, frame.q_world_barrel, frame.captured_at);
         const auto& command = rune.lastCommand();
         found_frames += command.found;
+        if (command.found && !command.center_hold) intercept_sector = command.target_sector;
+        intercept_frames += intercept_sector >= 0;
         feasible_frames += command.fire_feasible;
         ++statuses[command.status];
       }
@@ -254,7 +268,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
           : std::string("status=") + statusName(rune.lastCommand().status);
       if (frames == 1 || frames % 100 == 0) {
         std::cout << "frame=" << index << " t=" << seconds << " det=" << frame.detections.size()
-                  << ' ' << reason << '\n';
+                  << ' ' << reason << " target_sector=" << intercept_sector << '\n';
         if (const auto diagnostics = rune.detectorDiagnostics())
           std::cout << "  " << Rune::formatDetectionDiagnostics(*diagnostics) << '\n';
         if (motion)
@@ -274,6 +288,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
                       {"full_pipeline", full_pipeline}, {"status", reason},
                       {"visual_only", visual_only}, {"motion_ready", motion && motion->ready},
                       {"found", full_pipeline && command.found},
+                      {"target_sector", intercept_sector},
                       {"fire_feasible", full_pipeline && command.fire_feasible},
                       {"shoot", false}, {"using_mpc", command.using_mpc},
                       {"yaw_rad", command.yaw_rad}, {"pitch_rad", command.pitch_rad}}}};
@@ -288,21 +303,26 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
         Rune::drawDetectionOverlay(annotated, frame.detections, mode);
         if (motion) {
           Rune::drawTrackingOverlay(annotated, frame, motion->pose);
-          prediction_frames += Rune::drawPredictionOverlay(annotated, frame, *motion,
-              config.geometry, full_pipeline && rune.lastPlan() ? &*rune.lastPlan() : nullptr,
-              preview_s);
+        }
+        const auto& command = rune.lastCommand();
+        cv::Scalar text_color{0, 255, 255};
+        if (intercept_sector >= 0) {
+          text_color = {0, 255, 0};
+        } else if (full_pipeline && command.status == Rune::Status::AimNotReady) {
+          text_color = {0, 165, 255};
         }
         if (const auto diagnostics = rune.detectorDiagnostics())
-          Rune::drawDetectionDiagnostics(annotated, *diagnostics);
+          Rune::drawDetectionDiagnostics(annotated, *diagnostics, text_color);
         const std::string label = std::string(mode == Rune::Mode::Small ? "Small rune " : "Big rune ") + reason;
-        cv::putText(annotated, label, {20, 40}, cv::FONT_HERSHEY_SIMPLEX, 0.65, {0, 255, 255}, 2);
-        if (full_pipeline && rune.lastCommand().found) {
-          const auto& command = rune.lastCommand();
+        cv::putText(annotated, label, {20, 40}, cv::FONT_HERSHEY_SIMPLEX, 0.65, text_color, 2);
+        if (full_pipeline && command.found) {
           const double degrees = 180 / std::numbers::pi;
           cv::putText(annotated, "yaw=" + std::to_string(command.yaw_rad * degrees) +
                       " pitch=" + std::to_string(command.pitch_rad * degrees) +
+                      (intercept_sector >= 0 ? " intercept sector=" + std::to_string(intercept_sector)
+                                             : " center hold") +
                       (command.using_mpc ? " MPC" : ""),
-                      {20, 100}, cv::FONT_HERSHEY_SIMPLEX, 0.65, {0, 255, 255}, 2);
+                      {20, 100}, cv::FONT_HERSHEY_SIMPLEX, 0.65, text_color, 2);
         }
         L6Telemetry::drawFpsOverlay(annotated, playback_fps);
       }
@@ -333,10 +353,10 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     if (debug.overlay) cv::destroyAllWindows();
     std::cout << "回放结束: frames=" << frames << " positive_frames=" << positive_frames
               << " total_detections=" << total_detections << " found_frames=" << found_frames
+              << " intercept_frames=" << intercept_frames
               << " fire_feasible_frames=" << feasible_frames << " overlay_frames=" << overlay_frames
               << " motion_ready_frames=" << motion_ready_frames << " history_resets=" << history_resets
               << " target_switches=" << target_switches
-              << " prediction_frames=" << prediction_frames
               << " mean_detect_ms=" << detect_ms / frames << '\n';
     for (const auto& [status, count] : statuses)
       std::cout << "  " << statusName(status) << ": " << count << '\n';

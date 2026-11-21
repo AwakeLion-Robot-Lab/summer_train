@@ -10,6 +10,12 @@ namespace Rune {
 std::optional<Observation> ObservationStage::run(const Region& region,
                                                  Color color, Mode mode) const {
   if (region.bgr.empty() || region.bgr.type() != CV_8UC3) return std::nullopt;
+  if (const auto& measured = region.keypoints.image_contours) {
+    const bool arm_only = mode == Mode::Big && region.keypoints.class_id == 1;
+    if (measured->color != color || measured->center_r.empty() || measured->arm.empty() ||
+        (!arm_only && measured->armor.empty())) return std::nullopt;
+    return Observation{region.keypoints, measured->armor, measured->arm, measured->center_r};
+  }
   std::vector<cv::Mat> channels;
   cv::split(region.bgr, channels);
   cv::Mat difference, smooth, mask;

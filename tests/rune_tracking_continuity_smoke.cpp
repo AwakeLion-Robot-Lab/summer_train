@@ -140,6 +140,40 @@ void checkStationaryVisualPrediction() {
   }
 }
 
+void checkRejectedRingContinuity() {
+  Rune::Geometry geometry;
+  geometry.radius_m=.7;
+  geometry.armor_half_width_m=geometry.armor_half_height_m=.15;
+  geometry.normal_vertical_weight_px=0;
+  geometry.plane_window_max_frames=0;
+  Rune::EstimatorConfig estimator;estimator.fit.min_fit_s=.3;
+  Rune::Processor processor(geometry,estimator);
+  Rune::ControlInput control;control.bullet_speed_m_s=25;
+  const auto update=[&](Rune::Frame frame) {
+    control.command_at=frame.captured_at;return processor.process(frame,control);
+  };
+  for (int i=0;i<=50;++i) update(frameAt(.02*i));
+  require(processor.lastMotion() && processor.lastMotion()->ready,"ring test failed to initialize motion");
+  const auto rejected=[&](int index) {
+    auto frame=frameAt(.02*index);
+    auto& k=frame.detections[0];
+    std::fill_n(k.point_valid.begin(),4,false);
+    k.target_ring_status=Rune::TargetRingStatus::Rejected;
+    const auto command=update(frame);
+    require(command.status==Rune::Status::NoContour && !command.found && !command.fire &&
+            !processor.lastMotion() && !processor.lastPlan(),
+            "rejected ring produced a pose failure, stale plan or control command");
+  };
+  for (int i=51;i<56;++i) rejected(i);
+  update(frameAt(1.12));
+  require(processor.lastMotion() && !processor.lastMotion()->pose.history_reset && processor.lastMotion()->ready,
+          "brief ring rejection erased usable estimator history");
+  for (int i=57;i<=70;++i) rejected(i);
+  update(frameAt(1.42));
+  require(processor.lastMotion() && processor.lastMotion()->pose.history_reset && !processor.lastMotion()->ready,
+          "repeated ring rejection extended tracking history without bound");
+}
+
 void checkFilteredPhaseCorrection() {
   Rune::EstimatorConfig config;
   config.fit.min_fit_s=.3;
@@ -180,7 +214,7 @@ void checkSmallFitWindow() {
 } // namespace
 
 int main() {
-  try { check(); checkStationaryVisualPrediction(); checkFilteredPhaseCorrection(); checkSmallFitWindow();
+  try { check(); checkStationaryVisualPrediction(); checkRejectedRingContinuity(); checkFilteredPhaseCorrection(); checkSmallFitWindow();
     std::cout<<"rune_tracking_continuity_smoke passed\n"; return 0; }
   catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

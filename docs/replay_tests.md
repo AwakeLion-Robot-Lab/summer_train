@@ -6,8 +6,8 @@
 ```bash
 xmake f --use_openvino=y
 xmake build auto_aim_test_armor
-xmake build auto_aim_test_small_tune
-xmake build auto_aim_test_big_tune
+xmake build auto_aim_test_small_rune
+xmake build auto_aim_test_big_rune
 ```
 
 ## 装甲板：auto_aim_test_armor
@@ -28,22 +28,23 @@ xmake run auto_aim_test_armor --end-index=100
 顶层装甲板 `mode: 1` 影响，无需 `--mode` 参数。默认蓝色目标，模型与推理设备读取
 `rune.detector`。
 
-默认视频分别为：小符 `video/rune/2026-10-28_00-05-41.avi`，大符
-`video/rune/2026-10-28_00-03-18.avi`。小符录像目前缺少同名姿态文本，默认运行
-相机相对的视觉估计和预测预览；大符录像自动读取配套 `.txt`。
+默认视频分别为：小符 `video/rune/2026-11-15_15-04-07.mkv`，大符
+`video/rune/2026-11-15_15-05-03.mkv`。两段录像均自动读取同名姿态文本 `.txt`，
+逐帧使用文本中的实际时间戳。素材索引见 [能量机关录像索引](rune_videos.md)。
 
 ```bash
-# 小符；默认播放 00-05-41，缺姿态时运行视觉预测预览。
-xmake run auto_aim_test_small_tune
-# 大符；默认播放 00-03-18，读取同名姿态文本。
-xmake run auto_aim_test_big_tune
+# 小符；默认播放 15-04-07，读取同名姿态文本。
+xmake run auto_aim_test_small_rune
+# 大符；默认播放 15-05-03，读取同名姿态文本。
+xmake run auto_aim_test_big_rune
 # 也可传入路径，覆盖所选入口的默认视频。
-xmake run auto_aim_test_small_tune /path/to/another_small_rune.avi
+xmake run auto_aim_test_small_rune /path/to/another_small_rune.mkv
 # 保存最后一帧的标注图；是否显示窗口由 debug.overlay 决定。
-xmake run auto_aim_test_small_tune --end-index=100 --output=build/rune_replay.png
+xmake run auto_aim_test_small_rune --end-index=100 --output=build/rune_replay.png
 ```
 
-输入接受视频完整路径或省略 `.avi` 的路径前缀。`--pose=auto` 默认寻找同名 `.txt`，
+输入接受视频完整路径；仅 AVI 支持省略 `.avi`，MKV 需保留 `.mkv` 扩展名。
+`--pose=auto` 默认寻找同名 `.txt`，
 每行格式为 `t w x y z`，与视频按帧配对；有文本时使用其中的时间戳，避免视频标称
 FPS 与实际采集间隔不一致影响运动拟合。文本提前结束时停止回放。`--pose=none`
 强制仅检测，`--pose=/path/to/poses.txt` 指定其他**确实与视频逐帧配对**的文本。
@@ -65,11 +66,11 @@ FPS 与实际采集间隔不一致影响运动拟合。文本提前结束时停�
 `--wait=0` 每次按键前进一帧。能量机关窗口显示五关键点、检测诊断、处理状态及
 有效命令角度；结束时输出检测帧数、发现目标帧数和各状态计数。
 
-绿色框为运动模型外推后的五个靶面。有有效靶板拦截规划时采用实际预测时长；
-否则使用 `--preview-ms=200` 指定的预览时长（允许 0～2000 ms，不含 0），
-窗口明确显示 `intercept` 或 `preview`。拟合未就绪时显示等待提示。
-日志每 100 帧输出角速度和拟合 RMS，结束统计包含 `motion_ready_frames` 和
-实际绘制未来框的 `prediction_frames`。稳定静止模型也可以就绪，其预测框自然重合。
+大符回放在运动模型就绪且可选中未激活叶片时计算叶片拦截。大符运动模型至少使用
+1.5 秒的观测进行拟合，回放采用这个预热条件。窗口在有效角度旁显示
+`intercept sector=N` 或 `center hold`。日志和遥测的 `target_sector` 为
+拦截叶片编号，符心跟随或没有有效规划时为 `-1`。结束统计中的
+`intercept_frames` 为产生有效叶片拦截角度的帧数。
 
 ## 统一调试配置
 

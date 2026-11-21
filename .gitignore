@@ -80,8 +80,8 @@ Thumbs.db
 /tests/*
 !/tests/*_smoke.cpp
 !/tests/auto_aim_test_armor.cpp
-!/tests/auto_aim_test_small_tune.cpp
-!/tests/auto_aim_test_big_tune.cpp
+!/tests/auto_aim_test_small_rune.cpp
+!/tests/auto_aim_test_big_rune.cpp
 !/tests/rune_replay.hpp
 !/tests/armor_pipeline_replay.cpp
 

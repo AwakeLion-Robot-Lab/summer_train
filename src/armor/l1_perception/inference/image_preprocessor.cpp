@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 #include <opencv2/imgproc.hpp>
 
@@ -41,6 +40,14 @@ cv::Point2f ImageTransform::modelToSource(const cv::Point2f& point) const noexce
 PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceInputSpec& input_spec,
                                          const ImagePreprocessConfig& config)
 {
+  PreprocessedImage output;
+  runInto(image, input_spec, output, config);
+  return output;
+}
+
+void ImagePreprocessor::runInto(const cv::Mat& image, const InferenceInputSpec& input_spec,
+                                PreprocessedImage& output, const ImagePreprocessConfig& config)
+{
   if (image.empty()) {
     throw std::invalid_argument("ImagePreprocessor received an empty image");
   }
@@ -74,11 +81,23 @@ PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceIn
   const int pad_top = config.alignment == LetterboxAlignment::Centered ? total_padding_y / 2 : 0;
   const int pad_bottom = total_padding_y - pad_top;
 
-  // 直接让最终 U8 vector 充当 OpenCV 目标图，避免 copyMakeBorder 后再复制一次。
-  std::vector<std::uint8_t> nhwc(static_cast<std::size_t>(model_width) *
-                                 static_cast<std::size_t>(model_height) * 3);
+  // input 持有最终 U8 缓冲区；固定模型尺寸时跨帧复用，不分配、不清零内容区。
+  output.input.name = input_spec.name;
+  output.input.shape = input_spec.shape;
+  const auto nhwc = output.input.resizeOwnedData(static_cast<std::size_t>(model_width) *
+                                                static_cast<std::size_t>(model_height) * 3);
   cv::Mat letterboxed(model_height, model_width, CV_8UC3, nhwc.data());
-  letterboxed.setTo(config.padding_color);
+  // 内容区会由 copyTo/resize 完整覆盖。只填当前四边，ROI、贴齐方式或颜色
+  // 改变时也不会把上一帧内容留在新的补边区。
+  if (pad_top > 0)
+    letterboxed.rowRange(0, pad_top).setTo(config.padding_color);
+  if (pad_bottom > 0)
+    letterboxed.rowRange(model_height - pad_bottom, model_height).setTo(config.padding_color);
+  if (pad_left > 0)
+    letterboxed(cv::Rect(0, pad_top, pad_left, resized_height)).setTo(config.padding_color);
+  if (pad_right > 0)
+    letterboxed(cv::Rect(model_width - pad_right, pad_top, pad_right, resized_height))
+      .setTo(config.padding_color);
 
   const cv::Rect content_rect(pad_left, pad_top, resized_width, resized_height);
   cv::Mat content = letterboxed(content_rect);
@@ -88,10 +107,6 @@ PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceIn
     cv::resize(image, content, content.size(), 0.0, 0.0, cv::INTER_LINEAR);
   }
 
-  PreprocessedImage output;
-  output.input.name = input_spec.name;
-  output.input.shape = input_spec.shape;
-  output.input.setOwnedData(std::move(nhwc));
   // Decoder 接到模型关键点后，必须用这份同帧变换还原原图坐标，不能重新猜 scale。
   output.transform = {.source_size = image.size(),
                       .model_size = {model_width, model_height},
@@ -100,7 +115,6 @@ PreprocessedImage ImagePreprocessor::run(const cv::Mat& image, const InferenceIn
                       .pad_top = pad_top,
                       .pad_right = pad_right,
                       .pad_bottom = pad_bottom};
-  return output;
 }
 
 }  // namespace L2Perception

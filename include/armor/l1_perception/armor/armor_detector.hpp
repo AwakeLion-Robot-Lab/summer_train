@@ -58,6 +58,8 @@ private:
   ArmorDecoder decoder_{};
   LightFinderConfig finder_config_{};
   ImagePreprocessConfig preprocess_config_{};
+  // 检测器由单个视觉线程独占；同步推理结束后复用宿主输入。
+  mutable PreprocessedImage preprocess_buffer_;
   ArmorRefiner refiner_{};
   mutable RefineStats last_refine_stats_{};
   mutable DetectTiming last_timing_{};

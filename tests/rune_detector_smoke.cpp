@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <tuple>
 #include <yaml-cpp/yaml.h>
+#include <opencv2/imgproc.hpp>
 
 namespace {
 void require(bool condition, const char* message) {
@@ -383,6 +384,44 @@ void checkFallback(bool channels_first) {
     require(threw,"invalid fallback scale accepted");
   }
 }
+
+void checkRingSelection(bool channels_first) {
+  auto backend=std::make_unique<Backend>(channels_first);
+  auto* source=backend.get();source->empty=true;
+  const auto candidate=[&](int anchor,float scale,float score) {
+    source->changes.emplace_back(anchor,0,score);
+    const std::array<cv::Point2f,5> points{
+      cv::Point2f(250,240+43*scale),cv::Point2f(250-43*scale,240),cv::Point2f(250,40),
+      cv::Point2f(250+43*scale,240),cv::Point2f(250,240-43*scale)};
+    for (int i=0;i<5;++i) {
+      source->changes.emplace_back(anchor,3+i*3,points[i].x);
+      source->changes.emplace_back(anchor,4+i*3,points[i].y);
+      source->changes.emplace_back(anchor,5+i*3,.95F);
+    }
+  };
+  candidate(0,1,.95F);candidate(1,.82F,.94F);
+  const auto geometry=YAML::Load("radius_m: .7\narmor_half_width_m: .15\narmor_half_height_m: .15");
+  const auto config=Rune::KeypointDetectorConfig::fromYaml(
+      YAML::Load("fuse_keypoints: true\nlock_target_ring: true"),{},geometry);
+  Rune::OpenVinoKeypointDetector detector(std::move(backend),config);
+  cv::Mat image(400,400,CV_8UC3,cv::Scalar::all(8));
+  cv::circle(image,{250,240},43,{255,30,10},2,cv::LINE_AA);
+  cv::circle(image,{250,240},35,{255,30,10},2,cv::LINE_AA);
+  const auto outer=detector.detect(image);
+  require(outer.size()==1 && detector.lastDiagnostics()->nms_rejected==1 &&
+          detector.lastDiagnostics()->fused_candidates==0 && detector.lastDiagnostics()->target_ring_refined==1 &&
+          outer[0].target_ring_status==Rune::TargetRingStatus::Verified,
+          "NMS/fusion mixed concentric boundaries or skipped image ring verification");
+  source->changes.emplace_back(0,0,.93F);source->changes.emplace_back(1,0,.96F);
+  const auto inner=detector.detect(image);
+  require(inner.size()==1 && cv::norm(inner[0].top-outer[0].top)<.01 &&
+          cv::norm(inner[0].left-outer[0].left)<.01,
+          "candidate score swap switched the published ring");
+  const auto missing=detector.detect(cv::Mat(400,400,CV_8UC3,cv::Scalar::all(0)));
+  require(missing.size()==1 && !missing[0].armorCenter() && missing[0].point_valid[4] &&
+          detector.lastDiagnostics()->target_ring_rejected==1 && detector.lastDiagnostics()->partial_detections==1,
+          "unverified ring remained a valid pose observation");
+}
 }  // namespace
 
 int main() {
@@ -400,6 +439,8 @@ int main() {
     checkTrackingOverlay();
     checkFallback(true);
     checkFallback(false);
+    checkRingSelection(true);
+    checkRingSelection(false);
     std::cout << "rune_detector_smoke passed\n";
     return 0;
   } catch (const std::exception& error) {

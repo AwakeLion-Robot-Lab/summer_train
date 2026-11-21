@@ -9,10 +9,17 @@ namespace Rune {
 
 // Counts describe one successfully decoded frame, before contour/pose processing.
 struct DetectorDiagnostics {
+  bool contour_backend{false};
+  std::size_t contour_count{0}, target_candidates{0}, center_candidates{0};
+  std::size_t arm_matches{0}, geometry_rejected{0};
+  std::size_t scut_gap_points{0}, scut_fan_points{0}, contour_passes{0};
   std::size_t anchors{0}, score_pass{0}, keypoint_rejected{0};
   std::size_t nms_rejected{0}, mode_rejected{0}, detections{0};
   std::size_t partial_detections{0}, best_valid_keypoints{0};
   std::size_t fused_candidates{0}; // Suppressed duplicates contributing coordinates.
+  std::size_t target_ring_refined{0}, target_ring_rejected{0};
+  std::size_t target_ring_subpixel_refined{0};
+  std::size_t target_ring_reconnected{0}, target_ring_no_contour{0};
   std::size_t inference_passes{1}; // Counters otherwise describe the selected pass.
   std::array<float, 3> max_class_scores{};
   int best_class{-1};
@@ -32,6 +39,10 @@ public:
   }
   [[nodiscard]] virtual std::optional<DetectorDiagnostics> lastDiagnostics() const {
     return std::nullopt;
+  }
+  [[nodiscard]] virtual std::vector<Keypoints> detect(const cv::Mat& bgr, Mode mode, Color color) {
+    (void)color;
+    return detect(bgr, mode);
   }
 };
 

@@ -74,9 +74,14 @@ Status Processor::observe(const Frame& frame) {
     missed(); return Status::NoDetection;
   }
   std::vector<Observation> observations;
-  for (const auto& region : regions)
+  for (const auto& region : regions) {
+    // A rejected physical boundary is missing image evidence, not a failed
+    // 3D solution. Stop this frame's command, retaining only the existing
+    // bounded blink history when no other reliable inactive blade is present.
+    if (region.keypoints.target_ring_status==TargetRingStatus::Rejected) continue;
     if (auto observation = observation_.run(region, frame.color, frame.mode))
       observations.push_back(std::move(*observation));
+  }
   if (observations.empty() || std::none_of(observations.begin(), observations.end(),
       [](const auto& observation) { return observation.keypoints.class_id == 0; })) {
     missed(); return Status::NoContour;

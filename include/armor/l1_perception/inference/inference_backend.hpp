@@ -90,6 +90,9 @@ public:
   std::vector<std::size_t> shape;
 
   void setOwnedData(std::vector<std::uint8_t> data);
+  // 保留已有容量；同尺寸重复调用不会分配或清零。返回视图在下一次调整大小、
+  // 替换数据或销毁 input 时失效，只能在同步 infer() 之外写入。
+  std::span<std::uint8_t> resizeOwnedData(std::size_t size);
   std::span<const std::uint8_t> values() const noexcept;
   std::size_t elementCount() const noexcept;
   bool isConsistent() const noexcept;

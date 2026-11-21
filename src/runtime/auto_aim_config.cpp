@@ -337,8 +337,15 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   }
   const YAML::Node rune = root["rune"];
   if (rune) {
-    config.rune.detector = Rune::KeypointDetectorConfig::fromYaml(
-        rune["detector"], std::filesystem::path(path).parent_path());
+    const auto detector = rune["detector"];
+    if (detector && !detector.IsMap()) throw std::runtime_error("rune.detector must be a map");
+    if (detector) config.rune.detector_backend = detector["backend"].as<std::string>("openvino");
+    if (config.rune.detector_backend == "scut") {
+      config.rune.scut_detector = Rune::ScutContourConfig::fromYaml(detector["scut"], rune["geometry"]);
+    } else if (config.rune.detector_backend == "openvino") {
+      config.rune.detector = Rune::KeypointDetectorConfig::fromYaml(
+          detector, std::filesystem::path(path).parent_path(), rune["geometry"]);
+    } else throw std::runtime_error("rune.detector.backend must be scut or openvino");
     config.rune.image_refiner = Rune::ImageRefinerConfig::fromYaml(rune["image_refiner"]);
     const auto geometry = rune["geometry"];
     if (geometry) {
@@ -356,7 +363,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
     if (rune["big_warmup_s"]) config.rune.planning.big_warmup_s = rune["big_warmup_s"].as<double>();
     const auto fire = rune["fire"];
     if (fire) {
-      if (fire["shoot_enable"]) config.rune.fire.shoot_enable = fire["shoot_enable"].as<bool>();
       if (fire["aim_settle_s"]) config.rune.fire.aim_settle_s = fire["aim_settle_s"].as<double>();
       if (fire["idle_duration_s"]) config.rune.fire.idle_duration_s = fire["idle_duration_s"].as<double>();
       if (fire["shoot_duration_s"]) config.rune.fire.shoot_duration_s = fire["shoot_duration_s"].as<double>();
@@ -564,6 +570,9 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 
   const YAML::Node fire = root["fire"];
   readValue(fire, "shoot_enable", config.fire.shoot_enable);
+  // 装甲板、大小符共用顶层开火开关；rune.fire 只保留专用门限和节拍。
+  config.rune.fire.shoot_enable = config.fire.shoot_enable;
+  config.rune.planning.shoot_enable = config.fire.shoot_enable;
   readValue(fire, "stop_fire_on_temp_lost", config.fire.stop_fire_on_temp_lost);
   readValue(fire, "stop_fire_on_aim_error", config.fire.stop_fire_on_aim_error);
   readValue(fire, "armor_width_small_m", config.fire.armor_width_small);

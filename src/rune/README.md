@@ -1,12 +1,27 @@
 # 能量机关代码框架
 
+实时入口、`rune_detect` 与大小符回放共用检测后端选择。当前配置为
+`rune.detector.backend: scut`，使用传统视觉检测靶圈、灯臂和 R 标；
+`openvino` 使用五关键点模型。旧配置省略该字段时使用 `openvino`。
+SCUT 的配置、接口和回放方法见 [SCUT 识别适配](../../docs/rune_scut_detection.md)。
+
+关键点持续抖动的图像运动补偿、光流回退与完整录像对照见
+[关键点防抖修正](../../docs/rune_keypoint_stabilization.md)。
+
+靶板四点在内外圈之间切换的专门处理见
+[靶板外圈约束](../../docs/rune_target_ring_lock.md)。工程配置已开启
+`rune.detector.lock_target_ring`，缺少可信外圈的四点保留为 ROI 种子，但不参与位姿解算。
+外圈的亮带中心线精修和精修结果的连续维护见
+[外圈亚像素精修](../../docs/rune_target_ring_subpixel.md)，开关为
+`rune.detector.target_ring_subpixel`。
+
 检测关键点 → 筛选轮廓 → 重建三维旋转平面 → 估计叶片相位与运动 → f4 选叶/弹道/轨迹优化 → f5 对准/射击节拍/单发输出。
 
 本模块借鉴 [RP-26Rune](https://github.com/SZURPVision/RP-26Rune) 的分层数据流与失败关闭原则，按本工程的 xmake、Eigen、OpenCV 约定实现独立 `Rune::Processor`。代码位于 `include/rune/` 与 `src/rune/`，已由 `newvision` 静态库自动收录。
 
 | 层 | 当前职责 | 后续精化点 |
 | --- | --- | --- |
-| f1-observation | `OpenVinoKeypointDetector` 解码五点模型；`DetectionStage::runAll` 同时保留未激活及激活叶片；各 ROI 提取装甲板、灯臂、R 标，大符激活叶片允许仅灯臂与 R 标 | 更复杂的轮廓遮挡恢复 |
+| f1-observation | `ScutContourDetector` 提取颜色轮廓和多角点，或 `OpenVinoKeypointDetector` 解码五点模型；保留未激活及激活叶片 | 更复杂的轮廓遮挡恢复 |
 | f2-building | 透视校正的五叶扇区匹配、PCA 锚框、联合 IPPE 与 Huber Chamfer；曝光时刻重力约束；完整公共坐标位姿下的平面滑窗；统一输出枪口系模型变换 | 实车标定、定位数据接入与录像评估 |
 | f3-estimator | 符心/法向/自转相位与速度 EKF；马氏门限与匈牙利逐特征更新；小符独立恒速预测，大符独立恒速/正弦双拟合并按代价自动切换 | 真实录像标定与评估 |
 | f4-planning | 固定身份选叶、大小符预热、延迟/飞行时间迭代；复用现有真空/线性阻力弹道与 TinyMPC | 移动车体的平移外推与实车标定 |
@@ -16,7 +31,7 @@
 
 主程序 `auto_aim` 已接入独立的 `runtime::RuneRuntime`。在 `config/auto_aim.yaml` 顶层设置 `mode: 1` 为装甲板、`2` 为小能量机关、`3` 为大能量机关，修改后重启。该配置覆盖下位机 WorkMode；串口仍提供曝光姿态、当前姿态、敌方颜色与弹速。只加载选中模式的检测器，大小符的 f3 模型保持独立。
 
-能量机关参数位于同一文件的 `rune` 节点：`detector` 配置检测模型、设备及阈值，模型路径相对于该 YAML 目录；`geometry` 三项尺寸必须填写实测米制值，默认 0 时仅检测；`fire.shoot_enable` 独立于装甲板开关，默认关闭。弹道、弹速回退、出膛延迟及 MPC 调参复用 `config/planner_config.yaml`，可用 `rune.mpc_enable` 单独覆盖 MPC 开关。相机标定复用 `sensor/camera/camera_calibration.hpp`，反馈过期、颜色未知或姿态缺失时中断跟踪并保持最后方向、关火。当前没有定位平移输入，不启用依赖完整公共坐标位姿的平面滑窗。
+能量机关参数位于同一文件的 `rune` 节点：`detector` 配置检测模型、设备及阈值，模型路径相对于该 YAML 目录；`geometry` 三项尺寸必须填写实测米制值，默认 0 时仅检测；装甲板与大小符统一使用顶层 `fire.shoot_enable` 开火开关，缺省关闭；`rune.fire` 只配置能量机关的对准门限和射击节拍，旧的嵌套开关不再读取。弹道、弹速回退、出膛延迟及 MPC 调参复用 `config/planner_config.yaml`，可用 `rune.mpc_enable` 单独覆盖 MPC 开关。相机标定复用 `sensor/camera/camera_calibration.hpp`，反馈过期、颜色未知或姿态缺失时中断跟踪并保持最后方向、关火。当前没有定位平移输入，不启用依赖完整公共坐标位姿的平面滑窗。
 
 运行时在关键点推理完成后取得规划时刻及最新反馈。能量机关命令通过 `SerialWorker::updateCommand(command, true)` 下发，单发位在一次完整串口写入后清除，角度仍周期发送；装甲板继续使用原有持续开火语义。`auto_aim_mode_smoke` 覆盖配置与传感器适配，`serial_single_shot_smoke` 用伪串口验证单发与超时。
 
@@ -59,13 +74,13 @@ f4/f5 的接口、MPC、坐标约定与射击时序见 [f4-planning](f4-planning
 
 ## 五关键点模型部署
 
-新导入的 `video/rune/` 录像，小符使用 `xmake run auto_aim_test_small_tune`，
-大符使用 `xmake run auto_aim_test_big_tune`。两个入口复用实机 `RuneRuntime`，
-默认分别播放 `2026-10-28_00-05-41.avi` 和 `2026-10-28_00-03-18.avi`，
+新导入的 `video/rune/` 录像，小符使用 `xmake run auto_aim_test_small_rune`，
+大符使用 `xmake run auto_aim_test_big_rune`。两个入口复用实机 `RuneRuntime`，
+默认分别播放 `2026-11-15_15-04-07.mkv` 和 `2026-11-15_15-05-03.mkv`，
 也可在命令后传入其他录像路径。
 窗口、绘制间隔及 UDP 遥测统一读取 `config/auto_aim.yaml` 的 `debug` 节点。
-有配套姿态和标定时运行完整链路，
-缺少姿态时仅检测。装甲板回放入口为 `auto_aim_test_armor`。
+两段默认录像均有同名姿态文本；有配套姿态和标定时运行完整链路，
+缺少姿态但标定有效时运行相机相对视觉预测。装甲板回放入口为 `auto_aim_test_armor`。
 参数、视频选择与无窗口运行见 [离线回放说明](../../docs/replay_tests.md)。
 
 模型采用 [SZURPVision/RuneDetectionModel](https://github.com/SZURPVision/RuneDetectionModel) 的 `model/model-0624.onnx`，本地位于 `model/rune_model/model-0624.onnx`，来源、SHA-256 与许可见该目录的 `README.md`。推理复用工程现有 OpenVINO 后端，模型只在构造时加载一次；适配器独立于相机和串口线程。
@@ -81,9 +96,11 @@ xmake run rune_detect --input /path/to/rune.mp4 --mode big --frames 30 --output 
 
 检测入口不需要相机标定，可独立回放图像。默认使用 CPU，阈值与设备可在 `config/auto_aim.yaml` 的 `rune.detector` 节点中修改，模型相对路径以配置文件所在目录为基准。工具不下发云台或开火指令。
 
-实时 `debug.overlay: true` 窗口与 `rune_detect --output` 共用 `Rune::drawDetectionOverlay`：未激活靶板画蓝色圆圈，已激活画橙色圆圈；五点沿用 RuneDetectionModel 的颜色（上绿、左黄、R 蓝、右紫、下红）及白色描边，黑底白字显示 `inactive / small_activated / big_activated` 和置信度百分比。只显示过阈值关键点；圆心由可靠的靶板对点确定，半径取可靠靶板点到圆心的最大距离，R 点不参与定圆。无法可靠确定靶心时只显示关键点。显示的是当前帧网络检测结果，标定或姿态缺失时仍可显示检测。
+实时调试窗口、大小符回放和 `rune_detect --output` 共用 `Rune::drawDetectionOverlay`。
+SCUT 绘制测得的靶圈椭圆、缺口点、灯臂端点和 R，`ImageRefiner` 对这些特征做图像运动补偿。
+OpenVINO 绘制网络锚点和靶板边线。
 
-实时窗口和大小符录像回放通过 `Rune::drawPredictionOverlay`，使用运动模型的相位增量，将全部五个靶面外推到同一未来时刻，再以投影靶心为圆心、投影靶板尺寸为半径绘制绿色圆圈，包括本帧未识别到的靶面。有有效靶板拦截规划时使用 `prediction_horizon_s`（包含图像年龄、发射延迟及飞行时间）；否则默认预览未来 200 ms，并明确标注 `preview`，回放可用 `--preview-ms=...` 调整。运动拟合未就绪时显示等待提示，不用当前滤波框冒充未来位置；缺少标定、有效滤波姿态或几何尺寸时不画预测框，过期姿态和相机后方的靶面也会跳过。`drawTrackingOverlay` 只保留当前滤波 R/靶心标记。静止模型通过拟合质量检查后也可就绪，此时未来框与当前模型重合。
+实时窗口和大小符回放不绘制未来位置预测框。运动估计、弹道规划及控制计算继续运行；`drawTrackingOverlay` 保留当前曝光时刻的滤波 R/靶心标记。
 
 关键点筛选采用 SZU 官方规则，`min_valid_keypoints: 3` 表示至少三点过阈值；
 NMS 的中心和平均置信度也只使用这些点。解码仍保留全部五点坐标、各点置信度

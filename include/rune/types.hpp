@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -18,6 +19,7 @@ using TimePoint = std::chrono::steady_clock::time_point;
 
 enum class Mode { Small, Big };
 enum class Color { Red, Blue };
+enum class TargetRingStatus { Unchecked, Verified, Rejected };
 enum class Status {
   Ready,
   NoDetection,
@@ -38,6 +40,22 @@ enum class Status {
   PlanStale
 };
 
+struct DetectedContours {
+  std::vector<cv::Point> armor, arm, center_r;
+  Color color{Color::Red};
+  std::optional<cv::RotatedRect> target_ellipse;
+  std::array<std::optional<cv::Point2f>, 8> gap_points;
+  std::vector<cv::Point2f> fan_points;
+  std::vector<int> fan_point_ids;
+  std::vector<bool> fan_point_valid;
+  [[nodiscard]] int fanPointId(std::size_t i) const {
+    return fan_point_ids.size() == fan_points.size() ? fan_point_ids[i] : int(i);
+  }
+  [[nodiscard]] bool fanPointValid(std::size_t i) const {
+    return fan_point_valid.size() != fan_points.size() || fan_point_valid[i];
+  }
+};
+
 // All image points use full-resolution pixel coordinates. Order is top, left,
 // right, bottom, R. class_id: 0 inactive, 1 activated.
 struct Keypoints {
@@ -48,6 +66,13 @@ struct Keypoints {
   // as ROI seeds, but must not become pose anchors or filter measurements.
   std::array<float, 5> point_confidences{1, 1, 1, 1, 1};
   std::array<bool, 5> point_valid{true, true, true, true, true};
+  // Set only by the optional image-based target-ring check.
+  TargetRingStatus target_ring_status{TargetRingStatus::Unchecked};
+  bool target_ring_subpixel{false};
+  // Coarse reference for motion-compensated precision corrections; zero when
+  // the optional subpixel stage is disabled.
+  std::array<cv::Point2f,4> target_ring_coarse_points{};
+  std::shared_ptr<const DetectedContours> image_contours;
 
   [[nodiscard]] std::optional<cv::Point2f> armorCenter() const {
     if (point_valid[0] && point_valid[1] && point_valid[2] && point_valid[3])

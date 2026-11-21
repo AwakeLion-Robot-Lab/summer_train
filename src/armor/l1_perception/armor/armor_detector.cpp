@@ -96,8 +96,9 @@ ArmorFrame ArmorDetector::detectFrame(
     const bool cropped = focus.area() > 0 && focus != image_rect;
     const cv::Mat network_input = cropped ? image(focus) : image;
 
-    const PreprocessedImage preprocessed =
-      ImagePreprocessor::run(network_input, armor_backend_->inputSpec(), preprocess_config_);
+    ImagePreprocessor::runInto(network_input, armor_backend_->inputSpec(),
+                               preprocess_buffer_, preprocess_config_);
+    const auto& preprocessed = preprocess_buffer_;
     last_timing_.preprocess = lap();
     const InferenceResult armor_result = armor_backend_->infer(preprocessed.input);
     last_timing_.infer = lap();
