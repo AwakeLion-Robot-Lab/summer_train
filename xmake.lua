@@ -88,7 +88,7 @@ target("rune_detect")
     set_kind("binary")
     set_default(false)
     set_rundir("$(projectdir)")
-    add_files("tools/rune/rune_detect.cpp")
+    add_files("src/rune/f6_telemetry/rune_obeservation/rune_detect.cpp")
     add_deps("newvision")
 target_end()
 
@@ -100,6 +100,7 @@ end
 target("newvision")
     set_kind("static")
     add_files("src/**/*.cpp")
+    remove_files("src/rune/f6_telemetry/rune_obeservation/rune_detect.cpp")
     remove_files("src/runtime/auto_aim_runtime.cpp")
     add_files("include/armor/l3_planning/planner_config.cpp")
     add_files("tools/tiny_MPC/*.cpp")
@@ -267,6 +268,11 @@ target_end()
 -- ---------------------------------------------------------------------------
 
 local standalone_tests = {
+    rune_zero_copy_smoke = {
+        files = {"src/rune/f1-observation/detection.cpp", "src/rune/f1-observation/reobservation.cpp"},
+        includes = {"include", "include/armor", "/usr/include/eigen3"},
+        opencv = {"opencv_core", "opencv_imgproc"},
+    },
     rune_scut_detector_smoke = {
         files = {"src/rune/f1-observation/scut_contour_detector.cpp",
                  "src/rune/f1-observation/scut_feature_points.cpp",
@@ -276,7 +282,8 @@ local standalone_tests = {
         syslinks = {"yaml-cpp"},
     },
     rune_scut_features_smoke = {
-        files = {"src/rune/f1-observation/scut_feature_points.cpp", "src/rune/debug_overlay.cpp"},
+        files = {"src/rune/f1-observation/scut_feature_points.cpp",
+                 "src/rune/f6_telemetry/rune_debug_overlay.cpp"},
         includes = {"include", "include/armor", "/usr/include/eigen3"},
         opencv = {"opencv_core", "opencv_imgproc", "opencv_calib3d"},
     },
@@ -382,7 +389,7 @@ local standalone_tests = {
 -- 需要开关或平台才存在的目标。openvino 这几个都要模型；
 -- 三个回放入口统一使用 auto_aim.yaml 的 debug 配置。
 local gated_tests = {
-    rune_detector_smoke      = "use_openvino",
+    zero_copy_inference_smoke = "use_openvino",
     openvino_armor_smoke     = "use_openvino",
     armor_latency_smoke      = "use_openvino",
     armor_pipeline_replay    = "use_openvino",

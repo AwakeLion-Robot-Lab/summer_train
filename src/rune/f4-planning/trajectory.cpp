@@ -39,7 +39,10 @@ void optimizeTrajectory(AimPlan& plan, const Motion& motion,
   double previous_yaw=reference.yaw_origin;
   for (std::size_t i=0;i<kTinyMpcHorizon;++i) {
     const double offset=(static_cast<double>(i)-kTinyMpcControlIndex)*dt;
-    const auto sample=angles(offset);
+    std::optional<Eigen::Vector2d> sample;
+    if (i == kTinyMpcControlIndex + 1) sample = next;
+    else if (i == kTinyMpcControlIndex + 2) sample = after;
+    else sample = angles(offset);
     if (!sample) return;
     const double delta=std::remainder(sample->x()-previous_yaw,2*std::numbers::pi);
     reference.yaw.angle[i]=(i ? reference.yaw.angle[i-1] : 0)+delta;

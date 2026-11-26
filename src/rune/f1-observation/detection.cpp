@@ -49,7 +49,12 @@ std::vector<Region> DetectionStage::runAll(const Frame& frame) const {
     const int x1=static_cast<int>(std::min(double(frame.bgr.cols),std::ceil(cx+half_w)));
     const int y1=static_cast<int>(std::min(double(frame.bgr.rows),std::ceil(cy+half_h)));
     const cv::Rect bounds(x0,y0,x1-x0,y1-y0);
-    if (!bounds.empty()) regions.push_back({candidate,bounds,frame.bgr(bounds).clone()});
+    if (!bounds.empty()) {
+      auto image = frame.bgr(bounds);
+      // 引用计数保持整帧存活；外部裸指针图像需要独立保存像素。
+      if (!image.u) image = image.clone();
+      regions.push_back({candidate,bounds,std::move(image)});
+    }
     // Permit duplicates/false positives for joint matching to resolve, but bound work.
     if (regions.size()==10) break;
   }

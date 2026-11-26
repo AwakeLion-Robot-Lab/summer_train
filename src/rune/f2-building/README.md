@@ -29,9 +29,30 @@
 
 允许部分叶片不可见。无可用未激活叶片时，Processor 不输出目标。保留的单片小符激活状态调用仅用于诊断，输出 `activated=true`，不作为开火目标。目标实际切换时输出 `target_switched`；上下文被清空时输出 `history_reset`，Processor 下游以固定叶片身份维护连续相位，换片不清空拟合；历史失效时重置，避免把 72° 换片误当成转速。开火闩锁仍需外部确认后显式 `rearm()`。
 
+## 编号角点联合解算
+
+在 `config/auto_aim.yaml` 的 `rune.geometry.numbered_anchors_m` 下填写实测三维坐标。`inactive`、`small_activated`、`big_activated` 分别对应未激活叶片、小符已激活叶片和大符已激活叶片。每组的 `gaps` 和 `fan` 都是从图像角点编号到 `[x, y, z]` 的映射。可以只配置有实测坐标的编号。
+
+```yaml
+rune:
+  geometry:
+    numbered_anchors_m:
+      inactive:
+        gaps: {}
+        fan: {}
+      small_activated:
+        fan: {}
+      big_activated:
+        fan: {}
+```
+
+坐标使用参考叶片的模型系，单位为米。R 标中心为 `(0, 0, 0)`，`+y` 从 R 标指向参考靶心，`+x` 指向参考靶心右侧。`gaps` 使用 `0–7`，偶数编号是缺口中点，奇数编号是相邻缺口之间的点。未激活叶片的 `fan` 编号 `0–3` 依次对应灯臂外左、外右、内右、内左。已激活叶片的 `fan` 编号 `0–5` 依次对应左、中、右外端点、右转折点、底端点、左转折点。编号可以从调试图或 `rune_detect --features-output` 核对。
+
+云台跟随配置下，先使用原有平面候选关联扇区，再将 ECC 处理后仍有效的实测编号角点加入联合 `SQPnP` 和重投影检查。`SQPnP` 支持有深度差的角点。缺少编号实测时可继续使用五点平面解算。回放日志的 `numbered_anchors` 和叶片观测审计的 `numbered_anchor_count` 记录参与求解的额外实测点数量。
+
 ## PCA 锚框与实测模型
 
-所有物点单位为米：R 原点 `(0,0,0)`，参考靶心 `(0,radius,0)`，右侧 NN 点为 `(+half_width,radius,0)`。上游物点的负 y 方向和毫米单位不能直接套用。
+所有物点以米为单位。R 原点为 `(0,0,0)`，参考靶心为 `(0,radius,0)`，右侧检测锚点为 `(+half_width,radius,0)`。上游物点的负 y 方向和毫米单位不能直接套用。
 
 ```cpp
 Rune::Geometry geometry{measured_radius, measured_half_width, measured_half_height};
@@ -49,7 +70,7 @@ Rune::BuildingStage building(geometry);
 
 `use_pca_anchors` 默认 true。提供装甲板和灯臂模型后，可从它们的模型系 x/y 包围范围生成四个物理锚框点。也可在 Geometry 或对应 BladeModel 的 `pca_box_anchors_m` 显式配置四角，顺序为 **外侧左、内侧左、内侧右、外侧右**，锚框必须共面 z=0、沿模型 x/y 轴对齐。
 
-图像侧对装甲板与灯臂轮廓按周长均匀采样，去畸变后做 PCA，用网络方向消除轴向正负歧义，提取包围框，再将角点映射回原始畸变像素。PCA 四角与网络五点是不同的物理点，使用各自的物点求解，不混用。没有可用锚框模型或 PCA 退化时回退网络点。轮廓被截断时 PCA 包围范围可能偏小，需要结合联合轮廓残差和质量门限；它不保证任意遮挡下都能恢复完整轮廓。
+图像侧对装甲板与灯臂轮廓按周长均匀采样，去畸变后做 PCA，用检测锚点的方向消除轴向正负歧义，提取包围框，再将角点映射回原始畸变像素。PCA 四角与五个检测锚点分别使用各自的物点求解。没有可用锚框模型或 PCA 退化时使用检测锚点。轮廓被截断时 PCA 包围范围可能偏小，需要结合联合轮廓残差和质量门限。
 
 联合模式中 R 标只提供共享中心锚点，不把 R 字形当成五个随扇区旋转的轮廓。单片模式仍支持显式 R 边界模型。
 
@@ -94,7 +115,7 @@ frame.world_frame_id = localization_epoch;   // 重定位或原点变化后递�
 
 `Pose` 提供 `reprojection_error_px`、`chamfer_error_px`、`contour_refined`、`blades`（观测索引、扇区、激活状态、是否使用 PCA、枪口系靶心）、`plane_window_frames`、`plane_smoothed`、`attitude_constrained`、`normal_vertical_component`、`target_switched` 和 `history_reset`。平滑后的残差会重新计算。输出法向按枪口系 x 非负定向，这不会改变完整变换矩阵。
 
-默认每类最多 96 个模型样本、15 次轮廓/姿态联合迭代、距离场 padding 24 px、单场最多 1048576 像素、单帧全部场最多 3145728 像素。模型在构造时缓存；每个距离场在一次种子求解内只构建一次，由该种子的 IPPE 候选解共享；初始化枚举其他种子时会重新构建。错误输入返回 nullopt，由 Processor 转成 PoseFailed 并重置运动历史，不复用上帧结果。轮廓模型缺省时仍支持网络锚点联合 PnP。
+默认每类最多 96 个模型样本、15 次轮廓/姿态联合迭代、距离场 padding 24 px、单场最多 1048576 像素、单帧全部场最多 3145728 像素。模型在构造时缓存；每个距离场在一次种子求解内只构建一次，由该种子的 IPPE 候选解共享；初始化枚举其他种子时会重新构建。错误输入返回 nullopt，由 Processor 转成 PoseFailed 并重置运动历史，不复用上帧结果。轮廓模型缺省时使用检测锚点做联合 PnP。
 
 ## 验证
 

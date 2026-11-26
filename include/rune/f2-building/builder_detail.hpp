@@ -1,7 +1,7 @@
 // Private implementation shared by the building translation units.
 #pragma once
 
-#include "rune/types.hpp"
+#include "rune/f6_telemetry/types.hpp"
 #include "geometry/pose_projection.hpp"
 #include "geometry/contour.hpp"
 
@@ -27,14 +27,17 @@ struct Field {
 
 struct Evaluation {
   Eigen::VectorXd residual;
+  std::vector<cv::Point2d> projected_anchors;
   double cost{std::numeric_limits<double>::infinity()};
-  double anchor_rms{0}, chamfer_rms{0};
+  double anchor_rms{0}, chamfer_rms{0}, worst_contour_mean_square{0};
 };
 
 struct Prepared {
   std::size_t index;
   std::vector<cv::Point3d> anchors;
   std::vector<cv::Point2d> pixels;
+  std::vector<cv::Point3d> numbered_anchors;
+  std::vector<cv::Point2d> numbered_pixels;
   std::vector<Field> fields;
   bool pca{false};
 };
@@ -42,10 +45,11 @@ struct Prepared {
 bool validGeometry(const Geometry& g);
 bool validCamera(const Frame& frame, cv::Mat& camera, cv::Mat& distortion);
 bool worldRotation(const Frame& frame, std::optional<Eigen::Matrix3d>& rotation);
-bool validObservation(const Observation& observation, bool arm_only);
+bool wellFormedObservation(const Observation& observation);
+bool validObservation(const Observation& observation, bool arm_only, bool allow_inferred_center = false);
 bool validPcaBox(const std::vector<cv::Point3d>& box);
 
-std::vector<cv::Point2d> networkPoints(const Observation& observation);
+std::vector<cv::Point2d> detectedAnchorPixels(const Observation& observation);
 cv::Point3d rotatePoint(const cv::Point3d& point, int sector);
 std::vector<cv::Point3d> rotatePoints(const std::vector<cv::Point3d>& points, int sector);
 void updatePhase(Pose& pose);
@@ -62,7 +66,4 @@ void refine(Parameters& p, Evaluation& evaluation, const std::vector<cv::Point3d
     const std::vector<cv::Point2d>& image, const std::vector<Field>& fields,
     const cv::Mat& camera, const cv::Mat& distortion, const Geometry& geometry,
     const std::optional<Eigen::Vector3d>& vertical);
-bool consistentFields(const std::vector<Field>& fields, const Parameters& p,
-    const cv::Mat& camera, const cv::Mat& distortion, const Geometry& geometry);
-
 } // namespace Rune::building_detail

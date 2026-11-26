@@ -24,9 +24,18 @@ std::optional<Pose> BuildingStage::run(const Observation& observation,const Fram
 
 std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observations,const Frame& frame) {
   const auto fail=[&]() -> std::optional<Pose> { reset(); return {}; };
+  const auto insufficient=[&]() -> std::optional<Pose> {
+    if (!gimbal_only_ || !std::all_of(observations.begin(),observations.end(),wellFormedObservation))
+      return fail();
+    return {};
+  };
   try {
     const auto& g=geometry_;
     if (!validGeometry(g) || observations.empty() || observations.size()>32) return fail();
+    cv::Mat camera,distortion;
+    if (gimbal_only_ && (frame.captured_at==TimePoint{} || frame.bgr.empty() || frame.bgr.type()!=CV_8UC3 ||
+        (frame.mode!=Mode::Small && frame.mode!=Mode::Big) ||
+        (frame.color!=Color::Red && frame.color!=Color::Blue) || !validCamera(frame,camera,distortion))) return fail();
     std::optional<Eigen::Matrix3d> orientation;
     if (!worldRotation(frame,orientation)) return fail();
     if (previous_frame_) {
@@ -44,34 +53,39 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
           !frame.T_barrel_camera || !before.T_barrel_camera ||
           (frame.T_barrel_camera->matrix()-before.T_barrel_camera->matrix()).norm()>1e-12) reset();
     }
-    std::size_t reference=observations.size();
-    double best_score=-1e30;
+    std::vector<std::size_t> seeds;
     for (std::size_t i=0;i<observations.size();++i) {
       const auto& o=observations[i];
-      if (o.keypoints.class_id!=0 || !validObservation(o,false)) continue;
-      const double score=o.keypoints.confidence;
-      if (score>best_score) { best_score=score; reference=i; }
+      if (o.keypoints.class_id==0 && validObservation(o,false,gimbal_only_)) seeds.push_back(i);
+    }
+    if (seeds.empty() && gimbal_only_) {
+      for (std::size_t i=0;i<observations.size();++i)
+        if (observations[i].keypoints.class_id==1 &&
+            validObservation(observations[i],frame.mode==Mode::Big,true)) seeds.push_back(i);
     }
     // Preserve the old single-small-activated diagnostic API; Processor itself
     // requires an inactive target before invoking the solver.
-    if (reference==observations.size() && observations.size()==1 && frame.mode==Mode::Small &&
-        observations[0].keypoints.class_id==1) reference=0;
-    if (reference==observations.size()) return fail();
+    if (seeds.empty() && observations.size()==1 && frame.mode==Mode::Small &&
+        observations[0].keypoints.class_id==1) seeds.push_back(0);
+    if (seeds.empty()) return insufficient();
+    std::stable_sort(seeds.begin(),seeds.end(),[&](auto a,auto b) {
+      return observations[a].keypoints.confidence>observations[b].keypoints.confidence;
+    });
+    std::size_t reference=seeds.front();
     // In big rune, confidence order may change between the two inactive blades.
     // Retain the previous physical target when it remains near its last position.
     if (previous_ && previous_frame_ && frame.T_world_barrel && previous_frame_->T_world_barrel && frame.T_barrel_camera) {
       const Eigen::Vector3d target_world=*previous_frame_->T_world_barrel*previous_->target_barrel;
       const Eigen::Vector3d camera_point=frame.T_barrel_camera->inverse()*frame.T_world_barrel->inverse()*target_world;
       if (camera_point.z()>0) {
-        cv::Mat camera,distortion;
-        if (!validCamera(frame,camera,distortion)) return fail();
+        if (camera.empty() && !validCamera(frame,camera,distortion)) return fail();
         const auto pixel=project(std::vector<cv::Point3d>{{camera_point.x(),camera_point.y(),camera_point.z()}},
                                  Parameters::Zero(),camera,distortion)[0];
         double nearest=1e30;
         for (std::size_t i=0;i<observations.size();++i) {
           const auto& o=observations[i];
           if (o.keypoints.class_id!=0 || !o.keypoints.point_valid[4] ||
-              !validObservation(o,false)) continue;
+              !validObservation(o,false,gimbal_only_)) continue;
           const cv::Point2d center=*o.keypoints.armorCenter();
           const double radius=cv::norm(center-cv::Point2d(o.keypoints.center_r));
           const double distance=cv::norm(center-pixel)/std::max(2.0,radius);
@@ -80,7 +94,7 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
       }
     }
     // Try every inactive seed and distinct R hypothesis on initialization.
-    // Compare their full five-blade layouts before trusting NN confidence.
+    // 优先检查五叶布局，再使用检测置信度。
     // Each trial starts from the SAME plane window: rejected PnP hypotheses
     // must not contaminate temporal geometry history.
     const PlaneWindow original_window=plane_window_;
@@ -90,13 +104,6 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
     const auto inactive_count=[&](const Pose& p) {
       return std::count_if(p.blades.begin(),p.blades.end(),[](const auto& b){return !b.activated;});
     };
-    std::vector<std::size_t> seeds;
-    for (std::size_t i=0;i<observations.size();++i)
-      if (observations[i].keypoints.class_id==0 && validObservation(observations[i],false)) seeds.push_back(i);
-    if (seeds.empty()) seeds.push_back(reference); // legacy activated diagnostic
-    std::stable_sort(seeds.begin(),seeds.end(),[&](auto a,auto b) {
-      return observations[a].keypoints.confidence>observations[b].keypoints.confidence;
-    });
     if (previous_) {
       const auto it=std::find(seeds.begin(),seeds.end(),reference);
       if (it!=seeds.end()) std::rotate(seeds.begin(),it,it+1);
@@ -145,7 +152,7 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
       if (trials>=64) break;
     }
     plane_window_=selected_window;
-    if (!pose) return fail();
+    if (!pose) return insufficient();
     updatePhase(*pose);
     pose->normal_vertical_component=std::abs(pose->normal_barrel.dot(pose->up_barrel));
     if (!std::isfinite(pose->phase_rad) || pose->target_barrel.x()<=0) return fail();

@@ -81,9 +81,23 @@ void ImagePreprocessor::runInto(const cv::Mat& image, const InferenceInputSpec& 
   const int pad_top = config.alignment == LetterboxAlignment::Centered ? total_padding_y / 2 : 0;
   const int pad_bottom = total_padding_y - pad_top;
 
-  // input 持有最终 U8 缓冲区；固定模型尺寸时跨帧复用，不分配、不清零内容区。
   output.input.name = input_spec.name;
   output.input.shape = input_spec.shape;
+  output.transform = {.source_size = image.size(),
+                      .model_size = {model_width, model_height},
+                      .source_to_model_scale = resize_scale,
+                      .pad_left = pad_left,
+                      .pad_top = pad_top,
+                      .pad_right = pad_right,
+                      .pad_bottom = pad_bottom};
+  // 裸指针构造的 Mat 没有可延长的所有权，必须复制到独立存储。
+  if (image.size() == cv::Size(model_width, model_height) && image.isContinuous() && image.u) {
+    output.input.setExternalView(image.data, image.total() * image.elemSize(),
+                                 std::make_shared<cv::Mat>(image));
+    return;
+  }
+
+  // 固定模型尺寸时复用最终 U8 缓冲区，不清零内容区。
   const auto nhwc = output.input.resizeOwnedData(static_cast<std::size_t>(model_width) *
                                                 static_cast<std::size_t>(model_height) * 3);
   cv::Mat letterboxed(model_height, model_width, CV_8UC3, nhwc.data());
@@ -106,15 +120,6 @@ void ImagePreprocessor::runInto(const cv::Mat& image, const InferenceInputSpec& 
   } else {
     cv::resize(image, content, content.size(), 0.0, 0.0, cv::INTER_LINEAR);
   }
-
-  // Decoder 接到模型关键点后，必须用这份同帧变换还原原图坐标，不能重新猜 scale。
-  output.transform = {.source_size = image.size(),
-                      .model_size = {model_width, model_height},
-                      .source_to_model_scale = resize_scale,
-                      .pad_left = pad_left,
-                      .pad_top = pad_top,
-                      .pad_right = pad_right,
-                      .pad_bottom = pad_bottom};
 }
 
 }  // namespace L2Perception

@@ -65,28 +65,205 @@ bool inImage(cv::Point2f p, cv::Size size) {
          p.x < size.width && p.y < size.height;
 }
 
+bool touchesEdge(const cv::Rect& bounds, const cv::Rect& area) {
+  return bounds.x <= area.x + 1 || bounds.y <= area.y + 1 ||
+         bounds.br().x >= area.br().x - 1 || bounds.br().y >= area.br().y - 1;
+}
+
+// 在拟合出的环内限制暗区连通范围，保留与外部背景相通的窄缺口。
+std::vector<std::vector<cv::Point>> originalGaps(const cv::Mat& binary,
+    const cv::RotatedRect& ellipse, const cv::Rect& bounds, double area) {
+  cv::Mat inside=cv::Mat::zeros(bounds.size(),CV_8U);
+  auto inner=ellipse;
+  inner.center-=cv::Point2f(bounds.tl());
+  inner.size*=.94F;
+  cv::ellipse(inside,inner,cv::Scalar(255),cv::FILLED);
+  cv::Mat dark;
+  cv::bitwise_not(binary(bounds),dark);
+  cv::bitwise_and(dark,inside,dark);
+  std::vector<std::vector<cv::Point>> candidates,result;
+  cv::findContours(dark,candidates,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_NONE,bounds.tl());
+  for (auto& contour:candidates) {
+    if (contour.size()<10) continue;
+    const double fraction=cv::contourArea(contour)/area;
+    if (fraction<.025 || fraction>.20) continue;
+    const auto fit=cv::fitEllipse(contour);
+    const auto p=normalized(ellipse,fit.center-ellipse.center);
+    const double radius=cv::norm(p);
+    if (radius<.5 || radius>.8 || std::min(fit.size.width,fit.size.height)<=0 ||
+        std::max(fit.size.width,fit.size.height)<1.55*std::min(fit.size.width,fit.size.height))
+      continue;
+    const double angle=std::atan2(p.y,p.x);
+    std::array<bool,2> bright{};
+    for (int i=0;i<2;++i) for (const double offset:{.65,.85,1.05}) {
+      const double theta=angle+(i==0 ? offset : -offset);
+      const cv::Point pixel=ellipse.center+denormalized(ellipse,
+          {float(radius*std::cos(theta)),float(radius*std::sin(theta))});
+      if (bounds.contains(pixel) && binary.at<unsigned char>(pixel)) bright[i]=true;
+    }
+    if (bright[0] && bright[1]) result.push_back(std::move(contour));
+  }
+  return result;
+}
+
 struct Target {
   Feature feature;
   bool inactive;
   bool concentric;
   std::vector<int> holes;
+  std::vector<std::vector<cv::Point>> original_gaps;
 };
 struct Match {
-  std::size_t target;
-  Keypoints keypoints;
+  const Target* target;
+  std::array<cv::Point2f,4> anchors;
+  bool inactive;
   double quality;
+  int main_lamp;
   std::vector<int> fan_indices;
 };
 
-std::optional<Match> matchTarget(std::size_t target_index, const Target& target,
+std::vector<RuneFanCorner> fanCorners(const DetectedContours& measured, bool activated,
+                                     bool allow_partial=false) {
+  std::vector<RuneFanCorner> corners;
+  corners.reserve(measured.fan_points.size());
+  for (std::size_t i=0; i<measured.fan_points.size(); ++i) {
+    if (measured.fanPointValid(i))
+      corners.push_back({measured.fanPointId(i),measured.fan_points[i]});
+  }
+  if (activated && corners.size()!=6) {
+    if (corners.size()>=3 && corners[0].id==0 && corners[1].id==1 && corners[2].id==2)
+      corners.resize(3);
+    else if (allow_partial)
+      std::erase_if(corners,[](const auto& corner) { return corner.id<0 || corner.id>2; });
+    else
+      corners.clear();
+  }
+  return corners;
+}
+
+std::vector<Keypoints> keypointsFromGroup(RuneGroup group) {
+  std::vector<Keypoints> result;
+  result.reserve(group.blades.size());
+  for (auto& blade : group.blades) {
+    auto measured = std::make_shared<DetectedContours>();
+    measured->color = group.color;
+    measured->center_r = group.center.contour;
+    measured->arm = std::move(blade.fan.contour);
+    measured->fan_points.reserve(blade.fan.corners.size());
+    measured->fan_point_ids.reserve(blade.fan.corners.size());
+    for (const auto& corner : blade.fan.corners) {
+      measured->fan_points.push_back(corner.pixel);
+      measured->fan_point_ids.push_back(corner.id);
+    }
+
+    Keypoints k;
+    k.center_r = group.center.position;
+    k.class_id = blade.fan.activated ? 1 : 0;
+    k.confidence = blade.confidence;
+    k.point_confidences.fill(k.confidence);
+    if (auto& target = blade.target) {
+      k.top = target->anchors[0]; k.left = target->anchors[1];
+      k.right = target->anchors[2]; k.bottom = target->anchors[3];
+      k.target_ring_status = TargetRingStatus::Verified;
+      measured->target_ellipse = target->ellipse;
+      measured->armor = std::move(target->contour);
+      measured->gap_points = target->gap_points;
+    } else {
+      // 旧接口用四个坐标限定灯臂的感兴趣区域。
+      k.top = k.left = cv::Point2f(blade.fan.bounds.tl());
+      k.right = k.bottom = cv::Point2f(blade.fan.bounds.br()-cv::Point(1,1));
+      k.point_valid = {false,false,false,false,true};
+      k.point_confidences = {0,0,0,0,k.confidence};
+    }
+    if (group.center.contour.empty()) {
+      k.point_valid[4] = false;
+      k.point_confidences[4] = 0;
+    }
+    if (blade.fan.activated) measured->fan_point_valid.assign(blade.fan.corners.size(),true);
+    k.image_contours = std::move(measured);
+    result.push_back(std::move(k));
+  }
+  return result;
+}
+
+std::vector<Feature> inferCenters(const std::vector<Target>& targets,
+    const std::vector<Feature>& lamps, const ScutContourConfig& config, cv::Size image_size) {
+  struct Axis {
+    std::size_t target;
+    int lamp;
+    cv::Point2f direction;
+    double expected_distance;
+  };
+  struct Candidate {
+    cv::Point2f center;
+    double error;
+  };
+  std::vector<Axis> axes;
+  // 按已有的面积排序限制候选数量，避免杂乱轮廓使两两求交开销激增。
+  for (std::size_t i=0; i<std::min<std::size_t>(targets.size(),10); ++i) {
+    const auto& ring=targets[i].feature;
+    int count=0;
+    for (const auto& lamp : lamps) {
+      if (lamp.area>3*ring.area) continue;
+      const auto delta=lamp.center-ring.center;
+      const double radius=cv::norm(normalized(ring.ellipse,delta));
+      const double fraction=radius*config.radius_ratio;
+      if (radius<1.1 || fraction<.16 || fraction>.86) continue;
+      const double length=cv::norm(delta);
+      axes.push_back({i,lamp.index,delta*float(1/length),length/fraction});
+      if (++count==10) break;
+    }
+  }
+
+  std::vector<Candidate> candidates;
+  for (std::size_t i=0; i<axes.size(); ++i) {
+    const auto& a=axes[i];
+    const auto& ring_a=targets[a.target].feature;
+    for (std::size_t j=i+1; j<axes.size(); ++j) {
+      const auto& b=axes[j];
+      const double cross=a.direction.cross(b.direction);
+      if (a.target==b.target || a.lamp==b.lamp || std::abs(cross)<.25) continue;
+      const auto& ring_b=targets[b.target].feature;
+      const auto offset=ring_b.center-ring_a.center;
+      const double range_a=offset.cross(b.direction)/cross;
+      const double range_b=offset.cross(a.direction)/cross;
+      if (range_a<=0 || range_b<=0) continue;
+      const double error_a=std::abs(a.expected_distance/range_a-1);
+      const double error_b=std::abs(b.expected_distance/range_b-1);
+      if (std::max(error_a,error_b)>config.radius_ratio_tolerance) continue;
+      const auto center=ring_a.center+a.direction*float(range_a);
+      if (!inImage(center,image_size)) continue;
+      const auto radial_a=normalized(ring_a.ellipse,ring_a.center-center);
+      const auto radial_b=normalized(ring_a.ellipse,ring_b.center-center);
+      const double angle=std::atan2(std::abs(radial_a.cross(radial_b)),radial_a.dot(radial_b));
+      if (angle<CV_PI/5 || std::abs(std::remainder(angle,2*CV_PI/5))>CV_PI/9) continue;
+      candidates.push_back({center,error_a+error_b});
+    }
+  }
+  std::stable_sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b) {
+    return a.error<b.error;
+  });
+  std::vector<Feature> centers;
+  for (const auto& candidate : candidates) {
+    if (std::any_of(centers.begin(),centers.end(),[&](const auto& center) {
+      return cv::norm(center.center-candidate.center)<3;
+    })) continue;
+    centers.push_back({-1,0,candidate.center,{}});
+    if (centers.size()==24) break;
+  }
+  return centers;
+}
+
+std::optional<Match> matchTarget(const Target& target,
     const Feature& hub, const std::vector<Feature>& features,
-    const std::vector<std::vector<cv::Point>>& contours,
     const std::vector<std::vector<cv::Point>>& arm_contours,
-    const ScutContourConfig& config, cv::Size image_size, Color color) {
+    const ScutContourConfig& config, cv::Size image_size) {
   const auto& t = target.feature;
   const auto delta = t.center - hub.center;
   const double distance = cv::norm(delta);
-  if (hub.area > t.area * 0.5 || hub.area < t.area * config.min_center_target_area_ratio || distance < 5)
+  const bool measured_hub = hub.index>=0;
+  if (distance < 5 || (measured_hub &&
+      (hub.area > t.area * 0.5 || hub.area < t.area * config.min_center_target_area_ratio)))
     return {};
   auto radial = normalized(t.ellipse, delta);
   const double normalized_distance = cv::norm(radial);
@@ -146,30 +323,122 @@ std::optional<Match> matchTarget(std::size_t target_index, const Target& target,
     for (const auto i : fan_indices) visible_strips.push_back(arm_contours[i]);
     DetectedContours measured;
     extractScutFeaturePoints(measured,t.ellipse,hub.center,false,{},visible_strips);
-    active_fan=measured.fan_points.size()>=3;
+    active_fan=!fanCorners(measured,true).empty();
   }
   if (inactive ? !inactive_arm : !active_fan) return {};
-  Keypoints k;
-  k.top = t.center + vertical; k.bottom = t.center - vertical;
-  k.left = t.center - horizontal; k.right = t.center + horizontal;
-  k.center_r = hub.center;
-  for (const auto p : {k.top, k.bottom, k.left, k.right, k.center_r})
+  if (!inImage(hub.center,image_size)) return {};
+  const std::array anchors{t.center+vertical,t.center-horizontal,t.center+horizontal,t.center-vertical};
+  for (const auto p : anchors)
     if (!inImage(p, image_size)) return {};
-  k.class_id = inactive ? 0 : 1;
   const double quality = 1 - 0.5 * error / config.radius_ratio_tolerance -
       0.2 * lateral_sum / (pieces * config.max_arm_offset_ratio);
-  k.confidence = float(std::clamp(quality, 0.1, 1.0));
-  k.point_confidences.fill(k.confidence);
-  k.target_ring_status = TargetRingStatus::Verified;
-  auto measured = std::make_shared<DetectedContours>();
-  measured->color = color;
-  measured->armor = contours[t.index];
-  // Keep an actual closed contour for downstream moments/distance fields.
-  // Other disconnected arrows contribute to matching, not invented polygon edges.
-  measured->arm = arm_contours[arm_index];
-  measured->center_r = contours[hub.index];
-  k.image_contours = std::move(measured);
-  return Match{target_index, std::move(k), quality, std::move(fan_indices)};
+  return Match{&target,anchors,inactive,quality,arm_index,std::move(fan_indices)};
+}
+
+std::vector<RuneBladeFeature> matchLampsWithoutRings(const Feature& hub, const std::vector<Match>& paired,
+    const std::vector<Feature>& lamps, const std::vector<cv::Point>& hub_contour,
+    const std::vector<std::vector<cv::Point>>& lamp_contours, cv::Size image_size) {
+  const auto hub_bounds=cv::boundingRect(hub_contour);
+  const double hub_size=std::max(hub_bounds.width,hub_bounds.height);
+  const cv::Rect image_bounds({0,0},image_size);
+  struct Lamp {
+    const Feature& feature;
+    bool strip;
+  };
+  std::vector<Lamp> candidates;
+  std::vector<bool> used(lamp_contours.size());
+  for (const auto& match : paired)
+    for (const auto index : match.fan_indices) used[index]=true;
+  for (const auto& lamp : lamps) {
+    const double distance=cv::norm(lamp.center-hub.center);
+    if (used[lamp.index] || distance<hub_size || distance>14*hub_size || lamp.area<30) continue;
+    const auto& contour=lamp_contours[lamp.index];
+    const auto rect=cv::minAreaRect(contour);
+    const double minor=std::min(rect.size.width,rect.size.height);
+    const double major=std::max(rect.size.width,rect.size.height);
+    if (minor<2 || touchesEdge(cv::boundingRect(contour),image_bounds)) continue;
+    const double aspect=major/minor;
+    const bool strip=aspect>=2;
+    if (!strip && lamp.area>.75*rect.size.area()) continue;
+    candidates.push_back({lamp,strip});
+    if (candidates.size()==24) break;
+  }
+
+  struct MatchWithoutRing {
+    RuneBladeFeature blade;
+    cv::Point2f direction;
+    std::vector<int> components;
+  };
+  std::vector<MatchWithoutRing> matches;
+  std::vector<std::vector<int>> tested_groups;
+  for (const auto& seed : candidates) {
+    std::vector<int> group;
+    const auto radial=seed.feature.center-hub.center;
+    const double distance=cv::norm(radial);
+    if (seed.strip) {
+      const auto axis=radial*float(1/distance);
+      for (const auto& lamp : candidates) {
+        const auto delta=lamp.feature.center-hub.center;
+        const double along=delta.dot(axis)/distance;
+        if (lamp.strip && along>.60 && along<1.40 && std::abs(delta.cross(axis))<.62*distance)
+          group.push_back(lamp.feature.index);
+      }
+      if (group.size()<3) continue;
+    } else group.push_back(seed.feature.index);
+    if (std::find(tested_groups.begin(),tested_groups.end(),group)!=tested_groups.end()) continue;
+    tested_groups.push_back(group);
+
+    cv::Rect bounds;
+    cv::Point2f lamp_center;
+    double total_area=0;
+    std::vector<std::vector<cv::Point>> visible;
+    for (const auto index : group) {
+      const auto& contour=lamp_contours[index];
+      const auto m=cv::moments(contour);
+      lamp_center+=cv::Point2f(float(m.m10),float(m.m01));
+      total_area+=m.m00;
+      bounds|=cv::boundingRect(contour);
+      visible.push_back(contour);
+    }
+    DetectedContours measured;
+    extractScutActiveFanPoints(measured,hub.center,lamp_center*float(1/total_area),visible);
+    auto corners=fanCorners(measured,true);
+    if (corners.empty()) continue;
+    const auto& tips=measured.fan_points;
+    const auto direction=tips[1]-hub.center;
+    const double length=cv::norm(direction);
+    const double span=cv::norm(tips[2]-tips[0]);
+    if (span<hub_size || length<.65*span || length>4.2*span || length<5) continue;
+    // 实测转折点参与几何验证和置信度评估。
+    // 缺少转折点时，要求两侧灯条延伸过中间灯条。
+    const double outer_lead=((tips[0]+tips[2])*.5F-tips[1]).dot(direction)/length;
+    if (tips.size()==3 && (outer_lead<.035*span || outer_lead>.28*span)) continue;
+    const auto main=std::max_element(visible.begin(),visible.end(),[&](const auto& a,const auto& b) {
+      return cv::pointPolygonTest(a,tips[1],true)<cv::pointPolygonTest(b,tips[1],true);
+    });
+    RuneFanFeature fan{true,bounds,std::move(*main),std::move(corners)};
+    const float confidence=.70F+.05F*float(tips.size()-3);
+    matches.push_back({{std::nullopt,std::move(fan),confidence},direction,std::move(group)});
+  }
+
+  std::stable_sort(matches.begin(),matches.end(),[](const auto& a,const auto& b) {
+    return a.blade.confidence>b.blade.confidence;
+  });
+  std::vector<cv::Point2f> directions;
+  for (const auto& match : paired) directions.push_back(match.target->feature.center-hub.center);
+  std::vector<RuneBladeFeature> result;
+  for (auto& match : matches) {
+    if (directions.size()==5) break;
+    if (std::any_of(directions.begin(),directions.end(),[&](const auto& direction) {
+      return std::abs(std::atan2(direction.cross(match.direction),direction.dot(match.direction)))<.6;
+    }) || std::any_of(match.components.begin(),match.components.end(),[&](const auto index) {
+      return used[index];
+    })) continue;
+    for (const auto index : match.components) used[index]=true;
+    directions.push_back(match.direction);
+    result.push_back(std::move(match.blade));
+  }
+  return result;
 }
 } // namespace
 
@@ -201,7 +470,8 @@ ScutContourConfig ScutContourConfig::fromYaml(const YAML::Node& node, const YAML
   return c;
 }
 
-ScutContourDetector::ScutContourDetector(ScutContourConfig config) : config_(config) {
+ScutContourDetector::ScutContourDetector(ScutContourConfig config, bool gimbal_only)
+    : config_(config), gimbal_only_(gimbal_only) {
   validate(config_);
 }
 std::vector<Keypoints> ScutContourDetector::detect(const cv::Mat& bgr) {
@@ -211,47 +481,66 @@ std::vector<Keypoints> ScutContourDetector::detect(const cv::Mat& bgr, Mode mode
   return detect(bgr, mode, Color::Blue);
 }
 std::vector<Keypoints> ScutContourDetector::detect(const cv::Mat& bgr, Mode mode, Color color) {
+  auto group = detectGroup(bgr, mode, color);
+  if (!group) return {};
+  return keypointsFromGroup(std::move(*group));
+}
+std::optional<RuneGroup> ScutContourDetector::detectGroup(const cv::Mat& bgr, Mode mode, Color color) {
   diagnostics_.reset();
   if (bgr.empty() || bgr.type() != CV_8UC3)
     throw std::invalid_argument("SCUT rune detector requires a nonempty CV_8UC3 BGR image");
+  cv::Mat red, blue, difference, arm_purity, closing_kernel;
+  cv::extractChannel(bgr, red, 2);
+  cv::extractChannel(bgr, blue, 0);
+  const auto& enemy = color == Color::Red ? red : blue;
+  const auto& other = color == Color::Red ? blue : red;
+  cv::subtract(enemy, other, difference);
+  cv::GaussianBlur(difference, difference, {3, 3}, 0);
+  if (config_.min_arm_color_ratio > 0) {
+    cv::Mat contrast;
+    cv::addWeighted(enemy, 1-config_.min_arm_color_ratio, other, -1-config_.min_arm_color_ratio,
+                    0, contrast, CV_32F);
+    cv::GaussianBlur(contrast, contrast, {3, 3}, 0);
+    cv::compare(contrast, 0, arm_purity, cv::CMP_GT);
+  }
+  if (config_.close_kernel > 1)
+    closing_kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE,
+                                               {config_.close_kernel, config_.close_kernel});
   const int threshold = color == Color::Red ? config_.red_threshold : config_.blue_threshold;
-  auto result = detectAtThreshold(bgr, mode, color, threshold);
-  if (result.empty() && config_.fallback_threshold_offset > 0 && threshold < 254) {
-    result = detectAtThreshold(bgr, mode, color, std::min(254, threshold + config_.fallback_threshold_offset));
+  auto result = detectAtThreshold(difference, arm_purity, closing_kernel, mode, color, threshold,
+                                  gimbal_only_);
+  if ((!result || result->center.contour.empty()) &&
+      config_.fallback_threshold_offset > 0 && threshold < 254) {
+    const auto first_diagnostics=diagnostics_;
+    auto stricter = detectAtThreshold(difference, arm_purity, closing_kernel, mode, color,
+                                      std::min(254, threshold + config_.fallback_threshold_offset),
+                                      gimbal_only_ && !result);
+    if (stricter || !result) result=std::move(stricter);
+    else diagnostics_=first_diagnostics;
     diagnostics_->contour_passes = 2;
   }
   return result;
 }
-std::vector<Keypoints> ScutContourDetector::detectAtThreshold(
-    const cv::Mat& bgr, Mode mode, Color color, int threshold) {
+std::optional<RuneGroup> ScutContourDetector::detectAtThreshold(
+    const cv::Mat& difference, const cv::Mat& arm_purity, const cv::Mat& closing_kernel,
+    Mode mode, Color color, int threshold, bool recover_center) {
+  const auto image_size = difference.size();
+  const cv::Rect image_bounds({0, 0}, image_size);
   DetectorDiagnostics d;
-  d.contour_backend = true; d.inference_passes = 0; d.contour_passes = 1;
-  cv::Mat red, blue, difference, mask;
-  cv::extractChannel(bgr, red, 2); cv::extractChannel(bgr, blue, 0);
-  if (color == Color::Red) cv::subtract(red, blue, difference);
-  else cv::subtract(blue, red, difference);
-  cv::GaussianBlur(difference, difference, {3, 3}, 0);
-  cv::threshold(difference, mask, threshold, 255, cv::THRESH_BINARY);
+  d.contour_passes = 1;
+  cv::Mat binary, mask, arm_mask;
+  cv::threshold(difference, binary, threshold, 255, cv::THRESH_BINARY);
+  if (closing_kernel.empty()) mask=binary;
+  else cv::morphologyEx(binary,mask,cv::MORPH_CLOSE,closing_kernel);
   // Keep target/R segmentation unchanged. Lamp components get a separate
   // relative-color mask so bright, nearly white reflections do not enlarge
   // the arrow-chain envelope or masquerade as sparse active fan strips.
-  cv::Mat arm_mask=mask.clone();
-  if (config_.min_arm_color_ratio>0) {
-    const auto& enemy=color==Color::Red ? red : blue;
-    const auto& other=color==Color::Red ? blue : red;
-    cv::Mat contrast,pure;
-    cv::addWeighted(enemy,1-config_.min_arm_color_ratio,other,-1-config_.min_arm_color_ratio,
-                    0,contrast,CV_32F);
-    cv::GaussianBlur(contrast,contrast,{3,3},0);
-    cv::compare(contrast,0,pure,cv::CMP_GT);
-    cv::bitwise_and(arm_mask,pure,arm_mask);
-  }
-  if (config_.close_kernel > 1) {
-    const auto kernel=cv::getStructuringElement(cv::MORPH_ELLIPSE,
-                                               {config_.close_kernel,config_.close_kernel});
-    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE,
-                     kernel);
-    cv::morphologyEx(arm_mask,arm_mask,cv::MORPH_CLOSE,kernel);
+  if (arm_purity.empty()) {
+    arm_mask = mask.clone();
+  } else {
+    cv::bitwise_and(binary, arm_purity, arm_mask);
+    if (!closing_kernel.empty())
+      cv::morphologyEx(arm_mask, arm_mask, cv::MORPH_CLOSE, closing_kernel);
   }
   std::vector<std::vector<cv::Point>> contours;
   std::vector<cv::Vec4i> hierarchy;
@@ -269,10 +558,12 @@ std::vector<Keypoints> ScutContourDetector::detectAtThreshold(
   std::stable_sort(roots.begin(), roots.end(), [](auto a, auto b) { return a.first > b.first; });
   if (roots.size() > std::size_t(config_.max_features)) roots.resize(config_.max_features);
   for (const auto& [area, index] : roots) {
+    const auto bounds = cv::boundingRect(contours[index]);
+    const bool clipped = touchesEdge(bounds, image_bounds);
     const auto ellipse = cv::fitEllipse(contours[index]);
     const double minor = std::min(ellipse.size.width, ellipse.size.height);
     const double major = std::max(ellipse.size.width, ellipse.size.height);
-    if (!inImage(ellipse.center, bgr.size()) || !std::isfinite(major) || minor < 2) continue;
+    if (!inImage(ellipse.center, image_size) || !std::isfinite(major) || minor < 2) continue;
     const auto moments = cv::moments(contours[index]);
     if (moments.m00 <= 0) continue;
     const Feature f{index, area, ellipse.center, ellipse};
@@ -300,21 +591,26 @@ std::vector<Keypoints> ScutContourDetector::detectAtThreshold(
     for (const auto& point : contours[index])
       ellipse_residual += std::abs(cv::norm(normalized(ellipse, cv::Point2f(point) - ellipse.center)) - 1);
     ellipse_residual /= contours[index].size();
-    const bool inactive = holes >= 4 && gaps >= 1 && gaps <= 4;
+    bool inactive = holes >= 4 && gaps >= 1 && gaps <= 4;
     const bool active = holes > 0 && (concentric || hole_area / area <= 0.30);
     if (area >= config_.min_target_area && major / minor <= config_.max_target_axis_ratio &&
         fill >= config_.min_ellipse_fill && fill <= 1.2 &&
-        ellipse_residual <= config_.max_ellipse_residual && (inactive || active)) {
-      targets.push_back({f, inactive, concentric, std::move(hole_indices)});
-      continue;
+        ellipse_residual <= config_.max_ellipse_residual) {
+      std::vector<std::vector<cv::Point>> recovered;
+      if (!inactive && !concentric && !clipped && !closing_kernel.empty()) {
+        recovered=originalGaps(binary,ellipse,bounds,area);
+        inactive=recovered.size()>=3 && recovered.size()<=4;
+        if (!inactive) recovered.clear();
+      }
+      if (inactive || active) {
+        targets.push_back({f,inactive,concentric,std::move(hole_indices),std::move(recovered)});
+        continue;
+      }
     }
     const double perimeter = cv::arcLength(contours[index], true);
     std::vector<cv::Point> hull; cv::convexHull(contours[index], hull);
     const double hull_area = cv::contourArea(hull);
     const double rect_fill = area / std::max(1.0F, cv::minAreaRect(contours[index]).size.area());
-    const auto bounds = cv::boundingRect(contours[index]);
-    const bool clipped = bounds.x <= 1 || bounds.y <= 1 ||
-        bounds.br().x >= bgr.cols - 1 || bounds.br().y >= bgr.rows - 1;
     if (area >= config_.min_center_area && area <= config_.max_center_area && major / minor <= 2.5 &&
         !clipped && rect_fill >= config_.min_center_rect_fill &&
         hole_area / area <= 0.5 && hull_area > 0 && area / hull_area >= 0.3 &&
@@ -325,7 +621,7 @@ std::vector<Keypoints> ScutContourDetector::detectAtThreshold(
     }
   }
   std::vector<std::vector<cv::Point>> arm_contours;
-  cv::findContours(arm_mask,arm_contours,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_NONE);
+  cv::findContours(arm_mask, arm_contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
   std::vector<std::pair<double,int>> arm_candidates;
   for (std::size_t i=0;i<arm_contours.size();++i) {
     const double area=cv::contourArea(arm_contours[i]);
@@ -339,16 +635,18 @@ std::vector<Keypoints> ScutContourDetector::detectAtThreshold(
     // An ellipse fitted to a concave arrow chain can have its center far
     // outside the lamp. Use measured moments for component association.
     const cv::Point2f center(float(moments.m10/moments.m00),float(moments.m01/moments.m00));
-    if (inImage(center,bgr.size())) features.push_back({index,area,center,{}});
+    if (inImage(center,image_size)) features.push_back({index,area,center,{}});
   }
   d.target_candidates = targets.size(); d.center_candidates = hubs.size();
   std::vector<Match> best;
+  std::optional<Feature> best_hub;
   double best_score = -1;
-  for (const auto& hub : hubs) {
+  const auto score_center = [&](const Feature& hub) {
+    const bool inferred=hub.index<0;
     std::vector<Match> matches;
-    for (std::size_t i = 0; i < targets.size(); ++i) {
-      if (const auto match = matchTarget(i, targets[i], hub, features, contours,arm_contours,
-                                        config_, bgr.size(), color)) matches.push_back(*match);
+    for (const auto& target : targets) {
+      if (auto match = matchTarget(target,hub,features,arm_contours,config_,image_size))
+        matches.push_back(std::move(*match));
       else ++d.geometry_rejected;
     }
     std::stable_sort(matches.begin(), matches.end(), [](const auto& a, const auto& b) {
@@ -357,37 +655,89 @@ std::vector<Keypoints> ScutContourDetector::detectAtThreshold(
     std::vector<Match> distinct;
     double score = 0;
     for (auto& m : matches) {
-      const auto v = *m.keypoints.armorCenter() - hub.center;
+      const auto v = m.target->feature.center - hub.center;
       const bool duplicate = std::any_of(distinct.begin(), distinct.end(), [&](const auto& old) {
-        const auto w = *old.keypoints.armorCenter() - hub.center;
-        return std::abs(std::atan2(v.cross(w), v.dot(w))) < 0.6;
+        const auto w = old.target->feature.center - hub.center;
+        return m.main_lamp==old.main_lamp ||
+            std::abs(std::atan2(v.cross(w), v.dot(w))) < 0.6;
       });
       if (duplicate) continue;
       score += 1 + m.quality;
       distinct.push_back(std::move(m));
       if (distinct.size() == 5) break;
     }
-    if (score > best_score) { best_score = score; best = std::move(distinct); }
+    if (inferred && distinct.size()<2) return;
+    if (score > best_score) {
+      best_score = score;
+      best = std::move(distinct);
+      best_hub=hub;
+    }
+  };
+  for (const auto& hub : hubs) score_center(hub);
+  if (recover_center && best.empty() && targets.size()>=2) {
+    for (const auto& hub : inferCenters(targets,features,config_,image_size)) score_center(hub);
   }
-  std::vector<Keypoints> result;
-  for (auto& m : best) {
-    const auto& target = targets[m.target];
+  std::vector<RuneBladeFeature> lamps_without_rings;
+  if (gimbal_only_ && mode==Mode::Big) {
+    const auto match_lamps=[&](const Feature& hub) {
+      return matchLampsWithoutRings(hub,best,features,contours[hub.index],arm_contours,image_size);
+    };
+    if (!best.empty() && best_hub && best_hub->index>=0) {
+      lamps_without_rings=match_lamps(*best_hub);
+    } else if (best.empty()) {
+      double best_lamp_score=0;
+      for (std::size_t i=0; i<std::min<std::size_t>(hubs.size(),8); ++i) {
+        auto matches=match_lamps(hubs[i]);
+        double score=0;
+        for (const auto& match : matches) score+=1+match.confidence;
+        if (score>best_lamp_score) {
+          best_lamp_score=score;
+          best_hub=hubs[i];
+          lamps_without_rings=std::move(matches);
+        }
+      }
+    }
+  }
+  if (best.empty() && lamps_without_rings.empty()) {
+    diagnostics_ = d;
+    return std::nullopt;
+  }
+  const auto& hub = best_hub.value();
+  RuneGroup group{color,{hub.center,{}},{}};
+  if (hub.index>=0) group.center.contour = std::move(contours[hub.index]);
+  group.blades.reserve(best.size()+lamps_without_rings.size());
+  for (const auto& match : best) {
+    const auto& target = *match.target;
     std::vector<std::vector<cv::Point>> holes, fan_contours;
-    for (const auto i : target.holes) holes.push_back(contours[i]);
-    for (const auto i : m.fan_indices) fan_contours.push_back(arm_contours[i]);
-    auto measured = std::make_shared<DetectedContours>(*m.keypoints.image_contours);
-    extractScutFeaturePoints(*measured, target.feature.ellipse, m.keypoints.center_r,
-                             m.keypoints.class_id == 0, holes, fan_contours);
-    for (const auto& point : measured->gap_points) d.scut_gap_points += point.has_value();
-    d.scut_fan_points += measured->fan_points.size();
-    m.keypoints.image_contours = std::move(measured);
-    result.push_back(std::move(m.keypoints));
+    if (!target.original_gaps.empty()) holes=target.original_gaps;
+    else for (const auto i : target.holes) holes.push_back(contours[i]);
+    cv::Rect fan_bounds;
+    for (const auto i : match.fan_indices) {
+      const auto& contour = arm_contours[i];
+      fan_bounds |= cv::boundingRect(contour);
+      fan_contours.push_back(contour);
+    }
+    DetectedContours measured;
+    measured.armor = contours[target.feature.index];
+    extractScutFeaturePoints(measured,target.feature.ellipse,hub.center,match.inactive,holes,fan_contours);
+    // 保留实测的主轮廓，分离的灯条只提供匹配和角点证据。
+    const auto& main_lamp = arm_contours[match.main_lamp];
+    RuneTargetFeature target_feature{target.feature.ellipse,std::move(measured.armor),
+                                     match.anchors,measured.gap_points};
+    // 靶环与灯臂已经匹配，可以保留独立确认了身份的部分外端。
+    RuneFanFeature fan{!match.inactive,fan_bounds,main_lamp,
+                       fanCorners(measured,!match.inactive,true)};
+    for (const auto& point : target_feature.gap_points) d.scut_gap_points += point.has_value();
+    d.scut_fan_points += fan.corners.size();
+    group.blades.push_back({std::move(target_feature),std::move(fan),
+                            float(std::clamp(match.quality,0.1,1.0))});
   }
-  d.detections = result.size(); d.arm_matches = result.size();
-  d.target_ring_refined = result.size();
-  if (!result.empty()) d.best_valid_keypoints = 5;
+  for (auto& blade : lamps_without_rings) {
+    d.scut_fan_points += blade.fan.corners.size();
+    group.blades.push_back(std::move(blade));
+  }
+  d.detections = group.blades.size(); d.arm_matches = group.blades.size();
   diagnostics_ = d;
-  (void)mode; // Target topology denotes activation in both modes; no model classes to filter.
-  return result;
+  return group;
 }
 } // namespace Rune

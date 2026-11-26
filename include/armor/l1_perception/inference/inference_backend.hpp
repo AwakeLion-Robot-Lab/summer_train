@@ -82,7 +82,7 @@ struct InferenceInputSpec
   std::vector<std::size_t> shape;
 };
 
-// 一帧预处理后的宿主输入。它只拥有连续 U8 NHWC 数据，不承担模型输出职责。
+// 一帧预处理后的宿主输入，拥有连续 U8 NHWC 数据或持有其只读视图及所有者。
 class InferenceInput
 {
 public:
@@ -93,12 +93,18 @@ public:
   // 保留已有容量；同尺寸重复调用不会分配或清零。返回视图在下一次调整大小、
   // 替换数据或销毁 input 时失效，只能在同步 infer() 之外写入。
   std::span<std::uint8_t> resizeOwnedData(std::size_t size);
+  // owner 保持像素存储有效；所有共享者在同步推理和解码完成前不得修改像素。
+  // 保留内部缓冲区容量，便于后续恢复缩放和补边处理。
+  void setExternalView(const std::uint8_t* data, std::size_t size,
+                       std::shared_ptr<const void> owner);
   std::span<const std::uint8_t> values() const noexcept;
   std::size_t elementCount() const noexcept;
   bool isConsistent() const noexcept;
 
 private:
   std::vector<std::uint8_t> owned_data_;
+  std::span<const std::uint8_t> external_data_;
+  std::shared_ptr<const void> external_owner_;
 };
 
 class IInferenceBackend

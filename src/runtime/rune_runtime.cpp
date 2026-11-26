@@ -2,7 +2,6 @@
 
 #include <cmath>
 #include <utility>
-#include <stdexcept>
 
 namespace runtime {
 namespace {
@@ -21,24 +20,17 @@ Rune::PlanningConfig planningConfig(const RuneRuntimeConfig& config,
 }
 }  // namespace
 
-std::unique_ptr<Rune::IKeypointDetector> makeRuneDetector(const RuneRuntimeConfig& config) {
-  if (config.detector_backend == "scut")
-    return std::make_unique<Rune::ScutContourDetector>(config.scut_detector);
-  if (config.detector_backend == "openvino")
-    return std::make_unique<Rune::OpenVinoKeypointDetector>(config.detector);
-  throw std::invalid_argument("rune.detector.backend must be scut or openvino");
-}
-
 RuneRuntime::RuneRuntime(const RuneRuntimeConfig& config,
                          const L4Planning::PlannerTuning& tuning,
                          std::unique_ptr<Rune::IKeypointDetector> detector)
-    : detector_(detector ? std::move(detector) : makeRuneDetector(config)),
+    : detector_(detector ? std::move(detector) :
+                std::make_unique<Rune::ScutContourDetector>(config.scut_detector, config.gimbal_only)),
       image_refiner_(config.image_refiner),
-      processor_(config.geometry, {}, planningConfig(config, tuning), {}, config.fire),
+      processor_(config.geometry, config.estimator, planningConfig(config, tuning), {}, config.fire, config.gimbal_only),
       tuning_(tuning), max_feedback_age_s_(config.fire.max_plan_age_s) {}
 
 void RuneRuntime::detect(Rune::Frame& frame) {
-  frame.detections = detector_->detect(frame.bgr, frame.mode, frame.color);
+  frame.detections = detector_->detect(frame);
   image_refiner_.update(frame);
 }
 

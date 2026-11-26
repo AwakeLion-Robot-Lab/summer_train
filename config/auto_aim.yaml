@@ -2,10 +2,14 @@
 # 算法模式由此处决定，覆盖下位机 WorkMode；姿态、敌方颜色和弹速仍由串口提供。
 mode: 3
 
-# 能量机关使用独立检测器、运动模型和火控；弹道、延迟及 MPC 参数沿用 planner_config.yaml。
+# 能量机关使用 SCUT 轮廓检测。
 rune:
+  # 直接跟随视觉目标的方向，要求 fire.shoot_enable 为 false。
+  gimbal_only: true
+  big_sector_tracking:
+    hold_ms: 75         # 原扇区短时失配后最多保持多久
+    confirmation_ms: 50  # 新扇区连续无歧义匹配多久后切换
   detector:
-    backend: "scut"
     scut:
       red_threshold: 40
       blue_threshold: 15
@@ -20,32 +24,15 @@ rune:
       radius_ratio_tolerance: 0.25
       max_arm_offset_ratio: 0.24
       min_arm_color_ratio: 0.25
-    # OpenVINO 五关键点模型，路径相对于本 YAML 所在目录。
-    model_path: "../model/rune_model/model-0624.onnx"
-    device: "GPU"
-    confidence_threshold: 0.4
-    keypoint_confidence_threshold: 0.3
-    # 与 SZU 官方一致：至少三个关键点过阈值即可检出，弱点不参与 PnP。
-    min_valid_keypoints: 3
-    nms_distance_px: 30.0
-    # 网络输入内的图像缩放比例；1.0 使用原始满幅输入，小于 1 时缩小目标并补边。
-    # 五关键点会按同一缩放和平移还原到原图，不改变标定或几何尺寸。
-    input_scale: 1.0
-    # 主尺度无检测时用更小尺度额外推理一次；设 0 关闭，门限不变。
-    fallback_input_scale: 0.6
-    # 同一叶片、同一模型类别的近邻候选做单帧融合，减少最高分候选切换引起的跳点。
-    # 关闭即可恢复原 NMS 坐标；弱点不参与融合，类别/关键点门限保持不变。
-    fuse_keypoints: true
-    fusion_min_quality_ratio: 0.8
-    fusion_max_point_distance_ratio: 0.2
-    # 将靶板四点固定在与 geometry 尺寸匹配的最外发光圈；缺少可信整圈时四点不参与 PnP。
-    # 依赖 geometry 中圆靶半径和 R 到靶心距离，不把内外圈坐标平均。
-    lock_target_ring: true
-    # 在已确认的外圈附近提取 LED 亮带中心线，亚像素拟合；证据不足时沿用原外圈结果。
-    target_ring_subpixel: true
   image_refiner:
     # 用局部图像运动补偿校正定位波动，包含 SCUT 多角点。
     enabled: true
+    # 单帧共享灰度图，批量执行 ECC；cpu 使用 OpenCV 原实现。
+    registration_backend: opencl
+    opencl_device: "NVIDIA CUDA:GPU:0"
+    track_numbered_points: true
+    reobserve_target_rings: true
+    refine_inactive_arm_edges: true
     max_gap_s: 0.2
     # 只平滑图像运动补偿后的定位残差，保留图像中真实的转动/平移。
     measurement_time_constant_s: 0.16
@@ -54,6 +41,37 @@ rune:
     radius_m: 0.70            # R 中心到靶心的距离
     armor_half_width_m: 0.15  # 靶板切向半宽，左右关键点间距 0.30 m
     armor_half_height_m: 0.15 # 靶板径向半高，内外关键点间距 0.30 m
+    # 依据 RMUC 2027 规则图 4-32、5-19、5-20 和同版场地 STEP 模型。
+    # 坐标单位为米，沿用现有五点模型的 z=0 平面。
+    numbered_anchors_m:
+      inactive:
+        # 靶心在 (0, 0.70)，按 SCUT 的 0.7037 倍靶盘半径确定缺口锚点。
+        gaps:
+          0: [-0.07464, 0.77464, 0.0]
+          1: [ 0.0,     0.80555, 0.0]
+          2: [ 0.07464, 0.77464, 0.0]
+          3: [ 0.10555, 0.70000, 0.0]
+          4: [ 0.07464, 0.62536, 0.0]
+          5: [ 0.0,     0.59445, 0.0]
+          6: [-0.07464, 0.62536, 0.0]
+          7: [-0.10555, 0.70000, 0.0]
+        # 流动箭头的图像包围框随灯效变化。
+        fan: {}
+      # 两种已激活灯效均可确认 0、1、2、3、5 号点。
+      small_activated:
+        fan:
+          0: [-0.1740, 0.5360, 0.0]
+          1: [ 0.0,    0.5040, 0.0]
+          2: [ 0.1740, 0.5360, 0.0]
+          3: [ 0.1856, 0.3303, 0.0]
+          5: [-0.1856, 0.3303, 0.0]
+      big_activated:
+        fan:
+          0: [-0.1740, 0.5360, 0.0]
+          1: [ 0.0,    0.5040, 0.0]
+          2: [ 0.1740, 0.5360, 0.0]
+          3: [ 0.1856, 0.3303, 0.0]
+          5: [-0.1856, 0.3303, 0.0]
   small_warmup_s: 1.0
   big_warmup_s: 2.0
   # mpc_enable: true         # 不填写则沿用 planner_config.yaml 的 mpc.enable
@@ -233,7 +251,7 @@ ieskf:
 # L5 开火闸门。
 fire:
   # 装甲板、小能量机关和大能量机关共用的开火总开关。
-  shoot_enable: true
+  shoot_enable: false
   # 短暂丢跟踪时沿用已锁定目标的有效预测，不因 TempLost 单独断火。
   stop_fire_on_temp_lost: false
   # yaw/pitch 跟随误差只作诊断，超出容差不再单独断火。

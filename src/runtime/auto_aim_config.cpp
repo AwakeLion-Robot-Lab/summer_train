@@ -9,6 +9,7 @@
 #include <cmath>
 #include <filesystem>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -95,6 +96,47 @@ bool positiveFinite(double value) noexcept
 bool nonNegativeFinite(double value) noexcept
 {
   return std::isfinite(value) && value >= 0.0;
+}
+
+void readNumberedPoints(const YAML::Node& node, std::span<std::optional<cv::Point3d>> points,
+                        const std::string& path) {
+  if (!node.IsMap()) throw std::runtime_error(path + " must map point IDs to [x, y, z]");
+  for (const auto& entry : node) {
+    const int id=entry.first.as<int>();
+    if (id<0 || std::size_t(id)>=points.size() || points[id])
+      throw std::runtime_error(path + " contains an invalid or repeated point ID: " + std::to_string(id));
+    const auto value=entry.second;
+    if (!value.IsSequence() || value.size()!=3)
+      throw std::runtime_error(path + " point coordinates must contain three values in metres");
+    const cv::Point3d point(value[0].as<double>(), value[1].as<double>(), value[2].as<double>());
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+      throw std::runtime_error(path + " point coordinates must be finite");
+    points[id]=point;
+  }
+}
+
+void readRuneNumberedAnchors(const YAML::Node& node, Rune::Geometry& geometry) {
+  if (!node) return;
+  const std::string path="rune.geometry.numbered_anchors_m";
+  if (!node.IsMap()) throw std::runtime_error(path + " must be a map");
+  const std::array<std::string,3> states{"inactive", "small_activated", "big_activated"};
+  std::array<bool,3> seen{};
+  for (const auto& entry : node) {
+    const auto state=entry.first.as<std::string>();
+    const auto it=std::find(states.begin(),states.end(),state);
+    if (it==states.end()) throw std::runtime_error(path + " contains an unknown state: " + state);
+    const auto index=std::size_t(it-states.begin());
+    if (seen[index] || !entry.second.IsMap())
+      throw std::runtime_error(path + "." + state + " must be a single map of point groups");
+    seen[index]=true;
+    auto& anchors=geometry.numbered_anchors[index];
+    for (const auto& group : entry.second) {
+      const auto name=group.first.as<std::string>();
+      if (name=="gaps") readNumberedPoints(group.second,anchors.gaps,path+"."+state+".gaps");
+      else if (name=="fan") readNumberedPoints(group.second,anchors.fan,path+"."+state+".fan");
+      else throw std::runtime_error(path + "." + state + " contains an unknown point group: " + name);
+    }
+  }
 }
 
 void normalize(AutoAimConfig& config)
@@ -339,14 +381,19 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
   if (rune) {
     const auto detector = rune["detector"];
     if (detector && !detector.IsMap()) throw std::runtime_error("rune.detector must be a map");
-    if (detector) config.rune.detector_backend = detector["backend"].as<std::string>("openvino");
-    if (config.rune.detector_backend == "scut") {
-      config.rune.scut_detector = Rune::ScutContourConfig::fromYaml(detector["scut"], rune["geometry"]);
-    } else if (config.rune.detector_backend == "openvino") {
-      config.rune.detector = Rune::KeypointDetectorConfig::fromYaml(
-          detector, std::filesystem::path(path).parent_path(), rune["geometry"]);
-    } else throw std::runtime_error("rune.detector.backend must be scut or openvino");
+    if (detector && detector["backend"] && detector["backend"].as<std::string>() != "scut")
+      throw std::runtime_error("rune.detector.backend supports only scut");
+    config.rune.scut_detector = Rune::ScutContourConfig::fromYaml(
+        detector ? detector["scut"] : YAML::Node{}, rune["geometry"]);
     config.rune.image_refiner = Rune::ImageRefinerConfig::fromYaml(rune["image_refiner"]);
+    if (const auto tracking=rune["big_sector_tracking"]) {
+      if (!tracking.IsMap()) throw std::runtime_error("rune.big_sector_tracking must be a map");
+      auto& filter=config.rune.estimator.filter;
+      readValue(tracking,"hold_ms",filter.big_sector_hold_ms);
+      readValue(tracking,"confirmation_ms",filter.big_sector_confirmation_ms);
+      if (filter.big_sector_hold_ms<=0 || filter.big_sector_confirmation_ms<=0)
+        throw std::runtime_error("rune.big_sector_tracking times must be positive milliseconds");
+    }
     const auto geometry = rune["geometry"];
     if (geometry) {
       if (geometry["radius_m"]) config.rune.geometry.radius_m = geometry["radius_m"].as<double>();
@@ -357,7 +404,9 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
                                 config.rune.geometry.armor_half_height_m}) {
         if (!std::isfinite(value) || value < 0) throw std::runtime_error("rune.geometry must contain finite, non-negative measured dimensions");
       }
+      readRuneNumberedAnchors(geometry["numbered_anchors_m"],config.rune.geometry);
     }
+    if (rune["gimbal_only"]) config.rune.gimbal_only = rune["gimbal_only"].as<bool>();
     if (rune["mpc_enable"]) config.rune.mpc_enable = rune["mpc_enable"].as<bool>();
     if (rune["small_warmup_s"]) config.rune.planning.small_warmup_s = rune["small_warmup_s"].as<double>();
     if (rune["big_warmup_s"]) config.rune.planning.big_warmup_s = rune["big_warmup_s"].as<double>();
@@ -570,6 +619,8 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 
   const YAML::Node fire = root["fire"];
   readValue(fire, "shoot_enable", config.fire.shoot_enable);
+  if (config.rune.gimbal_only && config.fire.shoot_enable)
+    throw std::runtime_error("rune.gimbal_only requires fire.shoot_enable: false");
   // 装甲板、大小符共用顶层开火开关；rune.fire 只保留专用门限和节拍。
   config.rune.fire.shoot_enable = config.fire.shoot_enable;
   config.rune.planning.shoot_enable = config.fire.shoot_enable;

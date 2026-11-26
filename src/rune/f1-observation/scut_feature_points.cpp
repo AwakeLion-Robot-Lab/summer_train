@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <utility>
 
 namespace Rune {
 namespace {
@@ -96,7 +97,19 @@ struct Line {
   int length() const { return last - first + 1; }
 };
 struct Strip { Line up, down; };
-struct Tip { Point base, vertex, direction; int strip; };
+struct Tip { Point base, vertex, direction; std::size_t contour; std::size_t strip; };
+
+// 已激活灯臂的编号按 R 标至靶心的方向固定。
+enum FanPointId { LeftTip, CenterTip, RightTip, RightJoint, Base, LeftJoint, FanPointCount };
+using FanPoints = std::array<std::optional<Point>, FanPointCount>;
+
+struct BladeAxes {
+  Point hub, outward;
+  double length;
+
+  double radial(Point p) const { return (p - hub).dot(outward) / length; }
+  double lateral(Point p) const { return outward.cross(p - hub) / length; }
+};
 
 std::vector<Strip> stripEdges(const Contour& contour) {
   cv::Mat coordinates(2, int(contour.size()), CV_32F);
@@ -206,7 +219,8 @@ std::vector<Strip> stripEdges(const Contour& contour) {
   return strips;
 }
 
-std::vector<Tip> stripTips(const Contour& contour, const std::vector<Strip>& strips) {
+std::vector<Tip> stripTips(const Contour& contour, const std::vector<Strip>& strips,
+                          std::size_t contour_index) {
   std::vector<Tip> tips;
   for (std::size_t i = 0; i < strips.size(); ++i) {
     const auto& s = strips[i];
@@ -220,7 +234,7 @@ std::vector<Tip> stripTips(const Contour& contour, const std::vector<Strip>& str
     const bool duplicate = std::any_of(tips.begin(), tips.end(), [&](const auto& old) {
       return cv::norm(vertex - old.vertex) < (angle(d, old.direction) < 20 ? 10 : 20);
     });
-    if (!duplicate) tips.push_back({base, vertex, d, int(i)});
+    if (!duplicate) tips.push_back({base, vertex, d, contour_index, i});
   }
   return tips;
 }
@@ -236,7 +250,8 @@ double alignment(const std::array<Tip, 3>& tips) {
   return std::sqrt(variance / 3) * 180 / CV_PI;
 }
 
-std::optional<std::array<Tip, 3>> topTips(const std::vector<Tip>& tips, Point center, Point hub) {
+std::optional<std::array<Tip, 3>> topTips(
+    const std::vector<Tip>& tips, Point center, const BladeAxes& axes) {
   if (tips.size() > 64) return {};
   std::optional<std::array<Tip, 3>> best;
   double cost = std::numeric_limits<double>::infinity();
@@ -244,12 +259,16 @@ std::optional<std::array<Tip, 3>> topTips(const std::vector<Tip>& tips, Point ce
     for (std::size_t j = i + 1; j < tips.size(); ++j)
       for (std::size_t k = j + 1; k < tips.size(); ++k) {
         std::array<Tip, 3> t{tips[i], tips[j], tips[k]};
-        const auto average = (t[0].vertex + t[1].vertex + t[2].vertex) / 3.0F;
-        auto middle = std::min_element(t.begin(), t.end(), [&](const auto& a, const auto& b) {
-          return cv::norm(a.vertex - average) < cv::norm(b.vertex - average);
+        std::sort(t.begin(), t.end(), [&](const auto& a, const auto& b) {
+          return axes.lateral(a.vertex) < axes.lateral(b.vertex);
         });
-        std::iter_swap(middle, t.begin() + 1);
-        if ((t[0].vertex - center).cross(t[2].vertex - center) <= 0) std::swap(t[0], t[2]);
+        const double left_offset = axes.lateral(t[0].vertex);
+        const double middle_offset = axes.lateral(t[1].vertex);
+        const double right_offset = axes.lateral(t[2].vertex);
+        const double spacing = std::min(middle_offset - left_offset, right_offset - middle_offset);
+        if (spacing <= 0 || left_offset >= -.2 * spacing || right_offset <= .2 * spacing ||
+            std::abs(middle_offset) > .35 * spacing)
+          continue;
         const double collinear = 180 - std::max({
             angle(t[1].vertex - t[0].vertex, t[2].vertex - t[0].vertex),
             angle(t[0].vertex - t[1].vertex, t[2].vertex - t[1].vertex),
@@ -259,7 +278,8 @@ std::optional<std::array<Tip, 3>> topTips(const std::vector<Tip>& tips, Point ce
         if (collinear > 25 || score > 20 || score >= cost || std::min(left, right) < 1 ||
             std::max(left, right) / std::min(left, right) > 1.5 ||
             angle(t[1].direction, t[1].vertex - center) > 15 ||
-            angle(-t[1].direction, hub - t[1].vertex) > 45) continue;
+            angle(t[1].direction, axes.outward) > 30 ||
+            angle(-t[1].direction, axes.hub - t[1].vertex) > 45) continue;
         cv::Vec4f line;
         cv::fitLine(std::vector<Point>{t[0].vertex, t[1].vertex, t[2].vertex}, line, cv::DIST_L2, 0, .01, .01);
         const double perpendicular = angle({line[0], line[1]}, t[0].direction + t[1].direction + t[2].direction);
@@ -276,97 +296,234 @@ std::optional<Point> intersection(Point a, Point da, Point b, Point db) {
   return std::isfinite(point.x) && std::isfinite(point.y) ? std::optional<Point>(point) : std::nullopt;
 }
 
-std::vector<Point> activeFan(const std::vector<Contour>& contours, Point hub) {
+FanPoints tipsOnly(const std::array<Tip, 3>& tips) {
+  FanPoints result;
+  result[LeftTip] = tips[0].vertex;
+  result[CenterTip] = tips[1].vertex;
+  result[RightTip] = tips[2].vertex;
+  return result;
+}
+
+FanPoints partialTips(const std::vector<Tip>& tips, const BladeAxes& axes) {
+  std::array<const Tip*, 3> candidates{};
+  std::array<bool, 3> ambiguous{};
+  const double separation = std::max(3.0, .025 * axes.length);
+  for (const auto& tip : tips) {
+    const double radial = axes.radial(tip.vertex);
+    if (radial < .42 || radial > .92 || angle(tip.direction, axes.outward) > 20 ||
+        (tip.vertex - tip.base).dot(axes.outward) < .05 * axes.length)
+      continue;
+    const double lateral = axes.lateral(tip.vertex);
+    int id = CenterTip;
+    if (std::abs(lateral) <= .035 && std::abs(axes.lateral(tip.base)) <= .045) {
+      id = CenterTip;
+    } else if (std::abs(lateral) >= .07 && std::abs(lateral) <= .36 &&
+               lateral * axes.lateral(tip.base) > 0) {
+      id = lateral < 0 ? LeftTip : RightTip;
+    } else {
+      continue;
+    }
+    if (!candidates[id]) candidates[id] = &tip;
+    else if (cv::norm(candidates[id]->vertex - tip.vertex) > separation) ambiguous[id] = true;
+  }
+  FanPoints result;
+  const auto* middle = candidates[CenterTip];
+  if (!middle || ambiguous[CenterTip]) return result;
+  result[CenterTip] = middle->vertex;
+  std::array<bool, 3> aligned{};
+  for (const auto id : {LeftTip, RightTip}) {
+    const auto* tip = candidates[id];
+    if (tip && !ambiguous[id])
+      aligned[id] = angle(tip->direction, middle->direction) <= 20 &&
+          std::abs(axes.radial(tip->vertex) - axes.radial(middle->vertex)) <=
+              .06 + .25 * std::abs(axes.lateral(tip->vertex));
+  }
+  // 若两侧均有候选但三端的联合几何检查失败，只保留已确认的中间灯条。
+  if (aligned[LeftTip] != aligned[RightTip]) {
+    const auto id = aligned[LeftTip] ? LeftTip : RightTip;
+    result[id] = candidates[id]->vertex;
+  }
+  return result;
+}
+
+struct Joint {
+  Point point, direction;
+  double inward_reach;
+};
+
+FanPoints connectedFan(const Contour& raw, const Contour& extended,
+                       const std::vector<Strip>& strips, const std::array<Tip, 3>& top,
+                       const BladeAxes& axes, std::size_t contour_index) {
+  auto result = tipsOnly(top);
+  const auto bounds = cv::boundingRect(raw);
+  const double span = cv::norm(top[2].vertex - top[0].vertex);
+  std::array<std::optional<Joint>, 2> joints;
+  for (std::size_t i = 0; i < strips.size(); ++i) {
+    if (std::any_of(top.begin(), top.end(), [&](const auto& tip) {
+          return tip.contour == contour_index && tip.strip == i;
+        }))
+      continue;
+    const auto& strip = strips[i];
+    const auto center = (strip.up.center + strip.down.center) * .5F;
+    const auto direction_on_strip = direction(strip.up.angle);
+    const double lateral = axes.lateral(center);
+    if (std::abs(lateral) < .05 * span / axes.length) continue;
+    const int side = lateral < 0 ? 0 : 1;
+    const auto& tip = top[side == 0 ? 0 : 2];
+    if (tip.contour != contour_index) continue;
+    const auto toward_tip = tip.base - center;
+    if (angle(tip.direction, direction_on_strip) > 90 ||
+        tip.direction.cross(toward_tip) * toward_tip.cross(direction_on_strip) < 0 ||
+        angle(tip.direction, toward_tip) > 45 || angle(toward_tip, direction_on_strip) > 45)
+      continue;
+    const auto point = intersection(tip.base, tip.direction, center, direction_on_strip);
+    if (!point || !bounds.contains(cv::Point(*point)) ||
+        cv::pointPolygonTest(raw, *point, true) < -2 ||
+        axes.lateral(*point) * lateral <= 0 || axes.radial(*point) >= axes.radial(tip.vertex))
+      continue;
+    const auto inward = direction_on_strip.dot(axes.outward) > 0
+        ? -direction_on_strip : direction_on_strip;
+    double reach = 0;
+    for (const auto& edge : {strip.up, strip.down})
+      for (int j = edge.first; j <= edge.last; ++j)
+        reach = std::max(reach, double((Point(extended[j]) - *point).dot(inward)));
+    if (!joints[side] || cv::norm(*point - top[1].base) < cv::norm(joints[side]->point - top[1].base))
+      joints[side] = Joint{*point, inward, reach};
+  }
+  if (joints[0]) result[LeftJoint] = joints[0]->point;
+  if (joints[1]) result[RightJoint] = joints[1]->point;
+  if (!joints[0] || !joints[1] || top[1].contour != contour_index) return result;
+
+  // 中线与轮廓的交点可能是遮挡边缘。两侧实测灯条应同时延伸至汇合处。
+  const auto& left = *joints[0];
+  const auto& right = *joints[1];
+  const auto convergence = intersection(left.point, left.direction, right.point, right.direction);
+  const double tolerance = std::max(4.0, .16 * span);
+  if (!convergence || std::abs(axes.lateral(*convergence)) * axes.length > tolerance ||
+      axes.radial(*convergence) >= std::min(axes.radial(left.point), axes.radial(right.point)))
+    return result;
+  for (const auto& side : {left, right}) {
+    const double distance = (*convergence - side.point).dot(side.direction);
+    if (distance <= 0 || distance > side.inward_reach + tolerance) return result;
+  }
+  const auto inward = -top[1].direction;
+  double furthest = 0;
+  std::optional<Point> base;
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    const auto a = Point(raw[i]) - top[1].base;
+    const auto b = Point(raw[(i + 1) % raw.size()]) - top[1].base;
+    const double ca = a.cross(inward), cb = b.cross(inward);
+    if (ca * cb > 0 || std::abs(ca - cb) < 1e-6) continue;
+    const auto crossing = a + (b - a) * float(ca / (ca - cb));
+    const double distance = crossing.dot(inward);
+    if (distance > furthest) { furthest = distance; base = top[1].base + crossing; }
+  }
+  if (base && cv::norm(*base - *convergence) <= tolerance) result[Base] = *base;
+  return result;
+}
+
+FanPoints activeFan(const std::vector<Contour>& contours, const BladeAxes& axes) {
+  struct MeasuredStrips {
+    const Contour& raw;
+    Contour extended;
+    std::vector<Strip> strips;
+  };
+  std::vector<MeasuredStrips> measured_strips;
   std::vector<Tip> all_tips;
   std::vector<Point> all_points;
+  FanPoints best;
+  int best_count = 0;
   for (const auto& raw : contours) {
     if (raw.size() < 30 || cv::contourArea(raw) < 30) continue;
     all_points.insert(all_points.end(), raw.begin(), raw.end());
     Contour extended = raw;
     extended.insert(extended.end(), raw.begin(), raw.begin() + raw.size() / 3);
-    const auto strips = stripEdges(extended);
-    const auto tips = stripTips(extended, strips);
+    auto strips = stripEdges(extended);
+    const auto contour_index = measured_strips.size();
+    const auto tips = stripTips(extended, strips, contour_index);
     all_tips.insert(all_tips.end(), tips.begin(), tips.end());
-    const auto top = topTips(tips, cv::fitEllipse(raw).center, hub);
-    if (!top) continue;
-    const auto& t = *top;
-    const auto inward = -t[1].direction;
-    if (angle(inward, hub - t[1].vertex) > 45) continue;
-    std::optional<Point> bottom;
-    double distance = 0;
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-      const auto a = Point(raw[i]) - t[1].base, b = Point(raw[(i + 1) % raw.size()]) - t[1].base;
-      const double ca = a.cross(inward), cb = b.cross(inward);
-      if (ca * cb > 0 || std::abs(ca - cb) < 1e-6) continue;
-      const auto crossing = a + (b - a) * float(ca / (ca - cb));
-      if (crossing.dot(inward) > distance) { distance = crossing.dot(inward); bottom = t[1].base + crossing; }
+    const auto top = topTips(tips, cv::fitEllipse(raw).center, axes);
+    if (top) {
+      auto candidate = connectedFan(raw, extended, strips, *top, axes, contour_index);
+      const int count = std::count_if(candidate.begin(), candidate.end(),
+                                      [](const auto& point) { return point.has_value(); });
+      if (count == FanPointCount) return candidate;
+      if (count > best_count) { best = std::move(candidate); best_count = count; }
     }
-    if (!bottom || angle(*bottom - t[1].base, inward) > 20) continue;
-    std::array<std::optional<Point>, 2> sides;
-    for (std::size_t i = 0; i < strips.size(); ++i) {
-      if (int(i) == t[0].strip || int(i) == t[1].strip || int(i) == t[2].strip) continue;
-      const auto base = (strips[i].up.center + strips[i].down.center) * .5F;
-      const auto d = direction(strips[i].up.angle);
-      const int side = cv::norm(base - t[0].base) < cv::norm(base - t[2].base) ? 0 : 1;
-      const auto& tip = side == 0 ? t[0] : t[2];
-      const auto toward_top = tip.base - base;
-      if (angle(tip.direction, d) > 90 || tip.direction.cross(toward_top) * toward_top.cross(d) < 0 ||
-          angle(tip.direction, toward_top) > 45 || angle(toward_top, d) > 45) continue;
-      const auto p = intersection(tip.base, tip.direction, base, d);
-      if (!p || !cv::boundingRect(raw).contains(cv::Point(*p))) continue;
-      if (!sides[side] || cv::norm(*p - t[1].base) < cv::norm(*sides[side] - t[1].base)) sides[side] = p;
-    }
-    if (sides[0] && sides[1])
-      return {t[0].vertex, t[1].vertex, t[2].vertex, *sides[1], *bottom, *sides[0]};
-    return {t[0].vertex, t[1].vertex, t[2].vertex, *bottom};
+    measured_strips.push_back({raw, std::move(extended), std::move(strips)});
   }
-  // Occluded/disconnected fan: only the three measured, aligned strip tips.
-  // No hidden bottom or side points are inferred from a fixed-size model.
+  if (best_count > 0) return best;
+  // 遮挡将灯条分开时，先跨轮廓确认三个外端，再分别保留仍有实测依据的转折点。
   if (all_points.size() >= 5) {
-    const auto top = topTips(all_tips, cv::fitEllipse(all_points).center, hub);
-    if (top && angle(-(*top)[1].direction, hub - (*top)[1].vertex) <= 45)
-      return {(*top)[0].vertex, (*top)[1].vertex, (*top)[2].vertex};
+    const auto top = topTips(all_tips, cv::fitEllipse(all_points).center, axes);
+    if (top) {
+      auto result = tipsOnly(*top);
+      for (std::size_t i = 0; i < measured_strips.size(); ++i) {
+        const auto& measured = measured_strips[i];
+        const auto candidate = connectedFan(measured.raw, measured.extended, measured.strips, *top, axes, i);
+        for (const auto id : {RightJoint, Base, LeftJoint})
+          if (candidate[id]) result[id] = candidate[id];
+      }
+      return result;
+    }
   }
-  return {};
+  return partialTips(all_tips, axes);
 }
 } // namespace
+
+void extractScutActiveFanPoints(DetectedContours& measured, Point hub, Point radial_reference,
+                                const std::vector<Contour>& fan_contours) {
+  measured.fan_points.clear();
+  measured.fan_point_ids.clear();
+  measured.fan_point_valid.clear();
+  measured.fan_display_predictions={};
+  const auto radial=radial_reference-hub;
+  const double length=cv::norm(radial);
+  if (length<2 || !std::isfinite(length)) return;
+  const auto points=activeFan(fan_contours,{hub,unit(radial),length});
+  for (int id=0; id<FanPointCount; ++id) {
+    if (!points[id]) continue;
+    measured.fan_points.push_back(*points[id]);
+    measured.fan_point_ids.push_back(id);
+    measured.fan_point_valid.push_back(true);
+  }
+}
 
 void extractScutFeaturePoints(DetectedContours& measured,
     const cv::RotatedRect& ellipse, Point hub, bool inactive,
     const std::vector<Contour>& holes, const std::vector<Contour>& fan_contours) {
   measured.target_ellipse = ellipse;
   measured.gap_points = {};
+  measured.gap_display_predictions = {};
+  if (!inactive && ellipse.size.width>0 && ellipse.size.height>0) {
+    extractScutActiveFanPoints(measured,hub,ellipse.center,fan_contours);
+    return;
+  }
   measured.fan_points.clear();
   measured.fan_point_ids.clear();
   measured.fan_point_valid.clear();
+  measured.fan_display_predictions = {};
   if (ellipse.size.width <= 0 || ellipse.size.height <= 0) return;
-  if (inactive) {
-    targetGaps(measured, ellipse, hub, holes);
-    Contour points;
-    for (const auto& c : fan_contours) points.insert(points.end(), c.begin(), c.end());
-    if (points.size() < 3) return;
-    const auto rect = cv::minAreaRect(points);
-    const double width = std::min(rect.size.width, rect.size.height), height = std::max(rect.size.width, rect.size.height);
-    if (width < 1 || height / width < 2 || height / width > 7) return;
-    std::vector<cv::Point> hull;
-    cv::convexHull(points, hull);
-    if (cv::contourArea(hull) / rect.size.area() < .7) return;
-    measured.fan_points.resize(4);
-    rect.points(measured.fan_points.data());
-    const auto inward = unit(hub - ellipse.center);
-    const Point right{inward.y, -inward.x};
-    // OpenCV may change the first corner when a rectangle crosses an axis.
-    // Sort in the blade frame before assigning persistent semantic IDs.
-    auto& p = measured.fan_points;
-    std::sort(p.begin(), p.end(), [&](Point a, Point b) { return a.dot(inward) < b.dot(inward); });
-    if (p[0].dot(right) > p[1].dot(right)) std::swap(p[0], p[1]);
-    if (p[2].dot(right) < p[3].dot(right)) std::swap(p[2], p[3]);
-    measured.fan_point_ids = {0, 1, 2, 3};
-  } else {
-    measured.fan_points = activeFan(fan_contours, hub);
-    if (measured.fan_points.size() == 6) measured.fan_point_ids = {0, 1, 2, 3, 4, 5};
-    else if (measured.fan_points.size() == 4) measured.fan_point_ids = {0, 1, 2, 4};
-    else if (measured.fan_points.size() == 3) measured.fan_point_ids = {0, 1, 2};
-  }
+  targetGaps(measured, ellipse, hub, holes);
+  Contour points;
+  for (const auto& c : fan_contours) points.insert(points.end(), c.begin(), c.end());
+  if (points.size() < 3) return;
+  const auto rect = cv::minAreaRect(points);
+  const double width = std::min(rect.size.width, rect.size.height), height = std::max(rect.size.width, rect.size.height);
+  if (width < 1 || height / width < 2 || height / width > 7) return;
+  std::vector<cv::Point> hull;
+  cv::convexHull(points, hull);
+  if (cv::contourArea(hull) / rect.size.area() < .7) return;
+  measured.fan_points.resize(4);
+  rect.points(measured.fan_points.data());
+  const auto inward = unit(hub - ellipse.center);
+  const Point right{inward.y, -inward.x};
+  // OpenCV may change the first corner when a rectangle crosses an axis.
+  // Sort in the blade frame before assigning persistent semantic IDs.
+  auto& p = measured.fan_points;
+  std::sort(p.begin(), p.end(), [&](Point a, Point b) { return a.dot(inward) < b.dot(inward); });
+  if (p[0].dot(right) > p[1].dot(right)) std::swap(p[0], p[1]);
+  if (p[2].dot(right) < p[3].dot(right)) std::swap(p[2], p[3]);
+  measured.fan_point_ids = {0, 1, 2, 3};
 }
 } // namespace Rune

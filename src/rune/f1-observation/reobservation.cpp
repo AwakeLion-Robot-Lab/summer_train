@@ -12,7 +12,8 @@ std::optional<Observation> ObservationStage::run(const Region& region,
   if (region.bgr.empty() || region.bgr.type() != CV_8UC3) return std::nullopt;
   if (const auto& measured = region.keypoints.image_contours) {
     const bool arm_only = mode == Mode::Big && region.keypoints.class_id == 1;
-    if (measured->color != color || measured->center_r.empty() || measured->arm.empty() ||
+    if (measured->color != color || (region.keypoints.point_valid[4] && measured->center_r.empty()) ||
+        measured->arm.empty() ||
         (!arm_only && measured->armor.empty())) return std::nullopt;
     return Observation{region.keypoints, measured->armor, measured->arm, measured->center_r};
   }

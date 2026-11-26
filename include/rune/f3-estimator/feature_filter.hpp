@@ -1,5 +1,5 @@
 #pragma once
-#include "rune/types.hpp"
+#include "rune/f6_telemetry/types.hpp"
 
 namespace Rune {
 struct FeatureFilterConfig {
@@ -12,21 +12,45 @@ struct FeatureFilterConfig {
   double max_center_jump_m{0.3};
   double max_normal_jump_rad{0.45};
   double max_speed_rad_s{6.0};
+  int big_sector_hold_ms{150};
+  int big_sector_confirmation_ms{75};
 };
 
 class FeatureFilter {
 public:
-  explicit FeatureFilter(Geometry geometry, FeatureFilterConfig config = {});
+  struct TargetPrediction {
+    Eigen::Vector3d observed_direction;
+    Eigen::Vector3d predicted_direction;
+  };
+  struct GimbalPrediction {
+    Eigen::Vector3d direction;
+    int sector;
+  };
+
+  explicit FeatureFilter(Geometry geometry, FeatureFilterConfig config = {}, bool gimbal_only = false);
   [[nodiscard]] std::optional<Pose> update(const Pose& seed,
       const std::vector<Observation>& observations, const Frame& frame);
+  void updateReobservedPhase(const Frame& frame);
+  void noteObservationGap();
+  [[nodiscard]] std::optional<TargetPrediction> predictTarget(
+      const Frame& frame, TimePoint at, int sector) const;
+  [[nodiscard]] std::optional<GimbalPrediction> predictGimbal(
+      const Frame& frame, TimePoint at, bool center_only) const;
+  [[nodiscard]] bool hasHistory() const noexcept { return state_.has_value(); }
   void reset();
 private:
   Geometry geometry_;
   FeatureFilterConfig config_;
+  bool gimbal_only_;
   std::optional<FilterState> state_;
   TimePoint previous_time_{};
   std::uint64_t world_frame_id_{0};
   int target_sector_{-1};
+  int pending_sector_{-1};
+  TimePoint pending_since_{};
+  TimePoint target_seen_at_{};
   Eigen::Vector3d up_{Eigen::Vector3d::UnitZ()};
+  std::optional<Eigen::Quaterniond> previous_world_orientation_;
+  Eigen::Vector3d previous_world_origin_{Eigen::Vector3d::Zero()};
 };
 } // namespace Rune

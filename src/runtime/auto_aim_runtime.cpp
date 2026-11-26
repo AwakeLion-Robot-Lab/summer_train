@@ -385,12 +385,7 @@ void AutoAimRuntime::run() {
   } else {
     try {
       rune = std::make_unique<RuneRuntime>(auto_aim_config.rune, planner_tuning);
-      const auto& detector = auto_aim_config.rune.detector;
-      if (auto_aim_config.rune.detector_backend == "scut")
-        L6Telemetry::logInfo("rune SCUT contour detector loaded");
-      else L6Telemetry::logInfo("rune detector loaded", detector.model_path.string(),
-                          "device", detector.device, "confidence", detector.confidence_threshold,
-                          "keypoint_confidence", detector.keypoint_confidence_threshold);
+      L6Telemetry::logInfo("rune SCUT contour detector loaded");
       const auto& geometry = auto_aim_config.rune.geometry;
       if (geometry.radius_m <= 0 || geometry.armor_half_width_m <= 0 ||
           geometry.armor_half_height_m <= 0) {
@@ -846,7 +841,7 @@ void AutoAimRuntime::run() {
               (void)Rune::applyCameraCalibration(input, *camera_calibration);
             }
             try {
-              // 检测只依赖图像：先推理，让串口接收线程同时补齐曝光后的姿态包。
+              // 先处理图像，让串口接收线程同时补齐曝光后的姿态包。
               const auto detect_started = Clock::now();
               rune->detect(input);
               frame_timing.detect_ms = milliseconds(Clock::now(), detect_started);
@@ -860,6 +855,8 @@ void AutoAimRuntime::run() {
                                         "image", frame.cols, frame.rows,
                                         "image_refined_r", refinement.refined_r,
                                         "image_refined_targets", refinement.refined_targets,
+                                        "gpu_ecc_batches", refinement.gpu_ecc_batches,
+                                        "gpu_ecc_accepted", refinement.gpu_ecc_accepted,
                                         "ring_motion_reject", refinement.rejected_target_rings);
                 }
                 last_rune_diagnostic_log = Clock::now();
@@ -868,13 +865,13 @@ void AutoAimRuntime::run() {
               (void)serial.waitPoseUntil(timestamp, pose_deadline);
               frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
               input.q_world_barrel = serial.gimbalPoseAt(timestamp);
-              // 推理耗时计入图像年龄；规划及反馈使用推理完成后的时刻。
+              // 图像处理耗时计入图像年龄，规划及反馈使用处理完成后的时刻。
               const auto feedback = serial.latestState();
               const auto actual_pose = serial.latestGimbalPose();
               const auto command_at = std::chrono::steady_clock::now();
               if (feedback) {
                 if (auto command = rune->process(input, *feedback, actual_pose, command_at)) {
-                  sendCommand(*command, true);
+                  sendCommand(*command, rune->lastCommand().single_shoot);
                 } else {
                   sendSafeHold();
                 }
@@ -898,7 +895,7 @@ void AutoAimRuntime::run() {
             }
             if (overlay_enabled && frame_index % auto_aim_config.debug.overlay_every == 0) {
               const auto draw_started = Clock::now();
-              Rune::drawDetectionOverlay(frame, input.detections, input.mode);
+              Rune::drawDetectionOverlay(frame, input);
               if (rune->lastMotion()) {
                 Rune::drawTrackingOverlay(frame, input, rune->lastMotion()->pose);
               }

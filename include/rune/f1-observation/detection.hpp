@@ -1,34 +1,20 @@
 #pragma once
 
-#include "rune/types.hpp"
+#include "rune/f6_telemetry/types.hpp"
 
-#include <array>
 #include <cstddef>
 
 namespace Rune {
 
-// Counts describe one successfully decoded frame, before contour/pose processing.
+// 记录当前帧的轮廓检测结果。
 struct DetectorDiagnostics {
-  bool contour_backend{false};
   std::size_t contour_count{0}, target_candidates{0}, center_candidates{0};
   std::size_t arm_matches{0}, geometry_rejected{0};
   std::size_t scut_gap_points{0}, scut_fan_points{0}, contour_passes{0};
-  std::size_t anchors{0}, score_pass{0}, keypoint_rejected{0};
-  std::size_t nms_rejected{0}, mode_rejected{0}, detections{0};
-  std::size_t partial_detections{0}, best_valid_keypoints{0};
-  std::size_t fused_candidates{0}; // Suppressed duplicates contributing coordinates.
-  std::size_t target_ring_refined{0}, target_ring_rejected{0};
-  std::size_t target_ring_subpixel_refined{0};
-  std::size_t target_ring_reconnected{0}, target_ring_no_contour{0};
-  std::size_t inference_passes{1}; // Counters otherwise describe the selected pass.
-  std::array<float, 3> max_class_scores{};
-  int best_class{-1};
-  float best_min_keypoint_score{0};
+  std::size_t detections{0};
 };
 
-// Fill Frame::detections before calling Processor. OpenVinoKeypointDetector
-// implements the published five-point model; alternate adapters can implement
-// this interface without introducing a model dependency into Processor.
+// 将原图坐标中的关键点填入 Frame::detections，供 Processor 使用。
 class IKeypointDetector {
 public:
   virtual ~IKeypointDetector() = default;
@@ -44,15 +30,17 @@ public:
     (void)color;
     return detect(bgr, mode);
   }
+  [[nodiscard]] virtual std::vector<Keypoints> detect(const Frame& frame) {
+    return detect(frame.bgr, frame.mode, frame.color);
+  }
 };
 
-// Network decoding belongs to the caller's model adapter. This stage validates
-// its full-image keypoints, chooses an inactive blade and owns a local ROI.
+// 验证检测得到的全图关键点，并提取共享原图存储的只读候选区域。
 class DetectionStage {
 public:
   explicit DetectionStage(double roi_scale = 2.0) : roi_scale_(roi_scale) {}
   [[nodiscard]] std::optional<Region> run(const Frame& frame) const;
-  // Includes activated blades as supporting observations, with owned ROIs.
+  // 包含作为辅助观测的已激活扇叶，候选区域保持源图像存储有效。
   [[nodiscard]] std::vector<Region> runAll(const Frame& frame) const;
 
 private:

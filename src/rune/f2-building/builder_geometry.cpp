@@ -79,23 +79,33 @@ bool worldRotation(const Frame& frame, std::optional<Eigen::Matrix3d>& rotation)
   }
   return true;
 }
-std::vector<cv::Point2d> networkPoints(const Observation& o) {
+std::vector<cv::Point2d> detectedAnchorPixels(const Observation& o) {
   const auto& k=o.keypoints;
   return {k.top,k.left,k.right,k.bottom,k.center_r};
 }
-bool validObservation(const Observation& o, bool arm_only) {
-  if ((o.keypoints.class_id!=0 && o.keypoints.class_id!=1) ||
-      !std::isfinite(o.keypoints.confidence) || o.arm.empty() || o.center_r.empty() ||
-      (!arm_only && o.armor.empty())) return false;
-  for (const auto* contour : {&o.armor,&o.arm,&o.center_r}) {
-    if (contour->empty() && arm_only && contour==&o.armor) continue;
-    if (contour->size()<3) return false;
+
+bool wellFormedObservation(const Observation& o) {
+  const auto& k=o.keypoints;
+  if ((k.class_id!=0 && k.class_id!=1) || !std::isfinite(k.confidence)) return false;
+  for (const auto& p : {k.top,k.left,k.right,k.bottom,k.center_r})
+    if (!std::isfinite(p.x) || !std::isfinite(p.y)) return false;
+  for (const auto* contour : {&o.armor,&o.arm,&o.center_r})
     for (const auto& point : *contour)
       if (std::abs(double(point.x))>1000000 || std::abs(double(point.y))>1000000) return false;
+  return true;
+}
+
+bool validObservation(const Observation& o, bool arm_only, bool allow_inferred_center) {
+  const bool inferred_center=allow_inferred_center && !o.keypoints.point_valid[4] && o.center_r.empty();
+  if (!wellFormedObservation(o) || o.arm.empty() ||
+      (o.center_r.empty() && !inferred_center) ||
+      (!arm_only && o.armor.empty())) return false;
+  for (const auto* contour : {&o.armor,&o.arm,&o.center_r}) {
+    if (contour->empty() && ((arm_only && contour==&o.armor) ||
+                            (inferred_center && contour==&o.center_r))) continue;
+    if (contour->size()<3) return false;
     if (std::abs(cv::contourArea(*contour))<1) return false;
   }
-  for (const auto& p : networkPoints(o))
-    if (!std::isfinite(p.x) || !std::isfinite(p.y)) return false;
   if (arm_only) return true;
   if (!o.keypoints.armorCenter()) return false;
   std::vector<cv::Point2f> hull;

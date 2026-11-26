@@ -1,4 +1,4 @@
-#include "rune_replay.hpp"
+#include "rune/f6_telemetry/rune_replay.hpp"
 
 int main(int argc, char** argv) {
   return runRuneReplay(argc, argv, Rune::Mode::Small, "auto_aim_test_small_rune",

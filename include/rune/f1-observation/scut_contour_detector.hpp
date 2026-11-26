@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rune/f1-observation/detection.hpp"
+#include "rune/f1-observation/rune_group.hpp"
 
 namespace YAML { class Node; }
 
@@ -26,21 +27,23 @@ struct ScutContourConfig {
       const YAML::Node& node, const YAML::Node& geometry);
 };
 
-// SCUT-style color / contour-tree / gap matching, adapted to the local five
-// anchors. No network, inferred R, hidden-window state or actuator dependency.
+// 颜色、轮廓和编号角点检测。云台跟随可根据可见叶片推算遮挡的 R 标位置。
 class ScutContourDetector final : public IKeypointDetector {
 public:
-  explicit ScutContourDetector(ScutContourConfig config = {});
+  explicit ScutContourDetector(ScutContourConfig config = {}, bool gimbal_only = false);
   [[nodiscard]] std::vector<Keypoints> detect(const cv::Mat& bgr) override;
   [[nodiscard]] std::vector<Keypoints> detect(const cv::Mat& bgr, Mode mode) override;
   [[nodiscard]] std::vector<Keypoints> detect(const cv::Mat& bgr, Mode mode, Color color) override;
+  [[nodiscard]] std::optional<RuneGroup> detectGroup(const cv::Mat& bgr, Mode mode, Color color);
   [[nodiscard]] std::optional<DetectorDiagnostics> lastDiagnostics() const override {
     return diagnostics_;
   }
 private:
-  [[nodiscard]] std::vector<Keypoints> detectAtThreshold(
-      const cv::Mat& bgr, Mode mode, Color color, int threshold);
+  [[nodiscard]] std::optional<RuneGroup> detectAtThreshold(
+      const cv::Mat& difference, const cv::Mat& arm_purity, const cv::Mat& closing_kernel,
+      Mode mode, Color color, int threshold, bool recover_center);
   ScutContourConfig config_;
+  bool gimbal_only_;
   std::optional<DetectorDiagnostics> diagnostics_;
 };
 

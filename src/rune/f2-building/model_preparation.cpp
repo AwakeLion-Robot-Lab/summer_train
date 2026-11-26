@@ -9,6 +9,7 @@
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <utility>
 
 namespace Rune::building_detail {
@@ -20,9 +21,9 @@ std::optional<std::vector<cv::Point2d>> pcaEnvelope(const Observation& o,
   appendContourSamples(o.armor,samples); appendContourSamples(o.arm,samples);
   if (samples.size()<6) return {};
   cv::undistortPoints(samples,samples,camera,distortion,cv::noArray(),camera);
-  const auto nn=networkPoints(o);
+  const auto anchors=detectedAnchorPixels(o);
   std::vector<cv::Point2d> undistorted;
-  cv::undistortPoints(nn,undistorted,camera,distortion,cv::noArray(),camera);
+  cv::undistortPoints(anchors,undistorted,camera,distortion,cv::noArray(),camera);
   const cv::Point2d radial=(undistorted[0]+undistorted[1]+undistorted[2]+undistorted[3])*0.25-undistorted[4];
   if (cv::norm(radial)<2) return {};
   cv::Mat data(static_cast<int>(samples.size()),2,CV_64F);
@@ -56,8 +57,18 @@ std::optional<std::vector<cv::Point2d>> pcaEnvelope(const Observation& o,
 namespace Rune {
 using namespace building_detail;
 
-BuildingStage::BuildingStage(Geometry geometry) : geometry_(std::move(geometry)) {
+BuildingStage::BuildingStage(Geometry geometry, bool use_numbered_anchors, bool gimbal_only)
+    : geometry_(std::move(geometry)), use_numbered_anchors_(use_numbered_anchors), gimbal_only_(gimbal_only) {
   const auto& g=geometry_;
+  const auto valid_points=[](const auto& points) {
+    return std::all_of(points.begin(),points.end(),[](const auto& point) {
+      return !point || finite(*point);
+    });
+  };
+  for (const auto& model : g.numbered_anchors) {
+    if (!valid_points(model.gaps) || !valid_points(model.fan))
+      throw std::invalid_argument("rune numbered anchors must contain finite coordinates");
+  }
   anchors_={{0,g.radius_m+g.armor_half_height_m,0},
             {-g.armor_half_width_m,g.radius_m,0},{g.armor_half_width_m,g.radius_m,0},
             {0,g.radius_m-g.armor_half_height_m,0},{0,0,0}};

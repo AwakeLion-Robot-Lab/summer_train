@@ -55,8 +55,9 @@ public:
   [[nodiscard]] static PreprocessedImage run(const cv::Mat& image,
                                              const InferenceInputSpec& input_spec,
                                              const ImagePreprocessConfig& config = {});
-  // output 拥有缓冲区；每个检测器独占一份，跨帧复用。再次写入前必须完成
-  // 使用该 input 的同步推理和解码，不得在其他线程同时读写 output。
+  // 匹配模型尺寸的连续图像通过 cv::Mat 引用保持存活并直接共享像素；
+  // 其他输入使用 output 的缓冲区，跨帧复用。同步推理和解码完成前，
+  // 不得修改共享原图或再次写入 output。
   static void runInto(const cv::Mat& image, const InferenceInputSpec& input_spec,
                       PreprocessedImage& output, const ImagePreprocessConfig& config = {});
 };

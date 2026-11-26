@@ -1,5 +1,5 @@
 #pragma once
-#include "rune/types.hpp"
+#include "rune/f6_telemetry/types.hpp"
 #include <deque>
 
 namespace Rune {

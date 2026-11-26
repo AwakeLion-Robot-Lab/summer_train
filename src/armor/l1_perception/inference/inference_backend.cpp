@@ -10,16 +10,31 @@ namespace L2Perception
 void InferenceInput::setOwnedData(std::vector<std::uint8_t> data)
 {
   owned_data_ = std::move(data);
+  external_data_ = {};
+  external_owner_.reset();
 }
 
 std::span<std::uint8_t> InferenceInput::resizeOwnedData(std::size_t size)
 {
   owned_data_.resize(size);
+  external_data_ = {};
+  external_owner_.reset();
   return owned_data_;
+}
+
+void InferenceInput::setExternalView(
+    const std::uint8_t* data, std::size_t size, std::shared_ptr<const void> owner)
+{
+  if ((data == nullptr && size != 0) || !owner) {
+    throw std::invalid_argument("InferenceInput external view requires valid data and owner");
+  }
+  external_data_ = {data, size};
+  external_owner_ = std::move(owner);
 }
 
 std::span<const std::uint8_t> InferenceInput::values() const noexcept
 {
+  if (external_owner_) return external_data_;
   return owned_data_;
 }
 
@@ -38,8 +53,8 @@ std::size_t InferenceInput::elementCount() const noexcept
 
 bool InferenceInput::isConsistent() const noexcept
 {
-  // U8 每个元素正好一个字节，所以元素数必须与 vector 长度一致。
-  return elementCount() == owned_data_.size();
+  // U8 每个元素正好一个字节。
+  return elementCount() == values().size();
 }
 
 void InferenceTensor::setOwnedData(std::vector<float> data)

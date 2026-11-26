@@ -41,10 +41,10 @@ Evaluation evaluate(const Parameters& p, const std::vector<cv::Point3d>& anchors
     const double robust = a <= delta ? raw : std::copysign(std::sqrt(2*delta*a-delta*delta), raw);
     e.residual[index++] = weight*robust;
   };
-  const auto pixels = project(anchors,p,camera,distortion);
+  e.projected_anchors = project(anchors,p,camera,distortion);
   double sum = 0;
   for (std::size_t i=0; i<image.size(); ++i) {
-    const auto delta = pixels[i]-image[i];
+    const auto delta = e.projected_anchors[i]-image[i];
     sum += delta.dot(delta);
     append(delta.x,1); append(delta.y,1);
   }
@@ -60,7 +60,9 @@ Evaluation evaluate(const Parameters& p, const std::vector<cv::Point3d>& anchors
       field_sum += distance*distance;
       append(distance,weight);
     }
-    contour_sum += field_sum/f.model.size();
+    const double mean_square = field_sum/f.model.size();
+    contour_sum += mean_square;
+    e.worst_contour_mean_square = std::max(e.worst_contour_mean_square, mean_square);
   }
   e.chamfer_rms = fields.empty() ? 0 : std::sqrt(contour_sum/fields.size());
   if (vertical && g.normal_vertical_weight_px>0) {
@@ -106,17 +108,4 @@ void refine(Parameters& p, Evaluation& e, const std::vector<cv::Point3d>& anchor
     }
   }
 }
-bool consistentFields(const std::vector<Field>& fields,const Parameters& p,
-                      const cv::Mat& camera,const cv::Mat& distortion,const Geometry& g) {
-  const double cap=std::max(10.0,4*g.max_chamfer_error_px);
-  for (const auto& field : fields) {
-    double sum=0;
-    for (const auto& pixel : project(field.model,p,camera,distortion)) {
-      const double distance=tools::geometry::sampleDistanceField(field.image,pixel,cap); sum+=distance*distance;
-    }
-    if (std::sqrt(sum/field.model.size())>g.max_chamfer_error_px) return false;
-  }
-  return true;
-}
-
 } // namespace Rune::building_detail

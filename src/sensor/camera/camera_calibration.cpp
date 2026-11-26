@@ -1,5 +1,5 @@
 #include "sensor/camera/camera_calibration.hpp"
-#include "rune/types.hpp"
+#include "rune/f6_telemetry/types.hpp"
 
 #include <cmath>
 #include <optional>

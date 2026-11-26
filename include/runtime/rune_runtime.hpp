@@ -1,27 +1,24 @@
 #pragma once
 
 #include "armor/l3_planning/planner_config.hpp"
-#include "rune/f1-observation/keypoint_detector.hpp"
 #include "rune/f1-observation/image_refiner.hpp"
 #include "rune/f1-observation/scut_contour_detector.hpp"
-#include "rune/processor.hpp"
+#include "rune/f6_telemetry/processor.hpp"
 #include "sensor/serial/robot_state.hpp"
 
 namespace runtime {
 
 struct RuneRuntimeConfig {
-  std::string detector_backend{"openvino"};
-  Rune::KeypointDetectorConfig detector;
   Rune::ScutContourConfig scut_detector;
   Rune::ImageRefinerConfig image_refiner;
   Rune::Geometry geometry;
   Rune::PlanningConfig planning;
   Rune::FireControlConfig fire;
+  bool gimbal_only{false};
   // 未配置时沿用 planner_config.yaml 的 MPC 开关及参数。
   std::optional<bool> mpc_enable;
+  Rune::EstimatorConfig estimator;
 };
-
-[[nodiscard]] std::unique_ptr<Rune::IKeypointDetector> makeRuneDetector(const RuneRuntimeConfig& config);
 
 // 只负责传感器数据适配；大小能量机关运动模型仍由 Processor 按 Frame::mode 分流。
 class RuneRuntime {

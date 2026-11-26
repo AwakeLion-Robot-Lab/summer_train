@@ -14,6 +14,11 @@ double seconds(TimePoint a,TimePoint b) {
   return std::chrono::duration<double>(a-b).count();
 }
 double yawError(double a,double b) { return std::abs(std::remainder(a-b,2*std::numbers::pi)); }
+bool validFeedback(const ControlInput& control,double max_age_s) {
+  const double age=seconds(control.command_at,control.feedback_at);
+  return std::isfinite(control.actual_yaw_rad) && std::isfinite(control.actual_pitch_rad) &&
+    (control.feedback_at==TimePoint{} || (age>=0 && age<=max_age_s));
+}
 }
 
 ControlStage::ControlStage(FireControlConfig config) : config_(std::move(config)) {
@@ -27,9 +32,39 @@ ControlStage::ControlStage(FireControlConfig config) : config_(std::move(config)
   if (!std::isfinite(period) || period<1e-6)
     throw std::invalid_argument("Invalid rune firing period");
 }
+void ControlStage::missObservation() noexcept {
+  if (config_.shoot_enable) suspend();
+  else observation_missed_=true;
+}
+
+Command ControlStage::followPrediction(Mode mode,Status status,const Eigen::Vector3d& observed,
+    const Eigen::Vector3d& predicted,const ControlInput& control) {
+  Command command;
+  command.mode=mode;
+  command.status=status;
+  const int sector=predictionSector();
+  const double observed_horizontal=std::hypot(observed.x(),observed.y());
+  const double predicted_horizontal=std::hypot(predicted.x(),predicted.y());
+  if (sector<0 || !last_command_ || control.command_at<previous_command_ ||
+      !validFeedback(control,config_.max_plan_age_s) ||
+      !observed.allFinite() || !predicted.allFinite() ||
+      observed_horizontal<1e-6 || predicted_horizontal<1e-6) return command;
+  if (!prediction_origin_) prediction_origin_.emplace(last_command_->yaw,-last_command_->pitch);
+  command.yaw_rad=std::remainder(prediction_origin_->x()+std::atan2(predicted.y(),predicted.x())-
+      std::atan2(observed.y(),observed.x()),2*std::numbers::pi);
+  command.pitch_rad=prediction_origin_->y()+std::atan2(predicted.z(),predicted_horizontal)-
+      std::atan2(observed.z(),observed_horizontal);
+  command.target_sector=sector;
+  command.found=true;
+  last_command_=makeSerialCommand(command);
+  return command;
+}
+
 void ControlStage::suspend() noexcept {
   cycle_started_={}; aligned_since_={}; fired_cycle_=-1;
   sector_=-1;
+  observation_missed_=false;
+  prediction_origin_.reset();
 }
 void ControlStage::reset() noexcept {
   suspend(); mode_.reset(); epoch_=0; last_shot_={}; previous_command_={};
@@ -66,8 +101,11 @@ Command ControlStage::update(const AimPlan& plan,const ControlInput& control) {
   if (previous_command_!=TimePoint{} && now<previous_command_) {
     suspend(); out.status=Status::InvalidInput; return out;
   }
-  if (previous_command_!=TimePoint{} && seconds(now,previous_command_)>config_.max_plan_age_s)
-    suspend(); // A gap in feedback cannot count as continuous alignment.
+  const bool observation_missed=std::exchange(observation_missed_,false);
+  prediction_origin_.reset();
+  if (!observation_missed && previous_command_!=TimePoint{} &&
+      seconds(now,previous_command_)>config_.max_plan_age_s)
+    suspend();
   previous_command_=now;
   if (!mode_ || *mode_!=plan.mode || epoch_!=plan.tracking_epoch || sector_!=plan.armor_id) {
     suspend(); mode_=plan.mode; epoch_=plan.tracking_epoch; sector_=plan.armor_id;
@@ -76,9 +114,7 @@ Command ControlStage::update(const AimPlan& plan,const ControlInput& control) {
     suspend(); return out;
   }
   if (cycle_started_==TimePoint{}) cycle_started_=now;
-  if (!std::isfinite(control.actual_yaw_rad) || !std::isfinite(control.actual_pitch_rad) ||
-      (control.feedback_at!=TimePoint{} && (seconds(now,control.feedback_at)<0 ||
-        seconds(now,control.feedback_at)>config_.max_plan_age_s))) {
+  if (!validFeedback(control,config_.max_plan_age_s)) {
     aligned_since_={}; out.status=Status::InvalidFeedback; return out;
   }
   // Check BOTH the executable trajectory and the true ballistic intercept.
