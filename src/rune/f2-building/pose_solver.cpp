@@ -48,7 +48,7 @@ bool consistentBladeAnchors(const Evaluation& evaluation, const std::vector<cv::
 
 void collectNumberedAnchors(Prepared& blade, const DetectedContours& measured,
                             const NumberedAnchors& model, cv::Size image_size) {
-  const auto append = [&](const auto& points, const auto& coordinates) {
+  const auto append = [&](const auto& points, const auto& coordinates, const float* variances) {
     for (std::size_t id=0; id<points.size(); ++id) {
       if (!points[id] || !coordinates[id]) continue;
       const auto pixel=*points[id];
@@ -56,9 +56,13 @@ void collectNumberedAnchors(Prepared& blade, const DetectedContours& measured,
           pixel.x>=image_size.width || pixel.y>=image_size.height) continue;
       blade.numbered_anchors.push_back(*coordinates[id]);
       blade.numbered_pixels.emplace_back(pixel);
+      double weight = 1.0;
+      if (variances && std::isfinite(variances[id]) && variances[id] > 0.0F)
+        weight = std::clamp(1.2 / std::sqrt(std::max(0.36, double(variances[id]))), 0.25, 1.0);
+      blade.numbered_weights.push_back(weight);
     }
   };
-  append(measured.gap_points, model.gaps);
+  append(measured.gap_points, model.gaps, measured.gap_point_variances.data());
   if (measured.fan_point_ids.size()!=measured.fan_points.size()) return;
   std::array<std::optional<cv::Point2f>,6> fan_points{};
   std::array<bool,6> seen{};
@@ -70,17 +74,25 @@ void collectNumberedAnchors(Prepared& blade, const DetectedContours& measured,
     else fan_points[id]=measured.fan_points[i];
     seen[id]=true;
   }
-  append(fan_points, model.fan);
+  append(fan_points, model.fan, nullptr);
 }
 
 std::size_t appendCorrespondences(const Prepared& blade, int sector,
                                   std::vector<cv::Point3d>& anchors,
-                                  std::vector<cv::Point2d>& pixels) {
+                                  std::vector<cv::Point2d>& pixels,
+                                  std::vector<double>& weights,
+                                  std::vector<bool>* is_numbered = nullptr) {
   const auto rotated=rotatePoints(blade.anchors,sector);
   anchors.insert(anchors.end(),rotated.begin(),rotated.end());
   pixels.insert(pixels.end(),blade.pixels.begin(),blade.pixels.end());
+  weights.insert(weights.end(), blade.pixels.size(), 1.0);
+  if (is_numbered) is_numbered->insert(is_numbered->end(), blade.pixels.size(), false);
   for (const auto& point : blade.numbered_anchors) anchors.push_back(rotatePoint(point,sector));
   pixels.insert(pixels.end(),blade.numbered_pixels.begin(),blade.numbered_pixels.end());
+  for (std::size_t i = 0; i < blade.numbered_pixels.size(); ++i) {
+    weights.push_back(i < blade.numbered_weights.size() ? blade.numbered_weights[i] : 1.0);
+  }
+  if (is_numbered) is_numbered->insert(is_numbered->end(), blade.numbered_pixels.size(), true);
   return blade.pixels.size()+blade.numbered_pixels.size();
 }
 } // namespace
@@ -112,14 +124,14 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
   for (const std::size_t i : order) {
     const auto& o=observations[i];
     const bool arm_only=armOnly(o,frame.mode);
-    if (!validObservation(o,arm_only,gimbal_only_)) continue;
+    if (!validObservation(o,arm_only,follow_only_)) continue;
     Prepared p; p.index=i;
     const int state=o.keypoints.class_id==0 ? 0 : (frame.mode==Mode::Small ? 1 : 2);
     const auto& model=models_[state];
     if (!arm_only) {
       const auto pixels=detectedAnchorPixels(o);
       // SCUT 风格的联合解算只使用一次共享 R 标观测。
-      const auto anchor_count=gimbal_only_ && i!=reference ? 4U : anchors_.size();
+      const auto anchor_count=follow_only_ && i!=reference ? 4U : anchors_.size();
       for (std::size_t j=0;j<anchor_count;++j) if (o.keypoints.point_valid[j]) {
         p.anchors.push_back(anchors_[j]); p.pixels.push_back(pixels[j]);
       }
@@ -135,7 +147,7 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
           p.pca=true;
         }
       }
-    } else if (gimbal_only_ && i==reference && o.keypoints.point_valid[4]) {
+    } else if (follow_only_ && i==reference && o.keypoints.point_valid[4]) {
       p.anchors.emplace_back(0,0,0);
       p.pixels.emplace_back(o.keypoints.center_r);
     }
@@ -150,8 +162,8 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
       for (std::size_t j=0;j<3;++j) {
         // The hub is shared, not five rotated copies of the R glyph. In joint
         // mode use its shared center anchors; its in-plane orientation is unknown.
-        if (j==2 && (observations.size()>1 || (gimbal_only_ && o.center_r.empty()))) continue;
-        if (j==0 && gimbal_only_ && arm_only && o.armor.empty()) continue;
+        if (j==2 && (observations.size()>1 || (follow_only_ && o.center_r.empty()))) continue;
+        if (j==0 && follow_only_ && arm_only && o.armor.empty()) continue;
         if (model->boundaries[j].empty()) continue;
         const auto field=makeField(*contours[j],model->boundaries[j],g);
         if (!field) { usable=false; break; }
@@ -194,7 +206,7 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
       assignments.push_back(slots);
   };
 
-  if (gimbal_only_) {
+  if (follow_only_) {
     const auto& reference_observation=observations[reference];
     const cv::Point2d center=reference_observation.keypoints.center_r;
     const auto target=bladePixel(reference_observation,frame.mode);
@@ -217,7 +229,7 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
   std::vector<cv::Point3d> seed_anchors=ref->anchors;
   std::vector<cv::Point2d> seed_pixels=ref->pixels;
   auto seed_method=cv::SOLVEPNP_IPPE;
-  if (seed_anchors.size()<4 && gimbal_only_) {
+  if (seed_anchors.size()<4 && follow_only_) {
     seed_anchors.insert(seed_anchors.end(),ref->numbered_anchors.begin(),ref->numbered_anchors.end());
     seed_pixels.insert(seed_pixels.end(),ref->numbered_pixels.begin(),ref->numbered_pixels.end());
     seed_method=cv::SOLVEPNP_SQPNP;
@@ -257,6 +269,8 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
   for (const auto& slots : assignments) {
     std::vector<cv::Point3d> anchors;
     std::vector<cv::Point2d> pixels;
+    std::vector<double> weights;
+    std::vector<bool> is_numbered;
     std::array<std::size_t,5> blade_anchor_counts{};
     std::vector<Field> fields;
     std::vector<BladeMatch> matches;
@@ -264,7 +278,7 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
     for (int sector=0;sector<5;++sector) {
       const auto* p=slots[sector];
       if (!p) continue;
-      blade_anchor_counts[sector]=appendCorrespondences(*p,sector,anchors,pixels);
+      blade_anchor_counts[sector]=appendCorrespondences(*p,sector,anchors,pixels,weights,&is_numbered);
       numbered_count+=p->numbered_anchors.size();
       for (const auto& f : p->fields) {
         Field field=f; field.model=rotatePoints(f.model,sector); fields.push_back(std::move(field));
@@ -273,31 +287,74 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
     }
     std::vector<cv::Mat> rotations,translations;
     // 编号角点允许有深度差，联合解算使用支持非共面点的 SQPnP。
-    const auto method=gimbal_only_ || numbered_count>0 ? cv::SOLVEPNP_SQPNP : cv::SOLVEPNP_IPPE;
+    const auto method=follow_only_ || numbered_count>0 ? cv::SOLVEPNP_SQPNP : cv::SOLVEPNP_IPPE;
     if (anchors.size()<4) continue;
     if (!cv::solvePnPGeneric(anchors,pixels,camera,distortion,rotations,translations,false,method)) continue;
     for (std::size_t i=0;i<rotations.size();++i) {
       cv::Vec3d r,t; rotations[i].copyTo(r); translations[i].copyTo(t);
       Parameters p; p<<r[0],r[1],r[2],t[0],t[1],t[2];
       if (!inFront(anchors,p)) continue;
-      auto e=evaluate(p,anchors,pixels,fields,camera,distortion,g,vertical);
+      auto e=evaluate(p,anchors,pixels,fields,camera,distortion,g,vertical,weights);
       cv::solvePnPRefineLM(anchors,pixels,camera,distortion,r,t,
                           cv::TermCriteria(cv::TermCriteria::COUNT|cv::TermCriteria::EPS,15,1e-8));
       Parameters polished; polished<<r[0],r[1],r[2],t[0],t[1],t[2];
-      auto polished_eval=evaluate(polished,anchors,pixels,fields,camera,distortion,g,vertical);
+      auto polished_eval=evaluate(polished,anchors,pixels,fields,camera,distortion,g,vertical,weights);
       if (polished_eval.cost<e.cost) { p=polished; e=std::move(polished_eval); }
       if (!std::isfinite(e.cost)) continue;
       const double before=e.cost;
-      if (!fields.empty() || (vertical && g.normal_vertical_weight_px>0))
-        refine(p,e,anchors,pixels,fields,camera,distortion,g,vertical);
+      if (!fields.empty() || (vertical && g.normal_vertical_weight_px>0) || numbered_count>0)
+        refine(p,e,anchors,pixels,fields,camera,distortion,g,vertical,weights);
+
+      std::size_t active_numbered_count = numbered_count;
+      const auto* active_pixels = &pixels;
+      const auto* active_counts = &blade_anchor_counts;
+      std::vector<cv::Point3d> pruned_anchors;
+      std::vector<cv::Point2d> pruned_pixels;
+      std::vector<double> pruned_weights;
+      std::array<std::size_t, 5> pruned_counts{};
+      // 单个编号关键点异常时，仅剔除该离群对应点并重新精修，避免整叶位姿失效。
+      if (numbered_count > 0 &&
+          (e.anchor_rms > g.max_reprojection_error_px ||
+           !consistentBladeAnchors(e, pixels, blade_anchor_counts, g.max_reprojection_error_px))) {
+        const double point_gate = std::max(g.max_reprojection_error_px, 2.5 * g.huber_delta_px);
+        std::size_t offset = 0;
+        std::size_t kept_numbered = 0;
+        bool dropped_any = false;
+        for (int sector = 0; sector < 5; ++sector) {
+          for (std::size_t k = 0; k < blade_anchor_counts[sector]; ++k) {
+            const std::size_t idx = offset + k;
+            const double err = cv::norm(e.projected_anchors[idx] - pixels[idx]);
+            if (is_numbered[idx] && err > point_gate) {
+              dropped_any = true;
+              continue;
+            }
+            pruned_anchors.push_back(anchors[idx]);
+            pruned_pixels.push_back(pixels[idx]);
+            pruned_weights.push_back(weights[idx]);
+            ++pruned_counts[sector];
+            if (is_numbered[idx]) ++kept_numbered;
+          }
+          offset += blade_anchor_counts[sector];
+        }
+        if (dropped_any && pruned_anchors.size() >= 4) {
+          auto pruned_eval = evaluate(p, pruned_anchors, pruned_pixels, fields, camera, distortion, g, vertical, pruned_weights);
+          if (std::isfinite(pruned_eval.cost)) {
+            refine(p, pruned_eval, pruned_anchors, pruned_pixels, fields, camera, distortion, g, vertical, pruned_weights);
+            e = std::move(pruned_eval);
+            active_numbered_count = kept_numbered;
+            active_pixels = &pruned_pixels;
+            active_counts = &pruned_counts;
+          }
+        }
+      }
       if (e.anchor_rms>g.max_reprojection_error_px ||
           (!fields.empty() && e.chamfer_rms>g.max_chamfer_error_px) ||
           std::sqrt(e.worst_contour_mean_square)>g.max_chamfer_error_px ||
-          !consistentBladeAnchors(e,pixels,blade_anchor_counts,g.max_reprojection_error_px)) continue;
+          !consistentBladeAnchors(e,*active_pixels,*active_counts,g.max_reprojection_error_px)) continue;
       if (matches.size()>best_matches.size() ||
           (matches.size()==best_matches.size() && e.cost<best_eval.cost)) {
         best=p; best_eval=std::move(e); best_matches=matches;
-        best_numbered_count=numbered_count;
+        best_numbered_count=active_numbered_count;
         best_refined=!fields.empty() && best_eval.cost<before;
       }
     }
@@ -348,18 +405,19 @@ std::optional<Pose> BuildingStage::solve(const std::vector<Observation>& observa
                 T_camera_smoothed.translation().y(),T_camera_smoothed.translation().z();
     std::vector<cv::Point3d> pooled_anchors;
     std::vector<cv::Point2d> pooled_pixels;
+    std::vector<double> pooled_weights;
     std::vector<Field> pooled_fields;
     std::array<std::size_t,5> blade_anchor_counts{};
     std::size_t count_index=0;
     for (const auto& match : pose.blades) {
       const auto item=std::find_if(prepared.begin(),prepared.end(),[&](const auto& item){return item.index==match.observation_index;});
-      blade_anchor_counts[count_index++]=appendCorrespondences(*item,match.sector,pooled_anchors,pooled_pixels);
+      blade_anchor_counts[count_index++]=appendCorrespondences(*item,match.sector,pooled_anchors,pooled_pixels,pooled_weights);
       for (const auto& f : item->fields) {
         Field field=f; field.model=rotatePoints(f.model,match.sector);
         pooled_fields.push_back(std::move(field));
       }
     }
-    const auto quality=evaluate(parameters,pooled_anchors,pooled_pixels,pooled_fields,camera,distortion,g,vertical);
+    const auto quality=evaluate(parameters,pooled_anchors,pooled_pixels,pooled_fields,camera,distortion,g,vertical,pooled_weights);
     if (!std::isfinite(quality.cost) ||
         !consistentBladeAnchors(quality,pooled_pixels,blade_anchor_counts,g.max_reprojection_error_px) ||
         std::sqrt(quality.worst_contour_mean_square)>g.max_chamfer_error_px ||

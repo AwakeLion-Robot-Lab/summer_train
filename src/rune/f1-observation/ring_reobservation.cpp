@@ -1,5 +1,8 @@
 #include "ring_reobservation.hpp"
 
+#include <opencv2/calib3d.hpp>
+#include <opencv2/imgproc.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -124,5 +127,69 @@ std::optional<ReobservedTargetRing> reobserveRing(
   return ReobservedTargetRing{
       {center,search.size*float(fit->radius),search.angle},
       double(samples.size())/ray_count,rms*minor,from_shared_motion};
+}
+
+std::optional<ReobservedTargetRing> reobserveInactiveArrowRing(
+    const Frame& frame, const Pose& pose, const Keypoints& target, double radius_m) {
+  const auto& contours = target.image_contours;
+  if (target.class_id != 0 || !target.point_valid[4] || !contours || contours->armor.size() < 5 ||
+      !contours->inactive_arrow_axis || !frame.T_barrel_camera || frame.camera_matrix.empty() ||
+      frame.bgr.empty() || frame.bgr.type() != CV_8UC3 || !std::isfinite(radius_m) || radius_m <= 0)
+    return {};
+  const auto& axis = *contours->inactive_arrow_axis;
+  const auto original = target.armorCenter();
+  const auto hub_moments = cv::moments(contours->center_r);
+  if (hub_moments.m00 <= 0) return {};
+  const cv::Point2d hub_pixel(hub_moments.m10 / hub_moments.m00, hub_moments.m01 / hub_moments.m00);
+  const auto detected_ellipse = cv::fitEllipse(contours->armor);
+  auto search = detected_ellipse;
+  const double minor = .5 * std::min(search.size.width, search.size.height);
+  const double pixel_span = cv::norm(axis.outer - axis.inner);
+  if (!original || !std::isfinite(pixel_span) || pixel_span < 12 || minor < 7) return {};
+
+  const Eigen::Isometry3d camera_from_model = frame.T_barrel_camera->inverse() * pose.T_barrel_model;
+  const Eigen::Isometry3d model_from_camera = camera_from_model.inverse();
+  const Eigen::Vector3d normal = camera_from_model.linear().col(2);
+  const double plane_distance = normal.dot(camera_from_model.translation());
+  std::vector<cv::Point2d> rays;
+  cv::undistortPoints(std::vector<cv::Point2d>{hub_pixel, axis.inner, axis.outer},
+                      rays, frame.camera_matrix, frame.distortion);
+  std::array<cv::Point2d, 3> points;
+  for (std::size_t i = 0; i < rays.size(); ++i) {
+    const Eigen::Vector3d ray(rays[i].x, rays[i].y, 1);
+    const double denominator = normal.dot(ray);
+    if (std::abs(denominator) < .05 * ray.norm()) return {};
+    const double depth = plane_distance / denominator;
+    if (!std::isfinite(depth) || depth <= 0) return {};
+    const Eigen::Vector3d model = model_from_camera * (depth * ray);
+    points[i] = {model.x(), model.y()};
+  }
+  const auto [hub, inner, outer] = points;
+  const double span = cv::norm(outer - inner);
+  if (span < .06 * radius_m) return {};
+  const auto direction = (outer - inner) / span;
+  const auto offset = hub - inner;
+  const double lateral = offset.cross(direction);
+  if (std::abs(lateral) > .12 * radius_m || offset.dot(direction) >= 0) return {};
+  const double outward = offset.dot(direction) + std::sqrt(radius_m * radius_m - lateral * lateral);
+  if (outward <= span) return {};
+  const auto center = inner + outward * direction;
+  const Eigen::Vector3d camera_point = camera_from_model * Eigen::Vector3d(center.x, center.y, 0);
+  if (!camera_point.allFinite() || camera_point.z() <= 0) return {};
+  std::vector<cv::Point2d> pixels;
+  cv::projectPoints(std::vector<cv::Point3d>{{camera_point.x(), camera_point.y(), camera_point.z()}},
+                    cv::Vec3d{}, cv::Vec3d{}, frame.camera_matrix, frame.distortion, pixels);
+  search.center = pixels.front();
+  const double extrapolation = cv::norm(search.center - axis.outer) / pixel_span;
+  const double uncertainty = std::max(1.0, axis.rms_px) * (1 + 1.5 * extrapolation);
+  if (uncertainty > .18 * minor || cv::norm(search.center - *original) > .5 * minor) return {};
+
+  // 外推位置只限定搜索范围，最终靶心仍由本帧发光边缘拟合。
+  const auto existing = reobserveRing(frame.bgr, frame.color, detected_ellipse, false);
+  if (existing && existing->arc_coverage >= .55) return {};
+  auto ring = reobserveRing(frame.bgr, frame.color, search, false);
+  if (!ring || ring->arc_coverage < .42 || cv::norm(ring->ellipse.center - *original) > .45 * minor) return {};
+  if (existing && ring->arc_coverage < existing->arc_coverage + 4.0 / ray_count) return {};
+  return ring;
 }
 } // namespace Rune::detail

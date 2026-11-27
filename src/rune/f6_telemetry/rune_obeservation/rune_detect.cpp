@@ -34,7 +34,8 @@ void printTiming(const char* stage, std::vector<double>& samples) {
             << " p95_" << stage << "_ms=" << samples[index];
 }
 
-nlohmann::json featureMeasurements(const std::vector<Rune::Keypoints>& detections) {
+nlohmann::json featureMeasurements(const std::vector<Rune::Keypoints>& detections,
+                                   bool include_ring_edges = false) {
   auto result=nlohmann::json::array();
   const auto point=[](cv::Point2f p) { return nlohmann::json::array({p.x,p.y}); };
   for (const auto& detection : detections) {
@@ -52,6 +53,16 @@ nlohmann::json featureMeasurements(const std::vector<Rune::Keypoints>& detection
         entry["ellipse"]={{"center",point(ellipse->center)},
                            {"size",{ellipse->size.width,ellipse->size.height}},
                            {"angle",ellipse->angle}};
+      if (const auto& axis=measured->inactive_arrow_axis)
+        entry["inactive_arrow_axis"]={{"inner",point(axis->inner)},{"outer",point(axis->outer)},
+                                      {"rms_px",axis->rms_px},{"samples",axis->samples}};
+      if (include_ring_edges) {
+        entry["r_measured"] = !measured->center_r.empty();
+        auto edges = nlohmann::json::array();
+        if (measured->target_ellipse)
+          for (const auto& p : measured->armor) edges.push_back({p.x,p.y});
+        entry["ring_edge_px"] = std::move(edges);
+      }
       for (const auto& p : measured->gap_points)
         entry["gaps"].push_back(p ? point(*p) : nlohmann::json(nullptr));
       for (std::size_t i=0; i<measured->gap_display_predictions.size(); ++i)
@@ -84,12 +95,12 @@ nlohmann::json featureMeasurements(const std::vector<Rune::Keypoints>& detection
 int main(int argc, char** argv) {
   try {
     std::filesystem::path config{"config/auto_aim.yaml"};
-    std::string input, output, features_output, ring_reobservation, arm_refinement;
+    std::string input, output, features_output, ring_reobservation, arm_refinement, arrow_geometry;
     std::string registration_backend, replay_clock="unpaced";
     Rune::Mode mode = Rune::Mode::Small;
     Rune::Color color = Rune::Color::Blue;
     int frames = 1;
-    bool quiet = false;
+    bool quiet = false, include_ring_edges = false;
     for (int arg = 1; arg < argc; ++arg) {
       const std::string flag = argv[arg];
       if (flag == "--help") {
@@ -97,11 +108,17 @@ int main(int argc, char** argv) {
                      "[--config AUTO_AIM_YAML] [--enemy blue|red] "
                      "[--frames N] [--output IMAGE.png] [--features-output AUDIT.jsonl] "
                      "[--registration-backend cpu|opencl] [--replay-clock realtime|unpaced] "
-                     "[--ring-reobservation on|off] [--arm-refinement on|off] [--quiet]\n";
+                     "[--ring-reobservation on|off] [--arm-refinement on|off] "
+                     "[--arrow-geometry on|off] "
+                     "[--include-ring-edges] [--quiet]\n";
         return 0;
       }
       if (flag == "--quiet") {
         quiet = true;
+        continue;
+      }
+      if (flag == "--include-ring-edges") {
+        include_ring_edges = true;
         continue;
       }
       if (arg + 1 >= argc) throw std::invalid_argument("missing value for " + flag);
@@ -114,6 +131,7 @@ int main(int argc, char** argv) {
       else if (flag == "--replay-clock") replay_clock = value;
       else if (flag == "--ring-reobservation") ring_reobservation = value;
       else if (flag == "--arm-refinement") arm_refinement = value;
+      else if (flag == "--arrow-geometry") arrow_geometry = value;
       else if (flag == "--enemy") {
         if (value == "blue") color = Rune::Color::Blue;
         else if (value == "red") color = Rune::Color::Red;
@@ -128,10 +146,17 @@ int main(int argc, char** argv) {
     }
     if (input.empty() || frames < 1)
       throw std::invalid_argument("specify --input IMAGE_OR_VIDEO and a positive --frames count");
+    if (include_ring_edges && features_output.empty())
+      throw std::invalid_argument("--include-ring-edges requires --features-output");
     if (replay_clock != "realtime" && replay_clock != "unpaced")
       throw std::invalid_argument("--replay-clock must be realtime or unpaced");
-    const auto rune_config = runtime::loadAutoAimConfig(config.string()).rune;
-    Rune::ScutContourDetector detector(rune_config.scut_detector, rune_config.gimbal_only);
+    auto rune_config = runtime::loadAutoAimConfig(config.string()).rune;
+    if (!arrow_geometry.empty()) {
+      if (arrow_geometry != "on" && arrow_geometry != "off")
+        throw std::invalid_argument("--arrow-geometry must be on or off");
+      rune_config.scut_detector.use_inactive_arrow_geometry = arrow_geometry == "on";
+    }
+    Rune::ScutContourDetector detector(rune_config.scut_detector, !rune_config.fire.shoot_enable);
     cv::Mat image = cv::imread(input);
     const bool still = !image.empty();
     cv::VideoCapture video;
@@ -200,7 +225,8 @@ int main(int argc, char** argv) {
       const auto detection_start=std::chrono::steady_clock::now();
       frame.detections=detector.detect(frame.bgr, frame.mode, frame.color);
       const auto detection_end=std::chrono::steady_clock::now();
-      const auto raw_features=feature_log.is_open() ? featureMeasurements(frame.detections) : nlohmann::json{};
+      const auto raw_features=feature_log.is_open() ? featureMeasurements(frame.detections, include_ring_edges)
+                                                  : nlohmann::json{};
       const auto refinement_start=std::chrono::steady_clock::now();
       refiner.update(frame);
       const auto refinement_end=std::chrono::steady_clock::now();
@@ -221,6 +247,7 @@ int main(int argc, char** argv) {
                                      {"image_size",{image.cols,image.rows}},
                                      {"backend","scut"},
                                      {"replay_clock",replay_clock},{"replay_lag_ms",replay_lag_ms}};
+        if (include_ring_edges) audit["source"] = std::filesystem::path(input).filename().string();
         if (!frame.reobserved_target_rings.empty()) {
           auto rings=nlohmann::json::array();
           for (const auto& ring : frame.reobserved_target_rings) {

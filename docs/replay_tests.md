@@ -13,11 +13,11 @@ xmake build auto_aim_test_big_rune
 ## 装甲板：auto_aim_test_armor
 
 原 `auto_aim_test` 已更名，检测、PnP、整车跟踪、规划、火控及代价曲线保持原有流程。
-默认输入为 `video/3m_high.avi` 与同名 `.txt`。
+默认输入为 `video/armor/3m_high.avi` 与同名 `.txt`。
 
 ```bash
 xmake run auto_aim_test_armor
-xmake run auto_aim_test_armor video/3m_mid.avi --view=full
+xmake run auto_aim_test_armor video/armor/3m_mid.avi --view=full
 xmake run auto_aim_test_armor --end-index=100
 ```
 
@@ -65,11 +65,10 @@ FPS 与实际采集间隔不一致影响运动拟合。文本提前结束时停�
 `--wait=0` 每次按键前进一帧。小符和大符回放默认无固定等待。能量机关窗口显示五关键点、检测诊断、处理状态及
 有效命令角度；结束时输出检测帧数、发现目标帧数和各状态计数。
 
-大符回放在运动模型就绪且可选中未激活叶片时计算叶片拦截。大符运动模型至少使用
-1.5 秒的观测进行拟合，回放采用这个预热条件。窗口在有效角度旁显示
-`intercept sector=N` 或 `center hold`。日志和遥测的 `target_sector` 为
-拦截叶片编号，符心跟随或没有有效规划时为 `-1`。结束统计中的
-`intercept_frames` 为产生有效叶片拦截角度的帧数。
+能量机关回放关闭开火，只输出云台跟随角度。窗口在有效角度旁显示
+`follow sector=N` 或 `center hold`。日志和遥测的 `target_sector` 为
+跟随叶片编号，符心跟随或没有有效命令时为 `-1`。结束统计中的
+`follow_frames` 为产生有效叶片跟随角度的帧数。
 
 ## 统一调试配置
 

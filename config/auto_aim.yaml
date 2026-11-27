@@ -4,8 +4,6 @@ mode: 3
 
 # 能量机关使用 SCUT 轮廓检测。
 rune:
-  # 直接跟随视觉目标的方向，要求 fire.shoot_enable 为 false。
-  gimbal_only: true
   big_sector_tracking:
     hold_ms: 75         # 原扇区短时失配后最多保持多久
     confirmation_ms: 50  # 新扇区连续无歧义匹配多久后切换
@@ -24,6 +22,7 @@ rune:
       radius_ratio_tolerance: 0.25
       max_arm_offset_ratio: 0.24
       min_arm_color_ratio: 0.25
+      use_inactive_arrow_geometry: true # 仅在云台跟随模式使用箭头中轴和靶心约束。
   image_refiner:
     # 用局部图像运动补偿校正定位波动，包含 SCUT 多角点。
     enabled: true
@@ -127,7 +126,7 @@ inference:
     # nms_iou_threshold: 0.3
     # nms_score_threshold: 0.7
 
-# 恢复 9db3949 的整板识别前端：网络四点后做传统角点精修。
+#网络四点后做传统角点精修。
 # 找不到可信的两根灯条时保留网络四点，不删除装甲板。
 refiner:
   enable: true

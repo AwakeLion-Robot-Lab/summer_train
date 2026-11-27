@@ -47,11 +47,19 @@ struct InactiveArmOutline {
   std::array<TimePoint,2> side_observed_at{};
 };
 
+struct InactiveArrowAxis {
+  cv::Point2f inner, outer;
+  double rms_px;
+  std::size_t samples;
+};
+
 struct DetectedContours {
   std::vector<cv::Point> armor, arm, center_r;
   Color color{Color::Red};
   std::optional<cv::RotatedRect> target_ellipse;
   std::array<std::optional<cv::Point2f>, 8> gap_points;
+  // 靶面8个关键点的像素观测方差（px^2），0表示沿用默认观测噪声。
+  std::array<float, 8> gap_point_variances{};
   std::vector<cv::Point2f> fan_points;
   std::vector<int> fan_point_ids;
   std::vector<bool> fan_point_valid;
@@ -59,6 +67,7 @@ struct DetectedContours {
   std::array<std::optional<cv::Point2f>, 6> fan_display_predictions{};
   std::array<std::optional<cv::Point2f>, 8> gap_display_predictions{};
   std::optional<InactiveArmOutline> inactive_arm_outline;
+  std::optional<InactiveArrowAxis> inactive_arrow_axis;
   [[nodiscard]] int fanPointId(std::size_t i) const {
     return fan_point_ids.size() == fan_points.size() ? fan_point_ids[i] : int(i);
   }
@@ -248,6 +257,7 @@ struct Pose {
   // gravity-aligned absolute axes before using the shared ballistic solver.
   std::optional<Eigen::Quaterniond> q_world_barrel;
   std::size_t numbered_anchor_count{0};
+  std::size_t arrow_refined_targets{0};
 };
 
 enum class MotionModel { Unready, Linear, Sine, External };

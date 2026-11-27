@@ -38,6 +38,7 @@ struct Prepared {
   std::vector<cv::Point2d> pixels;
   std::vector<cv::Point3d> numbered_anchors;
   std::vector<cv::Point2d> numbered_pixels;
+  std::vector<double> numbered_weights;
   std::vector<Field> fields;
   bool pca{false};
 };
@@ -61,9 +62,11 @@ std::optional<Field> makeField(const std::vector<cv::Point>& contour,
 Evaluation evaluate(const Parameters& p, const std::vector<cv::Point3d>& anchors,
     const std::vector<cv::Point2d>& image, const std::vector<Field>& fields,
     const cv::Mat& camera, const cv::Mat& distortion, const Geometry& geometry,
-    const std::optional<Eigen::Vector3d>& vertical);
+    const std::optional<Eigen::Vector3d>& vertical,
+    const std::vector<double>& anchor_weights = {});
 void refine(Parameters& p, Evaluation& evaluation, const std::vector<cv::Point3d>& anchors,
     const std::vector<cv::Point2d>& image, const std::vector<Field>& fields,
     const cv::Mat& camera, const cv::Mat& distortion, const Geometry& geometry,
-    const std::optional<Eigen::Vector3d>& vertical);
+    const std::optional<Eigen::Vector3d>& vertical,
+    const std::vector<double>& anchor_weights = {});
 } // namespace Rune::building_detail

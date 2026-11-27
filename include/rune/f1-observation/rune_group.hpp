@@ -16,6 +16,7 @@ struct RuneTargetFeature {
   // 顺序为上、左、右、下。
   std::array<cv::Point2f, 4> anchors;
   std::array<std::optional<cv::Point2f>, 8> gap_points;
+  std::array<float, 8> gap_point_variances{};
 };
 
 struct RuneFanCorner {
@@ -30,6 +31,7 @@ struct RuneFanFeature {
   std::vector<cv::Point> contour;
   // 已激活扇叶完整时为 0～5，部分可见时为三个外端 0～2。
   std::vector<RuneFanCorner> corners;
+  std::optional<InactiveArrowAxis> inactive_arrow_axis{};
 };
 
 struct RuneBladeFeature {

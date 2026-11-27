@@ -26,12 +26,28 @@ public:
     Eigen::Vector3d direction;
     int sector;
   };
+  struct TargetPriorProjection {
+    int sector{0};
+    cv::Matx33d homography_target_to_image{cv::Matx33d::eye()};
+    cv::RotatedRect projected_ellipse;
+    cv::Point2f center_pixel{};
+    cv::Point2f outward_direction{};
+    cv::Point2f hub_pixel{};
+    std::array<cv::Point2f, 8> gap_pixels{};
+    std::array<double, 8> gap_search_sigma_px{};
+  };
 
-  explicit FeatureFilter(Geometry geometry, FeatureFilterConfig config = {}, bool gimbal_only = false);
+  explicit FeatureFilter(Geometry geometry, FeatureFilterConfig config = {}, bool follow_only = false);
   [[nodiscard]] std::optional<Pose> update(const Pose& seed,
       const std::vector<Observation>& observations, const Frame& frame);
   void updateReobservedPhase(const Frame& frame);
+  bool updateReobservedTargetGaps(
+      const Frame& frame, int sector,
+      const std::array<std::optional<cv::Point2f>, 8>& gap_points,
+      const std::array<float, 8>& gap_variances);
   void noteObservationGap();
+  [[nodiscard]] std::vector<TargetPriorProjection> predictTargetPriors(const Frame& frame) const;
+  [[nodiscard]] int targetSector() const noexcept { return target_sector_; }
   [[nodiscard]] std::optional<TargetPrediction> predictTarget(
       const Frame& frame, TimePoint at, int sector) const;
   [[nodiscard]] std::optional<GimbalPrediction> predictGimbal(
@@ -41,7 +57,7 @@ public:
 private:
   Geometry geometry_;
   FeatureFilterConfig config_;
-  bool gimbal_only_;
+  bool follow_only_;
   std::optional<FilterState> state_;
   TimePoint previous_time_{};
   std::uint64_t world_frame_id_{0};

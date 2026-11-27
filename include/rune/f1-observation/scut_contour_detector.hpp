@@ -22,6 +22,7 @@ struct ScutContourConfig {
   double radius_ratio_tolerance{0.25};
   double max_arm_offset_ratio{0.24};
   double min_arm_color_ratio{0.25}; // (enemy-other)/(enemy+other); reject neutral reflections.
+  bool use_inactive_arrow_geometry{true};
   int max_features{128};
   [[nodiscard]] static ScutContourConfig fromYaml(
       const YAML::Node& node, const YAML::Node& geometry);
@@ -30,7 +31,7 @@ struct ScutContourConfig {
 // 颜色、轮廓和编号角点检测。云台跟随可根据可见叶片推算遮挡的 R 标位置。
 class ScutContourDetector final : public IKeypointDetector {
 public:
-  explicit ScutContourDetector(ScutContourConfig config = {}, bool gimbal_only = false);
+  explicit ScutContourDetector(ScutContourConfig config = {}, bool follow_only = false);
   [[nodiscard]] std::vector<Keypoints> detect(const cv::Mat& bgr) override;
   [[nodiscard]] std::vector<Keypoints> detect(const cv::Mat& bgr, Mode mode) override;
   [[nodiscard]] std::vector<Keypoints> detect(const cv::Mat& bgr, Mode mode, Color color) override;
@@ -40,10 +41,10 @@ public:
   }
 private:
   [[nodiscard]] std::optional<RuneGroup> detectAtThreshold(
-      const cv::Mat& difference, const cv::Mat& arm_purity, const cv::Mat& closing_kernel,
-      Mode mode, Color color, int threshold, bool recover_center);
+      const cv::Mat& bgr, const cv::Mat& difference, const cv::Mat& arm_purity,
+      const cv::Mat& closing_kernel, Mode mode, Color color, int threshold, bool recover_center);
   ScutContourConfig config_;
-  bool gimbal_only_;
+  bool follow_only_;
   std::optional<DetectorDiagnostics> diagnostics_;
 };
 

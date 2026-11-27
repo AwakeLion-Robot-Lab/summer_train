@@ -14,7 +14,6 @@ struct RuneRuntimeConfig {
   Rune::Geometry geometry;
   Rune::PlanningConfig planning;
   Rune::FireControlConfig fire;
-  bool gimbal_only{false};
   // 未配置时沿用 planner_config.yaml 的 MPC 开关及参数。
   std::optional<bool> mpc_enable;
   Rune::EstimatorConfig estimator;

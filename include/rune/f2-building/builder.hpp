@@ -6,7 +6,7 @@
 namespace Rune {
 class BuildingStage {
 public:
-  explicit BuildingStage(Geometry geometry, bool use_numbered_anchors = true, bool gimbal_only = false);
+  explicit BuildingStage(Geometry geometry, bool use_numbered_anchors = true, bool follow_only = false);
   [[nodiscard]] std::optional<Pose> run(const Observation& observation, const Frame& frame);
   [[nodiscard]] std::optional<Pose> run(const std::vector<Observation>& observations, const Frame& frame);
   [[nodiscard]] bool hasHistory() const noexcept { return previous_.has_value(); }
@@ -21,7 +21,7 @@ private:
                                          bool allow_pca = true);
   Geometry geometry_;
   bool use_numbered_anchors_;
-  bool gimbal_only_;
+  bool follow_only_;
   std::vector<cv::Point3d> anchors_;
   std::array<std::optional<CachedModel>,3> models_;
   PlaneWindow plane_window_;

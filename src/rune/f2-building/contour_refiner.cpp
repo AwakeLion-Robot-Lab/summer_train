@@ -24,7 +24,8 @@ std::optional<Field> makeField(const std::vector<cv::Point>& contour,
 Evaluation evaluate(const Parameters& p, const std::vector<cv::Point3d>& anchors,
                     const std::vector<cv::Point2d>& image, const std::vector<Field>& fields,
                     const cv::Mat& camera, const cv::Mat& distortion, const Geometry& g,
-                    const std::optional<Eigen::Vector3d>& vertical) {
+                    const std::optional<Eigen::Vector3d>& vertical,
+                    const std::vector<double>& anchor_weights) {
   if (!inFront(anchors,p)) return {};
   std::size_t count = 2*image.size()+(vertical && g.normal_vertical_weight_px>0 ? 1 : 0);
   for (const auto& f : fields) {
@@ -45,8 +46,10 @@ Evaluation evaluate(const Parameters& p, const std::vector<cv::Point3d>& anchors
   double sum = 0;
   for (std::size_t i=0; i<image.size(); ++i) {
     const auto delta = e.projected_anchors[i]-image[i];
+    const double weight = (i < anchor_weights.size() && std::isfinite(anchor_weights[i]) && anchor_weights[i] > 0)
+        ? anchor_weights[i] : 1.0;
     sum += delta.dot(delta);
-    append(delta.x,1); append(delta.y,1);
+    append(delta.x,weight); append(delta.y,weight);
   }
   e.anchor_rms = std::sqrt(sum/image.size());
   double contour_sum = 0;
@@ -77,7 +80,8 @@ Evaluation evaluate(const Parameters& p, const std::vector<cv::Point3d>& anchors
 void refine(Parameters& p, Evaluation& e, const std::vector<cv::Point3d>& anchors,
             const std::vector<cv::Point2d>& image, const std::vector<Field>& fields,
             const cv::Mat& k, const cv::Mat& d, const Geometry& g,
-            const std::optional<Eigen::Vector3d>& vertical) {
+            const std::optional<Eigen::Vector3d>& vertical,
+            const std::vector<double>& anchor_weights) {
   double lambda = 1e-3;
   for (int iteration=0; iteration<g.refinement_iterations; ++iteration) {
     Eigen::MatrixXd jacobian(e.residual.size(),6);
@@ -85,8 +89,8 @@ void refine(Parameters& p, Evaluation& e, const std::vector<cv::Point3d>& anchor
       const double step = 1e-5*std::max(1.0,std::abs(p[j]));
       Parameters plus=p, minus=p;
       plus[j]+=step; minus[j]-=step;
-      const auto a=evaluate(plus,anchors,image,fields,k,d,g,vertical);
-      const auto b=evaluate(minus,anchors,image,fields,k,d,g,vertical);
+      const auto a=evaluate(plus,anchors,image,fields,k,d,g,vertical,anchor_weights);
+      const auto b=evaluate(minus,anchors,image,fields,k,d,g,vertical,anchor_weights);
       if (a.residual.size()!=e.residual.size() || b.residual.size()!=e.residual.size()) return;
       jacobian.col(j)=(a.residual-b.residual)/(2*step);
     }
@@ -96,7 +100,7 @@ void refine(Parameters& p, Evaluation& e, const std::vector<cv::Point3d>& anchor
     const Parameters delta = -h.ldlt().solve(gradient);
     if (!delta.allFinite() || delta.norm()<1e-8) break;
     const Parameters trial=p+delta;
-    auto next=evaluate(trial,anchors,image,fields,k,d,g,vertical);
+    auto next=evaluate(trial,anchors,image,fields,k,d,g,vertical,anchor_weights);
     if (next.cost < e.cost && next.anchor_rms <= g.max_reprojection_error_px) {
       const double improvement=e.cost-next.cost;
       p=trial; e=std::move(next);

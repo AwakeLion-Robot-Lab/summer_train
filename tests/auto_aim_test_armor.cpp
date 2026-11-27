@@ -90,7 +90,7 @@ const std::string kCommandLineKeys =
   "{bullet-speed | 27.0 | 回放没有裁判系统数据；默认与 SP auto_aim_test 一致（m/s）}"
   "{command-jump | 10.0 | 相邻帧命令 yaw 跳变超过该角度即判为 command_jump（度）}"
   "{conf | 0 | 覆盖检测分数门（confidence/minimum/nms_score 三者同时设为该值），<=0 保持 layout 预设}"
-  "{@input-path | video/3m_high | 视频路径或 avi 和 txt 的路径前缀}";
+  "{@input-path | video/armor/3m_high | 视频路径或 avi 和 txt 的路径前缀}";
 
 struct PoseSample {
   double seconds{0.0};

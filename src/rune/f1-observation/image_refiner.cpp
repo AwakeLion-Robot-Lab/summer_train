@@ -1,4 +1,5 @@
 #include "rune/f1-observation/image_refiner.hpp"
+#include "rune/f1-observation/target_gap_refiner.hpp"
 #include "opencl_ecc.hpp"
 #include "ring_reobservation.hpp"
 #include "inactive_arm_refiner.hpp"
@@ -279,6 +280,7 @@ bool hasColoredRim(const cv::Mat& bgr, const cv::RotatedRect& ellipse, Color col
 }
 
 void stabilizeTargetFeatures(DetectedContours& out,const DetectedContours& previous,
+    const cv::Mat& bgr, Color color, cv::Point2f outward_direction,
     const cv::Matx23f& warp,float alpha,const cv::Size& image_size,
     ImageRefinerDiagnostics& diagnostics) {
   if (!out.target_ellipse || !previous.target_ellipse) return;
@@ -293,22 +295,60 @@ void stabilizeTargetFeatures(DetectedContours& out,const DetectedContours& previ
   // reported axis angle by 90 degrees without any geometric motion.
   const double current_major=std::max(current.size.width,current.size.height);
   const double current_minor=std::min(current.size.width,current.size.height);
-  if (!inside(center,image_size) || cv::norm(center-current.center)>gate ||
-      std::abs(current_major-projected.size.width)>std::max(2.0,.12*current_major) ||
-      std::abs(current_minor-projected.size.height)>std::max(2.0,.12*current_minor)) {
-    out.target_ellipse.reset(); out.gap_points={};
+  const bool ellipse_ok = inside(center,image_size) && cv::norm(center-current.center)<=gate &&
+      std::abs(current_major-projected.size.width)<=std::max(2.0,.12*current_major) &&
+      std::abs(current_minor-projected.size.height)<=std::max(2.0,.12*current_minor);
+  cv::RotatedRect working_ellipse = current;
+  if (ellipse_ok) {
+    working_ellipse = ellipseFromShape(alpha*current.center+(1-alpha)*center,
+        alpha*ellipseShape(current)+(1-alpha)*shape);
+    out.target_ellipse = working_ellipse;
+    ++diagnostics.refined_feature_targets;
+  } else {
+    // 外环尺寸跳变时保留经过本帧图像验证的缺口关键点，仅使用运动传递预测椭圆做局部检查。
+    working_ellipse = inside(center,image_size) ? projected : current;
     ++diagnostics.rejected_feature_points;
-    return;
   }
-  out.target_ellipse=ellipseFromShape(alpha*current.center+(1-alpha)*center,
-      alpha*ellipseShape(current)+(1-alpha)*shape);
-  ++diagnostics.refined_feature_targets;
-  for (std::size_t i=0;i<out.gap_points.size();++i) {
-    if (!out.gap_points[i] || !previous.gap_points[i]) continue;
-    const auto predicted=transfer(warp,*previous.gap_points[i]);
-    if (!inside(predicted,image_size) || cv::norm(predicted-*out.gap_points[i])>gate) {
-      out.gap_points[i].reset(); ++diagnostics.rejected_feature_points;
-    } else out.gap_points[i]=alpha*(*out.gap_points[i])+(1-alpha)*predicted;
+
+  // 若本帧缺口点不完整，利用运动传递后的靶环椭圆在原图上主动补测缺失槽位。
+  const bool missing_gap = std::any_of(out.gap_points.begin(), out.gap_points.end(),
+                                       [](const auto& p) { return !p.has_value(); });
+  if (missing_gap && !bgr.empty() && bgr.type() == CV_8UC3 && cv::norm(outward_direction) >= 2.0) {
+    const auto recovered = refineTargetGapsFromImage(
+        bgr, color, working_ellipse, outward_direction, std::nullopt, nullptr, false);
+    if (recovered.measured_spokes >= 2) {
+      for (std::size_t i = 0; i < out.gap_points.size(); ++i) {
+        if (!out.gap_points[i] && recovered.gap_points[i]) {
+          out.gap_points[i] = recovered.gap_points[i];
+          out.gap_point_variances[i] = recovered.gap_point_variances[i];
+        }
+      }
+    }
+  }
+
+  std::array<std::optional<cv::Point2f>, 8> predicted_points{};
+  for (std::size_t i = 0; i < out.gap_points.size(); ++i) {
+    if (!previous.gap_points[i]) continue;
+    const auto p = transfer(warp, *previous.gap_points[i]);
+    if (inside(p, image_size)) predicted_points[i] = p;
+  }
+  if (cv::norm(outward_direction) >= 2.0) {
+    refineGapPointsRigidHuber(
+        out.gap_points, out.gap_point_variances,
+        predicted_points, previous.gap_point_variances,
+        working_ellipse, outward_direction, image_size, alpha,
+        diagnostics.rejected_feature_points);
+  } else {
+    for (std::size_t i = 0; i < out.gap_points.size(); ++i) {
+      if (!out.gap_points[i] || !predicted_points[i]) continue;
+      if (cv::norm(*predicted_points[i] - *out.gap_points[i]) > gate) {
+        out.gap_points[i].reset();
+        out.gap_point_variances[i] = 0.0F;
+        ++diagnostics.rejected_feature_points;
+      } else {
+        out.gap_points[i] = alpha * (*out.gap_points[i]) + (1.0F - alpha) * (*predicted_points[i]);
+      }
+    }
   }
 }
 
@@ -773,15 +813,22 @@ void ImageRefiner::update(Frame& frame) {
       auto features=std::make_shared<DetectedContours>(*current.image_contours);
       features->fan_display_predictions = {};
       if (current.target_ring_status==TargetRingStatus::Rejected) {
-        features->target_ellipse.reset();features->gap_points={};
+        features->target_ellipse.reset();features->gap_points={};features->gap_point_variances={};
       }
       const int old_index=feature_associations[i];
       if (old_index>=0) {
         const auto& old=previous_detections_[old_index].image_contours;
         const auto& raw_old=previous_raw_detections_[old_index].image_contours;
         if (old && raw_old) {
-          if (feature_warps[i]) stabilizeTargetFeatures(*features,*old,*feature_warps[i],alpha,
-                                                        gray.size(),diagnostics_);
+          cv::Point2f outward{};
+          if (const auto center = current.armorCenter()) {
+            if (current.point_valid[4] && finite(current.center_r))
+              outward = *center - current.center_r;
+            else if (current.point_valid[0] && current.point_valid[3])
+              outward = current.top - current.bottom;
+          }
+          if (feature_warps[i]) stabilizeTargetFeatures(*features,*old,frame.bgr,frame.color,outward,
+                                                        *feature_warps[i],alpha,gray.size(),diagnostics_);
           stabilizeFanFeatures(*features,*old,fans[i],batch,gray.size(),alpha,
                                diameter(raw_detections[i]),diagnostics_);
         }

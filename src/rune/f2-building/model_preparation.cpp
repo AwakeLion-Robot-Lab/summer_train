@@ -57,8 +57,8 @@ std::optional<std::vector<cv::Point2d>> pcaEnvelope(const Observation& o,
 namespace Rune {
 using namespace building_detail;
 
-BuildingStage::BuildingStage(Geometry geometry, bool use_numbered_anchors, bool gimbal_only)
-    : geometry_(std::move(geometry)), use_numbered_anchors_(use_numbered_anchors), gimbal_only_(gimbal_only) {
+BuildingStage::BuildingStage(Geometry geometry, bool use_numbered_anchors, bool follow_only)
+    : geometry_(std::move(geometry)), use_numbered_anchors_(use_numbered_anchors), follow_only_(follow_only) {
   const auto& g=geometry_;
   const auto valid_points=[](const auto& points) {
     return std::all_of(points.begin(),points.end(),[](const auto& point) {

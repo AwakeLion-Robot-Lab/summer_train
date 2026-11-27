@@ -131,6 +131,7 @@ public:
     if (motion && motion->pose.filter_state) {
       const auto& pose = motion->pose;
       row["numbered_anchor_count"] = pose.numbered_anchor_count;
+      row["arrow_refined_targets"] = pose.arrow_refined_targets;
       if (pose.history_reset || epoch_ == 0) {
         ++epoch_;
         seen_ = {};
@@ -217,15 +218,13 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     const auto runtime_config = runtime::loadAutoAimConfig(config_path);
     const auto& debug = runtime_config.debug;
     auto config = runtime_config.rune;
-    // 大符回放以运动模型就绪作为拦截规划的预热条件。
-    if (mode == Rune::Mode::Big) config.planning.big_warmup_s = 0.0;
     config.planning.shoot_enable = false;
     config.fire.shoot_enable = false;
     const bool audit_only = !audit_path.empty();
     runtime::RuneRuntime rune(config, audit_only ? L4Planning::PlannerTuning{} : L4Planning::loadPlannerTuning(planner_path));
     // Separate observation-only instance: missing IMU data must not be replaced
     // with fabricated feedback or used to generate aiming/fire commands.
-    Rune::Processor visual_rune(config.geometry, config.estimator, {}, {}, {}, config.gimbal_only);
+    Rune::Processor visual_rune(config.geometry, config.estimator);
     std::optional<L6Telemetry::UdpJsonSender> plotter;
     if (debug.plot && !audit_only)
       plotter.emplace(debug.plot_host, static_cast<std::uint16_t>(debug.plot_port));
@@ -266,7 +265,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
                            : "无姿态文本，运行相机相对视觉预测；相机运动未补偿") << '\n'
               << "shoot_enable=false；不连接相机和串口\n";
     std::size_t frames = 0, positive_frames = 0, total_detections = 0, found_frames = 0, feasible_frames = 0;
-    std::size_t intercept_frames = 0;
+    std::size_t follow_frames = 0;
     std::size_t overlay_frames = 0;
     std::size_t motion_ready_frames=0, history_resets=0, target_switches=0;
     std::size_t normal_pairs = 0, normal_jump_frames = 0;
@@ -318,7 +317,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
         const auto& command = rune.lastCommand();
         found_frames += command.found;
         if (command.found && !command.center_hold) command_sector = command.target_sector;
-        intercept_frames += !config.gimbal_only && command_sector >= 0;
+        follow_frames += command_sector >= 0;
         feasible_frames += command.fire_feasible;
         ++statuses[command.status];
       }
@@ -407,8 +406,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
             const double degrees = 180 / std::numbers::pi;
             cv::putText(annotated, "yaw=" + std::to_string(command.yaw_rad * degrees) +
                         " pitch=" + std::to_string(command.pitch_rad * degrees) +
-                        (command_sector >= 0 ? std::string(config.gimbal_only ? " follow sector=" : " intercept sector=") +
-                                                  std::to_string(command_sector)
+                        (command_sector >= 0 ? " follow sector=" + std::to_string(command_sector)
                                             : " center hold") +
                         (command.using_mpc ? " MPC" : ""),
                         {20, 100}, cv::FONT_HERSHEY_SIMPLEX, 0.65, text_color, 2);
@@ -453,7 +451,7 @@ inline int runRuneReplay(int argc, char** argv, Rune::Mode mode,
     if (debug.overlay) cv::destroyAllWindows();
     std::cout << "回放结束: frames=" << frames << " positive_frames=" << positive_frames
               << " total_detections=" << total_detections << " found_frames=" << found_frames
-              << " intercept_frames=" << intercept_frames
+              << " follow_frames=" << follow_frames
               << " fire_feasible_frames=" << feasible_frames << " overlay_frames=" << overlay_frames
               << " motion_ready_frames=" << motion_ready_frames << " history_resets=" << history_resets
               << " target_switches=" << target_switches

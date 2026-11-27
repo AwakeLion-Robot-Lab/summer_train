@@ -4,6 +4,7 @@
 #include "rune/f3-estimator/association.hpp"
 
 #include <Eigen/Cholesky>
+#include <Eigen/Eigenvalues>
 #include <opencv2/calib3d.hpp>
 #include <algorithm>
 #include <array>
@@ -26,6 +27,50 @@ Eigen::Vector3d radial(const Vector& x,const Eigen::Vector3d& up,int sector) {
   const Eigen::Vector3d v=(up-n*n.dot(up)).normalized();
   const double a=x[5]+sector*sector_angle;
   return v*std::cos(a)+n.cross(v)*std::sin(a);
+}
+Eigen::Vector3d bladeRightAxis(const Vector& x, const Eigen::Vector3d& up, int sector,
+                               const Eigen::Isometry3d& camera_tracking) {
+  const auto n = normal(x);
+  const Eigen::Vector3d n_cam = camera_tracking.linear() * n;
+  const Eigen::Vector3d n_away = n_cam.z() >= 0.0 ? n : -n;
+  const Eigen::Vector3d v = radial(x, up, sector);
+  return n_away.cross(v);
+}
+std::optional<Eigen::Vector2d> projectModelPoint(
+    const Vector& x, const Eigen::Vector3d& up, int sector,
+    const cv::Point3d& anchor, const Eigen::Isometry3d& camera_tracking, const Frame& frame) {
+  const auto n = normal(x);
+  if ((up - n * n.dot(up)).norm() < 1e-3) return std::nullopt;
+  const Eigen::Vector3d v = radial(x, up, sector);
+  const Eigen::Vector3d right = bladeRightAxis(x, up, sector, camera_tracking);
+  const Eigen::Vector3d n_cam = camera_tracking.linear() * n;
+  const Eigen::Vector3d n_away = n_cam.z() >= 0.0 ? n : -n;
+  const Eigen::Vector3d p_track = x.head<3>() + anchor.x * right + anchor.y * v - anchor.z * n_away;
+  const Eigen::Vector3d p_cam = camera_tracking * p_track;
+  if (!p_cam.allFinite() || p_cam.z() <= 0.1) return std::nullopt;
+  std::vector<cv::Point2d> pixels;
+  cv::projectPoints(std::vector<cv::Point3d>{{p_cam.x(), p_cam.y(), p_cam.z()}},
+                    cv::Vec3d(0, 0, 0), cv::Vec3d(0, 0, 0),
+                    frame.camera_matrix, frame.distortion, pixels);
+  const Eigen::Vector2d uv(pixels[0].x, pixels[0].y);
+  if (!uv.allFinite()) return std::nullopt;
+  return uv;
+}
+std::optional<Jacobian> modelPointJacobian(
+    const Vector& x, const Eigen::Vector3d& up, int sector,
+    const cv::Point3d& anchor, const Eigen::Isometry3d& camera_tracking, const Frame& frame) {
+  Jacobian h = Jacobian::Zero();
+  constexpr double step = 1e-5;
+  for (int k = 0; k < 6; ++k) {
+    Vector a = x, b = x;
+    a[k] += step;
+    b[k] -= step;
+    const auto pa = projectModelPoint(a, up, sector, anchor, camera_tracking, frame);
+    const auto pb = projectModelPoint(b, up, sector, anchor, camera_tracking, frame);
+    if (!pa || !pb) return std::nullopt;
+    h.col(k) = (*pa - *pb) / (2.0 * step);
+  }
+  return h;
 }
 void predictPhase(Vector& x,double dt) { x[5]+=x[6]*dt; }
 void predictCovariance(Matrix& p, double dt, const FeatureFilterConfig& config) {
@@ -116,8 +161,8 @@ std::vector<Measurement> measurements(const std::vector<Observation>& observatio
 }
 } // namespace
 
-FeatureFilter::FeatureFilter(Geometry geometry,FeatureFilterConfig config,bool gimbal_only)
-  : geometry_(std::move(geometry)),config_(config),gimbal_only_(gimbal_only) {
+FeatureFilter::FeatureFilter(Geometry geometry,FeatureFilterConfig config,bool follow_only)
+  : geometry_(std::move(geometry)),config_(config),follow_only_(follow_only) {
   for (double v : {config.gate_squared,config.observation_variance_px2,
       config.center_process_variance_m2_s,config.normal_process_variance_rad2_s,
       config.angular_acceleration_variance,config.max_gap_s,
@@ -154,16 +199,10 @@ std::optional<FeatureFilter::TargetPrediction> FeatureFilter::predictTarget(
   if (frame.T_world_barrel) {
     result.observed_direction-=previous_world_origin_;
     result.predicted_direction-=frame.T_world_barrel->translation();
-  } else {
-    if (frame.q_world_barrel.has_value()!=previous_world_orientation_.has_value()) return {};
-    if (previous_world_orientation_) {
-      const auto& current=*frame.q_world_barrel;
-      if (!current.coeffs().allFinite() || std::abs(current.squaredNorm()-1)>1e-3) return {};
-      // 相对坐标中的滤波状态属于上一次有效曝光时的云台坐标系。
-      const auto rotation=previous_world_orientation_->normalized();
-      result.observed_direction=rotation*result.observed_direction;
-      result.predicted_direction=rotation*result.predicted_direction;
-    }
+  } else if (frame.q_world_barrel.has_value()!=previous_world_orientation_.has_value() ||
+             (frame.q_world_barrel && (!frame.q_world_barrel->coeffs().allFinite() ||
+              std::abs(frame.q_world_barrel->squaredNorm()-1)>1e-3))) {
+    return {};
   }
   if (!result.observed_direction.allFinite() || !result.predicted_direction.allFinite()) return {};
   return result;
@@ -172,7 +211,7 @@ std::optional<FeatureFilter::TargetPrediction> FeatureFilter::predictTarget(
 std::optional<FeatureFilter::GimbalPrediction> FeatureFilter::predictGimbal(
     const Frame& frame,TimePoint at,bool center_only) const {
   const double dt=std::chrono::duration<double>(at-previous_time_).count();
-  if (!gimbal_only_ || !state_ || target_sector_<0 || frame.captured_at<previous_time_ ||
+  if (!follow_only_ || !state_ || target_sector_<0 || frame.captured_at<previous_time_ ||
       at<frame.captured_at || dt<0 || dt>config_.max_gap_s || frame.world_frame_id!=world_frame_id_ ||
       frame.T_world_barrel.has_value()!=state_->world_frame) return {};
   if (!state_->world_frame && (!previous_world_orientation_ || !frame.q_world_barrel ||
@@ -192,7 +231,7 @@ std::optional<FeatureFilter::GimbalPrediction> FeatureFilter::predictGimbal(
 
 void FeatureFilter::updateReobservedPhase(const Frame& frame) {
   const double dt=std::chrono::duration<double>(frame.captured_at-previous_time_).count();
-  if (!gimbal_only_ || !state_ || target_sector_<0 || dt<=0 || dt>config_.max_gap_s ||
+  if (!follow_only_ || !state_ || target_sector_<0 || dt<=0 || dt>config_.max_gap_s ||
       frame.reobserved_target_rings.empty() || !frame.T_barrel_camera ||
       frame.camera_matrix.rows!=3 || frame.camera_matrix.cols!=3 ||
       frame.world_frame_id!=world_frame_id_ || frame.T_world_barrel.has_value()!=state_->world_frame)
@@ -269,6 +308,191 @@ void FeatureFilter::updateReobservedPhase(const Frame& frame) {
   previous_time_=frame.captured_at;
 }
 
+std::vector<FeatureFilter::TargetPriorProjection> FeatureFilter::predictTargetPriors(
+    const Frame& frame) const {
+  std::vector<TargetPriorProjection> priors;
+  const double dt = std::chrono::duration<double>(frame.captured_at - previous_time_).count();
+  if (!state_ || dt <= 0.0 || dt > config_.max_gap_s || !frame.T_barrel_camera ||
+      frame.camera_matrix.rows != 3 || frame.camera_matrix.cols != 3 ||
+      frame.world_frame_id != world_frame_id_ ||
+      frame.T_world_barrel.has_value() != state_->world_frame) {
+    return priors;
+  }
+  Eigen::Isometry3d tracking_barrel = Eigen::Isometry3d::Identity();
+  if (state_->world_frame) {
+    tracking_barrel = *frame.T_world_barrel;
+  } else if (frame.q_world_barrel.has_value() != previous_world_orientation_.has_value()) {
+    return priors;
+  } else if (frame.q_world_barrel) {
+    if (!frame.q_world_barrel->coeffs().allFinite() ||
+        std::abs(frame.q_world_barrel->squaredNorm() - 1.0) > 1e-3) {
+      return priors;
+    }
+    tracking_barrel.linear() = frame.q_world_barrel->normalized().toRotationMatrix();
+  }
+  if (!tracking_barrel.matrix().allFinite() || !frame.T_barrel_camera->matrix().allFinite())
+    return priors;
+
+  cv::Mat k_mat;
+  frame.camera_matrix.convertTo(k_mat, CV_64F);
+  Eigen::Matrix3d K;
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c) K(r, c) = k_mat.at<double>(r, c);
+  if (!K.allFinite()) return priors;
+
+  const Eigen::Isometry3d camera_tracking = frame.T_barrel_camera->inverse() * tracking_barrel.inverse();
+  Vector predicted = state_->x;
+  predictPhase(predicted, dt);
+  Matrix predicted_cov = state_->covariance;
+  predictCovariance(predicted_cov, dt, config_);
+
+  const auto hub_uv = projectModelPoint(predicted, up_, 0, {0.0, 0.0, 0.0}, camera_tracking, frame);
+  if (!hub_uv) return priors;
+  const double half_w = geometry_.armor_half_width_m;
+  const double half_h = geometry_.armor_half_height_m;
+  const double radius = geometry_.radius_m;
+  if (half_w <= 0.0 || half_h <= 0.0 || radius <= 0.0) return priors;
+
+  priors.reserve(5);
+  for (int sector = 0; sector < 5; ++sector) {
+    const Eigen::Vector3d v = radial(predicted, up_, sector);
+    const Eigen::Vector3d right = bladeRightAxis(predicted, up_, sector, camera_tracking);
+    const Eigen::Vector3d target_3d = predicted.head<3>() + radius * v;
+    const Eigen::Vector3d center_cam = camera_tracking * target_3d;
+    if (!center_cam.allFinite() || center_cam.z() <= 0.1) continue;
+
+    // 构造规范化靶面圆 (u, v) ∈ [-1, 1]^2 -> 像素的单应性矩阵 H。
+    const Eigen::Vector3d col_u = K * (camera_tracking.linear() * (half_w * right));
+    const Eigen::Vector3d col_v = K * (camera_tracking.linear() * (half_h * v));
+    const Eigen::Vector3d col_t = K * center_cam;
+    Eigen::Matrix3d H_eig;
+    H_eig.col(0) = col_u;
+    H_eig.col(1) = col_v;
+    H_eig.col(2) = col_t;
+    if (!H_eig.allFinite() || std::abs(H_eig.determinant()) < 1e-6) continue;
+
+    TargetPriorProjection prior;
+    prior.sector = sector;
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 3; ++c) prior.homography_target_to_image(r, c) = H_eig(r, c);
+
+    const auto center_uv = projectModelPoint(predicted, up_, sector, {0.0, radius, 0.0}, camera_tracking, frame);
+    const auto top_uv = projectModelPoint(predicted, up_, sector, {0.0, radius + half_h, 0.0}, camera_tracking, frame);
+    const auto right_uv = projectModelPoint(predicted, up_, sector, {half_w, radius, 0.0}, camera_tracking, frame);
+    if (!center_uv || !top_uv || !right_uv) continue;
+
+    prior.center_pixel = cv::Point2f(float(center_uv->x()), float(center_uv->y()));
+    prior.hub_pixel = cv::Point2f(float(hub_uv->x()), float(hub_uv->y()));
+    prior.outward_direction = prior.center_pixel - prior.hub_pixel;
+    if (cv::norm(prior.outward_direction) < 2.0) continue;
+
+    // 由规范化正交半轴构造预测外环椭圆。
+    const Eigen::Vector2d e1 = *right_uv - *center_uv;
+    const Eigen::Vector2d e2 = *top_uv - *center_uv;
+    const Eigen::Matrix2d shape = e1 * e1.transpose() + e2 * e2.transpose();
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> eig(shape);
+    if (eig.info() != Eigen::Success) continue;
+    const double l0 = std::max(1.0, eig.eigenvalues()[0]);
+    const double l1 = std::max(1.0, eig.eigenvalues()[1]);
+    const Eigen::Vector2d major_vec = eig.eigenvectors().col(1);
+    prior.projected_ellipse = cv::RotatedRect(
+        prior.center_pixel,
+        cv::Size2f(float(2.0 * std::sqrt(l1)), float(2.0 * std::sqrt(l0))),
+        float(std::atan2(major_vec.y(), major_vec.x()) * 180.0 / std::numbers::pi));
+
+    const auto& gap_anchors = geometry_.numbered_anchors[0].gaps;
+    bool all_gaps_ok = true;
+    for (std::size_t k = 0; k < 8; ++k) {
+      const double phi = double(int(k) - 1) * (0.25 * std::numbers::pi);
+      const cv::Point3d anchor = gap_anchors[k].value_or(
+          cv::Point3d(0.7037 * half_w * std::sin(phi),
+                      radius + 0.7037 * half_h * std::cos(phi), 0.0));
+      const auto g_uv = projectModelPoint(predicted, up_, sector, anchor, camera_tracking, frame);
+      const auto g_h = modelPointJacobian(predicted, up_, sector, anchor, camera_tracking, frame);
+      if (!g_uv || !g_h) {
+        all_gaps_ok = false;
+        break;
+      }
+      prior.gap_pixels[k] = cv::Point2f(float(g_uv->x()), float(g_uv->y()));
+      const Eigen::Matrix2d cov_uv = (*g_h) * predicted_cov * g_h->transpose();
+      const double max_var = std::max(0.25, cov_uv.trace() * 0.5);
+      prior.gap_search_sigma_px[k] = std::clamp(std::sqrt(max_var), 1.0, 40.0);
+    }
+    if (all_gaps_ok) priors.push_back(prior);
+  }
+  return priors;
+}
+
+bool FeatureFilter::updateReobservedTargetGaps(
+    const Frame& frame, int sector,
+    const std::array<std::optional<cv::Point2f>, 8>& gap_points,
+    const std::array<float, 8>& gap_variances) {
+  const double dt = std::chrono::duration<double>(frame.captured_at - previous_time_).count();
+  if (!state_ || sector < 0 || sector >= 5 || dt <= 0.0 || dt > config_.max_gap_s ||
+      !frame.T_barrel_camera || frame.camera_matrix.rows != 3 || frame.camera_matrix.cols != 3 ||
+      frame.world_frame_id != world_frame_id_ ||
+      frame.T_world_barrel.has_value() != state_->world_frame) {
+    return false;
+  }
+  Eigen::Isometry3d tracking_barrel = Eigen::Isometry3d::Identity();
+  if (state_->world_frame) {
+    tracking_barrel = *frame.T_world_barrel;
+  } else {
+    if (!frame.q_world_barrel || !previous_world_orientation_ ||
+        !frame.q_world_barrel->coeffs().allFinite() ||
+        std::abs(frame.q_world_barrel->squaredNorm() - 1.0) > 1e-3) {
+      return false;
+    }
+    tracking_barrel.linear() = frame.q_world_barrel->normalized().toRotationMatrix();
+  }
+  if (!tracking_barrel.matrix().allFinite() || !frame.T_barrel_camera->matrix().allFinite())
+    return false;
+  const Eigen::Isometry3d camera_tracking = frame.T_barrel_camera->inverse() * tracking_barrel.inverse();
+
+  Vector x = state_->x;
+  Matrix p = state_->covariance;
+  predictPhase(x, dt);
+  predictCovariance(p, dt, config_);
+
+  const auto& gap_anchors = geometry_.numbered_anchors[0].gaps;
+  int valid_count = 0;
+  for (std::size_t k = 0; k < 8; ++k) valid_count += (gap_points[k] && gap_anchors[k]);
+  const double correlation_scale = std::max(3.0, double(valid_count));
+  int accepted = 0;
+  for (std::size_t k = 0; k < 8; ++k) {
+    if (!gap_points[k] || !gap_anchors[k]) continue;
+    const auto projected = projectModelPoint(x, up_, sector, *gap_anchors[k], camera_tracking, frame);
+    const auto h = modelPointJacobian(x, up_, sector, *gap_anchors[k], camera_tracking, frame);
+    if (!projected || !h) continue;
+    const Eigen::Vector2d measured_px(gap_points[k]->x, gap_points[k]->y);
+    if (!measured_px.allFinite()) continue;
+    const Eigen::Vector2d innovation = measured_px - *projected;
+    const double base_var = gap_variances[k] > 0.0F ? double(gap_variances[k]) : config_.observation_variance_px2;
+    const Eigen::Matrix2d meas_r =
+        Eigen::Matrix2d::Identity() * std::max(config_.observation_variance_px2, base_var) * correlation_scale;
+    const Eigen::Matrix2d s = (*h) * p * h->transpose() + meas_r;
+    const Eigen::LDLT<Eigen::Matrix2d> ldlt(s);
+    if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) continue;
+    const double distance = innovation.dot(ldlt.solve(innovation));
+    if (!std::isfinite(distance) || distance >= config_.gate_squared) continue;
+    const Eigen::Matrix<double, 7, 2> gain = p * h->transpose() * ldlt.solve(Eigen::Matrix2d::Identity());
+    const Vector next = x + gain * innovation;
+    if (!next.allFinite() || std::abs(next[6]) > config_.max_speed_rad_s) continue;
+    const Matrix complement = Matrix::Identity() - gain * (*h);
+    p = (complement * p * complement.transpose() + gain * meas_r * gain.transpose()).eval();
+    p = (0.5 * (p + p.transpose())).eval();
+    x = next;
+    x[3] = std::remainder(x[3], 2.0 * std::numbers::pi);
+    ++accepted;
+  }
+  if (accepted < 4 || !x.allFinite() || !p.allFinite()) return false;
+  state_->x = x;
+  state_->covariance = p;
+  previous_time_ = frame.captured_at;
+  if (sector == target_sector_) target_seen_at_ = frame.captured_at;
+  return true;
+}
+
 std::optional<Pose> FeatureFilter::update(const Pose& seed,
     const std::vector<Observation>& observations,const Frame& frame) {
   const auto fail=[&]() -> std::optional<Pose> { reset(); return {}; };
@@ -278,7 +502,8 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
       !std::isfinite(geometry_.radius_m) || geometry_.radius_m<=0) return fail();
   try {
     const bool world=frame.T_world_barrel.has_value();
-    const bool gyro_frame=gimbal_only_ && !world && frame.q_world_barrel.has_value();
+    // 只有姿态时，状态保存在以枪管原点为基准、轴向与世界系对齐的坐标系。
+    const bool gyro_frame=!world && frame.q_world_barrel.has_value();
     Eigen::Isometry3d tracking_barrel=world ? *frame.T_world_barrel : Eigen::Isometry3d::Identity();
     if (gyro_frame) {
       if (!frame.q_world_barrel->coeffs().allFinite() ||
@@ -291,7 +516,7 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
     const Eigen::Vector3d up=(tracking_barrel.linear()*seed.up_barrel).normalized();
     if ((up-n*n.dot(up)).norm()<1e-3) return fail();
     auto measured=measurements(observations,frame.mode);
-    const bool pose_center_only=gimbal_only_ && seed.activated &&
+    const bool pose_center_only=follow_only_ && seed.activated &&
       std::none_of(measured.begin(),measured.end(),[](const auto& m){return !m.icon;});
     // 已激活灯臂可以联合解算符心。使用这个实测几何结果更新中心，避免重复计入 R 标。
     if (pose_center_only) measured.clear();
@@ -309,7 +534,7 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
     const double dt=std::chrono::duration<double>(frame.captured_at-previous_time_).count();
     bool initialized=!state_ || seed.history_reset || dt<=0 || dt>config_.max_gap_s ||
       state_->world_frame!=world || world_frame_id_!=frame.world_frame_id ||
-      (gimbal_only_ && !world && gyro_frame!=previous_world_orientation_.has_value());
+      (!world && gyro_frame!=previous_world_orientation_.has_value());
     if (!initialized && ((center-state_->x.head<3>()).norm()>config_.max_center_jump_m ||
         normal(state_->x).dot(n)<std::cos(config_.max_normal_jump_rad))) {
       // IPPE can switch between ambiguous planar poses despite continuous image
@@ -337,7 +562,7 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
       }
       initialized=!(hub_support && target_support);
     }
-    const auto before_update=gimbal_only_ && !initialized ? state_ : std::nullopt;
+    const auto before_update=follow_only_ && !initialized ? state_ : std::nullopt;
     const auto previous_up=up_;
     if (initialized) {
       linearization.reset();
@@ -395,7 +620,7 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
       }
     }
     const auto assignments=hungarianAssign(costs,config_.gate_squared);
-    const bool confirm_sector=gimbal_only_ && frame.mode==Mode::Big;
+    const bool confirm_sector=follow_only_ && frame.mode==Mode::Big;
     Pose output=seed;
     output.feature_matches.clear();
     std::array<int,5> inactive; inactive.fill(-1);
@@ -440,6 +665,51 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
         }
       }
     }
+    // 紧耦合观测更新：将已关联未激活叶片的 8 个靶面精修关键点按异方差直接送入七状态 EKF。
+    const auto& gap_anchors = geometry_.numbered_anchors[0].gaps;
+    const bool has_gap_anchors = std::any_of(gap_anchors.begin(), gap_anchors.end(),
+                                             [](const auto& a) { return a.has_value(); });
+    if (has_gap_anchors && !pose_center_only) {
+      for (int sector = 0; sector < 5; ++sector) {
+        if (inactive[sector] < 0) continue;
+        const auto& kpts = observations[inactive[sector]].keypoints;
+        if (!kpts.image_contours || kpts.target_ring_status == TargetRingStatus::Rejected) continue;
+        const auto& contours = *kpts.image_contours;
+        int valid_count = 0;
+        for (std::size_t k = 0; k < 8; ++k) valid_count += (contours.gap_points[k] && gap_anchors[k]);
+        if (valid_count == 0) continue;
+        const double correlation_scale = std::max(2.5, double(valid_count));
+        for (std::size_t k = 0; k < 8; ++k) {
+          if (!contours.gap_points[k] || !gap_anchors[k]) continue;
+          const Eigen::Vector2d pixel(contours.gap_points[k]->x, contours.gap_points[k]->y);
+          if (!pixel.allFinite()) continue;
+          const auto projected = projectModelPoint(x, up_, sector, *gap_anchors[k], camera_tracking, frame);
+          const auto h = modelPointJacobian(x, up_, sector, *gap_anchors[k], camera_tracking, frame);
+          if (!projected || !h) continue;
+          const Eigen::Vector2d innovation = pixel - *projected;
+          const double point_var = contours.gap_point_variances[k] > 0.0F
+              ? double(contours.gap_point_variances[k])
+              : config_.observation_variance_px2;
+          // 按同靶环有效点数放大单点方差，避免多点相关性导致协方差过度收窄与法向抖动。
+          const Eigen::Matrix2d meas_r =
+              Eigen::Matrix2d::Identity() * std::max(config_.observation_variance_px2, point_var) * correlation_scale;
+          const Eigen::Matrix2d s = (*h) * p * h->transpose() + meas_r;
+          const Eigen::LDLT<Eigen::Matrix2d> ldlt(s);
+          if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) continue;
+          const double distance = innovation.dot(ldlt.solve(innovation));
+          if (!std::isfinite(distance) || distance >= config_.gate_squared) continue;
+          const Eigen::Matrix<double, 7, 2> gain = p * h->transpose() * ldlt.solve(Eigen::Matrix2d::Identity());
+          const Vector next = x + gain * innovation;
+          if (!next.allFinite() || std::abs(next[6]) > config_.max_speed_rad_s) continue;
+          const Matrix complement = Matrix::Identity() - gain * (*h);
+          p = (complement * p * complement.transpose() + gain * meas_r * gain.transpose()).eval();
+          p = (0.5 * (p + p.transpose())).eval();
+          x = next;
+          x[3] = std::remainder(x[3], 2.0 * std::numbers::pi);
+          linearization.reset();
+        }
+      }
+    }
     int selected=target_sector_;
     if (selected<0 || inactive[selected]<0) {
       selected=-1;
@@ -470,7 +740,7 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
         selected=target_sector_;
       }
     }
-    if (selected<0 && gimbal_only_ && seed.activated)
+    if (selected<0 && follow_only_ && seed.activated)
       selected=std::max(0,target_sector_);
     if (!p.allFinite() || !x.allFinite()) return fail();
     if (selected<0) {
@@ -488,9 +758,11 @@ std::optional<Pose> FeatureFilter::update(const Pose& seed,
     output.target_barrel=output.center_barrel+geometry_.radius_m*v;
     output.phase_rad=std::remainder(x[5]+selected*sector_angle,2*std::numbers::pi);
     output.T_barrel_model.translation()=output.center_barrel;
-    output.T_barrel_model.linear().col(0)=v.cross(output.normal_barrel);
+    const Eigen::Vector3d n_cam=frame.T_barrel_camera->linear().transpose()*output.normal_barrel;
+    const Eigen::Vector3d n_away=n_cam.z()>=0.0 ? output.normal_barrel : -output.normal_barrel;
+    output.T_barrel_model.linear().col(0)=n_away.cross(v);
     output.T_barrel_model.linear().col(1)=v;
-    output.T_barrel_model.linear().col(2)=output.normal_barrel;
+    output.T_barrel_model.linear().col(2)=-n_away;
     output.normal_vertical_component=std::abs(output.normal_barrel.dot(output.up_barrel));
     output.blades.clear();
     for (int j=0;j<5;++j) if (matched[j]>=0) {

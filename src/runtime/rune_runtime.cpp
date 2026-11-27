@@ -1,5 +1,6 @@
 #include "runtime/rune_runtime.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -24,9 +25,9 @@ RuneRuntime::RuneRuntime(const RuneRuntimeConfig& config,
                          const L4Planning::PlannerTuning& tuning,
                          std::unique_ptr<Rune::IKeypointDetector> detector)
     : detector_(detector ? std::move(detector) :
-                std::make_unique<Rune::ScutContourDetector>(config.scut_detector, config.gimbal_only)),
+                std::make_unique<Rune::ScutContourDetector>(config.scut_detector, !config.fire.shoot_enable)),
       image_refiner_(config.image_refiner),
-      processor_(config.geometry, config.estimator, planningConfig(config, tuning), {}, config.fire, config.gimbal_only),
+      processor_(config.geometry, config.estimator, planningConfig(config, tuning), {}, config.fire),
       tuning_(tuning), max_feedback_age_s_(config.fire.max_plan_age_s) {}
 
 void RuneRuntime::detect(Rune::Frame& frame) {
@@ -51,7 +52,8 @@ std::optional<L1Sensor::SerialCommand> RuneRuntime::process(
     control.actual_yaw_rad = std::atan2(forward.y(), forward.x());
     control.actual_pitch_rad = std::atan2(forward.z(), std::hypot(forward.x(), forward.y()));
   }
-  frame.color = state.enemy_color == L1Sensor::EnemyColor::Blue
+  const bool color_known = state.enemy_color != L1Sensor::EnemyColor::Unknown;
+  const Rune::Color expected_color = state.enemy_color == L1Sensor::EnemyColor::Blue
       ? Rune::Color::Blue : Rune::Color::Red;
   // 没有曝光姿态、标定或目标颜色时，不能把相机相对角度当作绝对指令。
   const double feedback_age_s = std::chrono::duration<double>(command_at - state.timestamp).count();
@@ -59,12 +61,22 @@ std::optional<L1Sensor::SerialCommand> RuneRuntime::process(
       frame.q_world_barrel->norm() < 1e-6 || !actual_pose_valid ||
       !frame.T_barrel_camera || frame.camera_matrix.empty() ||
       state.timestamp == Rune::TimePoint{} || feedback_age_s < 0 ||
-      feedback_age_s > max_feedback_age_s_ ||
-      state.enemy_color == L1Sensor::EnemyColor::Unknown) {
+      feedback_age_s > max_feedback_age_s_ || !color_known) {
     frame.detections.clear();
     // Loss of sensor validity must hard-reset tracking, even when visual
     // detections would otherwise qualify for the short blink grace period.
     frame.bgr.release();
+  } else {
+    const bool contour_color_mismatch = std::any_of(
+        frame.detections.begin(), frame.detections.end(),
+        [expected_color](const auto& detection) {
+          return detection.image_contours && detection.image_contours->color != expected_color;
+        });
+    const bool need_redetect = contour_color_mismatch || frame.color != expected_color;
+    frame.color = expected_color;
+    if (need_redetect && !frame.bgr.empty() && frame.bgr.type() == CV_8UC3) {
+      detect(frame);
+    }
   }
   command_ = processor_.process(frame, control);
   if (auto command = Rune::ControlStage::makeSerialCommand(command_)) return command;

@@ -19,7 +19,7 @@
 #include "runtime/auto_aim_config.hpp"
 #include "runtime/armor_detector_factory.hpp"
 #include "runtime/l4_target_adapter.hpp"
-#include "rune/debug_overlay.hpp"
+#include "rune/f6_telemetry/debug_overlay.hpp"
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
@@ -835,52 +835,80 @@ void AutoAimRuntime::run() {
             input.captured_at = timestamp;
             input.mode = mode == L1Sensor::WorkMode::SmallBuff
                 ? Rune::Mode::Small : Rune::Mode::Big;
-            input.color = state && state->enemy_color==L1Sensor::EnemyColor::Blue
-                ? Rune::Color::Blue : Rune::Color::Red;
+            const auto enemyRuneColor = [](const std::optional<L1Sensor::RobotState>& robot_state)
+                -> std::optional<Rune::Color> {
+              if (!robot_state) return std::nullopt;
+              switch (robot_state->enemy_color) {
+              case L1Sensor::EnemyColor::Red:
+                return Rune::Color::Red;
+              case L1Sensor::EnemyColor::Blue:
+                return Rune::Color::Blue;
+              case L1Sensor::EnemyColor::Unknown:
+                return std::nullopt;
+              }
+              return std::nullopt;
+            };
             if (camera_calibration) {
               (void)Rune::applyCameraCalibration(input, *camera_calibration);
             }
+            std::optional<L1Sensor::RobotState> rune_feedback;
+            std::optional<Rune::Color> feedback_color;
             try {
-              // 先处理图像，让串口接收线程同时补齐曝光后的姿态包。
-              const auto detect_started = Clock::now();
-              rune->detect(input);
-              frame_timing.detect_ms = milliseconds(Clock::now(), detect_started);
-              frame_timing.detection_passes = 1;
-              if ((overlay_enabled || plotter) &&
-                  (last_rune_diagnostic_log == Clock::time_point{} ||
-                   Clock::now() - last_rune_diagnostic_log >= std::chrono::seconds(1))) {
-                if (const auto diagnostics = rune->detectorDiagnostics()) {
-                  const auto refinement = rune->imageRefinerDiagnostics();
-                  L6Telemetry::logDebug("rune detection", Rune::formatDetectionDiagnostics(*diagnostics),
-                                        "image", frame.cols, frame.rows,
-                                        "image_refined_r", refinement.refined_r,
-                                        "image_refined_targets", refinement.refined_targets,
-                                        "gpu_ecc_batches", refinement.gpu_ecc_batches,
-                                        "gpu_ecc_accepted", refinement.gpu_ecc_accepted,
-                                        "ring_motion_reject", refinement.rejected_target_rings);
-                }
-                last_rune_diagnostic_log = Clock::now();
+              std::optional<Rune::Color> detected_color;
+              const auto runDetect = [&](Rune::Color color) {
+                input.color = color;
+                const auto detect_started = Clock::now();
+                rune->detect(input);
+                frame_timing.detect_ms += milliseconds(Clock::now(), detect_started);
+                ++frame_timing.detection_passes;
+                detected_color = color;
+              };
+              // 已知目标颜色时先处理图像，让串口接收线程同时补齐曝光后的姿态包。
+              if (const auto initial_color = enemyRuneColor(state)) {
+                runDetect(*initial_color);
               }
               const auto pose_wait_started = Clock::now();
               (void)serial.waitPoseUntil(timestamp, pose_deadline);
               frame_timing.pose_wait_ms = milliseconds(Clock::now(), pose_wait_started);
               input.q_world_barrel = serial.gimbalPoseAt(timestamp);
-              // 图像处理耗时计入图像年龄，规划及反馈使用处理完成后的时刻。
-              const auto feedback = serial.latestState();
+              rune_feedback = serial.latestState();
+              feedback_color = enemyRuneColor(rune_feedback);
               const auto actual_pose = serial.latestGimbalPose();
-              const auto command_at = std::chrono::steady_clock::now();
-              if (feedback) {
-                if (auto command = rune->process(input, *feedback, actual_pose, command_at)) {
+              if (rune_feedback && feedback_color) {
+                if (!detected_color || *detected_color != *feedback_color) {
+                  runDetect(*feedback_color);
+                }
+                if ((overlay_enabled || plotter) &&
+                    (last_rune_diagnostic_log == Clock::time_point{} ||
+                     Clock::now() - last_rune_diagnostic_log >= std::chrono::seconds(1))) {
+                  if (const auto diagnostics = rune->detectorDiagnostics()) {
+                    const auto refinement = rune->imageRefinerDiagnostics();
+                    L6Telemetry::logDebug("rune detection", Rune::formatDetectionDiagnostics(*diagnostics),
+                                          "image", frame.cols, frame.rows,
+                                          "image_refined_r", refinement.refined_r,
+                                          "image_refined_targets", refinement.refined_targets,
+                                          "gpu_ecc_batches", refinement.gpu_ecc_batches,
+                                          "gpu_ecc_accepted", refinement.gpu_ecc_accepted,
+                                          "ring_motion_reject", refinement.rejected_target_rings);
+                  }
+                  last_rune_diagnostic_log = Clock::now();
+                }
+                // 图像处理耗时计入图像年龄，规划及反馈使用处理完成后的时刻。
+                const auto command_at = std::chrono::steady_clock::now();
+                if (auto command = rune->process(input, *rune_feedback, actual_pose, command_at)) {
                   sendCommand(*command, rune->lastCommand().single_shoot);
                 } else {
                   sendSafeHold();
                 }
+                // Rune::process 包含轮廓、PnP、估计、规划及控制。
+                frame_timing.plan_control_ms = milliseconds(Clock::now(), command_at);
               } else {
+                input.detections.clear();
+                input.display_outline_predictions.clear();
+                input.reobserved_target_rings.clear();
                 rune->suspend();
                 sendSafeHold();
               }
-              // Rune::process 包含轮廓、PnP、估计、规划及控制。
-              frame_timing.plan_control_ms = milliseconds(Clock::now(), command_at);
             } catch (const std::exception& error) {
               L6Telemetry::logError("rune frame processing failed", error.what());
               rune->suspend();
@@ -899,13 +927,17 @@ void AutoAimRuntime::run() {
               if (rune->lastMotion()) {
                 Rune::drawTrackingOverlay(frame, input, rune->lastMotion()->pose);
               }
-              if (const auto diagnostics = rune->detectorDiagnostics())
-                Rune::drawDetectionDiagnostics(frame, *diagnostics);
+              if (feedback_color) {
+                if (const auto diagnostics = rune->detectorDiagnostics())
+                  Rune::drawDetectionDiagnostics(frame, *diagnostics);
+              }
               const auto& command = rune->lastCommand();
+              const std::string serial_note = (!serial_started || !rune_feedback)
+                  ? " NO SERIAL FEEDBACK"
+                  : (!feedback_color ? " UNKNOWN ENEMY COLOR" : "");
               const std::string label = (mode == L1Sensor::WorkMode::SmallBuff ? "Small rune" : "Big rune") +
                   std::string(" status=") + std::to_string(static_cast<int>(command.status)) +
-                  ((!serial_started || !state) ? " NO SERIAL FEEDBACK" : "") +
-                  (command.using_mpc ? " MPC" : "") + (command.fire ? " FIRE" : "");
+                  serial_note + (command.using_mpc ? " MPC" : "") + (command.fire ? " FIRE" : "");
               cv::putText(frame, label, {20, 40}, cv::FONT_HERSHEY_SIMPLEX, 0.8, {0, 255, 255}, 2);
               frame_timing.draw_ms += milliseconds(Clock::now(), draw_started);
             }

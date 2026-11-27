@@ -14,8 +14,7 @@ public:
   explicit Processor(Geometry geometry, EstimatorConfig estimator = {},
                      PlanningConfig planning = {},
                      std::unique_ptr<IBigMotionModel> big_model = {},
-                     std::optional<FireControlConfig> fire = {},
-                     bool gimbal_only = false);
+                     std::optional<FireControlConfig> fire = {});
   [[nodiscard]] Command process(const Frame& frame,
                                  const ControlInput& control);
   // Image/calibration-only observation and motion estimation for visual replay.
@@ -26,7 +25,7 @@ public:
   }
   [[nodiscard]] const std::optional<AimPlan>& lastPlan() const noexcept { return last_plan_; }
   [[nodiscard]] std::optional<L1Sensor::SerialCommand> safeHold() const {
-    return gimbal_only_ ? gimbal_hold_ : control_.safeHold();
+    return follow_only_ ? gimbal_hold_ : control_.safeHold();
   }
   // Needed only when FireControlConfig::require_rearm is enabled.
   void rearm() noexcept { control_.rearm(); }
@@ -37,6 +36,7 @@ private:
   [[nodiscard]] Command followGimbal(Command result, const Frame& frame, const ControlInput& control);
   DetectionStage detection_;
   ObservationStage observation_;
+  bool follow_only_;
   BuildingStage building_;
   FeatureFilter filter_;
   EstimatorStage estimator_;
@@ -45,8 +45,7 @@ private:
   std::optional<Mode> previous_mode_;
   std::optional<Color> previous_color_;
   TimePoint previous_frame_time_{}, last_observation_time_{};
-  double continuity_gap_s_;
-  bool gimbal_only_;
+  double continuity_gap_s_, radius_m_;
   bool follow_center_{false};
   std::optional<L1Sensor::SerialCommand> gimbal_hold_;
   std::optional<Motion> last_motion_;

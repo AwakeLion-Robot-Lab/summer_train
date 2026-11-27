@@ -406,7 +406,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
       }
       readRuneNumberedAnchors(geometry["numbered_anchors_m"],config.rune.geometry);
     }
-    if (rune["gimbal_only"]) config.rune.gimbal_only = rune["gimbal_only"].as<bool>();
     if (rune["mpc_enable"]) config.rune.mpc_enable = rune["mpc_enable"].as<bool>();
     if (rune["small_warmup_s"]) config.rune.planning.small_warmup_s = rune["small_warmup_s"].as<double>();
     if (rune["big_warmup_s"]) config.rune.planning.big_warmup_s = rune["big_warmup_s"].as<double>();
@@ -619,8 +618,6 @@ AutoAimConfig loadAutoAimConfig(const std::string& path)
 
   const YAML::Node fire = root["fire"];
   readValue(fire, "shoot_enable", config.fire.shoot_enable);
-  if (config.rune.gimbal_only && config.fire.shoot_enable)
-    throw std::runtime_error("rune.gimbal_only requires fire.shoot_enable: false");
   // 装甲板、大小符共用顶层开火开关；rune.fire 只保留专用门限和节拍。
   config.rune.fire.shoot_enable = config.fire.shoot_enable;
   config.rune.planning.shoot_enable = config.fire.shoot_enable;

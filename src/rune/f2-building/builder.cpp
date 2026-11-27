@@ -25,7 +25,7 @@ std::optional<Pose> BuildingStage::run(const Observation& observation,const Fram
 std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observations,const Frame& frame) {
   const auto fail=[&]() -> std::optional<Pose> { reset(); return {}; };
   const auto insufficient=[&]() -> std::optional<Pose> {
-    if (!gimbal_only_ || !std::all_of(observations.begin(),observations.end(),wellFormedObservation))
+    if (!follow_only_ || !std::all_of(observations.begin(),observations.end(),wellFormedObservation))
       return fail();
     return {};
   };
@@ -33,7 +33,7 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
     const auto& g=geometry_;
     if (!validGeometry(g) || observations.empty() || observations.size()>32) return fail();
     cv::Mat camera,distortion;
-    if (gimbal_only_ && (frame.captured_at==TimePoint{} || frame.bgr.empty() || frame.bgr.type()!=CV_8UC3 ||
+    if (follow_only_ && (frame.captured_at==TimePoint{} || frame.bgr.empty() || frame.bgr.type()!=CV_8UC3 ||
         (frame.mode!=Mode::Small && frame.mode!=Mode::Big) ||
         (frame.color!=Color::Red && frame.color!=Color::Blue) || !validCamera(frame,camera,distortion))) return fail();
     std::optional<Eigen::Matrix3d> orientation;
@@ -56,9 +56,9 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
     std::vector<std::size_t> seeds;
     for (std::size_t i=0;i<observations.size();++i) {
       const auto& o=observations[i];
-      if (o.keypoints.class_id==0 && validObservation(o,false,gimbal_only_)) seeds.push_back(i);
+      if (o.keypoints.class_id==0 && validObservation(o,false,follow_only_)) seeds.push_back(i);
     }
-    if (seeds.empty() && gimbal_only_) {
+    if (seeds.empty() && follow_only_) {
       for (std::size_t i=0;i<observations.size();++i)
         if (observations[i].keypoints.class_id==1 &&
             validObservation(observations[i],frame.mode==Mode::Big,true)) seeds.push_back(i);
@@ -85,7 +85,7 @@ std::optional<Pose> BuildingStage::run(const std::vector<Observation>& observati
         for (std::size_t i=0;i<observations.size();++i) {
           const auto& o=observations[i];
           if (o.keypoints.class_id!=0 || !o.keypoints.point_valid[4] ||
-              !validObservation(o,false,gimbal_only_)) continue;
+              !validObservation(o,false,follow_only_)) continue;
           const cv::Point2d center=*o.keypoints.armorCenter();
           const double radius=cv::norm(center-cv::Point2d(o.keypoints.center_r));
           const double distance=cv::norm(center-pixel)/std::max(2.0,radius);
